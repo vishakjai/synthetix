@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Synthetix</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      tailwind = {
+        config: {
+          theme: {
+            extend: {
+              colors: {
+                ink: {
+                  950: "#0b1320",
+                  900: "#122033",
+                  800: "#1b3554",
+                },
+              },
+              boxShadow: {
+                card: "0 0 0 1px rgba(15,23,42,0.06), 0 18px 34px rgba(15,23,42,0.12)",
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        font-family: "Sora", "Avenir Next", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 8% 3%, rgba(16, 185, 129, 0.17), transparent 32%),
+          radial-gradient(circle at 95% 0%, rgba(245, 158, 11, 0.18), transparent 34%),
+          linear-gradient(140deg, #f1f7ff, #fef9f0);
+      }
+      /* Readability override: keep text contrast high across Tailwind utility variants. */
+      .text-slate-500 { color: #334155 !important; }
+      .text-slate-600 { color: #334155 !important; }
+      .text-slate-700 { color: #1e293b !important; }
+      .text-slate-800 { color: #0f172a !important; }
+      .text-slate-900 { color: #020617 !important; }
+      label, p, span, h1, h2, h3, h4, h5 {
+        -webkit-font-smoothing: antialiased;
+      }
+      input, textarea, select, option {
+        color: #0f172a;
+      }
+      input::placeholder,
+      textarea::placeholder {
+        color: #475569;
+        opacity: 1;
+      }
+      .mono {
+        font-family: "JetBrains Mono", "Menlo", monospace;
+      }
+      .running-glow {
+        animation: runningPulse 1.4s ease-in-out infinite;
+      }
+      @keyframes runningPulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.25); }
+        50% { box-shadow: 0 0 0 8px rgba(56, 189, 248, 0.08); }
+      }
+      .btn-dark {
+        background: #122033;
+        border: 1px solid #122033;
+        color: #ffffff;
+      }
+      .btn-dark:hover {
+        background: #1b3554;
+      }
+      .btn-light {
+        background: #f8fafc;
+        border: 1px solid #94a3b8;
+        color: #0f172a;
+      }
+      .btn-light:hover {
+        background: #e2e8f0;
+      }
+      .btn-success {
+        background: #047857;
+        border: 1px solid #047857;
+        color: #ffffff;
+      }
+      .btn-success:hover {
+        background: #059669;
+      }
+      .btn-danger {
+        background: #b91c1c;
+        border: 1px solid #b91c1c;
+        color: #ffffff;
+      }
+      .btn-danger:hover {
+        background: #dc2626;
+      }
+      .mode-btn-active {
+        background: #0f172a;
+        color: #ffffff;
+        border-color: #0f172a;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen text-slate-900">
+    <main class="mx-auto flex w-full max-w-[1540px] flex-col gap-5 px-4 py-6 lg:px-8">
+      <header class="rounded-2xl border border-slate-300/70 bg-white/90 p-5 shadow-card backdrop-blur">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p class="mono text-xs uppercase tracking-[0.2em] text-ink-800">Synthetix Agent Swarm</p>
+            <h1 class="mt-2 text-3xl font-semibold text-ink-950 lg:text-4xl">Synthetix</h1>
+            <p class="mt-2 max-w-4xl text-sm text-slate-700">
+              Multi-agent software delivery workspace with persona-driven teams, live execution, and reusable task history.
+            </p>
+          </div>
+        </div>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button id="nav-home" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Home</button>
+          <button id="nav-work" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Work on Task</button>
+          <button id="nav-team" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Create a Team</button>
+          <button id="nav-history" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Previous Tasks</button>
+        </div>
+      </header>
+
+      <section id="home-screen" class="rounded-2xl border border-slate-300/70 bg-white/90 p-6 shadow-card backdrop-blur">
+        <h2 class="text-xl font-semibold text-ink-950">Choose your workflow</h2>
+        <div class="mt-4 grid gap-3 md:grid-cols-3">
+          <button id="home-work-btn" class="rounded-xl border border-slate-300 bg-slate-50 p-4 text-left text-slate-900 hover:border-sky-400 hover:bg-sky-50">
+            <p class="text-sm font-semibold">Work on task</p>
+            <p class="mt-1 text-xs text-slate-700">Describe the business challenge and run the Synthetix swarm.</p>
+          </button>
+          <button id="home-team-btn" class="rounded-xl border border-slate-300 bg-slate-50 p-4 text-left text-slate-900 hover:border-emerald-400 hover:bg-emerald-50">
+            <p class="text-sm font-semibold">Create a team</p>
+            <p class="mt-1 text-xs text-slate-700">Pick ready-made persona agents, clone, and customize.</p>
+          </button>
+          <button id="home-history-btn" class="rounded-xl border border-slate-300 bg-slate-50 p-4 text-left text-slate-900 hover:border-amber-400 hover:bg-amber-50">
+            <p class="text-sm font-semibold">Look at previous tasks</p>
+            <p class="mt-1 text-xs text-slate-700">Review completed tasks and clone them to run again.</p>
+          </button>
+        </div>
+      </section>
+
+      <section id="work-screen" class="hidden grid gap-5 xl:grid-cols-[390px_1fr]">
+        <aside id="work-config-panel" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+          <h2 class="text-lg font-semibold text-ink-950">Execution Options</h2>
+
+          <div class="mt-3 grid gap-3">
+            <div>
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Provider</label>
+              <select id="provider" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI (GPT)</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Model</label>
+              <input id="model" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800" value="claude-sonnet-4-20250514" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">API Key</label>
+              <input id="api-key" type="password" class="mono w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Enter API key" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Temp</label>
+                <input id="temperature" type="number" min="0" max="1" step="0.05" value="0.3" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800" />
+              </div>
+              <div>
+                <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Sub-agents</label>
+                <input id="parallel-agents" type="number" min="1" max="8" value="5" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800" />
+              </div>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Max Retries</label>
+              <input id="max-retries" type="number" min="0" max="5" value="2" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800" />
+            </div>
+            <div class="flex items-center gap-2">
+              <input id="human-approval" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-ink-900 focus:ring-ink-800" />
+              <label for="human-approval" class="text-sm text-slate-700">Require human approval at each stage</label>
+            </div>
+            <div class="flex items-center gap-2">
+              <input id="strict-security-mode" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-ink-900 focus:ring-ink-800" />
+              <label for="strict-security-mode" class="text-sm text-slate-700">Strict security mode</label>
+            </div>
+            <div class="flex items-center gap-2">
+              <input id="live-deploy" type="checkbox" checked class="h-4 w-4 rounded border-slate-300 text-ink-900 focus:ring-ink-800" />
+              <label for="live-deploy" class="text-sm text-slate-700">Enable actual deployment execution</label>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Deployment Target</label>
+              <select id="deployment-target" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                <option value="local">Local Docker</option>
+                <option value="cloud">Cloud</option>
+              </select>
+            </div>
+            <div id="cloud-config-box" class="hidden rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-2 text-xs font-semibold text-slate-700">Cloud Deployment Details</p>
+              <div class="grid grid-cols-1 gap-2">
+                <select id="cloud-platform" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                  <option value="">Select platform</option>
+                  <option value="aws">AWS</option>
+                  <option value="azure">Azure</option>
+                  <option value="gcp">GCP</option>
+                </select>
+                <input id="cloud-region" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Region (e.g. us-east-1)" />
+                <input id="cloud-service-name" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Service/App name" />
+                <input id="cloud-project-id" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="GCP Project ID" />
+                <input id="cloud-resource-group" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Azure Resource Group" />
+                <input id="cloud-subscription-id" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Azure Subscription ID (optional)" />
+                <input id="cloud-power" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="AWS Lightsail power (nano|micro|small)" />
+                <input id="cloud-scale" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="AWS Lightsail scale (1,2,3...)" />
+                <input id="cloud-credentials" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Credentials ref (env:..., profile:..., file:...)" />
+                <textarea id="cloud-extra" rows="3" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Extra params key=value (one per line)"></textarea>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <input id="cluster-name" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:border-ink-800" value="agent-pipeline" placeholder="Cluster name" />
+              <input id="namespace" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:border-ink-800" value="agent-app" placeholder="Namespace" />
+            </div>
+            <input id="deploy-output-dir" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:border-ink-800" value="./deploy_output" placeholder="Deploy output dir" />
+          </div>
+
+          <div class="mt-5 rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <div class="flex items-center justify-between gap-2">
+              <h3 class="text-sm font-semibold text-ink-950">Assigned Team</h3>
+              <button id="work-refresh-teams" class="btn-light rounded-md px-2 py-1 text-xs font-semibold">Refresh</button>
+            </div>
+            <div class="mt-2 flex gap-2">
+              <select id="work-team-select" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900"></select>
+              <button id="work-suggest-team" class="btn-dark rounded-lg px-3 py-2 text-xs font-semibold">Suggest</button>
+            </div>
+            <div class="mt-2 flex gap-2">
+              <button id="work-open-team-builder" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Open Team Builder</button>
+              <button id="work-apply-team" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Apply Team</button>
+            </div>
+            <p id="work-team-reason" class="mt-2 text-xs text-slate-700"></p>
+            <div id="work-team-roster" class="mt-2 grid gap-2"></div>
+          </div>
+
+          <div class="mt-5 border-t border-slate-300/80 pt-4">
+            <h3 class="text-sm font-semibold text-ink-950">Run History</h3>
+            <div class="mt-2 flex gap-2">
+              <select id="run-history" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"></select>
+              <button id="load-run" class="btn-dark rounded-lg px-3 py-2 text-xs font-semibold">Load</button>
+            </div>
+            <button id="refresh-run-history" class="btn-light mt-2 rounded-lg px-3 py-1.5 text-xs font-semibold">Refresh History</button>
+          </div>
+        </aside>
+
+        <section class="rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+          <div id="work-intake-step">
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">Step 1 of 2</p>
+            <h2 class="mt-1 text-lg font-semibold text-ink-950">Describe The Task</h2>
+
+            <div class="mt-3 mb-2 grid gap-2 sm:grid-cols-[220px_1fr] sm:items-center">
+              <label class="text-xs uppercase tracking-[0.16em] text-slate-600">Task Type</label>
+              <select id="task-type" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                <option value="business_objectives">Business Challenge</option>
+                <option value="code_modernization">Code Modernization</option>
+                <option value="database_conversion">Database Conversion</option>
+              </select>
+            </div>
+
+            <div class="flex items-center justify-between gap-2">
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Business Challenge</label>
+              <div class="flex gap-2">
+                <input id="objectives-file" type="file" class="hidden" accept=".txt,.md,.json,.yaml,.yml,.csv" />
+                <button id="upload-objectives" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+              </div>
+            </div>
+            <textarea id="objectives" rows="6" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none focus:border-ink-800" placeholder="Describe your business challenge in natural language..."></textarea>
+
+            <div id="modernization-panel" class="mt-3 hidden">
+              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Target Modernization Language</label>
+              <select id="modernization-language" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                <option value="Python" selected>Python</option>
+                <option value="Node.js">Node.js</option>
+                <option value="TypeScript">TypeScript</option>
+                <option value="Go">Go</option>
+                <option value="Java">Java</option>
+                <option value="C#">C#</option>
+                <option value="Rust">Rust</option>
+              </select>
+
+              <div class="mt-2 flex items-center justify-between gap-2">
+                <label class="mb-1 mt-2 block text-xs uppercase tracking-[0.16em] text-slate-600">Legacy Source Code</label>
+                <div class="flex gap-2">
+                  <input id="legacy-file" type="file" class="hidden" accept=".asp,.aspx,.txt,.vb,.cs,.js,.py,.java,.go" />
+                  <button id="upload-legacy" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+                </div>
+              </div>
+              <textarea id="legacy-code" rows="8" class="mono w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Paste or upload legacy code for modernization..."></textarea>
+            </div>
+
+            <div id="database-panel" class="mt-3 hidden">
+              <div class="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Source Database</label>
+                  <select id="db-source" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                    <option value="">Select source</option>
+                    <option value="SQL Server">SQL Server</option>
+                    <option value="Oracle">Oracle</option>
+                    <option value="MySQL">MySQL</option>
+                    <option value="PostgreSQL">PostgreSQL</option>
+                    <option value="SQLite">SQLite</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Target Database</label>
+                  <select id="db-target" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                    <option value="">Select target</option>
+                    <option value="PostgreSQL">PostgreSQL</option>
+                    <option value="MySQL">MySQL</option>
+                    <option value="SQL Server">SQL Server</option>
+                    <option value="Oracle">Oracle</option>
+                    <option value="SQLite">SQLite</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mt-2 flex items-center justify-between gap-2">
+                <label class="mb-1 mt-2 block text-xs uppercase tracking-[0.16em] text-slate-600">Legacy Schema / SQL</label>
+                <div class="flex gap-2">
+                  <input id="db-file" type="file" class="hidden" accept=".sql,.txt,.ddl,.md" />
+                  <button id="upload-db" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+                </div>
+              </div>
+              <textarea id="db-schema" rows="8" class="mono w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Paste legacy schema, DDL, or migration source SQL..."></textarea>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button id="wizard-continue" class="btn-dark rounded-lg px-4 py-2 text-sm font-semibold">Continue To Team & Execution</button>
+              <button id="work-open-history" class="btn-light rounded-lg px-4 py-2 text-sm font-semibold">View Previous Tasks</button>
+            </div>
+          </div>
+
+          <div id="work-execution-step" class="hidden">
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">Step 2 of 2</p>
+                <p class="text-sm text-slate-700">Team assigned and execution controls ready.</p>
+              </div>
+              <div class="flex gap-2">
+                <button id="wizard-back" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Back</button>
+                <button id="run-pipeline" class="btn-dark rounded-lg px-4 py-2 text-sm font-semibold">Run Pipeline</button>
+              </div>
+            </div>
+
+            <div id="task-summary-card" class="mb-3 rounded-xl border border-slate-300 bg-slate-50 p-3">
+              <div class="mb-2 flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-ink-950">Task Summary</h3>
+                <span id="task-summary-use-case" class="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700">BUSINESS CHALLENGE</span>
+              </div>
+              <p id="task-summary-objective" class="text-xs text-slate-800"></p>
+              <div id="task-summary-details" class="mt-2 grid gap-2 text-xs text-slate-700 sm:grid-cols-2"></div>
+            </div>
+
+            <div class="mb-3 grid grid-cols-2 gap-2 text-xs mono sm:grid-cols-4" id="status-chips"></div>
+
+            <div class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-3">
+              <div class="mb-2 flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-ink-950">Pipeline Progress</h3>
+                <span id="pipeline-status-text" class="mono text-xs text-slate-700">IDLE</span>
+              </div>
+              <div class="h-3 w-full overflow-hidden rounded-full bg-slate-200">
+                <div id="progress-fill" class="h-full w-0 rounded-full bg-gradient-to-r from-sky-500 to-emerald-500 transition-all duration-500"></div>
+              </div>
+              <p id="progress-meta" class="mono mt-2 text-xs text-slate-700">0 / 8 stages complete</p>
+            </div>
+          </div>
+
+          <div id="work-runtime-panels" class="hidden">
+            <section id="retry-plan-section" class="mt-3 hidden rounded-xl border border-sky-300 bg-sky-50 p-3">
+              <div class="flex items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold text-sky-900">Retry Plan (Self-Heal)</h3>
+                <span id="retry-plan-status" class="rounded-md border border-sky-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-sky-900">PENDING</span>
+              </div>
+              <div id="retry-plan-content" class="mt-2 text-xs text-slate-800"></div>
+            </section>
+
+            <div id="approval-panel" class="mt-3 hidden rounded-xl border border-amber-300 bg-amber-50 p-3">
+              <p id="approval-title" class="text-sm font-semibold text-amber-900">Approval Required</p>
+              <p id="approval-message" class="mt-1 text-xs text-amber-800"></p>
+              <div id="approval-developer-options" class="mt-2 hidden grid gap-2 sm:grid-cols-2">
+                <div>
+                  <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">Microservice Count</label>
+                  <input id="approve-microservices-count" type="number" min="1" max="8" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="e.g. 2, 3, 5" />
+                </div>
+                <div>
+                  <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">Split Strategy</label>
+                  <select id="approve-split-strategy" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="domain-driven">domain-driven</option>
+                    <option value="layered">layered</option>
+                    <option value="hybrid">hybrid</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">Target Language</label>
+                  <input id="approve-target-language" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="e.g. Python, Go" />
+                </div>
+                <div>
+                  <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">Target Platform</label>
+                  <input id="approve-target-platform" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="e.g. docker-local, kubernetes" />
+                </div>
+              </div>
+              <div id="approval-cloud-options" class="mt-2 hidden grid gap-2 sm:grid-cols-2">
+                <input id="approve-cloud-platform" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Cloud platform" />
+                <input id="approve-cloud-region" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Cloud region" />
+                <input id="approve-cloud-service-name" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Service/app name" />
+                <input id="approve-cloud-project-id" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="GCP project id" />
+                <input id="approve-cloud-resource-group" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Azure resource group" />
+                <input id="approve-cloud-subscription-id" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Azure subscription id" />
+                <input id="approve-cloud-power" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="AWS power" />
+                <input id="approve-cloud-scale" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="AWS scale" />
+                <input id="approve-cloud-credentials" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900 sm:col-span-2" placeholder="Credentials ref" />
+                <textarea id="approve-cloud-extra" rows="2" class="w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900 sm:col-span-2" placeholder="Extra key=value lines"></textarea>
+              </div>
+              <div class="mt-3 flex gap-2">
+                <button id="approve-stage" class="btn-success rounded-lg px-3 py-1.5 text-xs font-semibold">Approve & Continue</button>
+                <button id="reject-stage" class="btn-danger rounded-lg px-3 py-1.5 text-xs font-semibold">Reject</button>
+              </div>
+            </div>
+
+            <section class="mt-4 rounded-xl border border-slate-300 bg-white p-4" id="current-agent-panel"></section>
+            <section class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-3">
+              <div class="flex flex-wrap gap-2" id="agent-tabs"></div>
+              <div id="agent-tab-panel" class="mt-3 rounded-lg border border-slate-300 bg-white p-3"></div>
+            </section>
+            <section class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-3">
+              <div class="mb-2 flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-ink-950">Artifacts</h3>
+                <div class="flex gap-2">
+                  <button id="refresh-artifacts" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Refresh</button>
+                  <button id="view-artifact" class="btn-dark rounded-lg px-3 py-1.5 text-xs font-semibold">Open</button>
+                </div>
+              </div>
+              <select id="artifact-select" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"></select>
+              <pre id="artifact-preview" class="mono mt-2 h-[170px] overflow-auto rounded-xl border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+            </section>
+
+            <div class="mt-4">
+              <h3 class="text-sm font-semibold text-ink-950">Live Log Stream</h3>
+              <pre id="live-logs" class="mono mt-2 h-[220px] overflow-auto rounded-xl border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+            </div>
+
+            <section id="flow-diagram-section" class="mt-4 hidden rounded-xl border border-slate-300 bg-slate-50 p-4">
+              <h3 class="text-sm font-semibold text-ink-950">Agent Communication Flow</h3>
+              <div class="mt-3 overflow-x-auto">
+                <div class="min-w-[980px] rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-700">
+                  <div class="flex items-center gap-2">
+                    <div class="rounded bg-sky-100 px-2 py-1">Analyst</div>
+                    <div>-></div>
+                    <div class="rounded bg-blue-100 px-2 py-1">Architect</div>
+                    <div>-></div>
+                    <div class="rounded bg-indigo-100 px-2 py-1">Developer</div>
+                    <div>-></div>
+                    <div class="rounded bg-violet-100 px-2 py-1">Database Engineer</div>
+                    <div>-></div>
+                    <div class="rounded bg-cyan-100 px-2 py-1">Security Engineer</div>
+                    <div>-></div>
+                    <div class="rounded bg-emerald-100 px-2 py-1">Tester</div>
+                    <div>-></div>
+                    <div class="rounded bg-lime-100 px-2 py-1">Validation</div>
+                    <div>-></div>
+                    <div class="rounded bg-amber-100 px-2 py-1">Deployment</div>
+                  </div>
+                  <div class="mt-3 text-[11px] text-slate-600">
+                    Developer fans out to sub-agents, then database/security engineering refine output before QA gate.
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <section id="team-screen" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+        <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+          <div>
+            <h2 class="text-lg font-semibold text-ink-950">Create Team</h2>
+            <p class="mt-1 text-xs text-slate-700">Select one persona agent for each stage and save as a reusable Synthetix team.</p>
+            <div id="team-stage-selectors" class="mt-3 grid gap-3"></div>
+            <div class="mt-4 grid gap-2 sm:grid-cols-2">
+              <input id="team-name" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900" placeholder="Team name" />
+              <input id="team-description" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900" placeholder="Description (optional)" />
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button id="team-save-btn" class="btn-dark rounded-lg px-3 py-2 text-sm font-semibold">Save Team</button>
+              <button id="team-use-in-work-btn" class="btn-light rounded-lg px-3 py-2 text-sm font-semibold">Use In Work on Task</button>
+              <button id="team-refresh-btn" class="btn-light rounded-lg px-3 py-2 text-sm font-semibold">Refresh Agents/Teams</button>
+            </div>
+            <div id="team-save-message" class="mt-2 text-xs text-slate-700"></div>
+          </div>
+
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Clone & Modify Agent Persona</h3>
+            <div class="mt-2 grid gap-2">
+              <select id="clone-base-agent" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900"></select>
+              <input id="clone-agent-name" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="New agent display name" />
+              <textarea id="clone-agent-persona" rows="6" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="Persona override"></textarea>
+              <button id="clone-agent-btn" class="btn-dark rounded-lg px-3 py-2 text-xs font-semibold">Clone Agent</button>
+            </div>
+            <div id="clone-agent-message" class="mt-2 text-xs text-slate-700"></div>
+            <h4 class="mt-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">Ready-made & Custom Agents</h4>
+            <div id="team-agent-catalog" class="mt-2 max-h-[360px] overflow-auto rounded-lg border border-slate-300 bg-white p-2 text-xs"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="history-screen" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-lg font-semibold text-ink-950">Previous Tasks</h2>
+          <button id="tasks-refresh" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Refresh Tasks</button>
+        </div>
+        <div id="tasks-list" class="mt-3 grid gap-2"></div>
+      </section>
+    </main>
+
+    <dialog id="output-modal" class="w-[min(1000px,96vw)] rounded-2xl border border-slate-300 p-0 shadow-2xl">
+      <div class="border-b border-slate-300 bg-slate-50 px-4 py-3">
+        <div class="flex items-center justify-between gap-3">
+          <h3 id="modal-title" class="text-base font-semibold text-ink-950">Agent Output</h3>
+          <button id="close-modal" class="btn-light rounded-md px-3 py-1 text-xs font-semibold">Close</button>
+        </div>
+      </div>
+      <div class="grid gap-3 p-4 lg:grid-cols-[1fr_1fr]">
+        <div>
+          <h4 class="text-xs uppercase tracking-[0.16em] text-slate-600">Summary</h4>
+          <p id="modal-summary" class="mt-1 text-sm text-slate-800"></p>
+          <h4 class="mt-3 text-xs uppercase tracking-[0.16em] text-slate-600">Readable Output</h4>
+          <div id="modal-readable" class="mt-1 h-[180px] overflow-auto rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-800"></div>
+          <h4 class="mt-3 text-xs uppercase tracking-[0.16em] text-slate-600">Logs</h4>
+          <pre id="modal-logs" class="mono mt-1 h-[190px] overflow-auto rounded-lg border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+        </div>
+        <div>
+          <h4 class="text-xs uppercase tracking-[0.16em] text-slate-600">Structured Output (JSON)</h4>
+          <pre id="modal-output" class="mono mt-1 h-[360px] overflow-auto rounded-lg border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
