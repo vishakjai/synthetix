@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/feedback_event.schema.json",
+  "title": "Feedback Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "created_at", "repo_ref", "artifact_ref", "change", "created_by"],
+  "properties": {
+    "id": { "$ref": "common.schema.json#/$defs/Ulid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/IsoDateTime" },
+    "repo_ref": { "$ref": "common.schema.json#/$defs/RepoRef" },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_type", "artifact_id"],
+      "properties": {
+        "artifact_type": { "type": "string" },
+        "artifact_id": { "$ref": "common.schema.json#/$defs/Ulid" }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "path"],
+      "properties": {
+        "op": { "type": "string", "enum": ["add", "remove", "replace"] },
+        "path": { "type": "string", "description": "JSON Pointer to the exact field being corrected." },
+        "value": { "description": "New value if op is add/replace." }
+      }
+    },
+    "created_by": { "type": "string" },
+    "rationale": { "type": "string" },
+    "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+  }
+}

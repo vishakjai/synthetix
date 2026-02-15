@@ -11,20 +11,19 @@
       rel="stylesheet"
     />
     <script>
-      tailwind = {
-        config: {
-          theme: {
-            extend: {
-              colors: {
-                ink: {
-                  950: "#0b1320",
-                  900: "#122033",
-                  800: "#1b3554",
-                },
+      window.tailwind = window.tailwind || {};
+      window.tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: {
+                950: "#0b1320",
+                900: "#122033",
+                800: "#1b3554",
               },
-              boxShadow: {
-                card: "0 0 0 1px rgba(15,23,42,0.06), 0 18px 34px rgba(15,23,42,0.12)",
-              },
+            },
+            boxShadow: {
+              card: "0 0 0 1px rgba(15,23,42,0.06), 0 18px 34px rgba(15,23,42,0.12)",
             },
           },
         },
@@ -106,10 +105,133 @@
         color: #ffffff;
         border-color: #0f172a;
       }
+      .log-window {
+        background: #0b1320 !important;
+        color: #eaf2ff !important;
+      }
+      .log-window * {
+        color: #eaf2ff !important;
+      }
+      .log-window::selection {
+        background: #334155;
+        color: #ffffff;
+      }
+      .shell-card {
+        border: 1px solid rgba(148, 163, 184, 0.5);
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04), 0 14px 28px rgba(15, 23, 42, 0.09);
+      }
+      .nav-item {
+        width: 100%;
+        text-align: left;
+        border: 1px solid #94a3b8;
+        background: #f8fafc;
+        color: #0f172a;
+        border-radius: 0.6rem;
+        padding: 0.55rem 0.75rem;
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+      .nav-item:hover {
+        background: #e2e8f0;
+      }
+      .cmdk-backdrop {
+        background: rgba(2, 6, 23, 0.5);
+        backdrop-filter: blur(1px);
+      }
+      .cmdk-panel {
+        border: 1px solid #334155;
+        background: #f8fafc;
+      }
+      .hidden-drawer {
+        display: none;
+      }
+      .discover-step-btn {
+        border: 1px solid #94a3b8;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .discover-step-btn:hover {
+        background: #e2e8f0;
+      }
+      .discover-step-active {
+        border-color: #0f172a;
+        background: #0f172a;
+        color: #ffffff;
+      }
+      .discover-step-done {
+        border-color: #047857;
+        background: #ecfdf5;
+        color: #065f46;
+      }
+      .discover-panel-hidden {
+        display: none;
+      }
+      @media (min-width: 1280px) {
+        #shell-grid {
+          grid-template-columns: 220px minmax(0, 1fr) 320px;
+        }
+        #shell-grid.drawer-collapsed {
+          grid-template-columns: 220px minmax(0, 1fr);
+        }
+      }
+      .bg-ink-950 {
+        background: #0b1320 !important;
+      }
+      .text-slate-200 {
+        color: #e5edf8 !important;
+      }
     </style>
   </head>
   <body class="min-h-screen text-slate-900">
-    <main class="mx-auto flex w-full max-w-[1540px] flex-col gap-5 px-4 py-6 lg:px-8">
+    <div class="mx-auto w-full max-w-[1920px] p-4 lg:p-6">
+      <div id="shell-grid" class="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_320px]">
+        <aside class="shell-card rounded-2xl p-4">
+          <p class="mono text-[11px] uppercase tracking-[0.2em] text-ink-800">Synthetix</p>
+          <h1 class="mt-1 text-2xl font-semibold text-ink-950">Control Plane</h1>
+          <p class="mt-2 text-xs text-slate-700">Context-first delivery orchestration</p>
+          <nav class="mt-4 grid gap-2">
+            <button id="nav-home" class="nav-item mode-btn-active">Dashboards</button>
+            <button id="nav-work" class="nav-item">Discover</button>
+            <button id="nav-team" class="nav-item">Plan</button>
+            <button id="nav-build" class="nav-item">Build</button>
+            <button id="nav-history" class="nav-item">Verify</button>
+            <button id="nav-settings" class="nav-item">Settings</button>
+          </nav>
+          <div class="mt-5 rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.15em] text-slate-700">Command palette</p>
+            <button id="cmd-palette-btn" class="btn-dark mt-2 w-full rounded-lg px-3 py-1.5 text-xs font-semibold">Open (Ctrl+K)</button>
+          </div>
+        </aside>
+
+        <section class="min-w-0 space-y-4">
+          <header class="shell-card rounded-2xl px-4 py-3">
+            <div class="grid gap-2 xl:grid-cols-[170px_170px_minmax(0,1fr)_180px_auto_auto_auto]">
+              <select id="workspace-selector" title="Workspaces isolate data, integrations, and policy packs per client." aria-label="Workspace" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900">
+                <option value="">Select a workspace</option>
+                <option>ACME Workspace</option>
+                <option>Default Workspace</option>
+              </select>
+              <select id="project-selector" title="Filter views to a single project. Tasks remain visible when linked to the project." aria-label="Project" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900">
+                <option value="">All work</option>
+                <option>Synthetix Core</option>
+                <option>Modernization Lane</option>
+              </select>
+              <input id="global-search" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900" placeholder="Search work items, runs, services, artifacts, and evidence..." />
+              <select id="perspective-switcher" title="Perspectives adjust default views and detail level based on role." aria-label="Perspective" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900">
+                <option value="executive">Executive</option>
+                <option value="delivery">Delivery</option>
+                <option value="engineering">Engineering</option>
+                <option value="security">Security</option>
+              </select>
+              <button id="notifications-btn" class="btn-light rounded-lg px-3 py-2 text-xs font-semibold">Notifications</button>
+              <button id="context-drawer-toggle" class="btn-light rounded-lg px-3 py-2 text-xs font-semibold">Hide Context Drawer</button>
+              <button id="user-menu-btn" class="btn-light rounded-lg px-3 py-2 text-xs font-semibold">User</button>
+            </div>
+            <p id="global-search-status" class="mt-2 text-xs text-slate-700"></p>
+          </header>
+
+          <main id="center-content" class="flex flex-col gap-5">
       <header class="rounded-2xl border border-slate-300/70 bg-white/90 p-5 shadow-card backdrop-blur">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -120,35 +242,44 @@
             </p>
           </div>
         </div>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <button id="nav-home" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Home</button>
-          <button id="nav-work" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Work on Task</button>
-          <button id="nav-team" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Create a Team</button>
-          <button id="nav-history" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Previous Tasks</button>
+        <div class="mt-4 grid gap-2 text-xs text-slate-700 sm:grid-cols-4">
+          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>Work ID:</strong> context-driven</div>
+          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>Run ID:</strong> immutable</div>
+          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>Artifacts:</strong> versioned</div>
+          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>RBAC:</strong> policy-bound</div>
         </div>
       </header>
 
       <section id="home-screen" class="rounded-2xl border border-slate-300/70 bg-white/90 p-6 shadow-card backdrop-blur">
-        <h2 class="text-xl font-semibold text-ink-950">Choose your workflow</h2>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="dashboard-title" class="text-xl font-semibold text-ink-950">Portfolio overview</h2>
+          <p id="dashboard-subtitle" class="text-xs text-slate-700">Delivery outcomes, risk posture, and governance status.</p>
+        </div>
+        <div id="dashboard-kpi-row" class="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5"></div>
+        <div class="mt-4 grid gap-3 xl:grid-cols-2">
+          <div id="dashboard-main-left" class="rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
+          <div id="dashboard-main-right" class="rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
+        </div>
+        <div id="dashboard-bottom" class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
         <div class="mt-4 grid gap-3 md:grid-cols-3">
-          <button id="home-work-btn" class="rounded-xl border border-slate-300 bg-slate-50 p-4 text-left text-slate-900 hover:border-sky-400 hover:bg-sky-50">
-            <p class="text-sm font-semibold">Work on task</p>
-            <p class="mt-1 text-xs text-slate-700">Describe the business challenge and run the Synthetix swarm.</p>
+          <button id="home-work-btn" class="rounded-xl border border-slate-300 bg-sky-50 p-4 text-left text-slate-900 hover:border-sky-400">
+            <p class="text-sm font-semibold">Start system ingestion</p>
+            <p class="mt-1 text-xs text-slate-700">Launch system ingestion and context generation.</p>
           </button>
-          <button id="home-team-btn" class="rounded-xl border border-slate-300 bg-slate-50 p-4 text-left text-slate-900 hover:border-emerald-400 hover:bg-emerald-50">
-            <p class="text-sm font-semibold">Create a team</p>
-            <p class="mt-1 text-xs text-slate-700">Pick ready-made persona agents, clone, and customize.</p>
+          <button id="home-team-btn" class="rounded-xl border border-slate-300 bg-emerald-50 p-4 text-left text-slate-900 hover:border-emerald-400">
+            <p class="text-sm font-semibold">Plan Team</p>
+            <p class="mt-1 text-xs text-slate-700">Assemble personas and prepare work items.</p>
           </button>
-          <button id="home-history-btn" class="rounded-xl border border-slate-300 bg-slate-50 p-4 text-left text-slate-900 hover:border-amber-400 hover:bg-amber-50">
-            <p class="text-sm font-semibold">Look at previous tasks</p>
-            <p class="mt-1 text-xs text-slate-700">Review completed tasks and clone them to run again.</p>
+          <button id="home-history-btn" class="rounded-xl border border-slate-300 bg-amber-50 p-4 text-left text-slate-900 hover:border-amber-400">
+            <p class="text-sm font-semibold">Verify Outcomes</p>
+            <p class="mt-1 text-xs text-slate-700">Open evidence packs and traceability records.</p>
           </button>
         </div>
       </section>
 
       <section id="work-screen" class="hidden grid gap-5 xl:grid-cols-[390px_1fr]">
         <aside id="work-config-panel" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
-          <h2 class="text-lg font-semibold text-ink-950">Execution Options</h2>
+          <h2 class="text-lg font-semibold text-ink-950">Build Controls</h2>
 
           <div class="mt-3 grid gap-3">
             <div>
@@ -228,7 +359,7 @@
 
           <div class="mt-5 rounded-xl border border-slate-300 bg-slate-50 p-3">
             <div class="flex items-center justify-between gap-2">
-              <h3 class="text-sm font-semibold text-ink-950">Assigned Team</h3>
+              <h3 class="text-sm font-semibold text-ink-950">Assigned Delivery Team</h3>
               <button id="work-refresh-teams" class="btn-light rounded-md px-2 py-1 text-xs font-semibold">Refresh</button>
             </div>
             <div class="mt-2 flex gap-2">
@@ -244,7 +375,7 @@
           </div>
 
           <div class="mt-5 border-t border-slate-300/80 pt-4">
-            <h3 class="text-sm font-semibold text-ink-950">Run History</h3>
+            <h3 class="text-sm font-semibold text-ink-950">Active Runs</h3>
             <div class="mt-2 flex gap-2">
               <select id="run-history" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"></select>
               <button id="load-run" class="btn-dark rounded-lg px-3 py-2 text-xs font-semibold">Load</button>
@@ -255,86 +386,271 @@
 
         <section class="rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
           <div id="work-intake-step">
-            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">Step 1 of 2</p>
-            <h2 class="mt-1 text-lg font-semibold text-ink-950">Describe The Task</h2>
-
-            <div class="mt-3 mb-2 grid gap-2 sm:grid-cols-[220px_1fr] sm:items-center">
-              <label class="text-xs uppercase tracking-[0.16em] text-slate-600">Task Type</label>
-              <select id="task-type" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
-                <option value="business_objectives">Business Challenge</option>
-                <option value="code_modernization">Code Modernization</option>
-                <option value="database_conversion">Database Conversion</option>
-              </select>
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">Discover | Step 1 of 2</p>
+            <h2 class="mt-1 text-lg font-semibold text-ink-950">System ingestion</h2>
+            <p class="mt-1 text-xs text-slate-700">Build a canonical system model, extract repo conventions, and generate a health baseline.</p>
+            <div class="mt-2 grid gap-2 sm:grid-cols-4">
+              <button id="discover-step-connect" class="discover-step-btn rounded-md px-2 py-1.5 text-left text-[11px] font-semibold">1. Connect</button>
+              <button id="discover-step-scope" class="discover-step-btn rounded-md px-2 py-1.5 text-left text-[11px] font-semibold">2. Scope</button>
+              <button id="discover-step-scan" class="discover-step-btn rounded-md px-2 py-1.5 text-left text-[11px] font-semibold">3. Scan</button>
+              <button id="discover-step-results" class="discover-step-btn rounded-md px-2 py-1.5 text-left text-[11px] font-semibold">4. Results</button>
             </div>
+            <p id="discover-step-status" class="mt-2 text-[11px] text-slate-700">Current: Connect</p>
 
-            <div class="flex items-center justify-between gap-2">
-              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Business Challenge</label>
-              <div class="flex gap-2">
-                <input id="objectives-file" type="file" class="hidden" accept=".txt,.md,.json,.yaml,.yml,.csv" />
-                <button id="upload-objectives" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+            <div id="discover-connect-panel" class="mt-3 rounded-xl border border-slate-300 bg-slate-50 p-3">
+              <h3 class="text-sm font-semibold text-ink-950">Connect sources</h3>
+              <p class="mt-1 text-xs text-slate-700">Detect greenfield vs brownfield and configure connected systems.</p>
+              <div class="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800">
+                This connection is configured for read-only analysis. Write access can be enabled later for PR creation only.
               </div>
-            </div>
-            <textarea id="objectives" rows="6" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none focus:border-ink-800" placeholder="Describe your business challenge in natural language..."></textarea>
+              <div class="mt-2 grid gap-2 sm:grid-cols-[220px_1fr_auto] sm:items-center">
+                <label class="text-xs uppercase tracking-[0.16em] text-slate-600">Project Context</label>
+                <select id="project-state-mode" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900">
+                  <option value="auto" selected>Auto Detect</option>
+                  <option value="brownfield">Brownfield</option>
+                  <option value="greenfield">Greenfield</option>
+                </select>
+                <button id="detect-project-state" class="btn-light rounded-lg px-3 py-2 text-xs font-semibold">Detect</button>
+              </div>
+              <div id="project-state-result" class="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800">State: pending detection</div>
 
-            <div id="modernization-panel" class="mt-3 hidden">
-              <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Target Modernization Language</label>
-              <select id="modernization-language" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
-                <option value="Python" selected>Python</option>
-                <option value="Node.js">Node.js</option>
-                <option value="TypeScript">TypeScript</option>
-                <option value="Go">Go</option>
-                <option value="Java">Java</option>
-                <option value="C#">C#</option>
-                <option value="Rust">Rust</option>
-              </select>
-
-              <div class="mt-2 flex items-center justify-between gap-2">
-                <label class="mb-1 mt-2 block text-xs uppercase tracking-[0.16em] text-slate-600">Legacy Source Code</label>
-                <div class="flex gap-2">
-                  <input id="legacy-file" type="file" class="hidden" accept=".asp,.aspx,.txt,.vb,.cs,.js,.py,.java,.go" />
-                  <button id="upload-legacy" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+              <div id="brownfield-integrations" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3">
+                <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Brownfield Integrations</p>
+                <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Source code repository</label>
+                    <select id="bf-repo-provider" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                      <option value="">Select</option>
+                      <option value="github">GitHub</option>
+                      <option value="gitlab">GitLab</option>
+                      <option value="bitbucket">Bitbucket</option>
+                      <option value="azuredevops">Azure DevOps</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Repo URL</label>
+                    <input id="bf-repo-url" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="https://github.com/org/repo" />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Issue management</label>
+                    <select id="bf-issue-provider" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                      <option value="">Select</option>
+                      <option value="jira">Jira</option>
+                      <option value="linear">Linear</option>
+                      <option value="azureboards">Azure Boards</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Issue project / board</label>
+                    <input id="bf-issue-project" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="BANK-CORE / Team Board" />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Documentation source (optional)</label>
+                    <input id="bf-docs-url" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Confluence/Notion URL" />
+                  </div>
+                  <div class="flex items-center gap-2 pt-5">
+                    <input id="bf-runtime-telemetry" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-ink-900" />
+                    <label for="bf-runtime-telemetry" class="text-xs text-slate-700">Enable runtime telemetry (optional, staging)</label>
+                  </div>
                 </div>
               </div>
-              <textarea id="legacy-code" rows="8" class="mono w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Paste or upload legacy code for modernization..."></textarea>
+
+              <div id="greenfield-integrations" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3">
+                <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Greenfield Integrations</p>
+                <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Target Repo Provider</label>
+                    <select id="gf-repo-destination" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                      <option value="">Select</option>
+                      <option value="github">GitHub</option>
+                      <option value="gitlab">GitLab</option>
+                      <option value="bitbucket">Bitbucket</option>
+                      <option value="azuredevops">Azure DevOps</option>
+                      <option value="local">Local only</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Target Repo URL/Path</label>
+                    <input id="gf-repo-target" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="https://... or /path/to/repo" />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Tracker</label>
+                    <select id="gf-tracker-provider" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                      <option value="jira">Jira</option>
+                      <option value="linear">Linear</option>
+                      <option value="azureboards">Azure Boards</option>
+                      <option value="none">None</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Tracker Project/Team</label>
+                    <input id="gf-tracker-project" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="NEWAPP / Platform Team" />
+                  </div>
+                  <div class="flex items-center gap-2 pt-5">
+                    <input id="gf-save-generated" type="checkbox" checked class="h-4 w-4 rounded border-slate-300 text-ink-900" />
+                    <label for="gf-save-generated" class="text-xs text-slate-700">Save generated codebase to target repo</label>
+                  </div>
+                  <div class="flex items-center gap-2 pt-5">
+                    <input id="gf-read-write-tracker" type="checkbox" checked class="h-4 w-4 rounded border-slate-300 text-ink-900" />
+                    <label for="gf-read-write-tracker" class="text-xs text-slate-700">Enable tracker read/write (Jira/Linear)</label>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div id="database-panel" class="mt-3 hidden">
-              <div class="grid gap-2 sm:grid-cols-2">
+            <div id="discover-scope-panel" class="discover-panel-hidden mt-3">
+              <div class="mb-2 grid gap-2 sm:grid-cols-[220px_1fr] sm:items-center">
+                <label class="text-xs uppercase tracking-[0.16em] text-slate-600">Task Type</label>
+                <select id="task-type" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                  <option value="business_objectives">Business Challenge</option>
+                  <option value="code_modernization">Code Modernization</option>
+                  <option value="database_conversion">Database Conversion</option>
+                </select>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Business Challenge</label>
+                <div class="flex gap-2">
+                  <input id="objectives-file" type="file" class="hidden" accept=".txt,.md,.json,.yaml,.yml,.csv" />
+                  <button id="upload-objectives" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+                </div>
+              </div>
+              <textarea id="objectives" rows="6" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-900 outline-none focus:border-ink-800" placeholder="Describe your business challenge in natural language..."></textarea>
+
+              <div id="modernization-panel" class="mt-3 hidden">
+                <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Target Modernization Language</label>
+                <select id="modernization-language" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                  <option value="Python" selected>Python</option>
+                  <option value="Node.js">Node.js</option>
+                  <option value="TypeScript">TypeScript</option>
+                  <option value="Go">Go</option>
+                  <option value="Java">Java</option>
+                  <option value="C#">C#</option>
+                  <option value="Rust">Rust</option>
+                </select>
+
+                <div class="mt-2 flex items-center justify-between gap-2">
+                  <label class="mb-1 mt-2 block text-xs uppercase tracking-[0.16em] text-slate-600">Legacy Source Code</label>
+                  <div class="flex gap-2">
+                    <input id="legacy-file" type="file" class="hidden" accept=".asp,.aspx,.txt,.vb,.cs,.js,.py,.java,.go" />
+                    <button id="upload-legacy" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+                  </div>
+                </div>
+                <textarea id="legacy-code" rows="8" class="mono w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Paste or upload legacy code for modernization..."></textarea>
+              </div>
+
+              <div id="database-panel" class="mt-3 hidden">
+                <div class="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Source Database</label>
+                    <select id="db-source" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                      <option value="">Select source</option>
+                      <option value="SQL Server">SQL Server</option>
+                      <option value="Oracle">Oracle</option>
+                      <option value="MySQL">MySQL</option>
+                      <option value="PostgreSQL">PostgreSQL</option>
+                      <option value="SQLite">SQLite</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Target Database</label>
+                    <select id="db-target" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
+                      <option value="">Select target</option>
+                      <option value="PostgreSQL">PostgreSQL</option>
+                      <option value="MySQL">MySQL</option>
+                      <option value="SQL Server">SQL Server</option>
+                      <option value="Oracle">Oracle</option>
+                      <option value="SQLite">SQLite</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="mt-2 flex items-center justify-between gap-2">
+                  <label class="mb-1 mt-2 block text-xs uppercase tracking-[0.16em] text-slate-600">Legacy Schema / SQL</label>
+                  <div class="flex gap-2">
+                    <input id="db-file" type="file" class="hidden" accept=".sql,.txt,.ddl,.md" />
+                    <button id="upload-db" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
+                  </div>
+                </div>
+                <textarea id="db-schema" rows="8" class="mono w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Paste legacy schema, DDL, or migration source SQL..."></textarea>
+              </div>
+            </div>
+
+            <div id="discover-scan-panel" class="discover-panel-hidden mt-3 rounded-xl border border-slate-300 bg-slate-50 p-3">
+              <h3 class="text-sm font-semibold text-ink-950">Scanning system</h3>
+              <p class="mt-1 text-xs text-slate-700">We’re generating three canonical artifacts used by all downstream agents.</p>
+              <div class="mt-2 grid gap-2 sm:grid-cols-3">
+                <div class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] text-slate-800"><strong>Structural discovery</strong> → System context model</div>
+                <div class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] text-slate-800"><strong>Convention extraction</strong> → Convention profile</div>
+                <div class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] text-slate-800"><strong>Health assessment</strong> → Health bundle</div>
+              </div>
+              <div class="mt-2 grid gap-2 sm:grid-cols-2">
                 <div>
-                  <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Source Database</label>
-                  <select id="db-source" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
-                    <option value="">Select source</option>
-                    <option value="SQL Server">SQL Server</option>
-                    <option value="Oracle">Oracle</option>
-                    <option value="MySQL">MySQL</option>
-                    <option value="PostgreSQL">PostgreSQL</option>
-                    <option value="SQLite">SQLite</option>
+                  <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Analysis Depth</label>
+                  <select id="analysis-depth" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="standard" selected>Standard (static)</option>
+                    <option value="deep">Deep (static + dynamic augment where available)</option>
                   </select>
                 </div>
                 <div>
-                  <label class="mb-1 block text-xs uppercase tracking-[0.16em] text-slate-600">Target Database</label>
-                  <select id="db-target" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-ink-800">
-                    <option value="">Select target</option>
-                    <option value="PostgreSQL">PostgreSQL</option>
-                    <option value="MySQL">MySQL</option>
-                    <option value="SQL Server">SQL Server</option>
-                    <option value="Oracle">Oracle</option>
-                    <option value="SQLite">SQLite</option>
+                  <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Telemetry Mode</label>
+                  <select id="telemetry-mode" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="off" selected>Off by default</option>
+                    <option value="staging">Enable in staging</option>
+                    <option value="prod_readonly">Prod readonly ingest</option>
                   </select>
                 </div>
               </div>
-              <div class="mt-2 flex items-center justify-between gap-2">
-                <label class="mb-1 mt-2 block text-xs uppercase tracking-[0.16em] text-slate-600">Legacy Schema / SQL</label>
-                <div class="flex gap-2">
-                  <input id="db-file" type="file" class="hidden" accept=".sql,.txt,.ddl,.md" />
-                  <button id="upload-db" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Upload</button>
-                </div>
+              <label class="mb-1 mt-2 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Include Paths (optional, one per line)</label>
+              <textarea id="include-paths" rows="2" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="src/&#10;services/"></textarea>
+              <label class="mb-1 mt-2 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Exclude Paths (optional, one per line)</label>
+              <textarea id="exclude-paths" rows="2" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="node_modules/&#10;dist/"></textarea>
+              <p class="mt-2 text-[11px] text-slate-700">You can leave this page. Progress will continue and results will be available in Discover.</p>
+            </div>
+
+            <div id="discover-results-panel" class="discover-panel-hidden mt-3 rounded-xl border border-slate-300 bg-slate-50 p-3">
+              <h3 class="text-sm font-semibold text-ink-950">Baseline ready</h3>
+              <p id="discover-results-summary" class="mt-1 text-xs text-slate-700">Your baseline artifacts are published and ready for review.</p>
+              <div class="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                <div id="discover-results-state" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5">Project state: -</div>
+                <div id="discover-results-integrations" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5">Integrations: -</div>
+                <div id="discover-results-scan" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 sm:col-span-2">Scan profile: -</div>
               </div>
-              <textarea id="db-schema" rows="8" class="mono w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-xs text-slate-900 outline-none focus:border-ink-800" placeholder="Paste legacy schema, DDL, or migration source SQL..."></textarea>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button id="discover-open-city-map" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View City map</button>
+                <button id="discover-open-system-map" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View System map</button>
+                <button id="discover-open-health-debt" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Health & debt</button>
+                <button id="discover-open-conventions" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Convention profile</button>
+                <button id="discover-export-baseline" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export baseline report</button>
+              </div>
+              <div id="discover-city-map-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">System city map</h4>
+                <p class="mt-1 text-slate-700">A clustered view of architecture with risk and change signals overlaid.</p>
+                <p class="mt-2"><strong>Overlays:</strong> Recent churn · Complexity · Bug density · Security risk · Coverage gaps · Blast radius</p>
+                <p class="mt-1 text-slate-700">No components detected. Check scope settings or excluded paths.</p>
+              </div>
+              <div id="discover-system-map-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">System map</h4>
+                <p class="mt-1 text-slate-700">Evidence-backed dependencies across services, data, and infrastructure.</p>
+                <p class="mt-2"><strong>Search:</strong> services, modules, tables, topics.</p>
+                <p class="mt-1 text-slate-700">Confidence reflects the strength of supporting evidence (static analysis, runtime traces, or human confirmation).</p>
+              </div>
+              <div id="discover-health-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">Health & debt</h4>
+                <p class="mt-1 text-slate-700">Technical debt and risk, translated into a prioritized remediation backlog.</p>
+                <p class="mt-2">Columns: Severity · Risk score · Affected area · Suggested remediation · Effort estimate</p>
+                <p class="mt-1 text-slate-700">No findings detected in the current scope.</p>
+              </div>
+              <div id="discover-conventions-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">Convention profiles</h4>
+                <p class="mt-1 text-slate-700">Repo-native conventions extracted from code to ensure generated changes fit your operating model.</p>
+                <p class="mt-2">Filters: Naming · Error handling · Testing · Logging & observability · Auth · API design</p>
+              </div>
             </div>
 
             <div class="mt-3 flex flex-wrap gap-2">
-              <button id="wizard-continue" class="btn-dark rounded-lg px-4 py-2 text-sm font-semibold">Continue To Team & Execution</button>
+              <button id="wizard-prev-discover" class="btn-light rounded-lg px-4 py-2 text-sm font-semibold">Back</button>
+              <button id="wizard-continue" class="btn-dark rounded-lg px-4 py-2 text-sm font-semibold">Next: Scope</button>
               <button id="work-open-history" class="btn-light rounded-lg px-4 py-2 text-sm font-semibold">View Previous Tasks</button>
             </div>
           </div>
@@ -342,12 +658,12 @@
           <div id="work-execution-step" class="hidden">
             <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">Step 2 of 2</p>
-                <p class="text-sm text-slate-700">Team assigned and execution controls ready.</p>
+                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">Build | Step 2 of 2</p>
+                <p class="text-sm text-slate-700">Team assigned, policy controls set, ready to execute.</p>
               </div>
               <div class="flex gap-2">
                 <button id="wizard-back" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Back</button>
-                <button id="run-pipeline" class="btn-dark rounded-lg px-4 py-2 text-sm font-semibold">Run Pipeline</button>
+                <button id="run-pipeline" class="btn-dark rounded-lg px-4 py-2 text-sm font-semibold">Start Run</button>
               </div>
             </div>
 
@@ -362,9 +678,22 @@
 
             <div class="mb-3 grid grid-cols-2 gap-2 text-xs mono sm:grid-cols-4" id="status-chips"></div>
 
+            <section id="context-layer-card" class="mb-3 rounded-xl border border-indigo-300 bg-indigo-50 p-3">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold text-indigo-950">System Intelligence Layer (SIL)</h3>
+                <span id="context-layer-status" class="rounded-md border border-indigo-400 bg-white px-2 py-0.5 text-[11px] font-semibold text-indigo-900">PENDING</span>
+              </div>
+              <div class="grid gap-2 text-xs text-slate-800 sm:grid-cols-2">
+                <div id="context-layer-version" class="rounded-lg border border-indigo-200 bg-white px-2 py-1.5">Version: -</div>
+                <div id="context-layer-commit" class="rounded-lg border border-indigo-200 bg-white px-2 py-1.5 mono">Commit: -</div>
+                <div id="context-layer-counts" class="rounded-lg border border-indigo-200 bg-white px-2 py-1.5 sm:col-span-2">Counts: -</div>
+                <div id="context-layer-delta" class="rounded-lg border border-indigo-200 bg-white px-2 py-1.5 sm:col-span-2">Delta: -</div>
+              </div>
+            </section>
+
             <div class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-3">
               <div class="mb-2 flex items-center justify-between">
-                <h3 class="text-sm font-semibold text-ink-950">Pipeline Progress</h3>
+                <h3 class="text-sm font-semibold text-ink-950">Run Timeline Progress</h3>
                 <span id="pipeline-status-text" class="mono text-xs text-slate-700">IDLE</span>
               </div>
               <div class="h-3 w-full overflow-hidden rounded-full bg-slate-200">
@@ -375,6 +704,15 @@
           </div>
 
           <div id="work-runtime-panels" class="hidden">
+            <section class="mb-3 rounded-xl border border-slate-300 bg-white p-3">
+              <div class="flex flex-wrap gap-2">
+                <button class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Pause run</button>
+                <button class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Resume run</button>
+                <button class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Rerun stage</button>
+                <button class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold" title="Pause the agent and open a takeover session with the same branch and context bundle.">Intervene / Edit manually</button>
+                <button class="btn-danger rounded-lg px-3 py-1.5 text-xs font-semibold">Abort run</button>
+              </div>
+            </section>
             <section id="retry-plan-section" class="mt-3 hidden rounded-xl border border-sky-300 bg-sky-50 p-3">
               <div class="flex items-center justify-between gap-2">
                 <h3 class="text-sm font-semibold text-sky-900">Retry Plan (Self-Heal)</h3>
@@ -426,6 +764,22 @@
               </div>
             </div>
 
+            <section class="mt-3 rounded-xl border border-indigo-300 bg-indigo-50 p-3">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold text-indigo-950">Context Ops</h3>
+                <span class="rounded-md border border-indigo-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-indigo-900">Impact + Drift</span>
+              </div>
+              <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-900">Impact Forecast Requirement</label>
+              <textarea id="context-impact-input" rows="3" class="w-full rounded-lg border border-indigo-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="Describe the upcoming requirement/change to forecast impact..."></textarea>
+              <label class="mb-1 mt-2 block text-[11px] font-semibold uppercase tracking-[0.12em] text-indigo-900">Changed Files (optional, one per line)</label>
+              <textarea id="context-impact-files" rows="2" class="w-full rounded-lg border border-indigo-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="services/orders/handler.py&#10;services/payments/retry_worker.py"></textarea>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button id="run-impact-forecast" class="btn-dark rounded-lg px-3 py-1.5 text-xs font-semibold">Run Impact Forecast</button>
+                <button id="run-drift-scan" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Run Drift Scan</button>
+              </div>
+              <pre id="context-ops-output" class="log-window mono mt-2 h-[150px] overflow-auto rounded-lg border border-slate-300 p-3 text-[11px]"></pre>
+            </section>
+
             <section class="mt-4 rounded-xl border border-slate-300 bg-white p-4" id="current-agent-panel"></section>
             <section class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-3">
               <div class="flex flex-wrap gap-2" id="agent-tabs"></div>
@@ -433,23 +787,23 @@
             </section>
             <section class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-3">
               <div class="mb-2 flex items-center justify-between">
-                <h3 class="text-sm font-semibold text-ink-950">Artifacts</h3>
+                <h3 class="text-sm font-semibold text-ink-950">Artifacts & outputs</h3>
                 <div class="flex gap-2">
                   <button id="refresh-artifacts" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Refresh</button>
                   <button id="view-artifact" class="btn-dark rounded-lg px-3 py-1.5 text-xs font-semibold">Open</button>
                 </div>
               </div>
               <select id="artifact-select" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"></select>
-              <pre id="artifact-preview" class="mono mt-2 h-[170px] overflow-auto rounded-xl border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+              <pre id="artifact-preview" class="log-window mono mt-2 h-[170px] overflow-auto rounded-xl border border-slate-300 p-3 text-[11px]"></pre>
             </section>
 
             <div class="mt-4">
-              <h3 class="text-sm font-semibold text-ink-950">Live Log Stream</h3>
-              <pre id="live-logs" class="mono mt-2 h-[220px] overflow-auto rounded-xl border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+              <h3 class="text-sm font-semibold text-ink-950" title="Execution logs: tool output and stage-level diagnostic logs. Sensitive values are redacted.">Execution log stream</h3>
+              <pre id="live-logs" class="log-window mono mt-2 h-[220px] overflow-auto rounded-xl border border-slate-300 p-3 text-[11px]"></pre>
             </div>
 
             <section id="flow-diagram-section" class="mt-4 hidden rounded-xl border border-slate-300 bg-slate-50 p-4">
-              <h3 class="text-sm font-semibold text-ink-950">Agent Communication Flow</h3>
+              <h3 class="text-sm font-semibold text-ink-950">Agent communication flow</h3>
               <div class="mt-3 overflow-x-auto">
                 <div class="min-w-[980px] rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-700">
                   <div class="flex items-center gap-2">
@@ -480,10 +834,19 @@
       </section>
 
       <section id="team-screen" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+        <div class="mb-4 rounded-xl border border-slate-300 bg-slate-50 p-3">
+          <h2 class="text-lg font-semibold text-ink-950">Plan Workspace</h2>
+          <p class="mt-1 text-xs text-slate-700">Unified work item board with governance context and team composition.</p>
+          <div class="mt-3 grid gap-2 sm:grid-cols-3">
+            <div class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800"><strong>Work Item Type:</strong> Task / Project</div>
+            <div class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800"><strong>Governance Tier:</strong> Standard / Strict / Regulated</div>
+            <div class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800"><strong>Complexity:</strong> SCM + HAB weighted</div>
+          </div>
+        </div>
         <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
           <div>
             <h2 class="text-lg font-semibold text-ink-950">Create Team</h2>
-            <p class="mt-1 text-xs text-slate-700">Select one persona agent for each stage and save as a reusable Synthetix team.</p>
+            <p class="mt-1 text-xs text-slate-700">Select one persona agent per stage and save as a reusable Synthetix planning team.</p>
             <div id="team-stage-selectors" class="mt-3 grid gap-3"></div>
             <div class="mt-4 grid gap-2 sm:grid-cols-2">
               <input id="team-name" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900" placeholder="Team name" />
@@ -513,13 +876,315 @@
       </section>
 
       <section id="history-screen" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+        <div class="mb-4 grid gap-3 xl:grid-cols-3">
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Traceability matrix</h3>
+            <p class="mt-1 text-xs text-slate-700">Requirement to spec, ADR, PR, tests, and evidence chain.</p>
+            <div class="mt-2 h-24 rounded-lg border border-dashed border-slate-400 bg-white p-2 text-[11px] text-slate-700">Per-work matrix view placeholder</div>
+          </div>
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Evidence locker</h3>
+            <p class="mt-1 text-xs text-slate-700">Executive-safe and engineering-depth evidence packs.</p>
+            <div class="mt-2 h-24 rounded-lg border border-dashed border-slate-400 bg-white p-2 text-[11px] text-slate-700">Evidence pack library placeholder</div>
+          </div>
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Security gates</h3>
+            <p class="mt-1 text-xs text-slate-700">Policy enforcement and exception workflow with auditability.</p>
+            <div class="mt-2 h-24 rounded-lg border border-dashed border-slate-400 bg-white p-2 text-[11px] text-slate-700">Gate status placeholder</div>
+          </div>
+        </div>
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-lg font-semibold text-ink-950">Previous Tasks</h2>
+          <h2 class="text-lg font-semibold text-ink-950">Verification History</h2>
           <button id="tasks-refresh" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Refresh Tasks</button>
         </div>
         <div id="tasks-list" class="mt-3 grid gap-2"></div>
       </section>
+      
+      <section id="settings-screen" class="hidden rounded-2xl border border-slate-300/70 bg-white/90 p-4 shadow-card backdrop-blur">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h2 class="text-lg font-semibold text-ink-950">Settings</h2>
+            <p class="text-xs text-slate-700">Manage integrations, policy packs, and role-based access controls.</p>
+          </div>
+          <button id="settings-refresh" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Refresh</button>
+        </div>
+        <div id="settings-message" class="mt-2 text-xs text-slate-700"></div>
+        <div class="mt-3 grid gap-3 xl:grid-cols-3">
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Integrations</h3>
+            <p class="mt-1 text-xs text-slate-700">Configure connections to source control, issue tracking, CI/CD, and secrets.</p>
+
+            <div class="mt-3 space-y-3">
+              <div class="rounded-lg border border-slate-300 bg-white p-2">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-xs font-semibold text-slate-900">GitHub</p>
+                  <span id="settings-github-status" class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-800">Not connected</span>
+                </div>
+                <div class="mt-2 grid gap-2 text-xs text-slate-900">
+                  <label>API Base URL
+                    <input id="settings-github-base-url" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>Owner / Org
+                    <input id="settings-github-owner" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>Repository
+                    <input id="settings-github-repository" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>Personal Access Token
+                    <input id="settings-github-token" type="password" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Leave blank to keep existing token" />
+                  </label>
+                  <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+                    <input id="settings-github-read-only" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />
+                    Read-only access
+                  </label>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="settings-github-connect" class="btn-dark rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save</button>
+                  <button id="settings-github-test" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Test</button>
+                  <button id="settings-github-disconnect" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Disconnect</button>
+                </div>
+                <p id="settings-github-message" class="mt-1 text-[11px] text-slate-700"></p>
+              </div>
+
+              <div class="rounded-lg border border-slate-300 bg-white p-2">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-xs font-semibold text-slate-900">Jira</p>
+                  <span id="settings-jira-status" class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-800">Not connected</span>
+                </div>
+                <div class="mt-2 grid gap-2 text-xs text-slate-900">
+                  <label>API Base URL
+                    <input id="settings-jira-base-url" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>Project Key
+                    <input id="settings-jira-project-key" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>User Email
+                    <input id="settings-jira-email" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>API Token
+                    <input id="settings-jira-token" type="password" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Leave blank to keep existing token" />
+                  </label>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="settings-jira-connect" class="btn-dark rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save</button>
+                  <button id="settings-jira-test" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Test</button>
+                  <button id="settings-jira-disconnect" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Disconnect</button>
+                </div>
+                <p id="settings-jira-message" class="mt-1 text-[11px] text-slate-700"></p>
+              </div>
+
+              <div class="rounded-lg border border-slate-300 bg-white p-2">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-xs font-semibold text-slate-900">Linear</p>
+                  <span id="settings-linear-status" class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-800">Not connected</span>
+                </div>
+                <div class="mt-2 grid gap-2 text-xs text-slate-900">
+                  <label>API Base URL
+                    <input id="settings-linear-base-url" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>Team Key
+                    <input id="settings-linear-team-key" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                  </label>
+                  <label>API Token
+                    <input id="settings-linear-token" type="password" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Leave blank to keep existing token" />
+                  </label>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="settings-linear-connect" class="btn-dark rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save</button>
+                  <button id="settings-linear-test" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Test</button>
+                  <button id="settings-linear-disconnect" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Disconnect</button>
+                </div>
+                <p id="settings-linear-message" class="mt-1 text-[11px] text-slate-700"></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Policies & guardrails</h3>
+            <p class="mt-1 text-xs text-slate-700">Configure quality gates, security enforcement, and exceptions.</p>
+            <p class="mt-1 text-[11px] text-slate-700">Exceptions require rationale, owner, and expiry.</p>
+            <div class="mt-2 grid gap-2 text-xs text-slate-900">
+              <label>Policy Pack
+                <select id="settings-policy-pack" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                  <option value="standard">Standard</option>
+                  <option value="strict">Strict</option>
+                  <option value="regulated">Regulated</option>
+                </select>
+              </label>
+              <label>Quality Gate Minimum Pass Rate (0-1)
+                <input id="settings-policy-quality" type="number" min="0" max="1" step="0.01" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+              </label>
+              <label>Exception SLA (hours)
+                <input id="settings-policy-exception-sla" type="number" min="1" max="720" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+                <input id="settings-policy-human-approval" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />
+                Require human approval by default
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+                <input id="settings-policy-block-critical" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />
+                Block release on critical failures
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+                <input id="settings-policy-require-security" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />
+                Require security gate
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+                <input id="settings-policy-branch-protection" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />
+                Require branch protection before release
+              </label>
+            </div>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button id="settings-policy-save" class="btn-dark rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Activate policy pack</button>
+              <button id="settings-policy-clone" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Clone</button>
+              <button id="settings-policy-version" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Version</button>
+              <button id="settings-policy-export" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Export</button>
+            </div>
+            <p id="settings-policy-message" class="mt-1 text-[11px] text-slate-700"></p>
+
+            <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2">
+              <p class="text-xs font-semibold text-slate-900">Exceptions</p>
+              <div class="mt-2 grid gap-2 text-xs text-slate-900">
+                <label>Rule / Gate
+                  <input id="settings-exception-rule" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="security_gate" />
+                </label>
+                <label>Owner
+                  <input id="settings-exception-owner" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="owner@company.com" />
+                </label>
+                <label>Expires At (ISO)
+                  <input id="settings-exception-expiry" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="2026-03-01T00:00:00Z" />
+                </label>
+                <label>Reason
+                  <textarea id="settings-exception-reason" rows="2" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"></textarea>
+                </label>
+              </div>
+              <button id="settings-exception-add" class="btn-light mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Create Exception</button>
+              <div id="settings-exceptions-list" class="mt-2 max-h-40 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <h3 class="text-sm font-semibold text-ink-950">Administration</h3>
+            <p class="mt-1 text-xs text-slate-700">Role-based access, audit logging, and identity management.</p>
+            <div class="mt-2 rounded-lg border border-slate-300 bg-white p-2">
+              <p class="text-xs font-semibold text-slate-900">Role Permissions</p>
+              <label class="mt-1 block text-xs text-slate-900">Role
+                <select id="settings-rbac-role-select" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                  <option value="executive">Executive</option>
+                  <option value="delivery">Delivery</option>
+                  <option value="engineering">Engineering</option>
+                  <option value="security">Security</option>
+                </select>
+              </label>
+              <div class="mt-2 grid gap-1 text-xs text-slate-900">
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-view-exec" data-perm="view_executive_dashboard" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />View executive dashboard</label>
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-run-pipeline" data-perm="run_pipeline" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Run pipeline</label>
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-approve-gates" data-perm="approve_gates" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Approve stage gates</label>
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-manage-integrations" data-perm="manage_integrations" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Manage integrations</label>
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-manage-policies" data-perm="manage_policies" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Manage policies</label>
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-manage-rbac" data-perm="manage_rbac" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Manage RBAC</label>
+                <label class="inline-flex items-center gap-2"><input id="settings-perm-view-logs" data-perm="view_engineering_logs" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />View engineering logs</label>
+              </div>
+              <button id="settings-rbac-save-role" class="btn-dark mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Role Permissions</button>
+              <p id="settings-rbac-role-message" class="mt-1 text-[11px] text-slate-700"></p>
+            </div>
+            <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2">
+              <p class="text-xs font-semibold text-slate-900">User Assignments</p>
+              <div class="mt-2 grid gap-2 text-xs text-slate-900">
+                <label>User Email
+                  <input id="settings-rbac-user-email" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="user@company.com" />
+                </label>
+                <label>Role
+                  <select id="settings-rbac-user-role" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="executive">Executive</option>
+                    <option value="delivery">Delivery</option>
+                    <option value="engineering">Engineering</option>
+                    <option value="security">Security</option>
+                  </select>
+                </label>
+              </div>
+              <button id="settings-rbac-assign" class="btn-light mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Add / Update Assignment</button>
+              <div id="settings-rbac-assignments" class="mt-2 max-h-32 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+            </div>
+            <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-semibold text-slate-900">Admin Audit Log</p>
+                <button id="settings-audit-refresh" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Refresh</button>
+              </div>
+              <div id="settings-audit-log" class="mt-2 max-h-36 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+            </div>
+            <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-800">
+              <p class="font-semibold text-slate-900">Single sign-on</p>
+              <p class="mt-1">Configure SAML/OIDC. Enable SSO to align access with enterprise identity controls.</p>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
+        </section>
+
+        <aside id="context-drawer" class="shell-card rounded-2xl p-4">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-sm font-semibold text-ink-950">Context drawer</h2>
+            <span class="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-700">Optional</span>
+          </div>
+          <div class="mt-3 space-y-3">
+            <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Context bundle used</p>
+              <p id="drawer-context-bundle" class="mono mt-1 text-[11px] text-slate-800">-</p>
+            </div>
+            <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Policies applied</p>
+              <p id="drawer-policies" class="mt-1 text-[11px] text-slate-800">Standard policy pack</p>
+            </div>
+            <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Linked systems</p>
+              <p id="drawer-linked-systems" class="mt-1 text-[11px] text-slate-800">GitHub PR: - | Jira: -</p>
+            </div>
+            <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Evidence pack status</p>
+              <p id="drawer-evidence-status" class="mt-1 text-[11px] text-slate-800">Not generated</p>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <dialog id="command-palette" class="cmdk-panel w-[min(640px,96vw)] rounded-2xl p-0">
+      <div class="border-b border-slate-300 px-4 py-3">
+        <p class="text-sm font-semibold text-ink-950">Command palette</p>
+        <p class="mt-1 text-xs text-slate-700">Type a command or search...</p>
+        <input id="cmdk-search" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900" placeholder="Type a command or search..." />
+      </div>
+      <div class="p-4">
+        <div id="cmdk-empty" class="mb-2 hidden rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs text-slate-700">No matches found. Try searching by service name, work ID, or artifact version.</div>
+        <div id="cmdk-actions" class="grid gap-2">
+          <button data-command="create-work-item" class="btn-light rounded-lg px-3 py-2 text-left text-xs font-semibold">Create work item</button>
+          <button data-command="start-ingestion" class="btn-light rounded-lg px-3 py-2 text-left text-xs font-semibold">Start system ingestion</button>
+          <button data-command="open-last-failed-run" class="btn-light rounded-lg px-3 py-2 text-left text-xs font-semibold">Open last failed run</button>
+          <button data-command="export-evidence-pack" class="btn-light rounded-lg px-3 py-2 text-left text-xs font-semibold">Export evidence pack</button>
+          <button data-command="jump-scm-node" class="btn-light rounded-lg px-3 py-2 text-left text-xs font-semibold">Jump to a service in System map</button>
+          <button data-command="jump-pr" class="btn-light rounded-lg px-3 py-2 text-left text-xs font-semibold">Open pull request queue</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="notifications-dialog" class="w-[min(760px,96vw)] rounded-2xl border border-slate-300 p-0 shadow-2xl">
+      <div class="border-b border-slate-300 bg-slate-50 px-4 py-3">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="text-base font-semibold text-ink-950">Notifications</h3>
+          <button id="notifications-close" class="btn-light rounded-md px-3 py-1 text-xs font-semibold">Close</button>
+        </div>
+      </div>
+      <div class="p-4">
+        <div class="flex flex-wrap gap-2">
+          <button data-notification-tab="approvals" class="btn-light rounded-md px-3 py-1.5 text-xs font-semibold">Approvals</button>
+          <button data-notification-tab="failures" class="btn-light rounded-md px-3 py-1.5 text-xs font-semibold">Failures</button>
+          <button data-notification-tab="exceptions" class="btn-light rounded-md px-3 py-1.5 text-xs font-semibold">Exceptions</button>
+        </div>
+        <div id="notifications-content" class="mt-3 rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800"></div>
+      </div>
+    </dialog>
 
     <dialog id="output-modal" class="w-[min(1000px,96vw)] rounded-2xl border border-slate-300 p-0 shadow-2xl">
       <div class="border-b border-slate-300 bg-slate-50 px-4 py-3">
@@ -535,11 +1200,11 @@
           <h4 class="mt-3 text-xs uppercase tracking-[0.16em] text-slate-600">Readable Output</h4>
           <div id="modal-readable" class="mt-1 h-[180px] overflow-auto rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-800"></div>
           <h4 class="mt-3 text-xs uppercase tracking-[0.16em] text-slate-600">Logs</h4>
-          <pre id="modal-logs" class="mono mt-1 h-[190px] overflow-auto rounded-lg border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+          <pre id="modal-logs" class="log-window mono mt-1 h-[190px] overflow-auto rounded-lg border border-slate-300 p-3 text-[11px]"></pre>
         </div>
         <div>
           <h4 class="text-xs uppercase tracking-[0.16em] text-slate-600">Structured Output (JSON)</h4>
-          <pre id="modal-output" class="mono mt-1 h-[360px] overflow-auto rounded-lg border border-slate-300 bg-ink-950 p-3 text-[11px] text-slate-200"></pre>
+          <pre id="modal-output" class="log-window mono mt-1 h-[360px] overflow-auto rounded-lg border border-slate-300 p-3 text-[11px]"></pre>
         </div>
       </div>
     </dialog>

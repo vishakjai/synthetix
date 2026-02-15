@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/agent_task.schema.json",
+  "title": "Agent Task",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "stage_id", "task_id", "created_at", "role", "objective", "context_bundle"],
+  "properties": {
+    "run_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+    "stage_id": { "type": "string" },
+    "task_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/IsoDateTime" },
+    "role": {
+      "type": "string",
+      "enum": [
+        "structural_discovery",
+        "convention_extraction",
+        "health_assessment",
+        "architect",
+        "developer",
+        "tester",
+        "security_reviewer",
+        "release_manager"
+      ]
+    },
+    "objective": { "type": "string" },
+    "repo_checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "read_only": { "type": "boolean" }
+      }
+    },
+    "context_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "uri"],
+      "properties": {
+        "bundle_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+        "uri": { "type": "string" }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "expected_outputs": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "quality_gates": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_minutes": { "type": "integer", "minimum": 1 },
+        "max_cost_usd": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

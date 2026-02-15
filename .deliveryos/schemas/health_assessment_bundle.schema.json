@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/health_assessment_bundle.schema.json",
+  "title": "Health Assessment Bundle (HAB)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["header", "summary", "findings", "backlog"],
+  "properties": {
+    "header": { "$ref": "common.schema.json#/$defs/ArtifactHeader" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overall_risk", "key_themes"],
+      "properties": {
+        "overall_risk": { "$ref": "common.schema.json#/$defs/RiskScore" },
+        "key_themes": { "type": "array", "items": { "type": "string" } },
+        "recommendation": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Aggregated metrics: coverage %, dependency vuln counts, complexity histograms, etc."
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Finding" }
+    },
+    "backlog": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/BacklogItem" }
+    },
+    "roadmap_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "quick_wins": { "type": "array", "items": { "type": "string" } },
+        "stabilization": { "type": "array", "items": { "type": "string" } },
+        "modernization": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "FindingType": {
+      "type": "string",
+      "enum": [
+        "hotspot",
+        "dead_code",
+        "unused_dependency",
+        "security_vulnerability",
+        "outdated_framework",
+        "coverage_gap",
+        "architectural_violation",
+        "performance_risk",
+        "operational_risk"
+      ]
+    },
+    "Severity": {
+      "type": "string",
+      "enum": ["info", "low", "medium", "high", "critical"]
+    },
+    "Finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "severity", "title", "description", "risk", "affected", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "$ref": "#/$defs/FindingType" },
+        "severity": { "$ref": "#/$defs/Severity" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "risk": { "$ref": "common.schema.json#/$defs/RiskScore" },
+        "affected": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scm_node_ids": { "type": "array", "items": { "type": "string" } },
+            "paths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/EvidencePointer" }
+        },
+        "suggested_remediation": { "type": "string" },
+        "effort": { "$ref": "common.schema.json#/$defs/EffortEstimate" },
+        "confidence": { "$ref": "common.schema.json#/$defs/Confidence" }
+      }
+    },
+    "Priority": {
+      "type": "string",
+      "enum": ["P0", "P1", "P2", "P3"]
+    },
+    "BacklogItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "priority", "risk", "effort", "linked_findings", "plan", "acceptance_criteria"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "priority": { "$ref": "#/$defs/Priority" },
+        "business_value": { "type": "string" },
+        "risk": { "$ref": "common.schema.json#/$defs/RiskScore" },
+        "effort": { "$ref": "common.schema.json#/$defs/EffortEstimate" },
+        "linked_findings": { "type": "array", "items": { "type": "string" } },
+        "scm_impact": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scm_node_ids": { "type": "array", "items": { "type": "string" } },
+            "expected_edges_touched": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "dependencies": { "type": "array", "items": { "type": "string" } },
+        "plan": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Step-by-step execution approach; should be agent-executable."
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "owner_role": { "type": "string", "description": "e.g., 'Tech Lead', 'SRE', 'Security'." },
+        "suggested_agent_roles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Which platform agents should execute it."
+        }
+      }
+    }
+  }
+}

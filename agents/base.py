@@ -79,12 +79,39 @@ class BaseAgent(ABC):
             "Keep your output format contract unchanged."
         )
 
+    def _context_contract_instruction(self, state: dict[str, Any]) -> str:
+        """
+        Inject Context Layer contract instructions for downstream stages.
+        """
+        if int(self.stage) < 2:
+            return ""
+        ctx = state.get("context_vault_ref", {})
+        scm = state.get("system_context_model", {})
+        cp = state.get("convention_profile", {})
+        ha = state.get("health_assessment", {})
+        rb = state.get("remediation_backlog", [])
+        if not isinstance(ctx, dict) or not ctx.get("version_id"):
+            return ""
+        if not isinstance(scm, dict) or not isinstance(cp, dict) or not isinstance(ha, dict) or not isinstance(rb, list):
+            return ""
+        return (
+            "CONTEXT LAYER CONTRACT (MANDATORY):\n"
+            f"- Context vault version_id: {ctx.get('version_id')}\n"
+            f"- SCM version: {scm.get('version', 'scm-v1')}\n"
+            f"- CP version: {cp.get('version', 'cp-v1')}\n"
+            f"- HA version: {ha.get('version', 'ha-v1')}\n"
+            "You must align your decisions with these artifacts and avoid violating conventions/topology.\n"
+            "If your output supports metadata, include a `context_reference` object that echoes these versions."
+        )
+
     def effective_system_prompt(self, state: dict[str, Any], base_prompt: str | None = None) -> str:
         prompt = base_prompt if isinstance(base_prompt, str) else self.system_prompt
         persona = self._persona_instruction(state)
-        if not persona:
+        context_contract = self._context_contract_instruction(state)
+        additions = [x for x in [persona, context_contract] if x]
+        if not additions:
             return prompt
-        return f"{prompt}\n\n{persona}"
+        return f"{prompt}\n\n" + "\n\n".join(additions)
 
     @abstractmethod
     def build_user_message(self, state: dict[str, Any]) -> str:

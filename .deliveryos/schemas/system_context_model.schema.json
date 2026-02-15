@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/system_context_model.schema.json",
+  "title": "System Context Model (SCM)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["header", "graph"],
+  "properties": {
+    "header": { "$ref": "common.schema.json#/$defs/ArtifactHeader" },
+    "graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Node" }
+        },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Edge" }
+        },
+        "statistics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "node_count": { "type": "integer", "minimum": 0 },
+            "edge_count": { "type": "integer", "minimum": 0 },
+            "languages": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "views": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "c4": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "context": { "type": "array", "items": { "$ref": "#/$defs/View" } },
+            "container": { "type": "array", "items": { "$ref": "#/$defs/View" } },
+            "component": { "type": "array", "items": { "$ref": "#/$defs/View" } },
+            "code": { "type": "array", "items": { "$ref": "#/$defs/View" } }
+          }
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Unknown" },
+      "description": "Explicit unknowns/hypotheses to avoid overconfidence."
+    }
+  },
+  "$defs": {
+    "NodeType": {
+      "type": "string",
+      "enum": [
+        "system",
+        "boundary",
+        "service",
+        "container",
+        "component",
+        "module",
+        "package",
+        "endpoint",
+        "message_topic",
+        "database",
+        "table",
+        "infra_resource",
+        "external_dependency"
+      ]
+    },
+    "Node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "name"],
+      "properties": {
+        "id": { "type": "string", "description": "Stable ID. Prefer prefix by type, e.g., svc:orders." },
+        "type": { "$ref": "#/$defs/NodeType" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "language": { "type": "string" },
+        "repo_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Folders/files backing this node."
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "platform": { "type": "string", "description": "kubernetes, ecs, vm, lambda, etc." },
+            "image": { "type": "string" },
+            "ports": { "type": "array", "items": { "type": "integer" } }
+          }
+        },
+        "interfaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Interface" }
+        },
+        "data": {
+          "type": "object",
+          "description": "Optional structured data for DB/table nodes",
+          "additionalProperties": true
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Extension point for type-specific metadata."
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/EvidencePointer" }
+        },
+        "confidence": { "$ref": "common.schema.json#/$defs/Confidence" }
+      }
+    },
+    "Interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["http", "grpc", "graphql", "async", "library"] },
+        "method": { "type": "string" },
+        "path": { "type": "string" },
+        "operation": { "type": "string", "description": "Logical operation name." },
+        "topic": { "type": "string" },
+        "schema_ref": { "type": "string", "description": "Link to OpenAPI/Proto/AsyncAPI if present." }
+      }
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "depends_on",
+        "imports",
+        "calls_http",
+        "calls_grpc",
+        "publishes",
+        "consumes",
+        "reads",
+        "writes",
+        "deploys_to",
+        "runs_on",
+        "owns",
+        "authenticates_via"
+      ]
+    },
+    "Edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "from", "to"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "$ref": "#/$defs/EdgeType" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "http_method": { "type": "string" },
+            "http_path": { "type": "string" },
+            "topic": { "type": "string" },
+            "queue": { "type": "string" }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/EvidencePointer" }
+        },
+        "confidence": { "$ref": "common.schema.json#/$defs/Confidence" }
+      }
+    },
+    "View": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "nodes"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "nodes": { "type": "array", "items": { "type": "string" } },
+        "edges": { "type": "array", "items": { "type": "string" } },
+        "layout_hints": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional layout hints for renderers."
+        }
+      }
+    },
+    "Unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "scope"],
+      "properties": {
+        "question": { "type": "string" },
+        "scope": { "type": "string", "description": "What area of the system this uncertainty touches." },
+        "suggested_validation": { "type": "string" },
+        "confidence": { "$ref": "common.schema.json#/$defs/Confidence" }
+      }
+    }
+  }
+}

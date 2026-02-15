@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/context_bundle.schema.json",
+  "title": "Context Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["bundle_id", "created_at", "repo_ref", "artifacts"],
+  "properties": {
+    "bundle_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+    "created_at": { "$ref": "common.schema.json#/$defs/IsoDateTime" },
+    "repo_ref": { "$ref": "common.schema.json#/$defs/RepoRef" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ArtifactRef" }
+    },
+    "policy_pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Runtime guardrails: allowed tools, banned endpoints, data handling constraints, etc."
+    }
+  },
+  "$defs": {
+    "ArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_type", "artifact_id", "digest"],
+      "properties": {
+        "artifact_type": { "type": "string", "enum": ["system_context_model", "convention_profile", "health_assessment_bundle"] },
+        "artifact_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+        "digest": { "$ref": "common.schema.json#/$defs/Digest" },
+        "uri": { "type": "string", "description": "Artifact store URI or relative path." }
+      }
+    }
+  }
+}

@@ -110,9 +110,11 @@ You MUST respond with valid JSON in this exact structure:
   "out_of_scope": ["string", ...]
 }
 
-Be thorough — generate at least 5 functional requirements and 3 non-functional requirements.
+Be thorough — generate at least 8 functional requirements and 5 non-functional requirements.
 The `analysis_walkthrough` section must be concise, readable, and non-JSON-jargony.
-Each requirement MUST have at least 2 acceptance criteria.
+Each requirement MUST have at least 3 acceptance criteria.
+For modernization use cases, each requirement description should explicitly mention expected inputs/outputs or data contracts where relevant.
+Include concrete acceptance criteria that can be objectively tested (not generic statements).
 Respond ONLY with the JSON, no other text."""
 
     def build_user_message(self, state: dict[str, Any]) -> str:

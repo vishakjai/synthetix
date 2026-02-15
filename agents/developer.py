@@ -61,6 +61,10 @@ CRITICAL REQUIREMENTS for the generated code:
 5. Include a working Dockerfile as one of the files (path: "Dockerfile").
 6. Keep dependencies minimal — don't import packages you don't use.
 7. The code should be functional, not placeholder stubs.
+8. Generate implementation artifacts with practical depth:
+   - Include at least one executable test file (pytest/jest/go test) when feasible.
+   - Include a short component README.md with run/build/test commands.
+   - Prefer 5+ files per component for non-trivial services (entrypoint, logic module, model/schema, tests, Docker/deps).
 
 Write clean, well-documented, production-quality code that actually runs.
 Respond ONLY with the JSON, no other text."""

@@ -40,10 +40,12 @@ Return JSON:
 {
   "test_strategy": "string",
   "focus_areas": ["string", ...],
-  "critical_paths": ["string", ...]
+  "critical_paths": ["string", ...],
+  "coverage_targets": ["string", ...],
+  "risk_based_priorities": ["string", ...]
 }
 
-Keep it concise and implementation-oriented."""
+Be detailed and implementation-oriented. Provide at least 5 focus_areas and 5 critical_paths."""
 
     def build_user_message(self, state: dict[str, Any]) -> str:
         developer_output = state.get("developer_output", {})

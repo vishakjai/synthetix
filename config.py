@@ -31,6 +31,7 @@ class PipelineConfig:
     max_retries: int = 2
     developer_parallel_agents: int = 5
     temperature: float = 0.3
+    max_output_tokens: int = 6000
 
     # Deployment settings
     live_deploy: bool = False

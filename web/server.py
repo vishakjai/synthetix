@@ -31,15 +31,42 @@ from config import (  # noqa: E402
 )
 from orchestrator.pipeline import AGENT_SEQUENCE, make_initial_state, run_single_stage  # noqa: E402
 from agents.developer import DeveloperAgent  # noqa: E402
+from agents.system_intelligence import SystemIntelligenceAgent  # noqa: E402
 from utils.cloud_deployer import required_cloud_fields  # noqa: E402
 from utils.artifacts import safe_name  # noqa: E402
 from utils.llm import LLMClient  # noqa: E402
+from utils.context_vault import (  # noqa: E402
+    context_gate_issues,
+    discover_repo_snapshot,
+    normalize_sil_output,
+    store_context_vault,
+)
+from utils.context_graph import (  # noqa: E402
+    detect_drift,
+    forecast_impact,
+    graph_neighbors,
+    ingest_runtime_logs,
+    ingest_runtime_traces,
+    list_versions,
+    sync_sil_graph,
+)
+from utils.context_contracts import (  # noqa: E402
+    build_context_contract_suite,
+    persist_context_contract_suite,
+)
 from utils.run_store import PipelineRunStore  # noqa: E402
+from utils.settings_store import SettingsStore  # noqa: E402
 from utils.team_store import TeamStore  # noqa: E402
 
 
 RUN_STORE = PipelineRunStore(str(ROOT / "pipeline_runs"))
 TEAM_STORE = TeamStore(str(ROOT / "team_data"))
+SETTINGS_STORE = SettingsStore(str(ROOT / "team_data"))
+CONTEXT_VAULT_ROOT = ROOT / "context_vault"
+CONTEXT_GRAPH_DB = CONTEXT_VAULT_ROOT / "context_graph.db"
+CONTRACT_SCHEMA_DIR = ROOT / ".deliveryos" / "schemas"
+DRIFT_LOCK = threading.Lock()
+DRIFT_INTERVAL_SEC = max(0, int(os.getenv("SIL_DRIFT_INTERVAL_SEC", "900") or 900))
 
 AGENT_CARDS = [
     {"stage": 1, "name": "Analyst Agent", "icon": "📋"},
@@ -84,6 +111,9 @@ class RunRecord:
     database_schema: str = ""
     deployment_target: str = "local"
     cloud_config: dict[str, Any] = field(default_factory=dict)
+    integration_context: dict[str, Any] = field(default_factory=dict)
+    project_state_mode: str = "auto"
+    project_state_detected: str = ""
     human_approval: bool = False
     strict_security_mode: bool = False
     team_id: str = ""
@@ -138,9 +168,13 @@ class PipelineRunManager:
         strict_security_mode: bool = False,
         deployment_target: str = "local",
         cloud_config: dict[str, Any] | None = None,
+        integration_context: dict[str, Any] | None = None,
         team_id: str = "",
         stage_agent_ids: dict[str, Any] | None = None,
     ) -> str:
+        integration = integration_context if isinstance(integration_context, dict) else {}
+        project_state_mode = str(integration.get("project_state_mode", "auto")).strip().lower() or "auto"
+        project_state_detected = str(integration.get("project_state_detected", "")).strip().lower()
         resolved_team_id = str(team_id or "").strip()
         stage_overrides = stage_agent_ids if isinstance(stage_agent_ids, dict) else {}
         has_stage_overrides = any(str(v or "").strip() for v in stage_overrides.values())
@@ -160,6 +194,8 @@ class PipelineRunManager:
                 "strict_security_mode": strict_security_mode,
                 "deployment_target": deployment_target,
                 "use_case": use_case,
+                "project_state_mode": project_state_mode,
+                "project_state_detected": project_state_detected,
                 "team_id": team_meta.get("id", ""),
                 "team_name": team_meta.get("name", ""),
             },
@@ -177,6 +213,9 @@ class PipelineRunManager:
             database_schema=database_schema,
             deployment_target=deployment_target,
             cloud_config=cloud_config or {},
+            integration_context=integration,
+            project_state_mode=project_state_mode,
+            project_state_detected=project_state_detected,
             human_approval=human_approval,
             strict_security_mode=strict_security_mode,
             team_id=str(team_meta.get("id", "")),
@@ -194,6 +233,9 @@ class PipelineRunManager:
         record.pipeline_state["database_schema"] = database_schema
         record.pipeline_state["deployment_target"] = deployment_target
         record.pipeline_state["cloud_config"] = cloud_config or {}
+        record.pipeline_state["integration_context"] = integration
+        record.pipeline_state["project_state_mode"] = project_state_mode
+        record.pipeline_state["project_state_detected"] = project_state_detected
         record.pipeline_state["human_approval"] = human_approval
         record.pipeline_state["strict_security_mode"] = strict_security_mode
         record.pipeline_state["team"] = team_meta
@@ -201,8 +243,17 @@ class PipelineRunManager:
         record.pipeline_state["team_name"] = str(team_meta.get("name", ""))
         record.pipeline_state["stage_agent_ids"] = dict(team_meta.get("stage_agent_ids", {}))
         record.pipeline_state["agent_personas"] = agent_personas
+        record.pipeline_state["sil_ready"] = False
+        record.pipeline_state["context_layer_status"] = "pending"
+        record.pipeline_state["system_context_model"] = {}
+        record.pipeline_state["convention_profile"] = {}
+        record.pipeline_state["health_assessment"] = {}
+        record.pipeline_state["remediation_backlog"] = []
+        record.pipeline_state["context_vault_ref"] = {}
+        record.pipeline_state["sil_discovery"] = discover_repo_snapshot(ROOT)
         self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
         self._append_log(record, f"👥 Team selected: {record.team_name or 'Ad-hoc Team'}")
+        self._append_log(record, "🧠 System Intelligence Layer scheduled (SCM / CP / HA-RB)")
         self._append_log(record, "ℹ️ Analyst Q&A disabled in web mode; using direct execution")
 
         with self._lock:
@@ -227,6 +278,199 @@ class PipelineRunManager:
         thread.start()
         return run_id
 
+    def _run_context_layer(self, record: RunRecord) -> bool:
+        if record.pipeline_state is None:
+            record.pipeline_state = make_initial_state(record.objectives)
+        if record.pipeline_state.get("sil_ready"):
+            return True
+
+        self._append_log(record, "⏳ Context Layer started: System Intelligence Layer (SIL)")
+        try:
+            llm = LLMClient(record.config)
+            sil_agent = SystemIntelligenceAgent(llm)
+            result = sil_agent.run(record.pipeline_state)
+            sil_output = result.output if isinstance(result.output, dict) else {}
+            sil_output = normalize_sil_output(sil_output, record.pipeline_state.get("sil_discovery", {}))
+            vault_ref = store_context_vault(
+                run_id=record.run_id,
+                repo_root=ROOT,
+                vault_root=CONTEXT_VAULT_ROOT,
+                sil_output=sil_output,
+                discovery=record.pipeline_state.get("sil_discovery", {}) if isinstance(record.pipeline_state, dict) else {},
+            )
+            graph_summary = sync_sil_graph(
+                CONTEXT_GRAPH_DB,
+                sil_output=sil_output,
+                context_ref=vault_ref,
+                run_id=record.run_id,
+            )
+            vault_ref["graph_summary"] = graph_summary
+            vault_ref["graph_db_path"] = str(CONTEXT_GRAPH_DB)
+
+            contract_suite = build_context_contract_suite(
+                sil_output,
+                context_ref=vault_ref,
+                run_id=record.run_id,
+                schema_dir=CONTRACT_SCHEMA_DIR,
+                repo_root=ROOT,
+                labels={
+                    "pipeline": "synthetix",
+                    "run_id": record.run_id,
+                    "bundle_version": str(vault_ref.get("version_id", "")),
+                },
+                model=record.config.get_model(),
+            )
+            contract_paths = persist_context_contract_suite(
+                contract_suite,
+                Path(str(vault_ref.get("vault_path", ""))).resolve() / "contract_bundle",
+            )
+            vault_ref["contract_bundle_path"] = str(Path(str(vault_ref.get("vault_path", ""))).resolve() / "contract_bundle")
+            vault_ref["contract_paths"] = contract_paths
+        except Exception as exc:
+            self._fail(record, f"Context Layer failed before Stage 1: {exc}")
+            return False
+
+        record.pipeline_state["sil_output"] = sil_output
+        record.pipeline_state["system_context_model"] = sil_output.get("system_context_model", {})
+        record.pipeline_state["convention_profile"] = sil_output.get("convention_profile", {})
+        record.pipeline_state["health_assessment"] = sil_output.get("health_assessment", {})
+        record.pipeline_state["remediation_backlog"] = sil_output.get("remediation_backlog", [])
+        record.pipeline_state["context_vault_ref"] = vault_ref
+        record.pipeline_state["context_contracts"] = {
+            "system_context_model": contract_suite.get("system_context_model", {}),
+            "convention_profile": contract_suite.get("convention_profile", {}),
+            "health_assessment_bundle": contract_suite.get("health_assessment_bundle", {}),
+            "context_bundle": contract_suite.get("context_bundle", {}),
+        }
+        record.pipeline_state["context_bundle"] = contract_suite.get("context_bundle", {})
+        record.pipeline_state["context_contract_validation"] = contract_suite.get("validation_report", {})
+        record.pipeline_state["sil_ready"] = True
+        report = contract_suite.get("validation_report", {}) if isinstance(contract_suite.get("validation_report", {}), dict) else {}
+        semantic_issues = report.get("semantic_issues", []) if isinstance(report.get("semantic_issues", []), list) else []
+        schema_issues = report.get("schema_issues", []) if isinstance(report.get("schema_issues", []), list) else []
+        blocking_issues = [x for x in (schema_issues + semantic_issues) if not str(x).startswith("Schema validation skipped")]
+        if blocking_issues:
+            record.pipeline_state["context_layer_status"] = "failed"
+            self._append_log(record, f"❌ Context contract validation failed with {len(blocking_issues)} issues")
+            for issue in blocking_issues[:12]:
+                self._append_log(record, f"  • {issue}")
+            self._fail(record, "Context Layer contract validation failed. Fix SCM/CP/HAB contract issues before downstream stages.")
+            return False
+        record.pipeline_state["context_layer_status"] = "ready"
+
+        existing_results = list(record.pipeline_state.get("agent_results", []))
+        sil_result = {
+            "agent_name": result.agent_name,
+            "stage": 0,
+            "status": result.status,
+            "summary": result.summary,
+            "output": {
+                "context_reference": {
+                    "version_id": vault_ref.get("version_id", ""),
+                    "repo": vault_ref.get("repo", ""),
+                    "branch": vault_ref.get("branch", ""),
+                    "commit_sha": vault_ref.get("commit_sha", ""),
+                },
+                "context_bundle": contract_suite.get("context_bundle", {}),
+                "contract_validation": contract_suite.get("validation_report", {}),
+                **sil_output,
+            },
+            "tokens_used": result.tokens_used,
+            "latency_ms": result.latency_ms,
+            "logs": result.logs,
+        }
+        existing_results.append(sil_result)
+        record.pipeline_state["agent_results"] = existing_results
+        record.pipeline_state["total_tokens"] = record.pipeline_state.get("total_tokens", 0) + result.tokens_used
+        record.pipeline_state["total_latency_ms"] = record.pipeline_state.get("total_latency_ms", 0) + result.latency_ms
+
+        for line in result.logs:
+            self._append_log(record, line, timestamped=True)
+        self._append_log(
+            record,
+            f"✅ Context Layer ready: {vault_ref.get('version_id', 'unknown')} "
+            f"({vault_ref.get('repo', '')}@{vault_ref.get('branch', '')})",
+        )
+        self.store.save_stage_snapshot(
+            run_id=record.run_id,
+            stage=0,
+            stage_result=sil_result,
+            pipeline_state=record.pipeline_state,
+            stage_status=record.stage_status,
+            progress_logs=record.progress_logs,
+        )
+        self._persist(record)
+        return True
+
+    @staticmethod
+    def _context_reference_from_state(state: dict[str, Any]) -> dict[str, Any]:
+        ref = state.get("context_vault_ref", {}) if isinstance(state, dict) else {}
+        scm = state.get("system_context_model", {}) if isinstance(state, dict) else {}
+        cp = state.get("convention_profile", {}) if isinstance(state, dict) else {}
+        ha = state.get("health_assessment", {}) if isinstance(state, dict) else {}
+        return {
+            "version_id": str(ref.get("version_id", "")),
+            "repo": str(ref.get("repo", "")),
+            "branch": str(ref.get("branch", "")),
+            "commit_sha": str(ref.get("commit_sha", "")),
+            "scm_version": str(scm.get("version", "scm-v1")),
+            "cp_version": str(cp.get("version", "cp-v1")),
+            "ha_version": str(ha.get("version", "ha-v1")),
+        }
+
+    @staticmethod
+    def _collect_runtime_logs_from_output(output: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(output, dict):
+            return []
+        logs: list[dict[str, Any]] = []
+        deployment = output.get("deployment_result", {}) if isinstance(output.get("deployment_result", {}), dict) else {}
+        service_name = str(output.get("component", "")).strip() or "deployed-service"
+
+        docker_live = output.get("docker_live_deployment", {}) if isinstance(output.get("docker_live_deployment", {}), dict) else {}
+        if docker_live:
+            service_name = str(docker_live.get("component", service_name) or service_name)
+            raw_logs = docker_live.get("logs", {}) if isinstance(docker_live.get("logs", {}), dict) else {}
+            for key in ("stdout", "stderr"):
+                block = str(raw_logs.get(key, "") or "")
+                if not block:
+                    continue
+                for line in block.splitlines():
+                    txt = line.strip()
+                    if txt:
+                        logs.append({"service": service_name, "message": txt, "stream": key})
+
+        cloud_live = output.get("cloud_live_deployment", {}) if isinstance(output.get("cloud_live_deployment", {}), dict) else {}
+        if cloud_live:
+            platform = str(cloud_live.get("platform", "cloud")).strip() or "cloud"
+            steps = cloud_live.get("steps", []) if isinstance(cloud_live.get("steps", []), list) else []
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                msg = str(step.get("message", "")).strip()
+                if not msg:
+                    continue
+                logs.append(
+                    {
+                        "service": f"{platform}-deployment",
+                        "message": msg,
+                        "status": str(step.get("status", "")),
+                    }
+                )
+
+        url = str(deployment.get("url", "")).strip()
+        if url:
+            logs.append(
+                {
+                    "service": service_name,
+                    "message": f"GET /health url={url}",
+                    "http_method": "GET",
+                    "http_path": "/health",
+                    "url": url,
+                }
+            )
+
+        return logs[:1600]
+
     def _execute_run(self, run_id: str) -> None:
         while True:
             record = self._get_record(run_id)
@@ -236,6 +480,10 @@ class PipelineRunManager:
                 return
             if record.pending_approval is not None:
                 return
+
+            if not record.pipeline_state or not record.pipeline_state.get("sil_ready"):
+                if not self._run_context_layer(record):
+                    return
 
             stage_idx = int(record.next_stage_idx)
             if stage_idx >= len(AGENT_SEQUENCE):
@@ -249,6 +497,14 @@ class PipelineRunManager:
 
             stage_num = stage_idx + 1
             agent = AGENT_CARDS[stage_idx]
+
+            gate_issues = context_gate_issues(record.pipeline_state or {})
+            if gate_issues:
+                self._fail(
+                    record,
+                    f"Context gate failed before Stage {stage_num}: " + "; ".join(gate_issues),
+                )
+                return
 
             # Developer planning checkpoint (always before code generation)
             if stage_idx == DEVELOPER_STAGE_INDEX and not record.pipeline_state.get("developer_plan_approved"):
@@ -321,6 +577,18 @@ class PipelineRunManager:
                     stage_index=stage_idx,
                 )
                 latest_result = updated_state.get("agent_results", [{}])[-1]
+                _, output_key = AGENT_SEQUENCE[stage_idx]
+                context_ref = self._context_reference_from_state(updated_state)
+                if stage_num >= 2 and not isinstance(latest_result.get("output"), dict):
+                    self._fail(
+                        record,
+                        f"Context contract violation at stage {stage_num}: output must be a JSON object with context_reference",
+                    )
+                    return
+                if isinstance(latest_result.get("output"), dict):
+                    latest_result["output"]["context_reference"] = context_ref
+                if isinstance(updated_state.get(output_key), dict):
+                    updated_state[output_key]["context_reference"] = context_ref
                 record.pipeline_state = updated_state
                 record.current_stage = stage_num
                 record.stage_status[stage_num] = latest_result.get("status", "error")
@@ -346,6 +614,46 @@ class PipelineRunManager:
                 if latest_result.get("status") == "error":
                     self._fail(record, f"Pipeline failed at stage {stage_num}: {summary}")
                     return
+
+                # Deployment stage: augment context graph from runtime logs when available.
+                if stage_idx == DEPLOYMENT_STAGE_INDEX:
+                    runtime_logs = self._collect_runtime_logs_from_output(
+                        latest_result.get("output", {}) if isinstance(latest_result.get("output", {}), dict) else {}
+                    )
+                    if runtime_logs:
+                        try:
+                            context_ref = (
+                                record.pipeline_state.get("context_vault_ref", {})
+                                if isinstance(record.pipeline_state.get("context_vault_ref", {}), dict)
+                                else {}
+                            )
+                            if context_ref.get("version_id"):
+                                ingest_summary = ingest_runtime_logs(
+                                    CONTEXT_GRAPH_DB,
+                                    context_ref=context_ref,
+                                    logs=runtime_logs,
+                                    run_id=record.run_id,
+                                )
+                                artifact_path = _persist_context_report(
+                                    context_ref,
+                                    "runtime_log_ingest",
+                                    {
+                                        "summary": ingest_summary,
+                                        "sample_logs": runtime_logs[:50],
+                                        "ingested_at": _utc_now(),
+                                    },
+                                )
+                                if artifact_path:
+                                    ingest_summary["artifact_path"] = artifact_path
+                                record.pipeline_state["runtime_log_ingestion"] = ingest_summary
+                                self._append_log(
+                                    record,
+                                    "📈 Runtime log augmentation: "
+                                    f"{ingest_summary.get('runtime_edges_upserted', 0)} edges from "
+                                    f"{ingest_summary.get('log_entries_parsed', 0)} log entries",
+                                )
+                        except Exception as exc:
+                            self._append_log(record, f"⚠️ Runtime log augmentation skipped: {exc}")
 
                 # Mark retry plan as applied once Developer stage finishes.
                 if stage_idx == DEVELOPER_STAGE_INDEX:
@@ -676,6 +984,9 @@ class PipelineRunManager:
             "human_approval": bool(pipeline_state.get("human_approval", False)),
             "strict_security_mode": bool(pipeline_state.get("strict_security_mode", False)),
             "deployment_target": str(pipeline_state.get("deployment_target", "local")),
+            "integration_context": pipeline_state.get("integration_context", {}) if isinstance(pipeline_state.get("integration_context"), dict) else {},
+            "project_state_mode": str(pipeline_state.get("project_state_mode", "auto")),
+            "project_state_detected": str(pipeline_state.get("project_state_detected", "")),
             "database_source": str(pipeline_state.get("database_source", "")),
             "database_target": str(pipeline_state.get("database_target", "")),
             "database_schema": str(pipeline_state.get("database_schema", "")),
@@ -703,6 +1014,9 @@ class PipelineRunManager:
             "human_approval": record.human_approval,
             "strict_security_mode": record.strict_security_mode,
             "deployment_target": record.deployment_target,
+            "integration_context": copy.deepcopy(record.integration_context),
+            "project_state_mode": record.project_state_mode,
+            "project_state_detected": record.project_state_detected,
             "database_source": record.database_source,
             "database_target": record.database_target,
             "database_schema": record.database_schema,
@@ -768,6 +1082,130 @@ def _config_from_payload(payload: dict[str, Any]) -> PipelineConfig:
     )
 
 
+def _read_json_file(path: Path) -> Any:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _write_json_file(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=True, default=str))
+
+
+def _resolve_context_reference(payload: dict[str, Any], query: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, str]:
+    query = query or {}
+    run_id = str(payload.get("run_id") or query.get("run_id") or "").strip()
+    ref: dict[str, Any] = {}
+
+    if run_id:
+        run = MANAGER.get_run(run_id)
+        if not run:
+            return None, f"run not found: {run_id}"
+        state = run.get("pipeline_state", {}) if isinstance(run, dict) else {}
+        ref = state.get("context_vault_ref", {}) if isinstance(state, dict) else {}
+        if not isinstance(ref, dict) or not ref.get("version_id"):
+            return None, f"context_vault_ref missing for run: {run_id}"
+        ref = dict(ref)
+        ref["run_id"] = run_id
+        return ref, ""
+
+    ref_payload = payload.get("context_reference", payload.get("context_vault_ref", {}))
+    if isinstance(ref_payload, dict):
+        ref = dict(ref_payload)
+
+    for key in ("repo", "branch", "commit_sha", "version_id", "vault_path"):
+        value = str(payload.get(key, query.get(key, "")) or "").strip()
+        if value:
+            ref[key] = value
+
+    if ref.get("version_id") and not ref.get("vault_path"):
+        target_version = str(ref.get("version_id", "")).strip()
+        candidates = list_versions(CONTEXT_GRAPH_DB, limit=600)
+        for row in candidates:
+            if str(row.get("version_id", "")) != target_version:
+                continue
+            if ref.get("repo") and str(row.get("repo", "")) != str(ref.get("repo", "")):
+                continue
+            if ref.get("branch") and str(row.get("branch", "")) != str(ref.get("branch", "")):
+                continue
+            ref.setdefault("repo", row.get("repo", ""))
+            ref.setdefault("branch", row.get("branch", ""))
+            ref.setdefault("commit_sha", row.get("commit_sha", ""))
+            ref.setdefault("vault_path", row.get("vault_path", ""))
+            break
+
+    if not ref.get("version_id"):
+        repo = str(ref.get("repo", "")).strip()
+        branch = str(ref.get("branch", "")).strip()
+        latest = list_versions(CONTEXT_GRAPH_DB, repo=repo, branch=branch, limit=1)
+        if latest:
+            row = latest[0]
+            ref.setdefault("repo", row.get("repo", ""))
+            ref.setdefault("branch", row.get("branch", ""))
+            ref.setdefault("commit_sha", row.get("commit_sha", ""))
+            ref.setdefault("vault_path", row.get("vault_path", ""))
+            ref["version_id"] = row.get("version_id", "")
+
+    if not ref.get("version_id"):
+        return None, "context version not resolvable (provide run_id or context_reference)"
+    return ref, ""
+
+
+def _load_context_artifacts(context_ref: dict[str, Any]) -> dict[str, Any]:
+    raw_vault = str(context_ref.get("vault_path", "")).strip()
+    if not raw_vault:
+        return {}
+    vault_path = Path(raw_vault)
+    if not vault_path.exists() or not vault_path.is_dir():
+        return {}
+    artifacts = {
+        "scm": _read_json_file(vault_path / "scm.json") or {},
+        "convention_profile": _read_json_file(vault_path / "convention_profile.json") or {},
+        "health_assessment": _read_json_file(vault_path / "health_assessment.json") or {},
+        "remediation_backlog": _read_json_file(vault_path / "remediation_backlog.json") or [],
+        "manifest": _read_json_file(vault_path / "manifest.json") or {},
+    }
+    contract_root = vault_path / "contract_bundle"
+    if contract_root.exists() and contract_root.is_dir():
+        artifacts.update(
+            {
+                "contract_system_context_model": _read_json_file(contract_root / "system_context_model.json") or {},
+                "contract_convention_profile": _read_json_file(contract_root / "convention_profile.json") or {},
+                "contract_health_assessment_bundle": _read_json_file(contract_root / "health_assessment_bundle.json") or {},
+                "context_bundle": _read_json_file(contract_root / "context_bundle.json") or {},
+                "contract_validation_report": _read_json_file(contract_root / "validation_report.json") or {},
+            }
+        )
+    return artifacts
+
+
+def _persist_context_report(context_ref: dict[str, Any], filename_prefix: str, payload: dict[str, Any]) -> str:
+    raw_vault = str(context_ref.get("vault_path", "")).strip()
+    if not raw_vault:
+        return ""
+    vault_path = Path(raw_vault)
+    if not vault_path.exists() or not vault_path.is_dir():
+        return ""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = vault_path / f"{filename_prefix}_{stamp}.json"
+    _write_json_file(path, payload)
+    return str(path)
+
+
+def _persist_branch_drift_report(report: dict[str, Any]) -> str:
+    repo = str(report.get("repo", "unknown")).strip() or "unknown"
+    branch = str(report.get("branch", "unknown")).strip() or "unknown"
+    base = CONTEXT_VAULT_ROOT / repo / branch / "_drift"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = base / f"drift_report_{stamp}.json"
+    _write_json_file(path, report)
+    return str(path)
+
+
 async def api_health(_request):
     return JSONResponse({"ok": True, "status": "healthy"})
 
@@ -782,6 +1220,118 @@ async def api_samples(_request):
             "agents": AGENT_CARDS,
         }
     )
+
+
+def _request_actor(request) -> str:
+    actor = str(request.headers.get("x-user-email", "")).strip().lower()
+    if actor:
+        return actor
+    actor = str(request.headers.get("x-user", "")).strip()
+    if actor:
+        return actor
+    return "local-user"
+
+
+async def api_get_settings(_request):
+    return JSONResponse({"ok": True, "settings": SETTINGS_STORE.get_settings()})
+
+
+async def api_connect_integration(request):
+    provider = request.path_params.get("provider", "")
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.update_integration(provider, payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    integration = settings.get("integrations", {}).get(str(provider).strip().lower(), {})
+    return JSONResponse({"ok": True, "settings": settings, "integration": integration})
+
+
+async def api_test_integration(request):
+    provider = request.path_params.get("provider", "")
+    try:
+        result = SETTINGS_STORE.test_integration(provider, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, **result})
+
+
+async def api_disconnect_integration(request):
+    provider = request.path_params.get("provider", "")
+    payload = _get_json(await request.body())
+    clear_secret = bool(payload.get("clear_secret", False))
+    try:
+        settings = SETTINGS_STORE.disconnect_integration(
+            provider,
+            clear_secret=clear_secret,
+            actor=_request_actor(request),
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    integration = settings.get("integrations", {}).get(str(provider).strip().lower(), {})
+    return JSONResponse({"ok": True, "settings": settings, "integration": integration})
+
+
+async def api_save_policies(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.update_policies(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "settings": settings, "policies": settings.get("policies", {})})
+
+
+async def api_add_policy_exception(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.add_exception(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "settings": settings, "exceptions": settings.get("exceptions", [])})
+
+
+async def api_resolve_policy_exception(request):
+    exception_id = request.path_params.get("exception_id", "")
+    try:
+        settings = SETTINGS_STORE.resolve_exception(exception_id, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "settings": settings, "exceptions": settings.get("exceptions", [])})
+
+
+async def api_save_rbac_role(request):
+    role = request.path_params.get("role", "")
+    payload = _get_json(await request.body())
+    permissions = payload.get("permissions", [])
+    try:
+        settings = SETTINGS_STORE.update_role_permissions(role, permissions, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    roles = settings.get("rbac", {}).get("roles", {})
+    return JSONResponse({"ok": True, "settings": settings, "roles": roles})
+
+
+async def api_upsert_rbac_assignment(request):
+    payload = _get_json(await request.body())
+    email = str(payload.get("email", "")).strip()
+    role = str(payload.get("role", "")).strip()
+    try:
+        settings = SETTINGS_STORE.upsert_assignment(email, role, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    assignments = settings.get("rbac", {}).get("assignments", [])
+    return JSONResponse({"ok": True, "settings": settings, "assignments": assignments})
+
+
+async def api_remove_rbac_assignment(request):
+    payload = _get_json(await request.body())
+    email = str(payload.get("email", "")).strip()
+    try:
+        settings = SETTINGS_STORE.remove_assignment(email, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    assignments = settings.get("rbac", {}).get("assignments", [])
+    return JSONResponse({"ok": True, "settings": settings, "assignments": assignments})
 
 
 def _agents_by_stage(agents: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -902,6 +1452,7 @@ async def api_list_tasks(request):
                 "business_objective": objective,
                 "objective_preview": objective.replace("\n", " ")[:220],
                 "use_case": pipeline_state.get("use_case", "business_objectives"),
+                "project_state_detected": pipeline_state.get("project_state_detected", ""),
                 "team_id": pipeline_state.get("team_id", ""),
                 "team_name": pipeline_state.get("team_name", ""),
                 "deployment_target": pipeline_state.get("deployment_target", "local"),
@@ -936,6 +1487,9 @@ async def api_clone_task(request):
         "database_schema": str(pipeline_state.get("database_schema", "")),
         "deployment_target": str(pipeline_state.get("deployment_target", "local")),
         "cloud_config": pipeline_state.get("cloud_config", {}) if isinstance(pipeline_state.get("cloud_config"), dict) else {},
+        "integration_context": pipeline_state.get("integration_context", {}) if isinstance(pipeline_state.get("integration_context"), dict) else {},
+        "project_state_mode": str(pipeline_state.get("project_state_mode", "auto")),
+        "project_state_detected": str(pipeline_state.get("project_state_detected", "")),
         "human_approval": bool(pipeline_state.get("human_approval", False)),
         "strict_security_mode": bool(pipeline_state.get("strict_security_mode", False)),
         "team_id": str(pipeline_state.get("team_id", "")),
@@ -967,6 +1521,7 @@ async def api_start_run(request):
     human_approval = bool(payload.get("human_approval", False))
     strict_security_mode = bool(payload.get("strict_security_mode", False))
     cloud_config = payload.get("cloud_config", {}) if isinstance(payload.get("cloud_config", {}), dict) else {}
+    integration_context = payload.get("integration_context", {}) if isinstance(payload.get("integration_context", {}), dict) else {}
     team_id = str(payload.get("team_id", "")).strip()
     stage_agent_ids = payload.get("stage_agent_ids", {}) if isinstance(payload.get("stage_agent_ids", {}), dict) else {}
     if not objectives:
@@ -999,6 +1554,7 @@ async def api_start_run(request):
         strict_security_mode=strict_security_mode,
         deployment_target=deployment_target,
         cloud_config=cloud_config,
+        integration_context=integration_context,
         team_id=team_id,
         stage_agent_ids=stage_agent_ids,
     )
@@ -1025,13 +1581,259 @@ async def api_approve_run(request):
     return JSONResponse(result, status_code=status_code)
 
 
-def _artifact_roots(run_id: str) -> dict[str, Path]:
+async def api_context_versions(request):
+    repo = str(request.query_params.get("repo", "")).strip()
+    branch = str(request.query_params.get("branch", "")).strip()
+    limit_raw = str(request.query_params.get("limit", "40")).strip()
+    try:
+        limit = max(1, min(300, int(limit_raw)))
+    except ValueError:
+        limit = 40
+    versions = list_versions(CONTEXT_GRAPH_DB, repo=repo, branch=branch, limit=limit)
+    return JSONResponse({"ok": True, "versions": versions})
+
+
+async def api_context_bundle(request):
+    ref, err = _resolve_context_reference({}, dict(request.query_params))
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    artifacts = _load_context_artifacts(ref)
+    bundle = artifacts.get("context_bundle", {})
+    if not bundle:
+        return JSONResponse({"ok": False, "error": "context_bundle not found for selected reference"}, status_code=404)
+    return JSONResponse(
+        {
+            "ok": True,
+            "context_reference": ref,
+            "context_bundle": bundle,
+            "validation_report": artifacts.get("contract_validation_report", {}),
+            "artifact_paths": {
+                "vault_path": ref.get("vault_path", ""),
+                "contract_bundle_path": str(Path(str(ref.get("vault_path", ""))) / "contract_bundle"),
+            },
+        }
+    )
+
+
+async def api_context_contracts(request):
+    ref, err = _resolve_context_reference({}, dict(request.query_params))
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    artifacts = _load_context_artifacts(ref)
+    contract = {
+        "system_context_model": artifacts.get("contract_system_context_model", {}),
+        "convention_profile": artifacts.get("contract_convention_profile", {}),
+        "health_assessment_bundle": artifacts.get("contract_health_assessment_bundle", {}),
+        "context_bundle": artifacts.get("context_bundle", {}),
+        "validation_report": artifacts.get("contract_validation_report", {}),
+    }
+    if not any(bool(v) for v in contract.values()):
+        return JSONResponse({"ok": False, "error": "contract artifacts not found"}, status_code=404)
+    return JSONResponse({"ok": True, "context_reference": ref, "contracts": contract})
+
+
+async def api_context_graph_neighbors(request):
+    node_id = str(request.query_params.get("node_id", "")).strip()
+    if not node_id:
+        return JSONResponse({"ok": False, "error": "node_id is required"}, status_code=400)
+    direction = str(request.query_params.get("direction", "both")).strip().lower() or "both"
+    edge_types_raw = str(request.query_params.get("edge_types", "")).strip()
+    edge_types = [x.strip() for x in edge_types_raw.split(",") if x.strip()] if edge_types_raw else []
+
+    ref, err = _resolve_context_reference({}, dict(request.query_params))
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    data = graph_neighbors(
+        CONTEXT_GRAPH_DB,
+        version_id=str(ref.get("version_id", "")),
+        node_id=node_id,
+        direction=direction,
+        edge_types=edge_types or None,
+    )
+    return JSONResponse({"ok": True, "context_reference": ref, "result": data})
+
+
+async def api_context_trace_ingest(request):
+    payload = _get_json(await request.body())
+    spans = payload.get("spans", [])
+    if not isinstance(spans, list) or not spans:
+        return JSONResponse({"ok": False, "error": "spans[] is required"}, status_code=400)
+
+    ref, err = _resolve_context_reference(payload)
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    run_id = str(payload.get("run_id", "")).strip()
+    summary = ingest_runtime_traces(
+        CONTEXT_GRAPH_DB,
+        context_ref=ref,
+        spans=[s for s in spans if isinstance(s, dict)],
+        run_id=run_id,
+    )
+    artifact_path = _persist_context_report(
+        ref,
+        "runtime_trace_ingest",
+        {"summary": summary, "sample_spans": spans[:30], "ingested_at": _utc_now()},
+    )
+    if artifact_path:
+        summary["artifact_path"] = artifact_path
+    return JSONResponse({"ok": True, "context_reference": ref, "ingestion": summary})
+
+
+async def api_context_log_ingest(request):
+    payload = _get_json(await request.body())
+    raw_logs = payload.get("logs", [])
+    logs: list[Any]
+    if isinstance(raw_logs, str):
+        logs = [line for line in raw_logs.splitlines() if str(line).strip()]
+    elif isinstance(raw_logs, list):
+        logs = raw_logs
+    else:
+        return JSONResponse({"ok": False, "error": "logs (array|string) is required"}, status_code=400)
+    if not logs:
+        return JSONResponse({"ok": False, "error": "logs is empty"}, status_code=400)
+
+    ref, err = _resolve_context_reference(payload)
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    run_id = str(payload.get("run_id", "")).strip()
+    summary = ingest_runtime_logs(
+        CONTEXT_GRAPH_DB,
+        context_ref=ref,
+        logs=logs,
+        run_id=run_id,
+    )
+    artifact_path = _persist_context_report(
+        ref,
+        "runtime_log_ingest",
+        {"summary": summary, "sample_logs": logs[:50], "ingested_at": _utc_now()},
+    )
+    if artifact_path:
+        summary["artifact_path"] = artifact_path
+    return JSONResponse({"ok": True, "context_reference": ref, "ingestion": summary})
+
+
+async def api_context_impact_forecast(request):
+    payload = _get_json(await request.body())
+    requirement_text = str(
+        payload.get("requirement_text")
+        or payload.get("requirement")
+        or payload.get("business_challenge")
+        or ""
+    ).strip()
+    if not requirement_text:
+        return JSONResponse({"ok": False, "error": "requirement_text is required"}, status_code=400)
+
+    changed_files = payload.get("changed_files", [])
+    if not isinstance(changed_files, list):
+        changed_files = []
+    changed_files = [str(x).strip() for x in changed_files if str(x).strip()]
+
+    ref, err = _resolve_context_reference(payload)
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    context_artifacts = _load_context_artifacts(ref)
+    report = forecast_impact(
+        CONTEXT_GRAPH_DB,
+        version_id=str(ref.get("version_id", "")),
+        requirement_text=requirement_text,
+        changed_files=changed_files,
+        health_assessment=context_artifacts.get("health_assessment", {}),
+        convention_profile=context_artifacts.get("convention_profile", {}),
+    )
+    report["requirement_text"] = requirement_text
+    report["context_reference"] = {
+        "version_id": ref.get("version_id", ""),
+        "repo": ref.get("repo", ""),
+        "branch": ref.get("branch", ""),
+        "commit_sha": ref.get("commit_sha", ""),
+    }
+
+    artifact_path = _persist_context_report(ref, "impact_forecast", report)
+    if artifact_path:
+        report["artifact_path"] = artifact_path
+    return JSONResponse({"ok": True, "forecast": report})
+
+
+async def api_context_drift_run(request):
+    payload = _get_json(await request.body())
+    ref, err = _resolve_context_reference(payload)
+    if err or not ref:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+
+    repo = str(payload.get("repo", ref.get("repo", ""))).strip()
+    branch = str(payload.get("branch", ref.get("branch", ""))).strip()
+    current_version_id = str(payload.get("current_version_id", ref.get("version_id", ""))).strip()
+    previous_version_id = str(payload.get("previous_version_id", "")).strip()
+
+    with DRIFT_LOCK:
+        report = detect_drift(
+            CONTEXT_GRAPH_DB,
+            repo=repo,
+            branch=branch,
+            current_version_id=current_version_id,
+            previous_version_id=previous_version_id,
+        )
+
+    report_path = _persist_context_report(ref, "drift_report", report)
+    if not report_path:
+        report_path = _persist_branch_drift_report(report)
+    report["report_path"] = report_path
+    return JSONResponse({"ok": True, "drift_report": report})
+
+
+async def api_context_drift_reports(request):
+    repo = str(request.query_params.get("repo", "")).strip()
+    branch = str(request.query_params.get("branch", "")).strip()
+    limit_raw = str(request.query_params.get("limit", "40")).strip()
+    try:
+        limit = max(1, min(300, int(limit_raw)))
+    except ValueError:
+        limit = 40
+
+    base = CONTEXT_VAULT_ROOT
+    if repo:
+        base = base / repo
+    if branch:
+        base = base / branch
+
+    reports: list[dict[str, Any]] = []
+    if base.exists() and base.is_dir():
+        paths = sorted(base.rglob("drift_report_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in paths[:limit]:
+            content = _read_json_file(path) or {}
+            reports.append(
+                {
+                    "path": str(path),
+                    "repo": content.get("repo", ""),
+                    "branch": content.get("branch", ""),
+                    "status": content.get("status", ""),
+                    "generated_at": content.get("generated_at", ""),
+                    "finding_count": len(content.get("findings", [])) if isinstance(content.get("findings", []), list) else 0,
+                }
+            )
+    return JSONResponse({"ok": True, "reports": reports})
+
+
+def _artifact_roots(run_id: str, run_payload: dict[str, Any] | None = None) -> dict[str, Path]:
     safe_run_id = safe_name(run_id)
-    return {
+    roots = {
         "pipeline": ROOT / "pipeline_runs" / run_id,
         "qa": ROOT / "run_artifacts" / safe_run_id,
         "deploy": ROOT / "deploy_output" / "runs" / safe_run_id,
     }
+    payload = run_payload or {}
+    state = payload.get("pipeline_state", {}) if isinstance(payload, dict) else {}
+    ref = state.get("context_vault_ref", {}) if isinstance(state, dict) else {}
+    vault_path = str(ref.get("vault_path", "")).strip() if isinstance(ref, dict) else ""
+    if vault_path:
+        p = Path(vault_path)
+        if p.exists() and p.is_dir():
+            roots["context"] = p
+    return roots
 
 
 def _is_within(root: Path, target: Path) -> bool:
@@ -1049,7 +1851,7 @@ async def api_list_artifacts(request):
         return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
 
     artifacts: list[dict[str, Any]] = []
-    for root_key, root in _artifact_roots(run_id).items():
+    for root_key, root in _artifact_roots(run_id, run).items():
         if not root.exists():
             continue
         for path in sorted(root.rglob("*")):
@@ -1085,7 +1887,7 @@ async def api_artifact_content(request):
     if "::" not in artifact_id:
         return JSONResponse({"ok": False, "error": "artifact_id is required"}, status_code=400)
     root_key, rel = artifact_id.split("::", 1)
-    roots = _artifact_roots(run_id)
+    roots = _artifact_roots(run_id, run)
     root = roots.get(root_key)
     if not root:
         return JSONResponse({"ok": False, "error": "invalid artifact root"}, status_code=400)
@@ -1181,9 +1983,68 @@ async def api_run_stream(request):
     )
 
 
+def _run_automated_drift_scan() -> list[dict[str, Any]]:
+    versions = list_versions(CONTEXT_GRAPH_DB, limit=600)
+    by_repo_branch: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in versions:
+        repo = str(row.get("repo", "")).strip()
+        branch = str(row.get("branch", "")).strip()
+        if not repo or not branch:
+            continue
+        by_repo_branch.setdefault((repo, branch), []).append(row)
+
+    reports: list[dict[str, Any]] = []
+    for (repo, branch), rows in by_repo_branch.items():
+        if len(rows) < 2:
+            continue
+        report = detect_drift(CONTEXT_GRAPH_DB, repo=repo, branch=branch)
+        report_path = _persist_branch_drift_report(report)
+        report["report_path"] = report_path
+        reports.append(report)
+    return reports
+
+
+def _drift_scheduler_loop() -> None:
+    while True:
+        try:
+            with DRIFT_LOCK:
+                _run_automated_drift_scan()
+        except Exception:
+            pass
+        # Keep looping even if the vault is empty or one scan fails.
+        threading.Event().wait(max(30, DRIFT_INTERVAL_SEC))
+
+
+if DRIFT_INTERVAL_SEC > 0:
+    threading.Thread(
+        target=_drift_scheduler_loop,
+        daemon=True,
+        name="sil-drift-monitor",
+    ).start()
+
+
 routes = [
     Route("/api/health", api_health, methods=["GET"]),
     Route("/api/samples", api_samples, methods=["GET"]),
+    Route("/api/settings", api_get_settings, methods=["GET"]),
+    Route("/api/settings/integrations/{provider:str}/connect", api_connect_integration, methods=["POST"]),
+    Route("/api/settings/integrations/{provider:str}/test", api_test_integration, methods=["POST"]),
+    Route("/api/settings/integrations/{provider:str}/disconnect", api_disconnect_integration, methods=["POST"]),
+    Route("/api/settings/policies", api_save_policies, methods=["POST"]),
+    Route("/api/settings/exceptions", api_add_policy_exception, methods=["POST"]),
+    Route("/api/settings/exceptions/{exception_id:str}/resolve", api_resolve_policy_exception, methods=["POST"]),
+    Route("/api/settings/rbac/roles/{role:str}", api_save_rbac_role, methods=["POST"]),
+    Route("/api/settings/rbac/assignments", api_upsert_rbac_assignment, methods=["POST"]),
+    Route("/api/settings/rbac/assignments/remove", api_remove_rbac_assignment, methods=["POST"]),
+    Route("/api/context/versions", api_context_versions, methods=["GET"]),
+    Route("/api/context/bundle", api_context_bundle, methods=["GET"]),
+    Route("/api/context/contracts", api_context_contracts, methods=["GET"]),
+    Route("/api/context/graph/neighbors", api_context_graph_neighbors, methods=["GET"]),
+    Route("/api/context/traces", api_context_trace_ingest, methods=["POST"]),
+    Route("/api/context/logs", api_context_log_ingest, methods=["POST"]),
+    Route("/api/context/impact-forecast", api_context_impact_forecast, methods=["POST"]),
+    Route("/api/context/drift/run", api_context_drift_run, methods=["POST"]),
+    Route("/api/context/drift/reports", api_context_drift_reports, methods=["GET"]),
     Route("/api/agents", api_list_agents, methods=["GET"]),
     Route("/api/agents/clone", api_clone_agent, methods=["POST"]),
     Route("/api/teams", api_list_teams, methods=["GET"]),

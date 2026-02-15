@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/agent_result.schema.json",
+  "title": "Agent Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "stage_id", "task_id", "status", "summary"],
+  "properties": {
+    "run_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+    "stage_id": { "type": "string" },
+    "task_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+    "status": { "type": "string", "enum": ["success", "needs_review", "failed"] },
+    "summary": { "type": "string" },
+    "artifact_updates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ArtifactUpdate" }
+    },
+    "code_changes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CodeChange" }
+    },
+    "assertions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Assertion" },
+      "description": "Claims the orchestrator or verification steps should validate."
+    },
+    "issues": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Durations, tool success counts, token usage, etc."
+    }
+  },
+  "$defs": {
+    "ArtifactUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_type", "mode", "base_artifact_id"],
+      "properties": {
+        "artifact_type": { "type": "string" },
+        "mode": { "type": "string", "enum": ["new_version", "json_patch"] },
+        "base_artifact_id": { "$ref": "common.schema.json#/$defs/Ulid" },
+        "payload": {
+          "description": "Either the full new artifact (mode=new_version) or a JSON Patch array (mode=json_patch)."
+        }
+      }
+    },
+    "CodeChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["git_diff", "patch_file", "pr_link"] },
+        "diff": { "type": "string" },
+        "path": { "type": "string" },
+        "ref": { "type": "string" }
+      }
+    },
+    "Assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "statement": { "type": "string" },
+        "confidence": { "$ref": "common.schema.json#/$defs/Confidence" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/EvidencePointer" }
+        }
+      }
+    }
+  }
+}

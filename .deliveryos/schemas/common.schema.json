@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/common.schema.json",
+  "title": "Common primitives for artifact contracts",
+  "type": "object",
+  "$defs": {
+    "Ulid": {
+      "type": "string",
+      "description": "ULID or UUID. ULID recommended for sortable IDs.",
+      "minLength": 10
+    },
+    "IsoDateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Digest": {
+      "type": "string",
+      "description": "Content digest, e.g., sha256:<hex>",
+      "pattern": "^[a-z0-9]+:[A-Fa-f0-9]{16,}$"
+    },
+    "RepoRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "repo_url", "default_branch", "commit_sha"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["github", "gitlab", "bitbucket", "azuredevops", "other"] },
+        "repo_url": { "type": "string" },
+        "default_branch": { "type": "string" },
+        "branch": { "type": "string" },
+        "commit_sha": { "type": "string", "minLength": 7 },
+        "subpath": { "type": "string", "description": "For monorepos, scope to a folder path if needed." }
+      }
+    },
+    "GeneratedBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_name", "agent_version", "run_id", "stage_id"],
+      "properties": {
+        "agent_name": { "type": "string" },
+        "agent_version": { "type": "string" },
+        "model": { "type": "string", "description": "Model identifier; keep vendor-neutral." },
+        "tooling": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Key tools used, e.g., 'tree-sitter', 'semgrep', 'otlp' etc."
+        },
+        "run_id": { "$ref": "#/$defs/Ulid" },
+        "stage_id": { "type": "string" },
+        "task_id": { "$ref": "#/$defs/Ulid" }
+      }
+    },
+    "Confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score"],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "rationale": { "type": "string" },
+        "signals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional structured hints: 'static_evidence', 'runtime_trace', 'heuristic', 'human_confirmed'."
+        }
+      }
+    },
+    "EvidencePointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["file_span", "config_key", "git_blame", "trace_span", "log_query", "manual", "external_ref"]
+        },
+        "file": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "config_file": { "type": "string" },
+        "config_key": { "type": "string" },
+        "commit_sha": { "type": "string" },
+        "author": { "type": "string" },
+        "trace_id": { "type": "string" },
+        "span_id": { "type": "string" },
+        "query": { "type": "string" },
+        "note": { "type": "string" },
+        "ref": { "type": "string" }
+      }
+    },
+    "ArtifactHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "artifact_type", "schema_version", "created_at", "repo_ref", "generated_by"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/Ulid" },
+        "artifact_type": { "type": "string" },
+        "schema_version": { "type": "string", "description": "Contract version, e.g., '1.0.0'." },
+        "created_at": { "$ref": "#/$defs/IsoDateTime" },
+        "repo_ref": { "$ref": "#/$defs/RepoRef" },
+        "generated_by": { "$ref": "#/$defs/GeneratedBy" },
+        "parents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Ulid" },
+          "description": "Parent artifact IDs used as inputs, if any."
+        },
+        "digest": { "$ref": "#/$defs/Digest" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Tenant, project, environment, etc."
+        }
+      }
+    },
+    "RiskScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["likelihood", "impact", "score"],
+      "properties": {
+        "likelihood": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "impact": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "score": { "type": "integer", "minimum": 1, "maximum": 25 },
+        "tier": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "rationale": { "type": "string" }
+      }
+    },
+    "EffortEstimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tshirt"],
+      "properties": {
+        "tshirt": { "type": "string", "enum": ["XS", "S", "M", "L", "XL"] },
+        "hours_range": {
+          "type": "array",
+          "items": { "type": "number", "minimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "confidence": { "$ref": "#/$defs/Confidence" }
+      }
+    }
+  }
+}

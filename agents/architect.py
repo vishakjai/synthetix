@@ -92,18 +92,36 @@ You MUST respond with valid JSON in this exact structure:
 Design for production-grade systems. Be specific about technology choices.
 Do NOT default to AWS or microservices unless requirements explicitly justify it.
 Prefer local Docker-compatible architecture for MVP unless the user requests cloud.
+Use-case behavior:
+- For `code_modernization`, include a detailed `legacy_system` section and both current + target diagrams.
+- For `business_objectives`, `legacy_system` is optional and target architecture is primary.
+Depth requirements:
+- Include at least 4 data_flow entries.
+- Include at least 4 latency_optimizations.
+- Include at least 3 trade_offs with explicit alternatives considered.
+- If `legacy_system` is present, include at least 5 key_logic_steps.
 Respond ONLY with the JSON, no other text."""
 
     def build_user_message(self, state: dict[str, Any]) -> str:
         requirements = state.get("analyst_output", {})
+        use_case = str(state.get("use_case", "business_objectives")).strip().lower()
         legacy_code = state.get("legacy_code", "")
         target_lang = state.get("modernization_language", "")
         db_source = str(state.get("database_source", "")).strip()
         db_target = str(state.get("database_target", "")).strip()
         db_schema = str(state.get("database_schema", "")).strip()
         deployment_target = state.get("deployment_target", "local")
+        legacy_mode = use_case == "code_modernization"
+        diagram_instructions = (
+            "Include both a current-system (legacy) Mermaid diagram and a target-system Mermaid diagram."
+            if legacy_mode
+            else "Focus on the target architecture Mermaid diagram; omit legacy/current diagram unless truly needed for context."
+        )
         return f"""Design a system architecture for the following requirements.
 Optimize for latency, security, and scalability.
+
+USE CASE:
+{use_case}
 
 REQUIREMENTS DOCUMENT:
 {json.dumps(requirements, indent=2)}
@@ -127,11 +145,9 @@ DEPLOYMENT TARGET PREFERENCE:
 {deployment_target}
 
 Include:
-- A clear summary of existing legacy logic.
-- A NON-EMPTY mermaid diagram describing current system logic and key flows.
-- The target modernized architecture.
-- A NON-EMPTY mermaid diagram for the target modernized architecture.
-- Both diagrams MUST be valid Mermaid syntax starting with "graph TD;".
+- The target architecture and a NON-EMPTY Mermaid diagram.
+- {diagram_instructions}
+- Any Mermaid diagram provided MUST be valid syntax starting with "graph TD;".
 - If deployment target is local, prefer Docker-local compatible services over cloud-managed dependencies."""
 
     def parse_output(self, raw: str) -> dict[str, Any]:
@@ -265,21 +281,36 @@ Include:
         if not isinstance(legacy, dict):
             legacy = {}
 
-        legacy_diagram = self._first_non_empty(
-            legacy.get("current_system_diagram_mermaid"),
-            legacy.get("legacy_diagram_mermaid"),
-            legacy.get("diagram_mermaid"),
-            parsed.get("legacy_system_diagram_mermaid"),
-            parsed.get("current_system_diagram_mermaid"),
+        legacy_steps = legacy.get("key_logic_steps", []) if isinstance(legacy.get("key_logic_steps", []), list) else []
+        has_legacy_signal = any(str(s).strip() for s in legacy_steps) or any(
+            str(v).strip()
+            for v in [
+                legacy.get("current_logic_summary", ""),
+                legacy.get("current_system_diagram_mermaid", ""),
+                legacy.get("legacy_diagram_mermaid", ""),
+                legacy.get("diagram_mermaid", ""),
+                parsed.get("legacy_system_diagram_mermaid", ""),
+                parsed.get("current_system_diagram_mermaid", ""),
+            ]
         )
-        if not legacy_diagram:
-            legacy_diagram = self._build_legacy_diagram(parsed, legacy)
-            self.log(f"[{self.name}] Missing legacy diagram from LLM output; generated fallback diagram.")
-        legacy["current_system_diagram_mermaid"] = self._normalize_mermaid(
-            legacy_diagram,
-            self._legacy_default_diagram(),
-        )
-        parsed["legacy_system"] = legacy
+        if has_legacy_signal:
+            legacy_diagram = self._first_non_empty(
+                legacy.get("current_system_diagram_mermaid"),
+                legacy.get("legacy_diagram_mermaid"),
+                legacy.get("diagram_mermaid"),
+                parsed.get("legacy_system_diagram_mermaid"),
+                parsed.get("current_system_diagram_mermaid"),
+            )
+            if not legacy_diagram:
+                legacy_diagram = self._build_legacy_diagram(parsed, legacy)
+                self.log(f"[{self.name}] Missing legacy diagram from LLM output; generated fallback diagram.")
+            legacy["current_system_diagram_mermaid"] = self._normalize_mermaid(
+                legacy_diagram,
+                self._legacy_default_diagram(),
+            )
+            parsed["legacy_system"] = legacy
+        else:
+            parsed.pop("legacy_system", None)
 
         target_diagram = self._first_non_empty(
             parsed.get("target_system_diagram_mermaid"),

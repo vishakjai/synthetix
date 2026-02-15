@@ -30,6 +30,7 @@ from agents.tester import TesterAgent
 from agents.validator import ValidatorAgent
 from agents.deployer import DeployerAgent
 from agents.base import AgentResult
+from utils.context_vault import context_gate_issues
 
 
 class PipelineState(TypedDict, total=False):
@@ -47,6 +48,13 @@ class PipelineState(TypedDict, total=False):
     cloud_config: dict[str, Any]
     human_approval: bool
     strict_security_mode: bool
+    sil_ready: bool
+    sil_output: dict[str, Any]
+    system_context_model: dict[str, Any]
+    convention_profile: dict[str, Any]
+    health_assessment: dict[str, Any]
+    remediation_backlog: list[dict[str, Any]]
+    context_vault_ref: dict[str, Any]
 
     # Agent outputs (populated as pipeline executes)
     analyst_output: dict[str, Any]
@@ -71,6 +79,22 @@ class PipelineState(TypedDict, total=False):
     logs: list[str]
 
 
+def _context_reference_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    ref = state.get("context_vault_ref", {}) if isinstance(state, dict) else {}
+    scm = state.get("system_context_model", {}) if isinstance(state, dict) else {}
+    cp = state.get("convention_profile", {}) if isinstance(state, dict) else {}
+    ha = state.get("health_assessment", {}) if isinstance(state, dict) else {}
+    return {
+        "version_id": str(ref.get("version_id", "")),
+        "repo": str(ref.get("repo", "")),
+        "branch": str(ref.get("branch", "")),
+        "commit_sha": str(ref.get("commit_sha", "")),
+        "scm_version": str(scm.get("version", "scm-v1")),
+        "cp_version": str(cp.get("version", "cp-v1")),
+        "ha_version": str(ha.get("version", "ha-v1")),
+    }
+
+
 def _make_node(
     agent_class: type,
     output_key: str,
@@ -93,10 +117,33 @@ def _make_node(
         agent = agent_class(llm)
 
     def node_fn(state: PipelineState) -> dict[str, Any]:
+        if agent.stage >= 2:
+            gate_issues = context_gate_issues(state if isinstance(state, dict) else {})
+            if gate_issues:
+                return {
+                    "pipeline_status": "failed",
+                    "current_stage": agent.stage,
+                    "logs": list(state.get("logs", [])) + [f"[Context Gate] {x}" for x in gate_issues],
+                    "agent_results": list(state.get("agent_results", [])) + [{
+                        "agent_name": agent.name,
+                        "stage": agent.stage,
+                        "status": "error",
+                        "summary": "Context gate failed: " + "; ".join(gate_issues),
+                        "output": {"context_gate_issues": gate_issues},
+                        "tokens_used": 0,
+                        "latency_ms": 0,
+                        "logs": [f"[Context Gate] {x}" for x in gate_issues],
+                    }],
+                }
+
         if on_progress:
             on_progress(agent.stage, f"Running {agent.name}...", [])
 
         result: AgentResult = agent.run(state)
+        output_payload = result.output
+        if agent.stage >= 2 and isinstance(output_payload, dict):
+            output_payload = dict(output_payload)
+            output_payload["context_reference"] = _context_reference_from_state(state if isinstance(state, dict) else {})
 
         if on_progress:
             on_progress(
@@ -112,7 +159,7 @@ def _make_node(
             "stage": result.stage,
             "status": result.status,
             "summary": result.summary,
-            "output": result.output,
+            "output": output_payload,
             "tokens_used": result.tokens_used,
             "latency_ms": result.latency_ms,
             "logs": result.logs,
@@ -122,7 +169,7 @@ def _make_node(
         existing_logs.extend(result.logs)
 
         updates = {
-            output_key: result.output,
+            output_key: output_payload,
             "agent_results": existing_results,
             "current_stage": agent.stage,
             "total_tokens": state.get("total_tokens", 0) + result.tokens_used,
@@ -292,6 +339,28 @@ def run_single_stage(
         raise ValueError(f"Invalid stage_index: {stage_index}")
 
     agent_class, output_key = AGENT_SEQUENCE[stage_index]
+    stage_num = stage_index + 1
+
+    # Enforce Context Layer gate for downstream stages (Architect onwards).
+    if stage_num >= 2:
+        gate_issues = context_gate_issues(state if isinstance(state, dict) else {})
+        if gate_issues:
+            state = dict(state)
+            existing_results = list(state.get("agent_results", []))
+            existing_results.append({
+                "agent_name": agent_class.__name__,
+                "stage": stage_num,
+                "status": "error",
+                "summary": "Context gate failed: " + "; ".join(gate_issues),
+                "output": {"context_gate_issues": gate_issues},
+                "tokens_used": 0,
+                "latency_ms": 0,
+                "logs": [f"[Context Gate] {x}" for x in gate_issues],
+            })
+            state["agent_results"] = existing_results
+            state["pipeline_status"] = "failed"
+            state["current_stage"] = stage_num
+            return state
     llm = LLMClient(config)
 
     # Instantiate agent (DeployerAgent needs extra kwargs)
@@ -311,7 +380,11 @@ def run_single_stage(
 
     # Merge result into state
     state = dict(state)  # shallow copy to avoid mutation issues
-    state[output_key] = result.output
+    output_payload = result.output
+    if stage_num >= 2 and isinstance(output_payload, dict):
+        output_payload = dict(output_payload)
+        output_payload["context_reference"] = _context_reference_from_state(state)
+    state[output_key] = output_payload
 
     existing_results = list(state.get("agent_results", []))
     existing_results.append({
@@ -319,7 +392,7 @@ def run_single_stage(
         "stage": result.stage,
         "status": result.status,
         "summary": result.summary,
-        "output": result.output,
+        "output": output_payload,
         "tokens_used": result.tokens_used,
         "latency_ms": result.latency_ms,
         "logs": result.logs,
@@ -354,6 +427,13 @@ def make_initial_state(business_objectives: str) -> dict[str, Any]:
         "cloud_config": {},
         "human_approval": False,
         "strict_security_mode": False,
+        "sil_ready": False,
+        "sil_output": {},
+        "system_context_model": {},
+        "convention_profile": {},
+        "health_assessment": {},
+        "remediation_backlog": [],
+        "context_vault_ref": {},
         "agent_results": [],
         "current_stage": 0,
         "pipeline_status": "running",

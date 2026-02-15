@@ -35,13 +35,25 @@ class LLMClient:
 
     def _get_anthropic_client(self):
         if self._anthropic_client is None:
-            from anthropic import Anthropic
+            try:
+                from anthropic import Anthropic
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Anthropic provider selected but dependency is missing. "
+                    "Install with: uv pip install --python '/Users/vishak/Projects/Codex Projects/.venv/bin/python' anthropic"
+                ) from exc
             self._anthropic_client = Anthropic(api_key=self.config.get_api_key())
         return self._anthropic_client
 
     def _get_openai_client(self):
         if self._openai_client is None:
-            from openai import OpenAI
+            try:
+                from openai import OpenAI
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "OpenAI provider selected but dependency is missing. "
+                    "Install with: uv pip install --python '/Users/vishak/Projects/Codex Projects/.venv/bin/python' openai"
+                ) from exc
             self._openai_client = OpenAI(api_key=self.config.get_api_key())
         return self._openai_client
 
@@ -99,7 +111,7 @@ class LLMClient:
         client = self._get_anthropic_client()
         response = client.messages.create(
             model=self.config.get_model(),
-            max_tokens=4096,
+            max_tokens=self.config.max_output_tokens,
             temperature=self.config.temperature,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -137,7 +149,7 @@ class LLMClient:
 
         response = client.messages.create(
             model=self.config.get_model(),
-            max_tokens=4096,
+            max_tokens=self.config.max_output_tokens,
             temperature=self.config.temperature,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -175,7 +187,7 @@ class LLMClient:
         response = client.chat.completions.create(
             model=self.config.get_model(),
             temperature=self.config.temperature,
-            max_tokens=4096,
+            max_tokens=self.config.max_output_tokens,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -201,7 +213,7 @@ class LLMClient:
         response = client.chat.completions.create(
             model=self.config.get_model(),
             temperature=self.config.temperature,
-            max_tokens=4096,
+            max_tokens=self.config.max_output_tokens,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -240,7 +252,7 @@ class LLMClient:
         client = self._get_anthropic_client()
         with client.messages.stream(
             model=self.config.get_model(),
-            max_tokens=4096,
+            max_tokens=self.config.max_output_tokens,
             temperature=self.config.temperature,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -253,7 +265,7 @@ class LLMClient:
         stream = client.chat.completions.create(
             model=self.config.get_model(),
             temperature=self.config.temperature,
-            max_tokens=4096,
+            max_tokens=self.config.max_output_tokens,
             stream=True,
             messages=[
                 {"role": "system", "content": system_prompt},

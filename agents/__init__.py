@@ -6,6 +6,7 @@ from .security_engineer import SecurityEngineerAgent
 from .tester import TesterAgent
 from .validator import ValidatorAgent
 from .deployer import DeployerAgent
+from .system_intelligence import SystemIntelligenceAgent
 
 __all__ = [
     "AnalystAgent",
@@ -16,4 +17,5 @@ __all__ = [
     "TesterAgent",
     "ValidatorAgent",
     "DeployerAgent",
+    "SystemIntelligenceAgent",
 ]

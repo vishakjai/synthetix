@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+
+pipeline_runs/
+run_artifacts/
+deploy_output/
+context_vault/
+.deliveryos/context/
+
+.DS_Store
+
+team_data/*.json

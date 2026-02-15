@@ -1,0 +1,149 @@
+version: "1.0"
+name: "Brownfield Context-First Delivery Pipeline"
+
+artifacts:
+  - type: system_context_model
+    schema: ".deliveryos/schemas/system_context_model.schema.json"
+  - type: convention_profile
+    schema: ".deliveryos/schemas/convention_profile.schema.json"
+  - type: health_assessment_bundle
+    schema: ".deliveryos/schemas/health_assessment_bundle.schema.json"
+  - type: context_bundle
+    schema: ".deliveryos/schemas/context_bundle.schema.json"
+
+principles:
+  - "Artifacts are immutable; updates create new versions."
+  - "Every graph edge and convention claim should be evidence-backed and confidence-scored."
+  - "Downstream agents must consume the Context Bundle."
+  - "No production-impacting action without a human approval gate (configurable)."
+
+stages:
+  - id: phase1_structural_discovery
+    role: structural_discovery
+    inputs:
+      - repo_checkout
+    outputs:
+      - system_context_model
+    gates:
+      - "SCM JSON validates against schema"
+      - "SCM node_count > 0"
+      - "No secrets in SCM (redaction check)"
+    human_approval: optional
+    write_permissions:
+      - system_context_model: author
+
+  - id: phase2_convention_extraction
+    role: convention_extraction
+    inputs:
+      - repo_checkout
+      - system_context_model
+    outputs:
+      - convention_profile
+    gates:
+      - "CP JSON validates against schema"
+      - "At least 1 rule per: naming, testing, logging_observability (unless not applicable)"
+      - "Rule confidence distribution captured"
+    human_approval: recommended
+    write_permissions:
+      - convention_profile: author
+
+  - id: phase3_health_assessment
+    role: health_assessment
+    inputs:
+      - repo_checkout
+      - system_context_model
+      - convention_profile
+    outputs:
+      - health_assessment_bundle
+    gates:
+      - "HAB JSON validates against schema"
+      - "Backlog has prioritized items with effort + risk"
+      - "Findings reference valid SCM node IDs when provided"
+    human_approval: recommended
+    write_permissions:
+      - health_assessment_bundle: author
+
+  - id: context_bundle_publish
+    role: release_manager
+    inputs:
+      - system_context_model
+      - convention_profile
+      - health_assessment_bundle
+    outputs:
+      - context_bundle
+    gates:
+      - "All artifact digests computed"
+      - "Context Bundle references latest commit_sha"
+    human_approval: none
+    write_permissions:
+      - context_bundle: author
+
+  - id: architecture
+    role: architect
+    inputs:
+      - context_bundle
+      - business_requirement
+    outputs:
+      - adr_set
+      - architecture_delta
+    gates:
+      - "Proposed changes do not violate high-confidence SCM boundaries unless explicitly justified"
+      - "References CP rules for API/error/logging conventions"
+    human_approval: required
+    write_permissions:
+      - adr_set: author
+      - system_context_model: propose_delta_only
+
+  - id: implementation
+    role: developer
+    inputs:
+      - context_bundle
+      - adr_set
+      - work_items
+    outputs:
+      - code_changes
+      - test_changes
+      - scm_delta
+    gates:
+      - "Build passes"
+      - "Unit tests pass"
+      - "New code adheres to CP (lint + convention checks)"
+    human_approval: optional
+    write_permissions:
+      - system_context_model: propose_delta_only
+      - convention_profile: propose_delta_only
+
+  - id: verification
+    role: tester
+    inputs:
+      - context_bundle
+      - code_changes
+    outputs:
+      - test_reports
+      - coverage_delta
+      - hab_delta
+    gates:
+      - "Integration tests pass (where available)"
+      - "Functional smoke tests pass"
+      - "Coverage addresses HAB-identified gaps where scoped"
+    human_approval: optional
+    write_permissions:
+      - health_assessment_bundle: propose_delta_only
+
+  - id: release_and_deploy
+    role: release_manager
+    inputs:
+      - context_bundle
+      - code_changes
+      - test_reports
+    outputs:
+      - release_plan
+      - deployment_changes
+      - evidence_pack
+    gates:
+      - "Security scans pass or exceptions approved"
+      - "Rollback plan exists"
+      - "Observability checks in place (CP logging/trace conventions met)"
+    human_approval: required_for_prod
+    write_permissions:
+      - evidence_pack: author

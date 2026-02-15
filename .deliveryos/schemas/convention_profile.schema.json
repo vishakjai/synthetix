@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/convention_profile.schema.json",
+  "title": "Convention Profile (CP)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["header", "rules"],
+  "properties": {
+    "header": { "$ref": "common.schema.json#/$defs/ArtifactHeader" },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Rule" }
+    },
+    "templates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Template" }
+    },
+    "overrides": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Override" },
+      "description": "Human-confirmed corrections; treated as highest priority."
+    }
+  },
+  "$defs": {
+    "RuleCategory": {
+      "type": "string",
+      "enum": [
+        "naming",
+        "error_handling",
+        "testing",
+        "logging_observability",
+        "authn_authz",
+        "api_design",
+        "packaging_build",
+        "infra_iac"
+      ]
+    },
+    "Scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "file_globs": { "type": "array", "items": { "type": "string" } },
+        "scm_node_ids": { "type": "array", "items": { "type": "string" } },
+        "applies_to": { "type": "string", "enum": ["prod", "test", "infra", "docs", "all"] }
+      }
+    },
+    "Rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "title", "scope", "statement", "confidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "category": { "$ref": "#/$defs/RuleCategory" },
+        "title": { "type": "string" },
+        "scope": { "$ref": "#/$defs/Scope" },
+        "statement": { "type": "string", "description": "Human-readable rule." },
+        "detection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "enum": ["regex", "ast_heuristic", "config_inference", "statistical"] },
+            "pattern": { "type": "string" },
+            "parameters": { "type": "object", "additionalProperties": true }
+          }
+        },
+        "enforcement": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "lint_tool": { "type": "string" },
+            "lint_rule": { "type": "string" },
+            "config_path": { "type": "string" },
+            "severity": { "type": "string", "enum": ["info", "warn", "error"] },
+            "autofix_available": { "type": "boolean" }
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Example" }
+        },
+        "counterexamples": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Example" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "common.schema.json#/$defs/EvidencePointer" }
+        },
+        "confidence": { "$ref": "common.schema.json#/$defs/Confidence" },
+        "exceptions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Known exception cases (paths/modules) where rule does not apply."
+        }
+      }
+    },
+    "Example": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "note": { "type": "string" }
+      }
+    },
+    "Template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "language", "name", "description"],
+      "properties": {
+        "id": { "type": "string" },
+        "language": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "file_path_template": { "type": "string" },
+        "parameters": { "type": "array", "items": { "type": "string" } },
+        "content_snippet": {
+          "type": "string",
+          "description": "Optional; can also be stored separately and referenced."
+        }
+      }
+    },
+    "Override": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "target_rule_id", "change", "created_at"],
+      "properties": {
+        "id": { "type": "string" },
+        "target_rule_id": { "type": "string" },
+        "change": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path", "value"],
+          "properties": {
+            "type": { "type": "string", "enum": ["add", "remove", "replace"] },
+            "path": { "type": "string", "description": "JSON Pointer into the rule." },
+            "value": {}
+          }
+        },
+        "created_at": { "$ref": "common.schema.json#/$defs/IsoDateTime" },
+        "created_by": { "type": "string" },
+        "rationale": { "type": "string" }
+      }
+    }
+  }
+}
