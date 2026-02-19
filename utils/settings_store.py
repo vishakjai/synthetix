@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 INTEGRATION_KEYS = {"github", "jira", "linear"}
@@ -29,6 +30,11 @@ INTEGRATION_SECRET_KEYS = {
     "github": "token",
     "jira": "api_token",
     "linear": "api_token",
+}
+LLM_PROVIDER_KEYS = {"anthropic", "openai"}
+LLM_DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o",
 }
 
 
@@ -61,6 +67,25 @@ def _mask_secret(secret: str) -> str:
     return ("*" * max(4, len(raw) - 4)) + raw[-4:]
 
 
+def _parse_github_repo_reference(value: str) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return "", ""
+    if raw.startswith("git@") and ":" in raw:
+        path = raw.split(":", 1)[1]
+    else:
+        parsed = urlparse(raw)
+        path = parsed.path if parsed.scheme and parsed.netloc else raw
+    segments = [seg for seg in path.split("/") if seg]
+    if len(segments) < 2:
+        return "", ""
+    owner = segments[0].strip()
+    repo = segments[1].strip()
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return owner, repo
+
+
 def _default_role_permissions() -> dict[str, list[str]]:
     return {
         "executive": ["view_executive_dashboard"],
@@ -82,6 +107,12 @@ def _default_settings() -> dict[str, Any]:
                 "auth_type": "pat",
                 "token": "",
                 "read_only": True,
+                "run_export_enabled": False,
+                "export_base_url": "",
+                "export_owner": "",
+                "export_repository": "",
+                "export_branch": "",
+                "export_prefix": "synthetix",
                 "connected": False,
                 "status": "disconnected",
                 "last_tested_at": "",
@@ -105,6 +136,29 @@ def _default_settings() -> dict[str, Any]:
                 "status": "disconnected",
                 "last_tested_at": "",
                 "last_error": "",
+            },
+        },
+        "llm": {
+            "default_provider": "anthropic",
+            "providers": {
+                "anthropic": {
+                    "model": LLM_DEFAULT_MODELS["anthropic"],
+                    "base_url": "https://api.anthropic.com",
+                    "api_key": "",
+                    "connected": False,
+                    "status": "disconnected",
+                    "last_tested_at": "",
+                    "last_error": "",
+                },
+                "openai": {
+                    "model": LLM_DEFAULT_MODELS["openai"],
+                    "base_url": "https://api.openai.com",
+                    "api_key": "",
+                    "connected": False,
+                    "status": "disconnected",
+                    "last_tested_at": "",
+                    "last_error": "",
+                },
             },
         },
         "policies": {
@@ -157,6 +211,31 @@ class SettingsStore:
         merged_policies.update(data["policies"] if isinstance(data["policies"], dict) else {})
         data["policies"] = merged_policies
 
+        llm_defaults = _default_settings()["llm"]
+        llm = data.get("llm", {})
+        if not isinstance(llm, dict):
+            llm = {}
+        providers = llm.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+        merged_providers: dict[str, Any] = {}
+        for provider, defaults in llm_defaults["providers"].items():
+            cur = providers.get(provider, {})
+            if not isinstance(cur, dict):
+                cur = {}
+            merged = dict(defaults)
+            merged.update(cur)
+            model = str(merged.get("model", "")).strip()
+            merged["model"] = model or LLM_DEFAULT_MODELS[provider]
+            merged_providers[provider] = merged
+        default_provider = str(llm.get("default_provider", llm_defaults["default_provider"])).strip().lower()
+        if default_provider not in LLM_PROVIDER_KEYS:
+            default_provider = llm_defaults["default_provider"]
+        data["llm"] = {
+            "default_provider": default_provider,
+            "providers": merged_providers,
+        }
+
         data.setdefault("exceptions", [])
         if not isinstance(data["exceptions"], list):
             data["exceptions"] = []
@@ -194,8 +273,21 @@ class SettingsStore:
                 integration[f"{secret_key}_masked"] = _mask_secret(raw)
                 integration["has_secret"] = bool(raw)
                 integration[secret_key] = ""
+        llm = payload.get("llm", {})
+        if isinstance(llm, dict):
+            providers = llm.get("providers", {})
+            if isinstance(providers, dict):
+                for provider in LLM_PROVIDER_KEYS:
+                    cfg = providers.get(provider, {})
+                    if not isinstance(cfg, dict):
+                        continue
+                    raw = str(cfg.get("api_key", "")).strip()
+                    cfg["api_key_masked"] = _mask_secret(raw)
+                    cfg["has_secret"] = bool(raw)
+                    cfg["api_key"] = ""
         payload["meta"] = {
             "integration_providers": sorted(INTEGRATION_KEYS),
+            "llm_providers": sorted(LLM_PROVIDER_KEYS),
             "policy_packs": sorted(POLICY_PACKS),
             "rbac_roles": sorted(RBAC_ROLES),
             "rbac_permissions": sorted(RBAC_PERMISSIONS),
@@ -232,6 +324,16 @@ class SettingsStore:
     def get_settings(self) -> dict[str, Any]:
         return self._sanitize(self._load())
 
+    def get_integration_config(self, provider: str) -> dict[str, Any]:
+        key = str(provider or "").strip().lower()
+        if key not in INTEGRATION_KEYS:
+            raise ValueError(f"unsupported integration provider: {provider}")
+        data = self._load()
+        integration = data.get("integrations", {}).get(key, {})
+        if not isinstance(integration, dict):
+            integration = {}
+        return copy.deepcopy(integration)
+
     def update_integration(self, provider: str, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
         key = str(provider or "").strip().lower()
         if key not in INTEGRATION_KEYS:
@@ -242,7 +344,20 @@ class SettingsStore:
             integration = {}
 
         if key == "github":
-            allowed = {"base_url", "owner", "repository", "auth_type", "token", "read_only"}
+            allowed = {
+                "base_url",
+                "owner",
+                "repository",
+                "auth_type",
+                "token",
+                "read_only",
+                "run_export_enabled",
+                "export_base_url",
+                "export_owner",
+                "export_repository",
+                "export_branch",
+                "export_prefix",
+            }
             required = {"base_url", "owner", "repository"}
         elif key == "jira":
             allowed = {"base_url", "project_key", "email", "api_token"}
@@ -252,16 +367,28 @@ class SettingsStore:
             required = {"base_url", "team_key"}
 
         incoming = payload if isinstance(payload, dict) else {}
+        secret_key = INTEGRATION_SECRET_KEYS[key]
         for field in allowed:
             if field not in incoming:
                 continue
             value = incoming.get(field)
-            if field in {"read_only"}:
+            if field == secret_key and not str(value or "").strip():
+                # Keep existing secret when UI submits an empty placeholder value.
+                continue
+            if field in {"read_only", "run_export_enabled"}:
                 integration[field] = bool(value)
             else:
                 integration[field] = str(value or "").strip()
 
-        secret_key = INTEGRATION_SECRET_KEYS[key]
+        if key == "github":
+            export_owner_raw = str(integration.get("export_owner", "")).strip()
+            export_repo_raw = str(integration.get("export_repository", "")).strip()
+            parsed_owner, parsed_repo = _parse_github_repo_reference(export_repo_raw)
+            if parsed_repo:
+                integration["export_repository"] = parsed_repo
+                if not export_owner_raw and parsed_owner:
+                    integration["export_owner"] = parsed_owner
+
         has_secret = bool(str(integration.get(secret_key, "")).strip())
         missing = [field for field in required if not str(integration.get(field, "")).strip()]
 
@@ -291,9 +418,9 @@ class SettingsStore:
         secret_key = INTEGRATION_SECRET_KEYS[key]
 
         required_by_provider = {
-            "github": ["base_url", "owner", "repository", secret_key],
-            "jira": ["base_url", "project_key", "email", secret_key],
-            "linear": ["base_url", "team_key", secret_key],
+            "github": ["owner", "repository", secret_key],
+            "jira": ["project_key", "email", secret_key],
+            "linear": ["team_key", secret_key],
         }
         required = required_by_provider[key]
 
@@ -301,7 +428,14 @@ class SettingsStore:
         base_url = str(integration.get("base_url", "")).strip()
         checks.append(
             {
-                "name": "base_url",
+                "name": "base_url_present",
+                "ok": bool(base_url),
+                "message": "Base URL is required",
+            }
+        )
+        checks.append(
+            {
+                "name": "base_url_scheme",
                 "ok": base_url.startswith("http://") or base_url.startswith("https://"),
                 "message": "Base URL must start with http:// or https://",
             }
@@ -312,6 +446,40 @@ class SettingsStore:
                     "name": field,
                     "ok": bool(str(integration.get(field, "")).strip()),
                     "message": f"{field} is required",
+                }
+            )
+        if key == "github" and bool(integration.get("run_export_enabled", False)):
+            export_owner = str(integration.get("export_owner", "")).strip()
+            export_repository = str(integration.get("export_repository", "")).strip()
+            parsed_owner, parsed_repo = _parse_github_repo_reference(export_repository)
+            if parsed_repo:
+                export_repository = parsed_repo
+                integration["export_repository"] = parsed_repo
+                if not export_owner and parsed_owner:
+                    export_owner = parsed_owner
+                    integration["export_owner"] = parsed_owner
+            if bool(export_owner) != bool(export_repository):
+                checks.append(
+                    {
+                        "name": "export_target",
+                        "ok": False,
+                        "message": "Set both export_owner and export_repository, or leave both empty to use source repository",
+                    }
+                )
+            export_base_url = str(integration.get("export_base_url", "")).strip()
+            if export_base_url:
+                checks.append(
+                    {
+                        "name": "export_base_url_scheme",
+                        "ok": export_base_url.startswith("http://") or export_base_url.startswith("https://"),
+                        "message": "export_base_url must start with http:// or https://",
+                    }
+                )
+            checks.append(
+                {
+                    "name": "read_only",
+                    "ok": not bool(integration.get("read_only", True)),
+                    "message": "Disable read-only access to export run artifacts to GitHub",
                 }
             )
 
@@ -354,6 +522,173 @@ class SettingsStore:
             integration[secret_key] = ""
         data["integrations"][key] = integration
         self._append_audit(data, action="integration_disconnected", target=key, actor=actor, details={"clear_secret": bool(clear_secret)})
+        self._save(data)
+        return self._sanitize(data)
+
+    def get_llm_provider_config(self, provider: str) -> dict[str, Any]:
+        key = str(provider or "").strip().lower()
+        if key not in LLM_PROVIDER_KEYS:
+            raise ValueError(f"unsupported llm provider: {provider}")
+        data = self._load()
+        llm = data.get("llm", {})
+        providers = llm.get("providers", {}) if isinstance(llm, dict) else {}
+        cfg = providers.get(key, {}) if isinstance(providers, dict) else {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        return copy.deepcopy(cfg)
+
+    def resolve_llm_credentials(self, provider: str, requested_model: str = "") -> dict[str, Any]:
+        key = str(provider or "").strip().lower()
+        if key not in LLM_PROVIDER_KEYS:
+            raise ValueError(f"unsupported llm provider: {provider}")
+        cfg = self.get_llm_provider_config(key)
+        api_key = str(cfg.get("api_key", "")).strip()
+        model = str(requested_model or "").strip() or str(cfg.get("model", "")).strip() or LLM_DEFAULT_MODELS[key]
+        return {"provider": key, "api_key": api_key, "model": model, "has_secret": bool(api_key)}
+
+    def update_llm_provider(self, provider: str, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        key = str(provider or "").strip().lower()
+        if key not in LLM_PROVIDER_KEYS:
+            raise ValueError(f"unsupported llm provider: {provider}")
+        data = self._load()
+        llm = data.get("llm", {})
+        if not isinstance(llm, dict):
+            llm = {}
+        providers = llm.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+        cfg = providers.get(key, {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        incoming = payload if isinstance(payload, dict) else {}
+        model_value = str(incoming.get("model", "")).strip()
+        if model_value:
+            cfg["model"] = model_value
+        elif not str(cfg.get("model", "")).strip():
+            cfg["model"] = LLM_DEFAULT_MODELS[key]
+
+        if "base_url" in incoming:
+            cfg["base_url"] = str(incoming.get("base_url", "")).strip()
+
+        # Blank secret input keeps the existing key to match UI behavior.
+        if "api_key" in incoming:
+            secret = str(incoming.get("api_key", "")).strip()
+            if secret:
+                cfg["api_key"] = secret
+
+        if bool(incoming.get("set_default_provider", False)):
+            llm["default_provider"] = key
+
+        has_secret = bool(str(cfg.get("api_key", "")).strip())
+        has_model = bool(str(cfg.get("model", "")).strip())
+        cfg["connected"] = bool(has_secret and has_model)
+        cfg["status"] = "connected" if cfg["connected"] else "incomplete"
+        missing = []
+        if not has_model:
+            missing.append("model")
+        if not has_secret:
+            missing.append("api_key")
+        cfg["last_error"] = "" if cfg["connected"] else f"Missing: {', '.join(missing)}"
+
+        providers[key] = cfg
+        llm["providers"] = providers
+        llm["default_provider"] = str(llm.get("default_provider", "anthropic")).strip().lower()
+        if llm["default_provider"] not in LLM_PROVIDER_KEYS:
+            llm["default_provider"] = "anthropic"
+        data["llm"] = llm
+        self._append_audit(
+            data,
+            action="llm_provider_updated",
+            target=key,
+            actor=actor,
+            details={"connected": cfg["connected"], "status": cfg["status"]},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def test_llm_provider(self, provider: str, actor: str = "local-user") -> dict[str, Any]:
+        key = str(provider or "").strip().lower()
+        if key not in LLM_PROVIDER_KEYS:
+            raise ValueError(f"unsupported llm provider: {provider}")
+        data = self._load()
+        llm = data.get("llm", {})
+        providers = llm.get("providers", {}) if isinstance(llm, dict) else {}
+        cfg = providers.get(key, {}) if isinstance(providers, dict) else {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        base_url = str(cfg.get("base_url", "")).strip()
+        checks: list[dict[str, Any]] = [
+            {
+                "name": "model",
+                "ok": bool(str(cfg.get("model", "")).strip()),
+                "message": "model is required",
+            },
+            {
+                "name": "api_key",
+                "ok": bool(str(cfg.get("api_key", "")).strip()),
+                "message": "api_key is required",
+            },
+        ]
+        if base_url:
+            checks.append(
+                {
+                    "name": "base_url_scheme",
+                    "ok": base_url.startswith("http://") or base_url.startswith("https://"),
+                    "message": "base_url must start with http:// or https://",
+                }
+            )
+
+        passed = all(bool(item.get("ok")) for item in checks)
+        cfg["connected"] = passed
+        cfg["status"] = "connected" if passed else "error"
+        cfg["last_tested_at"] = _utc_now()
+        cfg["last_error"] = "" if passed else "; ".join(item["message"] for item in checks if not item.get("ok"))
+        providers[key] = cfg
+        llm["providers"] = providers
+        data["llm"] = llm
+        self._append_audit(
+            data,
+            action="llm_provider_tested",
+            target=key,
+            actor=actor,
+            details={"passed": passed},
+        )
+        self._save(data)
+        sanitized = self._sanitize(data)
+        return {
+            "provider": key,
+            "test_ok": passed,
+            "checks": checks,
+            "llm_provider": sanitized.get("llm", {}).get("providers", {}).get(key, {}),
+            "settings": sanitized,
+        }
+
+    def disconnect_llm_provider(self, provider: str, clear_secret: bool = False, actor: str = "local-user") -> dict[str, Any]:
+        key = str(provider or "").strip().lower()
+        if key not in LLM_PROVIDER_KEYS:
+            raise ValueError(f"unsupported llm provider: {provider}")
+        data = self._load()
+        llm = data.get("llm", {})
+        if not isinstance(llm, dict):
+            llm = {}
+        providers = llm.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+        cfg = providers.get(key, {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        cfg["connected"] = False
+        cfg["status"] = "disconnected"
+        cfg["last_error"] = ""
+        if clear_secret:
+            cfg["api_key"] = ""
+        providers[key] = cfg
+        llm["providers"] = providers
+        data["llm"] = llm
+        self._append_audit(data, action="llm_provider_disconnected", target=key, actor=actor, details={"clear_secret": bool(clear_secret)})
         self._save(data)
         return self._sanitize(data)
 

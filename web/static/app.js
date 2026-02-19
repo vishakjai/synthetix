@@ -27,6 +27,9 @@ const el = {
   navBuild: document.getElementById("nav-build"),
   navHistory: document.getElementById("nav-history"),
   navSettings: document.getElementById("nav-settings"),
+  brandHomeBtn: document.getElementById("brand-home-btn"),
+  brandLogoSidebar: document.getElementById("brand-logo-sidebar"),
+  brandLogoHero: document.getElementById("brand-logo-hero"),
   homeWorkBtn: document.getElementById("home-work-btn"),
   homeTeamBtn: document.getElementById("home-team-btn"),
   homeHistoryBtn: document.getElementById("home-history-btn"),
@@ -44,12 +47,36 @@ const el = {
   settingsRefresh: document.getElementById("settings-refresh"),
   settingsMessage: document.getElementById("settings-message"),
 
+  settingsLlmAnthropicStatus: document.getElementById("settings-llm-anthropic-status"),
+  settingsLlmAnthropicModel: document.getElementById("settings-llm-anthropic-model"),
+  settingsLlmAnthropicBaseUrl: document.getElementById("settings-llm-anthropic-base-url"),
+  settingsLlmAnthropicKey: document.getElementById("settings-llm-anthropic-key"),
+  settingsLlmAnthropicConnect: document.getElementById("settings-llm-anthropic-connect"),
+  settingsLlmAnthropicTest: document.getElementById("settings-llm-anthropic-test"),
+  settingsLlmAnthropicDisconnect: document.getElementById("settings-llm-anthropic-disconnect"),
+  settingsLlmAnthropicMessage: document.getElementById("settings-llm-anthropic-message"),
+
+  settingsLlmOpenaiStatus: document.getElementById("settings-llm-openai-status"),
+  settingsLlmOpenaiModel: document.getElementById("settings-llm-openai-model"),
+  settingsLlmOpenaiBaseUrl: document.getElementById("settings-llm-openai-base-url"),
+  settingsLlmOpenaiKey: document.getElementById("settings-llm-openai-key"),
+  settingsLlmOpenaiConnect: document.getElementById("settings-llm-openai-connect"),
+  settingsLlmOpenaiTest: document.getElementById("settings-llm-openai-test"),
+  settingsLlmOpenaiDisconnect: document.getElementById("settings-llm-openai-disconnect"),
+  settingsLlmOpenaiMessage: document.getElementById("settings-llm-openai-message"),
+
   settingsGithubStatus: document.getElementById("settings-github-status"),
   settingsGithubBaseUrl: document.getElementById("settings-github-base-url"),
   settingsGithubOwner: document.getElementById("settings-github-owner"),
   settingsGithubRepository: document.getElementById("settings-github-repository"),
   settingsGithubToken: document.getElementById("settings-github-token"),
   settingsGithubReadOnly: document.getElementById("settings-github-read-only"),
+  settingsGithubRunExportEnabled: document.getElementById("settings-github-run-export-enabled"),
+  settingsGithubExportBaseUrl: document.getElementById("settings-github-export-base-url"),
+  settingsGithubExportOwner: document.getElementById("settings-github-export-owner"),
+  settingsGithubExportRepository: document.getElementById("settings-github-export-repository"),
+  settingsGithubExportBranch: document.getElementById("settings-github-export-branch"),
+  settingsGithubExportPrefix: document.getElementById("settings-github-export-prefix"),
   settingsGithubConnect: document.getElementById("settings-github-connect"),
   settingsGithubTest: document.getElementById("settings-github-test"),
   settingsGithubDisconnect: document.getElementById("settings-github-disconnect"),
@@ -153,8 +180,20 @@ const el = {
   discoverSystemMapPanel: document.getElementById("discover-system-map-panel"),
   discoverHealthPanel: document.getElementById("discover-health-panel"),
   discoverConventionsPanel: document.getElementById("discover-conventions-panel"),
+  discoverCityMapContent: document.getElementById("discover-city-map-content"),
+  discoverSystemMapContent: document.getElementById("discover-system-map-content"),
+  discoverHealthContent: document.getElementById("discover-health-content"),
+  discoverConventionsContent: document.getElementById("discover-conventions-content"),
+  cityMapSvg: document.getElementById("city-map-svg"),
+  cityMapInspector: document.getElementById("city-map-inspector"),
+  cityMapReset: document.getElementById("city-map-reset"),
+  systemMapSvg: document.getElementById("system-map-svg"),
+  systemMapInspector: document.getElementById("system-map-inspector"),
+  systemMapSearch: document.getElementById("system-map-search"),
+  systemMapClear: document.getElementById("system-map-clear"),
   projectStateMode: document.getElementById("project-state-mode"),
   detectProjectState: document.getElementById("detect-project-state"),
+  discoverUseSample: document.getElementById("discover-use-sample"),
   projectStateResult: document.getElementById("project-state-result"),
   brownfieldIntegrations: document.getElementById("brownfield-integrations"),
   greenfieldIntegrations: document.getElementById("greenfield-integrations"),
@@ -164,6 +203,12 @@ const el = {
   bfIssueProject: document.getElementById("bf-issue-project"),
   bfDocsUrl: document.getElementById("bf-docs-url"),
   bfRuntimeTelemetry: document.getElementById("bf-runtime-telemetry"),
+  bfLoadGithubTree: document.getElementById("bf-load-github-tree"),
+  bfGithubTreeStatus: document.getElementById("bf-github-tree-status"),
+  bfGithubTreePreview: document.getElementById("bf-github-tree-preview"),
+  bfLoadLinearIssues: document.getElementById("bf-load-linear-issues"),
+  bfLinearIssuesStatus: document.getElementById("bf-linear-issues-status"),
+  bfLinearIssuesPreview: document.getElementById("bf-linear-issues-preview"),
   gfRepoDestination: document.getElementById("gf-repo-destination"),
   gfRepoTarget: document.getElementById("gf-repo-target"),
   gfTrackerProvider: document.getElementById("gf-tracker-provider"),
@@ -174,6 +219,9 @@ const el = {
   telemetryMode: document.getElementById("telemetry-mode"),
   includePaths: document.getElementById("include-paths"),
   excludePaths: document.getElementById("exclude-paths"),
+  discoverRunAnalystBrief: document.getElementById("discover-run-analyst-brief"),
+  discoverAnalystBriefStatus: document.getElementById("discover-analyst-brief-status"),
+  discoverAnalystBriefPreview: document.getElementById("discover-analyst-brief-preview"),
 
   workTeamSelect: document.getElementById("work-team-select"),
   workSuggestTeam: document.getElementById("work-suggest-team"),
@@ -200,16 +248,30 @@ const el = {
 
   tasksRefresh: document.getElementById("tasks-refresh"),
   tasksList: document.getElementById("tasks-list"),
+  workItemsRefresh: document.getElementById("work-items-refresh"),
+  workItemTitle: document.getElementById("work-item-title"),
+  workItemType: document.getElementById("work-item-type"),
+  workItemGovernance: document.getElementById("work-item-governance"),
+  workItemLinkedIssue: document.getElementById("work-item-linked-issue"),
+  workItemDescription: document.getElementById("work-item-description"),
+  workItemCreate: document.getElementById("work-item-create"),
+  workItemRecommendation: document.getElementById("work-item-recommendation"),
+  workItemsList: document.getElementById("work-items-list"),
+  verifyTraceability: document.getElementById("verify-traceability"),
+  verifyEvidence: document.getElementById("verify-evidence"),
+  verifySecurityGates: document.getElementById("verify-security-gates"),
 
   provider: document.getElementById("provider"),
   model: document.getElementById("model"),
-  apiKey: document.getElementById("api-key"),
   temperature: document.getElementById("temperature"),
   parallelAgents: document.getElementById("parallel-agents"),
   maxRetries: document.getElementById("max-retries"),
   taskType: document.getElementById("task-type"),
   modernizationPanel: document.getElementById("modernization-panel"),
   modernizationLanguage: document.getElementById("modernization-language"),
+  modernizationSourceMode: document.getElementById("modernization-source-mode"),
+  modernizationSourceHelp: document.getElementById("modernization-source-help"),
+  modernizationManualInputs: document.getElementById("modernization-manual-inputs"),
   databasePanel: document.getElementById("database-panel"),
   dbSource: document.getElementById("db-source"),
   dbTarget: document.getElementById("db-target"),
@@ -220,6 +282,7 @@ const el = {
   strictSecurityMode: document.getElementById("strict-security-mode"),
   liveDeploy: document.getElementById("live-deploy"),
   deploymentTarget: document.getElementById("deployment-target"),
+  enableCloudPromotion: document.getElementById("enable-cloud-promotion"),
   cloudConfigBox: document.getElementById("cloud-config-box"),
   cloudPlatform: document.getElementById("cloud-platform"),
   cloudRegion: document.getElementById("cloud-region"),
@@ -264,6 +327,8 @@ const el = {
   runImpactForecast: document.getElementById("run-impact-forecast"),
   runDriftScan: document.getElementById("run-drift-scan"),
   contextOpsOutput: document.getElementById("context-ops-output"),
+  impactDiffPanel: document.getElementById("impact-diff-panel"),
+  impactDiffContent: document.getElementById("impact-diff-content"),
   currentAgentPanel: document.getElementById("current-agent-panel"),
   agentTabs: document.getElementById("agent-tabs"),
   agentTabPanel: document.getElementById("agent-tab-panel"),
@@ -320,15 +385,51 @@ const state = {
     detected: "",
     confidence: 0,
     reason: "",
+    sampleDatasetEnabled: false,
+  },
+  discoverGithubTree: {
+    loading: false,
+    error: "",
+    repo: null,
+    tree: null,
+  },
+  discoverLinearIssues: {
+    loading: false,
+    error: "",
+    team: null,
+    issues: [],
+    source: "",
+  },
+  discoverAutoFetch: {
+    githubKey: "",
+    linearKey: "",
+  },
+  discoverAnalystBrief: {
+    loading: false,
+    error: "",
+    data: null,
+    requestKey: "",
   },
   currentRunId: "",
   currentRun: null,
   eventSource: null,
   selectedStage: 1,
+  impactDiffTab: "topology",
+  cityOverlay: "none",
+  systemSearch: "",
+  graphView: {
+    city: { x: 0, y: 0, scale: 1 },
+    system: { x: 0, y: 0, scale: 1 },
+  },
+  graphSelected: {
+    city: "",
+    system: "",
+  },
   artifacts: [],
   teams: [],
   agents: { premade: [], custom: [], all: [], by_stage: {} },
   tasks: [],
+  workItems: [],
   dashboardRuns: [],
   dashboardTasks: [],
   dashboardRunDetails: {},
@@ -392,6 +493,170 @@ function parseLines(text) {
     .filter(Boolean);
 }
 
+function downloadText(filename, content, mimeType = "text/plain;charset=utf-8") {
+  const blob = new Blob([String(content || "")], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function getAnalystOutput(run) {
+  const result = latestResultByStage(run, 1);
+  if (result?.output && typeof result.output === "object") return result.output;
+  const fromState = run?.pipeline_state?.analyst_output;
+  return (fromState && typeof fromState === "object") ? fromState : {};
+}
+
+function buildAnalystTechReqMarkdown(output) {
+  if (!output || typeof output !== "object") {
+    return "# Technical Requirements Document\n\nNo analyst output available.";
+  }
+  const revised = String(output.human_revised_document_markdown || "").trim();
+  if (revised) return revised;
+
+  const walkthrough = output.analysis_walkthrough || {};
+  const functional = Array.isArray(output.functional_requirements) ? output.functional_requirements : [];
+  const nonFunctional = Array.isArray(output.non_functional_requirements) ? output.non_functional_requirements : [];
+  const contracts = Array.isArray(output.legacy_functional_contract) ? output.legacy_functional_contract : [];
+  const risks = Array.isArray(output.risks) ? output.risks : [];
+  const lines = [
+    "# Technical Requirements Document",
+    "",
+    `## Project`,
+    String(output.project_name || "Untitled"),
+    "",
+    "## Executive Summary",
+    String(output.executive_summary || "Not provided"),
+    "",
+    "## Business Objective Summary",
+    String(walkthrough.business_objective_summary || "Not provided"),
+    "",
+    "## Requirements Understanding",
+  ];
+  (Array.isArray(walkthrough.requirements_understanding) ? walkthrough.requirements_understanding : []).forEach((item) => {
+    lines.push(`- ${String(item || "")}`);
+  });
+  if (!Array.isArray(walkthrough.requirements_understanding) || !walkthrough.requirements_understanding.length) lines.push("- Not provided");
+  lines.push("", "## Conversion to Technical Requirements");
+  (Array.isArray(walkthrough.conversion_to_technical_requirements) ? walkthrough.conversion_to_technical_requirements : []).forEach((item) => {
+    lines.push(`- ${String(item || "")}`);
+  });
+  if (!Array.isArray(walkthrough.conversion_to_technical_requirements) || !walkthrough.conversion_to_technical_requirements.length) lines.push("- Not provided");
+
+  lines.push("", "## Functional Requirements");
+  functional.forEach((item, idx) => {
+    lines.push(
+      "",
+      `### ${String(item.id || `FR-${idx + 1}`)} ${String(item.title || "").trim()}`.trim(),
+      String(item.description || "No description"),
+      "",
+      "Acceptance criteria:"
+    );
+    const ac = Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria : [];
+    if (!ac.length) lines.push("- None provided");
+    ac.forEach((criteria) => lines.push(`- ${String(criteria || "")}`));
+  });
+  if (!functional.length) lines.push("- None provided");
+
+  lines.push("", "## Non-Functional Requirements");
+  nonFunctional.forEach((item, idx) => {
+    lines.push(
+      "",
+      `### ${String(item.id || `NFR-${idx + 1}`)} ${String(item.title || "").trim()}`.trim(),
+      String(item.description || "No description"),
+      `Metric: ${String(item.metric || "Not specified")}`,
+      "",
+      "Acceptance criteria:"
+    );
+    const ac = Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria : [];
+    if (!ac.length) lines.push("- None provided");
+    ac.forEach((criteria) => lines.push(`- ${String(criteria || "")}`));
+  });
+  if (!nonFunctional.length) lines.push("- None provided");
+
+  lines.push("", "## Legacy Functional Contract");
+  contracts.forEach((item) => {
+    const name = String(item.function_name || "function");
+    const inputs = Array.isArray(item.inputs) ? item.inputs.join(", ") : "";
+    const outputs = Array.isArray(item.outputs) ? item.outputs.join(", ") : "";
+    lines.push(`- ${name} | Inputs: ${inputs || "n/a"} | Outputs: ${outputs || "n/a"}`);
+  });
+  if (!contracts.length) lines.push("- Not provided");
+
+  lines.push("", "## Risks");
+  risks.forEach((risk) => {
+    lines.push(
+      `- ${String(risk.impact || "unknown").toUpperCase()}: ${String(risk.description || "")} | Mitigation: ${String(risk.mitigation || "")}`
+    );
+  });
+  if (!risks.length) lines.push("- None");
+
+  return lines.join("\n");
+}
+
+async function uploadAnalystTechReq(runId, file) {
+  const text = await file.text();
+  const filename = String(file.name || "").toLowerCase();
+  const format = filename.endsWith(".json") ? "json" : "markdown";
+  const data = await api(`/api/runs/${encodeURIComponent(runId)}/analyst-doc`, {
+    format,
+    content: text,
+  });
+  return data?.run || null;
+}
+
+function wireAnalystDocActions(rootNode, run) {
+  if (!rootNode || !run?.run_id) return;
+  const exportBtn = rootNode.querySelector("[data-analyst-export]");
+  const uploadTrigger = rootNode.querySelector("[data-analyst-upload-trigger]");
+  const uploadInput = rootNode.querySelector("[data-analyst-upload-file]");
+  const statusNode = rootNode.querySelector("[data-analyst-doc-status]");
+  const setStatus = (text, isError = false) => {
+    if (!statusNode) return;
+    statusNode.textContent = String(text || "");
+    statusNode.className = `mt-1 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
+  };
+
+  if (exportBtn) {
+    exportBtn.addEventListener("click", () => {
+      const output = getAnalystOutput(run);
+      const markdown = buildAnalystTechReqMarkdown(output);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      downloadText(`analyst-tech-req-${run.run_id}-${stamp}.md`, markdown, "text/markdown;charset=utf-8");
+      setStatus("Technical requirements document exported.");
+    });
+  }
+
+  if (uploadTrigger && uploadInput) {
+    uploadTrigger.addEventListener("click", () => uploadInput.click());
+    uploadInput.addEventListener("change", async () => {
+      const file = uploadInput.files?.[0];
+      if (!file) return;
+      try {
+        uploadTrigger.setAttribute("disabled", "true");
+        setStatus(`Uploading ${file.name}...`);
+        const updatedRun = await uploadAnalystTechReq(String(run.run_id), file);
+        if (updatedRun?.run_id) {
+          state.currentRun = updatedRun;
+          state.currentRunId = String(updatedRun.run_id || state.currentRunId || "");
+          state.dashboardRunDetails[state.currentRunId] = updatedRun;
+          renderRun();
+          await refreshRunHistory().catch(() => {});
+        }
+        setStatus("Modified technical requirements uploaded to Analyst stage.");
+      } catch (err) {
+        setStatus(`Upload failed: ${err.message || err}`, true);
+      } finally {
+        uploadTrigger.removeAttribute("disabled");
+        uploadInput.value = "";
+      }
+    });
+  }
+}
+
 function setGlobalSearchStatus(text, isError = false) {
   if (!el.globalSearchStatus) return;
   el.globalSearchStatus.textContent = String(text || "");
@@ -445,7 +710,11 @@ function handleGlobalSearchQuery(query) {
 }
 
 function renderDiscoverResultsView() {
-  const view = String(state.discoverResultsView || "");
+  let view = String(state.discoverResultsView || "");
+  if (!view) {
+    view = "city";
+    state.discoverResultsView = view;
+  }
   const viewMap = {
     city: el.discoverCityMapPanel,
     system: el.discoverSystemMapPanel,
@@ -458,8 +727,824 @@ function renderDiscoverResultsView() {
 }
 
 function setDiscoverResultsView(view) {
-  state.discoverResultsView = String(view || "");
+  state.discoverResultsView = String(view || "city");
   renderDiscoverResultsView();
+}
+
+function _scmViewFromState() {
+  const p = state.currentRun?.pipeline_state || {};
+  const scm = (p.system_context_model && typeof p.system_context_model === "object") ? p.system_context_model : {};
+  const graph = (scm.graph && typeof scm.graph === "object") ? scm.graph : {};
+  const nodesRaw = Array.isArray(graph.nodes) ? graph.nodes : (Array.isArray(scm.nodes) ? scm.nodes : []);
+  const edgesRaw = Array.isArray(graph.edges) ? graph.edges : (Array.isArray(scm.edges) ? scm.edges : []);
+  const nodes = nodesRaw.filter((x) => x && typeof x === "object");
+  const edges = edgesRaw.filter((x) => x && typeof x === "object");
+  return { nodes, edges };
+}
+
+function _discoverPreviewData() {
+  const tree = (state.discoverGithubTree?.tree && typeof state.discoverGithubTree.tree === "object")
+    ? state.discoverGithubTree.tree
+    : {};
+  const entries = Array.isArray(tree.entries) ? tree.entries : [];
+  const analyst = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : {};
+  const analystSummary = (analyst.analyst_brief && typeof analyst.analyst_brief === "object" && analyst.analyst_brief.summary && typeof analyst.analyst_brief.summary === "object")
+    ? analyst.analyst_brief.summary
+    : {};
+  const issues = Array.isArray(state.discoverLinearIssues?.issues) ? state.discoverLinearIssues.issues : [];
+
+  const nodeMap = {};
+  const edgeMap = {};
+  const rules = [];
+  const findings = [];
+  const backlog = [];
+
+  const addNode = (id, name, type, confidence = 0.72) => {
+    const key = String(id || "").trim();
+    if (!key) return null;
+    if (!nodeMap[key]) {
+      nodeMap[key] = { id: key, name: String(name || key), type: String(type || "module"), confidence: { score: confidence } };
+    }
+    return nodeMap[key];
+  };
+
+  const addEdge = (from, to, type, confidence = 0.65) => {
+    const a = String(from || "").trim();
+    const b = String(to || "").trim();
+    if (!a || !b || a === b) return;
+    const key = `${a}|${b}|${type}`;
+    if (!edgeMap[key]) {
+      edgeMap[key] = { id: `edge:${key}`, from: a, to: b, type: String(type || "depends_on"), confidence: { score: confidence } };
+    }
+  };
+
+  addNode("repo:root", "repository", "system", 0.95);
+
+  const moduleScores = {};
+  entries.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const path = String(entry.path || "").trim();
+    if (!path) return;
+    const seg = path.split("/").filter(Boolean);
+    if (!seg.length) return;
+
+    const top = seg[0];
+    addNode(`pkg:${top}`, top, "boundary", 0.78);
+    addEdge("repo:root", `pkg:${top}`, "owns");
+    moduleScores[`pkg:${top}`] = (moduleScores[`pkg:${top}`] || 0) + 1;
+
+    if (seg.length > 1) {
+      const branch = `${top}/${seg[1]}`;
+      const nodeId = `mod:${branch}`;
+      const lower = branch.toLowerCase();
+      const type = lower.includes("service")
+        ? "service"
+        : (lower.includes("db") || lower.includes("database") ? "database" : "module");
+      addNode(nodeId, branch, type, 0.75);
+      addEdge(`pkg:${top}`, nodeId, "depends_on");
+      moduleScores[nodeId] = (moduleScores[nodeId] || 0) + 1;
+    }
+  });
+
+  const components = Array.isArray(analystSummary.key_components) ? analystSummary.key_components : [];
+  components.slice(0, 20).forEach((component) => {
+    const label = String(component || "").trim();
+    if (!label) return;
+    const id = `cmp:${label}`;
+    const lower = label.toLowerCase();
+    const type = lower.includes("service")
+      ? "service"
+      : (lower.includes("db") || lower.includes("database") ? "database" : "component");
+    addNode(id, label, type, 0.7);
+    addEdge("repo:root", id, "depends_on", 0.62);
+  });
+
+  const interfaces = Array.isArray(analystSummary.interfaces) ? analystSummary.interfaces : [];
+  interfaces.slice(0, 24).forEach((iface, idx) => {
+    const raw = String(iface || "").trim();
+    if (!raw) return;
+    const ifaceId = `ep:${idx}:${raw.toLowerCase().replace(/[^a-z0-9/_-]+/g, "-").slice(0, 36)}`;
+    addNode(ifaceId, raw, "endpoint", 0.68);
+    const lower = raw.toLowerCase();
+    const ownerNode = Object.values(nodeMap).find((n) => {
+      if (!n || typeof n !== "object") return false;
+      if (!["service", "component", "module"].includes(String(n.type || "").toLowerCase())) return false;
+      const name = String(n.name || "").toLowerCase();
+      return name && (lower.includes(name.split("/").pop() || "") || lower.includes(name.replace("-service", "")));
+    });
+    addEdge(ownerNode ? ownerNode.id : "repo:root", ifaceId, "owns", 0.61);
+  });
+
+  const ioContracts = Array.isArray(analystSummary.input_output_contracts) ? analystSummary.input_output_contracts : [];
+  ioContracts.slice(0, 12).forEach((statement, idx) => {
+    const s = String(statement || "").trim();
+    if (!s) return;
+    const lower = s.toLowerCase();
+    let category = "api_design";
+    if (lower.includes("log") || lower.includes("trace")) category = "logging_observability";
+    else if (lower.includes("test")) category = "testing";
+    else if (lower.includes("error")) category = "error_handling";
+    else if (lower.includes("auth")) category = "authn_authz";
+    rules.push({ id: `disc-rule-${idx + 1}`, category, statement: s });
+  });
+
+  const unknowns = Array.isArray(analystSummary.unknowns) ? analystSummary.unknowns : [];
+  unknowns.slice(0, 8).forEach((item, idx) => {
+    const text = String(item || "").trim();
+    if (!text) return;
+    findings.push({
+      id: `disc-unk-${idx + 1}`,
+      severity: "medium",
+      title: "Analyst unknown",
+      description: text,
+    });
+  });
+
+  issues.slice(0, 24).forEach((issue, idx) => {
+    const priority = Number(issue?.priority || 0);
+    const severity = priority <= 1 ? "high" : (priority <= 2 ? "medium" : "low");
+    findings.push({
+      id: String(issue?.identifier || issue?.id || `issue-${idx + 1}`),
+      severity,
+      title: String(issue?.title || "Issue"),
+      description: `State: ${String(issue?.state || "Unknown")} | Assignee: ${String(issue?.assignee || "Unassigned")}`,
+    });
+    backlog.push({
+      id: `backlog-${idx + 1}`,
+      priority: priority <= 1 ? "P1" : (priority <= 2 ? "P2" : "P3"),
+      title: `${String(issue?.identifier || issue?.id || `Issue ${idx + 1}`)} - ${String(issue?.title || "")}`,
+    });
+  });
+
+  const hasLegacy = entries.some((entry) => {
+    const p = String(entry?.path || "").toLowerCase();
+    return p.includes("legacy/") || p.includes("monolith");
+  });
+  const hasService = entries.some((entry) => String(entry?.path || "").toLowerCase().includes("service"));
+  const hasTests = entries.some((entry) => {
+    const p = String(entry?.path || "").toLowerCase();
+    return p.includes("/test/") || p.includes("/tests/") || p.startsWith("test/") || p.startsWith("tests/");
+  });
+
+  const hotspotModules = Object.entries(moduleScores)
+    .filter(([, score]) => Number(score || 0) >= 4)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 4);
+  hotspotModules.forEach(([moduleId, score], idx) => {
+    const moduleNode = nodeMap[moduleId];
+    if (!moduleNode) return;
+    findings.push({
+      id: `disc-hotspot-${idx + 1}`,
+      severity: String(moduleNode.name || "").toLowerCase().includes("legacy") ? "high" : "medium",
+      title: `Hotspot candidate: ${moduleNode.name}`,
+      description: `Detected ${score} source paths under this module in current scope.`,
+    });
+  });
+
+  if (hasLegacy && hasService) {
+    findings.push({
+      id: "disc-arch-legacy-service",
+      severity: "high",
+      title: "Legacy and modern service boundaries overlap",
+      description: "Repository contains both legacy/monolith and service modules; review coupling and migration sequencing.",
+    });
+  }
+  if (!hasTests && entries.length) {
+    findings.push({
+      id: "disc-test-coverage-gap",
+      severity: "medium",
+      title: "Potential coverage gap",
+      description: "No obvious test directories detected in scoped paths. Validate unit/integration coverage baseline.",
+    });
+  }
+
+  if (!backlog.length && findings.length) {
+    findings.slice(0, 6).forEach((finding, idx) => {
+      const sev = String(finding?.severity || "medium").toLowerCase();
+      backlog.push({
+        id: `disc-rem-${idx + 1}`,
+        priority: sev === "high" ? "P1" : "P2",
+        title: `Remediate: ${String(finding?.title || finding?.id || "finding")}`,
+      });
+    });
+  }
+
+  if (!rules.length && interfaces.length) {
+    rules.push({
+      id: "disc-rule-api-contract",
+      category: "api_design",
+      statement: "Discovered endpoints should be documented and versioned consistently before modernization changes.",
+    });
+  }
+  if (!rules.length && entries.length) {
+    rules.push({
+      id: "disc-rule-structure",
+      category: "packaging_build",
+      statement: "Preserve existing repository module boundaries unless architecture plan explicitly approves refactoring.",
+    });
+  }
+
+  const nodes = Object.values(nodeMap);
+  const edges = Object.values(edgeMap);
+  if (!nodes.length && !rules.length && !findings.length && !backlog.length) {
+    return { nodes: [], edges: [], rules: [], findings: [], backlog: [] };
+  }
+  return { nodes, edges, rules, findings, backlog };
+}
+
+function _discoverData() {
+  const p = state.currentRun?.pipeline_state || {};
+  const { nodes, edges } = _scmViewFromState();
+  const cp = (p.convention_profile && typeof p.convention_profile === "object") ? p.convention_profile : {};
+  const health = (p.health_assessment && typeof p.health_assessment === "object") ? p.health_assessment : {};
+  const rules = Array.isArray(cp.rules) ? cp.rules : [];
+  const findings = Array.isArray(health.findings) ? health.findings : [];
+  const backlog = Array.isArray(p.remediation_backlog)
+    ? p.remediation_backlog
+    : (Array.isArray(health.backlog) ? health.backlog : []);
+
+  if (nodes.length || edges.length || rules.length || findings.length || backlog.length) {
+    return { nodes, edges, rules, findings, backlog, demo: false };
+  }
+
+  const preview = _discoverPreviewData();
+  if (preview.nodes.length || preview.rules.length || preview.findings.length || preview.backlog.length) {
+    return { ...preview, demo: false };
+  }
+
+  if (!state.projectState.sampleDatasetEnabled) {
+    return { nodes: [], edges: [], rules: [], findings: [], backlog: [], demo: false };
+  }
+
+  const demoNodes = [
+    { id: "svc:orders", name: "orders-service", type: "service" },
+    { id: "svc:payments", name: "payments-service", type: "service" },
+    { id: "svc:inventory", name: "inventory-service", type: "service" },
+    { id: "svc:billing", name: "billing-monolith", type: "service" },
+    { id: "db:commerce", name: "commerce_db", type: "database" },
+    { id: "db:payments", name: "payments_db", type: "database" },
+    { id: "topic:order_created", name: "order.created", type: "message_topic" },
+  ];
+  const demoEdges = [
+    { from: "svc:orders", to: "svc:payments", type: "calls_http", confidence: { score: 0.93 } },
+    { from: "svc:orders", to: "topic:order_created", type: "publishes", confidence: { score: 0.9 } },
+    { from: "topic:order_created", to: "svc:inventory", type: "consumes", confidence: { score: 0.84 } },
+    { from: "svc:orders", to: "db:commerce", type: "writes", confidence: { score: 0.88 } },
+    { from: "svc:billing", to: "db:commerce", type: "reads", confidence: { score: 0.79 } },
+  ];
+  const demoRules = [
+    { id: "cp-1", category: "logging_observability", statement: "Logs include correlationId and traceId." },
+    { id: "cp-2", category: "testing", statement: "API handlers require unit tests in test/handlers." },
+    { id: "cp-3", category: "api_design", statement: "Error responses follow shared error envelope." },
+  ];
+  const demoFindings = [
+    { id: "f-1", severity: "high", title: "Billing monolith hotspot", description: "High churn and complexity in billing engine." },
+    { id: "f-2", severity: "high", title: "Shared DB smell", description: "orders-service and billing-monolith share commerce_db." },
+    { id: "f-3", severity: "medium", title: "Coverage gap in payments", description: "Low tests in payment retry handlers." },
+  ];
+  const demoBacklog = [
+    { id: "rem-001", priority: "P0", title: "Introduce payment idempotency store" },
+    { id: "rem-002", priority: "P1", title: "Strangler facade for billing monolith" },
+    { id: "rem-003", priority: "P1", title: "Upgrade vulnerable inventory dependency" },
+  ];
+  return { nodes: demoNodes, edges: demoEdges, rules: demoRules, findings: demoFindings, backlog: demoBacklog, demo: true };
+}
+
+function _nodeKey(node, idx) {
+  return String(node?.id || node?.node_id || node?.name || `node-${idx}`);
+}
+
+function _edgeFrom(edge) {
+  return String(edge?.from || edge?.source || edge?.source_id || "");
+}
+
+function _edgeTo(edge) {
+  return String(edge?.to || edge?.target || edge?.target_id || "");
+}
+
+function _seedHash(value) {
+  const s = String(value || "");
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+  }
+  return Math.abs(h >>> 0);
+}
+
+function _heatColor(score) {
+  const s = Math.max(0, Math.min(1, Number(score || 0)));
+  const r = Math.round(56 + (215 * s));
+  const g = Math.round(189 - (120 * s));
+  const b = Math.round(248 - (190 * s));
+  return `rgb(${r},${g},${b})`;
+}
+
+function _baseNodeColor(type) {
+  const t = String(type || "").toLowerCase();
+  if (t.includes("database") || t.includes("table")) return "#c4b5fd";
+  if (t.includes("topic") || t.includes("message")) return "#86efac";
+  if (t.includes("infra")) return "#fdba74";
+  if (t.includes("external")) return "#f9a8d4";
+  return "#93c5fd";
+}
+
+function _normalizedGraph(data) {
+  const nodeMap = {};
+  const nodes = (data.nodes || []).map((n, idx) => {
+    const id = _nodeKey(n, idx);
+    const out = {
+      id,
+      name: String(n?.name || id),
+      type: String(n?.type || "unknown"),
+      confidence: Number(n?.confidence?.score ?? n?.confidence ?? 0.7),
+      raw: n,
+    };
+    nodeMap[id] = out;
+    return out;
+  });
+  const edges = [];
+  (data.edges || []).forEach((e, idx) => {
+    const from = _edgeFrom(e);
+    const to = _edgeTo(e);
+    if (!from || !to || !nodeMap[from] || !nodeMap[to]) return;
+    edges.push({
+      id: String(e?.id || `edge-${idx}`),
+      from,
+      to,
+      type: String(e?.type || "edge"),
+      confidence: Number(e?.confidence?.score ?? e?.confidence ?? 0.65),
+      raw: e,
+    });
+  });
+  const degree = {};
+  nodes.forEach((n) => { degree[n.id] = 0; });
+  edges.forEach((e) => {
+    degree[e.from] = (degree[e.from] || 0) + 1;
+    degree[e.to] = (degree[e.to] || 0) + 1;
+  });
+  return { nodes, edges, degree };
+}
+
+function _cityZoneForNode(node) {
+  const id = String(node?.id || "").toLowerCase();
+  const name = String(node?.name || "").trim();
+  const type = String(node?.type || "").toLowerCase();
+  if (type.includes("endpoint")) return "API Surface";
+  if (type.includes("database") || type.includes("table")) return "Data Layer";
+  if (type.includes("message") || type.includes("topic")) return "Event Mesh";
+  if (type.includes("infra")) return "Infrastructure";
+  if (id.startsWith("pkg:")) return `Domain: ${name}`;
+  if (id.startsWith("mod:") || id.startsWith("cmp:")) {
+    const seg = name.split("/").filter(Boolean)[0] || name;
+    return `Domain: ${seg}`;
+  }
+  if (type.includes("service") || type.includes("component") || type.includes("module")) {
+    const seg = name.split(/[/._:-]/).filter(Boolean)[0] || name;
+    return `Domain: ${seg}`;
+  }
+  return "Platform";
+}
+
+function _cityGraphFromGraph(graph) {
+  const zoneByNode = {};
+  const zones = {};
+  graph.nodes.forEach((node) => {
+    const zone = _cityZoneForNode(node);
+    zoneByNode[node.id] = zone;
+    if (!zones[zone]) {
+      zones[zone] = {
+        id: `zone:${zone.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        name: zone,
+        type: "boundary",
+        members: [],
+        confidenceTotal: 0,
+      };
+    }
+    zones[zone].members.push(node);
+    zones[zone].confidenceTotal += Number(node.confidence || 0.7);
+  });
+
+  const cityNodes = Object.values(zones).map((zone) => ({
+    id: zone.id,
+    name: zone.name,
+    type: zone.type,
+    confidence: zone.members.length ? (zone.confidenceTotal / zone.members.length) : 0.7,
+    raw: {
+      size: zone.members.length,
+      members: zone.members.map((m) => m.name).slice(0, 16),
+      member_ids: zone.members.map((m) => m.id).slice(0, 64),
+    },
+  }));
+
+  const cityNodeByName = {};
+  cityNodes.forEach((n) => { cityNodeByName[n.name] = n; });
+  const edgeMap = {};
+  graph.edges.forEach((edge) => {
+    const fromZone = zoneByNode[edge.from];
+    const toZone = zoneByNode[edge.to];
+    if (!fromZone || !toZone || fromZone === toZone) return;
+    const fromNode = cityNodeByName[fromZone];
+    const toNode = cityNodeByName[toZone];
+    if (!fromNode || !toNode) return;
+    const key = `${fromNode.id}|${toNode.id}`;
+    if (!edgeMap[key]) {
+      edgeMap[key] = {
+        id: `city-edge:${key}`,
+        from: fromNode.id,
+        to: toNode.id,
+        type: "depends_on",
+        confidence: 0,
+        _count: 0,
+      };
+    }
+    edgeMap[key].confidence += Number(edge.confidence || 0.6);
+    edgeMap[key]._count += 1;
+  });
+
+  const cityEdges = Object.values(edgeMap).map((e) => ({
+    id: e.id,
+    from: e.from,
+    to: e.to,
+    type: e.type,
+    confidence: e._count ? (e.confidence / e._count) : 0.6,
+    raw: { count: e._count },
+  }));
+
+  const degree = {};
+  cityNodes.forEach((n) => { degree[n.id] = 0; });
+  cityEdges.forEach((e) => {
+    degree[e.from] = (degree[e.from] || 0) + 1;
+    degree[e.to] = (degree[e.to] || 0) + 1;
+  });
+  return { nodes: cityNodes, edges: cityEdges, degree };
+}
+
+function _buildTypeAnchors(types, width, height) {
+  const entries = Array.from(types);
+  if (!entries.length) return {};
+  const anchors = {};
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = Math.min(width, height) * 0.32;
+  entries.forEach((type, idx) => {
+    const angle = (Math.PI * 2 * idx) / Math.max(entries.length, 1);
+    anchors[type] = {
+      x: cx + (Math.cos(angle) * radius),
+      y: cy + (Math.sin(angle) * radius),
+    };
+  });
+  return anchors;
+}
+
+function _layoutNodes(graph, width, height) {
+  const types = new Set(graph.nodes.map((n) => n.type));
+  const anchors = _buildTypeAnchors(types, width, height);
+  const bucket = {};
+  graph.nodes.forEach((n) => {
+    const t = n.type || "unknown";
+    if (!bucket[t]) bucket[t] = [];
+    bucket[t].push(n);
+  });
+  const out = {};
+  Object.entries(bucket).forEach(([type, nodes]) => {
+    const anchor = anchors[type] || { x: width / 2, y: height / 2 };
+    const r = Math.max(24, Math.min(width, height) * 0.12);
+    nodes.forEach((node, idx) => {
+      const angle = (Math.PI * 2 * idx) / Math.max(nodes.length, 1);
+      const jitter = (_seedHash(node.id) % 11) - 5;
+      out[node.id] = {
+        x: anchor.x + (Math.cos(angle) * r) + jitter,
+        y: anchor.y + (Math.sin(angle) * r) + jitter,
+      };
+    });
+  });
+  return out;
+}
+
+function _nodeOverlayScore(node, overlay, graph, findings) {
+  const degree = graph.degree[node.id] || 0;
+  const maxDegree = Math.max(1, ...Object.values(graph.degree || { x: 1 }));
+  const degreeNorm = degree / maxDegree;
+  const idText = `${node.id} ${node.name}`.toLowerCase();
+  const findingHits = (findings || []).filter((f) => {
+    const t = `${f?.title || ""} ${f?.description || ""}`.toLowerCase();
+    return idText.includes(String(node.name || "").toLowerCase()) || t.includes(String(node.name || "").toLowerCase());
+  });
+  const seed = (_seedHash(`${overlay}:${node.id}`) % 100) / 100;
+  if (overlay === "churn") return Math.min(1, (idText.includes("legacy") || idText.includes("billing") ? 0.45 : 0.1) + (degreeNorm * 0.45) + (seed * 0.2));
+  if (overlay === "complexity") return Math.min(1, (degreeNorm * 0.7) + (seed * 0.3));
+  if (overlay === "bug_density") return Math.min(1, Math.min(0.9, findingHits.length * 0.22) + (seed * 0.25));
+  if (overlay === "security_risk") {
+    const secHits = findingHits.filter((f) => `${f?.title || ""} ${f?.description || ""}`.toLowerCase().includes("security")
+      || `${f?.title || ""} ${f?.description || ""}`.toLowerCase().includes("vulnerab"));
+    return Math.min(1, (secHits.length * 0.3) + (seed * 0.25));
+  }
+  if (overlay === "coverage_gaps") {
+    const covHits = findingHits.filter((f) => `${f?.title || ""} ${f?.description || ""}`.toLowerCase().includes("coverage")
+      || `${f?.title || ""} ${f?.description || ""}`.toLowerCase().includes("test"));
+    return Math.min(1, (covHits.length * 0.3) + (seed * 0.2));
+  }
+  if (overlay === "blast_radius") return Math.min(1, (degreeNorm * 0.85) + (seed * 0.15));
+  return 0;
+}
+
+function _svgEl(tag, attrs = {}) {
+  const elx = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  Object.entries(attrs).forEach(([k, v]) => elx.setAttribute(k, String(v)));
+  return elx;
+}
+
+function _bindGraphInteractions(svgEl, viewKey) {
+  if (!svgEl || svgEl.dataset.bindDone === "1") return;
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  svgEl.addEventListener("mousedown", (evt) => {
+    dragging = true;
+    startX = evt.clientX;
+    startY = evt.clientY;
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  window.addEventListener("mousemove", (evt) => {
+    if (!dragging) return;
+    const view = state.graphView[viewKey];
+    view.x += evt.clientX - startX;
+    view.y += evt.clientY - startY;
+    startX = evt.clientX;
+    startY = evt.clientY;
+    renderDiscoverInsights();
+  });
+  svgEl.addEventListener("wheel", (evt) => {
+    evt.preventDefault();
+    const view = state.graphView[viewKey];
+    const factor = evt.deltaY > 0 ? 0.92 : 1.08;
+    view.scale = Math.max(0.45, Math.min(2.8, view.scale * factor));
+    renderDiscoverInsights();
+  }, { passive: false });
+  svgEl.dataset.bindDone = "1";
+}
+
+function _renderGraph(svgEl, graph, opts) {
+  if (!svgEl) return;
+  const width = 900;
+  const height = 360;
+  svgEl.innerHTML = "";
+
+  const view = state.graphView[opts.viewKey];
+  const container = _svgEl("g", {
+    transform: `translate(${view.x},${view.y}) scale(${view.scale})`,
+  });
+  svgEl.appendChild(container);
+
+  const positions = _layoutNodes(graph, width, height);
+  const filterText = String(opts.filterText || "").toLowerCase();
+  const selectedId = String(opts.selectedId || "");
+
+  graph.edges.forEach((edge) => {
+    const from = positions[edge.from];
+    const to = positions[edge.to];
+    if (!from || !to) return;
+    const edgeEl = _svgEl("line", {
+      x1: from.x,
+      y1: from.y,
+      x2: to.x,
+      y2: to.y,
+      "stroke-width": Math.max(1, Math.min(3, 1 + (edge.confidence * 1.2))),
+      class: "graph-edge",
+    });
+    const edgeVisible = !filterText
+      || edge.from.toLowerCase().includes(filterText)
+      || edge.to.toLowerCase().includes(filterText)
+      || edge.type.toLowerCase().includes(filterText);
+    if (!edgeVisible) edgeEl.setAttribute("opacity", "0.15");
+    container.appendChild(edgeEl);
+  });
+
+  graph.nodes.forEach((node) => {
+    const p = positions[node.id];
+    if (!p) return;
+    const g = _svgEl("g", { class: "graph-node" });
+    const overlayScore = _nodeOverlayScore(node, opts.overlay, graph, opts.findings || []);
+    const fill = opts.overlay === "none" ? _baseNodeColor(node.type) : _heatColor(overlayScore);
+    const radius = 8 + Math.round(Math.min(12, (graph.degree[node.id] || 0) * 1.4));
+    const nodeVisible = !filterText
+      || node.id.toLowerCase().includes(filterText)
+      || node.name.toLowerCase().includes(filterText)
+      || node.type.toLowerCase().includes(filterText);
+    const isSelected = selectedId && selectedId === node.id;
+    const c = _svgEl("circle", {
+      cx: p.x,
+      cy: p.y,
+      r: radius,
+      fill,
+      stroke: isSelected ? "#0f172a" : "#334155",
+      "stroke-width": isSelected ? "2.2" : "1.2",
+      opacity: nodeVisible ? "1" : "0.15",
+    });
+    const lbl = _svgEl("text", {
+      x: p.x + radius + 2,
+      y: p.y + 3,
+      class: "graph-node-label",
+      opacity: nodeVisible ? "1" : "0.2",
+    });
+    lbl.textContent = node.name.length > 24 ? `${node.name.slice(0, 24)}...` : node.name;
+    g.appendChild(c);
+    g.appendChild(lbl);
+    g.addEventListener("click", () => opts.onNodeClick(node));
+    container.appendChild(g);
+  });
+}
+
+function _cityInspectorHtml(node, graph, data) {
+  if (!node) {
+    return `
+      <p><strong>Map summary</strong></p>
+      <p class="mt-1">Nodes: ${graph.nodes.length} | Edges: ${graph.edges.length}</p>
+      <p class="mt-1">Overlay: ${escapeHtml(state.cityOverlay)}</p>
+      <p class="mt-1 text-slate-600">${data.demo ? "Sample dataset mode." : "Live context data."}</p>
+    `;
+  }
+  const members = Array.isArray(node?.raw?.members) ? node.raw.members : [];
+  const memberCount = Number(node?.raw?.size || members.length || 0);
+  const neighbors = graph.edges
+    .filter((e) => e.from === node.id || e.to === node.id)
+    .slice(0, 8)
+    .map((e) => `${e.from === node.id ? "→" : "←"} ${e.from === node.id ? e.to : e.from} (${e.type})`);
+  const findingMatches = (data.findings || []).filter((f) => {
+    const hay = `${f?.title || ""} ${f?.description || ""}`.toLowerCase();
+    return members.some((m) => hay.includes(String(m).toLowerCase()));
+  }).slice(0, 5);
+  return `
+    <p><strong>${escapeHtml(node.name)}</strong></p>
+    <p class="mt-1">Zone size: ${memberCount} components | Degree: ${graph.degree[node.id] || 0}</p>
+    <p class="mt-1">Confidence: ${Number(node.confidence || 0).toFixed(2)}</p>
+    <p class="mt-1 font-semibold">Contained components</p>
+    <ul class="mt-1 list-disc pl-4">${members.slice(0, 8).map((m) => `<li>${escapeHtml(m)}</li>`).join("") || "<li>None</li>"}</ul>
+    <p class="mt-1 font-semibold">Dependencies</p>
+    <ul class="mt-1 list-disc pl-4">${neighbors.map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>None</li>"}</ul>
+    <p class="mt-1 font-semibold">Risk signals</p>
+    <ul class="mt-1 list-disc pl-4">${findingMatches.map((f) => `<li>${escapeHtml(f.title || f.id || "finding")}</li>`).join("") || "<li>No explicit findings mapped yet.</li>"}</ul>
+  `;
+}
+
+function _systemInspectorHtml(node, graph) {
+  if (!node) {
+    return `<p>Search and click nodes to inspect evidence, confidence, and adjacency.</p>`;
+  }
+  const inEdges = graph.edges.filter((e) => e.to === node.id).slice(0, 6);
+  const outEdges = graph.edges.filter((e) => e.from === node.id).slice(0, 6);
+  return `
+    <p><strong>${escapeHtml(node.name)}</strong></p>
+    <p class="mt-1">ID: ${escapeHtml(node.id)}</p>
+    <p class="mt-1">Type: ${escapeHtml(node.type)} | Confidence: ${Number(node.confidence || 0).toFixed(2)}</p>
+    <div class="mt-1">
+      <p class="font-semibold">Outbound</p>
+      <ul class="list-disc pl-4">${outEdges.map((e) => `<li>${escapeHtml(e.to)} (${escapeHtml(e.type)})</li>`).join("") || "<li>None</li>"}</ul>
+    </div>
+    <div class="mt-1">
+      <p class="font-semibold">Inbound</p>
+      <ul class="list-disc pl-4">${inEdges.map((e) => `<li>${escapeHtml(e.from)} (${escapeHtml(e.type)})</li>`).join("") || "<li>None</li>"}</ul>
+    </div>
+  `;
+}
+
+function _renderCityAndSystemGraphs(data) {
+  const systemGraph = _normalizedGraph(data);
+  if (!systemGraph.nodes.length) {
+    if (el.cityMapSvg) el.cityMapSvg.innerHTML = "";
+    if (el.systemMapSvg) el.systemMapSvg.innerHTML = "";
+    if (el.cityMapInspector) el.cityMapInspector.textContent = "No components detected. Check scope settings or run ingestion.";
+    if (el.systemMapInspector) el.systemMapInspector.textContent = "No graph data available yet.";
+    return;
+  }
+  const cityGraph = _cityGraphFromGraph(systemGraph);
+
+  _bindGraphInteractions(el.cityMapSvg, "city");
+  _bindGraphInteractions(el.systemMapSvg, "system");
+
+  const citySelected = state.graphSelected?.city || "";
+  if (citySelected && !cityGraph.nodes.some((n) => n.id === citySelected)) {
+    state.graphSelected.city = "";
+  }
+  _renderGraph(el.cityMapSvg, cityGraph, {
+    viewKey: "city",
+    overlay: state.cityOverlay,
+    selectedId: state.graphSelected?.city || "",
+    findings: data.findings,
+    onNodeClick: (node) => {
+      state.graphSelected = state.graphSelected || {};
+      state.graphSelected.city = node.id;
+      if (el.cityMapInspector) el.cityMapInspector.innerHTML = _cityInspectorHtml(node, cityGraph, data);
+      _renderCityAndSystemGraphs(data);
+    },
+  });
+  if (el.cityMapInspector && !(state.graphSelected?.city || "")) {
+    el.cityMapInspector.innerHTML = _cityInspectorHtml(null, cityGraph, data);
+  }
+
+  const systemSelected = state.graphSelected?.system || "";
+  if (systemSelected && !systemGraph.nodes.some((n) => n.id === systemSelected)) {
+    state.graphSelected.system = "";
+  }
+  _renderGraph(el.systemMapSvg, systemGraph, {
+    viewKey: "system",
+    overlay: "none",
+    filterText: state.systemSearch,
+    selectedId: state.graphSelected?.system || "",
+    onNodeClick: (node) => {
+      state.graphSelected = state.graphSelected || {};
+      state.graphSelected.system = node.id;
+      if (el.systemMapInspector) el.systemMapInspector.innerHTML = _systemInspectorHtml(node, systemGraph);
+      _renderCityAndSystemGraphs(data);
+    },
+  });
+  if (el.systemMapInspector && !(state.graphSelected?.system || "")) {
+    el.systemMapInspector.innerHTML = _systemInspectorHtml(null, systemGraph);
+  }
+}
+
+function renderDiscoverInsights() {
+  const data = _discoverData();
+  const { nodes, edges, rules, findings, backlog, demo } = data;
+  _renderCityAndSystemGraphs(data);
+
+  if (el.discoverCityMapContent && el.discoverCityMapContent.dataset) {
+    el.discoverCityMapContent.dataset.mode = demo ? "demo" : "live";
+  }
+  if (el.discoverSystemMapContent && el.discoverSystemMapContent.dataset) {
+    el.discoverSystemMapContent.dataset.mode = demo ? "demo" : "live";
+  }
+
+  if (el.discoverHealthContent) {
+    const findingRows = findings.slice(0, 8).map((f) => `
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">
+        <strong>${escapeHtml(String(f.severity || "info").toUpperCase())}</strong> · ${escapeHtml(f.title || f.id || "")}
+      </div>
+    `).join("");
+    const backlogRows = backlog.slice(0, 8).map((b) => `
+      <div class="rounded border border-slate-300 bg-white px-2 py-1">
+        ${escapeHtml(String(b.priority || "P2"))} · ${escapeHtml(b.title || b.id || "")}
+      </div>
+    `).join("");
+    el.discoverHealthContent.innerHTML = (findingRows || backlogRows)
+      ? `
+          <div class="grid gap-2 sm:grid-cols-2">
+            <div><p class="mb-1 font-semibold text-slate-900">Findings</p>${findingRows || "<p>No findings</p>"}</div>
+            <div><p class="mb-1 font-semibold text-slate-900">Backlog</p>${backlogRows || "<p>No backlog items</p>"}</div>
+          </div>
+        `
+      : `<p class="text-slate-700">No findings detected in the current scope.</p>`;
+  }
+
+  if (el.discoverConventionsContent) {
+    const categoryCounts = {};
+    rules.forEach((r) => {
+      const cat = String(r.category || "uncategorized");
+      categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+    });
+    const categories = Object.entries(categoryCounts)
+      .map(([cat, count]) => `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">${escapeHtml(cat)}: <strong>${count}</strong></div>`)
+      .join("");
+    const examples = rules.slice(0, 6).map((r) => `<li>${escapeHtml(r.statement || r.title || r.id || "")}</li>`).join("");
+    el.discoverConventionsContent.innerHTML = rules.length
+      ? `
+          <div class="flex flex-wrap gap-1">${categories}</div>
+          <ul class="mt-2 list-disc pl-4">${examples}</ul>
+        `
+      : `<p class="text-slate-700">No convention rules available yet.</p>`;
+  }
+}
+
+function applySampleDatasetPreset() {
+  state.projectState.sampleDatasetEnabled = true;
+  if (el.projectStateMode) el.projectStateMode.value = "brownfield";
+  if (el.bfRepoProvider) el.bfRepoProvider.value = "github";
+  if (el.bfRepoUrl) el.bfRepoUrl.value = "https://github.com/acme/acme-commerce-platform";
+  if (el.bfIssueProvider) el.bfIssueProvider.value = "jira";
+  if (el.bfIssueProject) el.bfIssueProject.value = "ACME";
+  if (el.bfDocsUrl) el.bfDocsUrl.value = "https://confluence.acme.local/commerce";
+  if (el.bfRuntimeTelemetry) el.bfRuntimeTelemetry.checked = true;
+  if (el.analysisDepth) el.analysisDepth.value = "deep";
+  if (el.telemetryMode) el.telemetryMode.value = "staging";
+  if (el.includePaths) el.includePaths.value = "services/\nlegacy/\ninfra/";
+  if (el.excludePaths) el.excludePaths.value = "node_modules/\ndist/\nvendor/";
+  if (el.taskType) el.taskType.value = "business_objectives";
+  if (el.objectives) {
+    el.objectives.value = "Improve payment reliability and compliance for ACME checkout while reducing duplicate charges and increasing traceability.";
+    el.objectives.dataset.autogen = "0";
+  }
+  applyProjectStateResult({
+    detected: "brownfield",
+    confidence: 0.99,
+    reason: "Using sample ACME brownfield dataset for guided demo.",
+  });
+  autoTriggerDiscoverExternalViews({ force: true });
+  setDiscoverStep(4);
+  setDiscoverResultsView("city");
+  renderDiscoverInsights();
 }
 
 function renderNotifications(tab = "approvals") {
@@ -516,6 +1601,41 @@ function setSettingsMessage(text, isError = false) {
   el.settingsMessage.className = `mt-2 text-xs ${isError ? "text-rose-700" : "text-slate-700"}`;
 }
 
+function settingsLlmRefs(provider) {
+  if (provider === "anthropic") {
+    return {
+      status: el.settingsLlmAnthropicStatus,
+      message: el.settingsLlmAnthropicMessage,
+      fields: {
+        model: el.settingsLlmAnthropicModel,
+        base_url: el.settingsLlmAnthropicBaseUrl,
+        api_key: el.settingsLlmAnthropicKey,
+      },
+      secretKey: "api_key",
+    };
+  }
+  return {
+    status: el.settingsLlmOpenaiStatus,
+    message: el.settingsLlmOpenaiMessage,
+    fields: {
+      model: el.settingsLlmOpenaiModel,
+      base_url: el.settingsLlmOpenaiBaseUrl,
+      api_key: el.settingsLlmOpenaiKey,
+    },
+    secretKey: "api_key",
+  };
+}
+
+function collectLlmPayload(provider) {
+  const refs = settingsLlmRefs(provider);
+  const payload = {};
+  Object.entries(refs.fields || {}).forEach(([key, node]) => {
+    if (!node) return;
+    payload[key] = String(node.value || "").trim();
+  });
+  return payload;
+}
+
 function settingsIntegrationRefs(provider) {
   if (provider === "github") {
     return {
@@ -527,6 +1647,12 @@ function settingsIntegrationRefs(provider) {
         repository: el.settingsGithubRepository,
         token: el.settingsGithubToken,
         read_only: el.settingsGithubReadOnly,
+        run_export_enabled: el.settingsGithubRunExportEnabled,
+        export_base_url: el.settingsGithubExportBaseUrl,
+        export_owner: el.settingsGithubExportOwner,
+        export_repository: el.settingsGithubExportRepository,
+        export_branch: el.settingsGithubExportBranch,
+        export_prefix: el.settingsGithubExportPrefix,
       },
       secretKey: "token",
     };
@@ -606,13 +1732,48 @@ function updateIntegrationForm(provider, integration) {
     const parts = [];
     if (provider === "github") {
       const readScope = "repo metadata, branches, pull requests";
-      const writeScope = data.read_only ? "none (read-only mode)" : "pull requests only";
+      const writeScope = data.read_only ? "none (read-only mode)" : "pull requests + run artifact exports";
       parts.push(`Permissions: read scope=${readScope}; write scope=${writeScope}`);
+      if (data.run_export_enabled) {
+        const exportBranch = String(data.export_branch || "default branch");
+        const exportPrefix = String(data.export_prefix || "synthetix");
+        const targetOwner = String(data.export_owner || data.owner || "-");
+        const targetRepo = String(data.export_repository || data.repository || "-");
+        parts.push(`Run export: enabled (${targetOwner}/${targetRepo} -> ${exportPrefix}/runs/<run_id> on ${exportBranch})`);
+      } else {
+        parts.push("Run export: disabled");
+      }
     } else if (provider === "jira") {
       parts.push("Permissions: read scope=issues/projects; write scope=issue updates (if token allows)");
     } else if (provider === "linear") {
       parts.push("Permissions: read scope=issues/projects; write scope=issue updates (if token allows)");
     }
+    if (masked) parts.push(`Secret: ${masked}`);
+    if (data.last_tested_at) parts.push(`Last sync check: ${String(data.last_tested_at).slice(0, 19).replace("T", " ")}`);
+    if (data.last_error) parts.push(`Error: ${data.last_error}`);
+    refs.message.textContent = parts.join(" | ");
+  }
+}
+
+function updateLlmForm(provider, cfg) {
+  const refs = settingsLlmRefs(provider);
+  const data = (cfg && typeof cfg === "object") ? cfg : {};
+  if (refs.status) {
+    const status = String(data.status || (data.connected ? "connected" : "disconnected"));
+    refs.status.textContent = status === "connected" ? "Connected" : "Not connected";
+    refs.status.className = integrationStatusClass(status);
+  }
+  Object.entries(refs.fields || {}).forEach(([key, node]) => {
+    if (!node) return;
+    if (key === refs.secretKey) {
+      node.value = "";
+      return;
+    }
+    node.value = String(data[key] || "");
+  });
+  if (refs.message) {
+    const masked = String(data.api_key_masked || "");
+    const parts = [];
     if (masked) parts.push(`Secret: ${masked}`);
     if (data.last_tested_at) parts.push(`Last sync check: ${String(data.last_tested_at).slice(0, 19).replace("T", " ")}`);
     if (data.last_error) parts.push(`Error: ${data.last_error}`);
@@ -722,7 +1883,13 @@ function renderSettingsAuditLog() {
 
 function applySettingsToWorkbench() {
   const policies = state.settings?.policies || {};
+  const llm = state.settings?.llm || {};
+  const defaultProvider = String(llm.default_provider || "anthropic").toLowerCase();
   if (!state.currentRun) {
+    if (el.provider && ["anthropic", "openai"].includes(defaultProvider)) {
+      el.provider.value = defaultProvider;
+    }
+    setDefaultModelByProvider();
     if (el.humanApproval) el.humanApproval.checked = !!policies.require_human_approval;
     if (el.strictSecurityMode) {
       const strictByPack = String(policies.policy_pack || "standard").toLowerCase() !== "standard";
@@ -734,6 +1901,11 @@ function applySettingsToWorkbench() {
 
 function renderSettings() {
   const settings = state.settings || {};
+  const llm = settings.llm || {};
+  const llmProviders = llm.providers || {};
+  updateLlmForm("anthropic", llmProviders.anthropic || {});
+  updateLlmForm("openai", llmProviders.openai || {});
+
   const integrations = settings.integrations || {};
   updateIntegrationForm("github", integrations.github || {});
   updateIntegrationForm("jira", integrations.jira || {});
@@ -773,12 +1945,19 @@ async function saveIntegration(provider) {
 }
 
 async function testIntegration(provider) {
-  const data = await api(`/api/settings/integrations/${encodeURIComponent(provider)}/test`, {}, "POST");
+  const payload = collectIntegrationPayload(provider);
+  const data = await api(`/api/settings/integrations/${encodeURIComponent(provider)}/test`, payload, "POST");
   state.settings = data.settings || state.settings;
   renderSettings();
   const ok = !!data.test_ok;
+  const checks = Array.isArray(data?.checks) ? data.checks : [];
+  const passCount = checks.filter((x) => !!x?.ok).length;
+  const failed = checks.filter((x) => !x?.ok);
+  const failedSummary = failed.length
+    ? ` Failed checks: ${failed.map((x) => `${x.name}: ${x.message}`).join(" | ")}`
+    : "";
   setSettingsMessage(
-    `${provider.toUpperCase()} integration test ${ok ? "passed" : "failed"}${data?.checks?.length ? ` (${data.checks.filter((x) => x.ok).length}/${data.checks.length} checks)` : ""}.`,
+    `${provider.toUpperCase()} integration test ${ok ? "passed" : "failed"}${checks.length ? ` (${passCount}/${checks.length} checks)` : ""}.${failedSummary}`,
     !ok
   );
 }
@@ -788,6 +1967,39 @@ async function disconnectIntegration(provider) {
   state.settings = data.settings || state.settings;
   renderSettings();
   setSettingsMessage(`${provider.toUpperCase()} integration disconnected.`);
+}
+
+async function saveLlmProvider(provider) {
+  const payload = collectLlmPayload(provider);
+  const data = await api(`/api/settings/llm/${encodeURIComponent(provider)}/connect`, payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setSettingsMessage(`${provider.toUpperCase()} LLM credentials saved.`);
+}
+
+async function testLlmProvider(provider) {
+  const payload = collectLlmPayload(provider);
+  const data = await api(`/api/settings/llm/${encodeURIComponent(provider)}/test`, payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  const ok = !!data.test_ok;
+  const checks = Array.isArray(data?.checks) ? data.checks : [];
+  const passCount = checks.filter((x) => !!x?.ok).length;
+  const failed = checks.filter((x) => !x?.ok);
+  const failedSummary = failed.length
+    ? ` Failed checks: ${failed.map((x) => `${x.name}: ${x.message}`).join(" | ")}`
+    : "";
+  setSettingsMessage(
+    `${provider.toUpperCase()} LLM test ${ok ? "passed" : "failed"}${checks.length ? ` (${passCount}/${checks.length} checks)` : ""}.${failedSummary}`,
+    !ok
+  );
+}
+
+async function disconnectLlmProvider(provider) {
+  const data = await api(`/api/settings/llm/${encodeURIComponent(provider)}/disconnect`, { clear_secret: false }, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setSettingsMessage(`${provider.toUpperCase()} LLM credentials disconnected.`);
 }
 
 async function savePolicies() {
@@ -1263,7 +2475,13 @@ async function runDriftScanNow() {
 }
 
 function setDefaultModelByProvider() {
-  el.model.value = el.provider.value === "anthropic" ? "claude-sonnet-4-20250514" : "gpt-4o";
+  const provider = String(el.provider?.value || "anthropic").toLowerCase();
+  const savedModel = String(state.settings?.llm?.providers?.[provider]?.model || "").trim();
+  if (savedModel) {
+    el.model.value = savedModel;
+    return;
+  }
+  el.model.value = provider === "anthropic" ? "claude-sonnet-4-20250514" : "gpt-4o";
 }
 
 function currentUseCase() {
@@ -1278,6 +2496,14 @@ function useCaseLabel(useCase) {
 
 function isCodeModernizationMode() {
   return currentUseCase() === "code_modernization";
+}
+
+function modernizationSourceMode() {
+  return String(el.modernizationSourceMode?.value || "manual");
+}
+
+function isModernizationRepoScanMode() {
+  return isCodeModernizationMode() && modernizationSourceMode() === "repo_scan";
 }
 
 function isDatabaseConversionMode() {
@@ -1321,6 +2547,19 @@ function toggleUseCasePanel() {
 
   el.modernizationPanel.classList.toggle("hidden", !codeMode);
   el.databasePanel.classList.toggle("hidden", !dbMode);
+  if (el.modernizationManualInputs) {
+    const hideManual = codeMode && isModernizationRepoScanMode();
+    el.modernizationManualInputs.classList.toggle("hidden", hideManual);
+  }
+  if (el.modernizationSourceHelp) {
+    if (!codeMode) {
+      el.modernizationSourceHelp.textContent = "";
+    } else if (isModernizationRepoScanMode()) {
+      el.modernizationSourceHelp.textContent = "The analyst will scan the connected GitHub repository to infer current functionality.";
+    } else {
+      el.modernizationSourceHelp.textContent = "Use pasted/uploaded code when migrating a specific legacy file or module.";
+    }
+  }
 
   if ((codeMode || dbMode) && ((el.objectives.value || "").trim() === "" || el.objectives.dataset.autogen === "1")) {
     setAutogeneratedObjective();
@@ -1329,7 +2568,9 @@ function toggleUseCasePanel() {
 }
 
 function toggleCloudConfig() {
-  el.cloudConfigBox.classList.toggle("hidden", el.deploymentTarget.value !== "cloud");
+  const cloudRequested = el.deploymentTarget.value === "cloud";
+  const cloudAllowed = !!el.enableCloudPromotion?.checked;
+  el.cloudConfigBox.classList.toggle("hidden", !(cloudRequested && cloudAllowed));
 }
 
 function detectProjectStateHeuristic() {
@@ -1372,11 +2613,13 @@ function detectProjectStateHeuristic() {
 
 function applyProjectStateResult(result) {
   const detected = String(result?.detected || "").toLowerCase();
+  const sampleDatasetEnabled = !!state.projectState.sampleDatasetEnabled;
   state.projectState = {
     mode: String(el.projectStateMode?.value || "auto"),
     detected,
     confidence: Number(result?.confidence || 0),
     reason: String(result?.reason || ""),
+    sampleDatasetEnabled,
   };
   if (el.projectStateResult) {
     const pctConfidence = Math.round(state.projectState.confidence * 100);
@@ -1391,7 +2634,353 @@ function applyProjectStateResult(result) {
   renderDiscoverStepper();
 }
 
+function renderDiscoverGitHubTreePreview() {
+  if (!el.bfGithubTreeStatus || !el.bfGithubTreePreview) return;
+  const view = state.discoverGithubTree || {};
+  if (view.loading) {
+    el.bfGithubTreeStatus.textContent = "Loading repository tree...";
+    el.bfGithubTreeStatus.className = "text-[11px] text-slate-700";
+    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">Fetching repository structure from GitHub API.</p>`;
+    return;
+  }
+  if (view.error) {
+    el.bfGithubTreeStatus.textContent = `Load failed: ${view.error}`;
+    el.bfGithubTreeStatus.className = "text-[11px] text-rose-700";
+    el.bfGithubTreePreview.innerHTML = `<p class="text-rose-700">${escapeHtml(view.error)}</p>`;
+    return;
+  }
+  const tree = (view.tree && typeof view.tree === "object") ? view.tree : {};
+  const repo = (view.repo && typeof view.repo === "object") ? view.repo : {};
+  const entries = Array.isArray(tree.entries) ? tree.entries : [];
+  if (!entries.length) {
+    el.bfGithubTreeStatus.textContent = "No repository tree loaded.";
+    el.bfGithubTreeStatus.className = "text-[11px] text-slate-700";
+    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">Enter a GitHub repository URL and click <strong>Load repo tree</strong> to preview folders and files.</p>`;
+    return;
+  }
+  const owner = escapeHtml(repo.owner || "-");
+  const repository = escapeHtml(repo.repository || "-");
+  const branch = escapeHtml(repo.default_branch || "-");
+  const folders = Number(tree.folders || 0);
+  const files = Number(tree.files || 0);
+  const total = Number(tree.total_entries || entries.length || 0);
+  const truncated = !!tree.truncated;
+  el.bfGithubTreeStatus.textContent = `${owner}/${repository} @ ${branch} | ${folders} folders | ${files} files${truncated ? " | truncated" : ""}`;
+  el.bfGithubTreeStatus.className = "text-[11px] text-emerald-700";
+
+  const maxRender = 240;
+  const rows = entries.slice(0, maxRender).map((entry) => {
+    const path = escapeHtml(entry.path || "");
+    const depth = Math.max(0, Math.min(24, Number(entry.depth || 0)));
+    const indent = "&nbsp;".repeat(depth * 2);
+    const kind = String(entry.type || "").toLowerCase() === "dir" ? "[DIR]" : "[FILE]";
+    return `<li class="leading-5">${indent}<span class="text-slate-500">${kind}</span> <span class="text-slate-900">${path}</span></li>`;
+  }).join("");
+  const hiddenCount = Math.max(0, total - maxRender);
+  el.bfGithubTreePreview.innerHTML = `
+    <div class="text-[11px] text-slate-700">Showing ${Math.min(total, maxRender)} of ${total} entries.</div>
+    <ul class="mt-1 font-mono text-[11px] text-slate-900">${rows}</ul>
+    ${hiddenCount ? `<p class="mt-1 text-[11px] text-slate-700">${hiddenCount} more entries not shown.</p>` : ""}
+  `;
+}
+
+function renderDiscoverLinearIssuesPreview() {
+  if (!el.bfLinearIssuesStatus || !el.bfLinearIssuesPreview) return;
+  const view = state.discoverLinearIssues || {};
+  const issueProvider = String(el.bfIssueProvider?.value || "").toLowerCase();
+  const providerLabel = issueProvider ? issueProvider.toUpperCase() : "issue tracker";
+  if (el.bfLoadLinearIssues) {
+    el.bfLoadLinearIssues.textContent = issueProvider ? `Load ${providerLabel} issues` : "Load issues";
+  }
+  if (view.loading) {
+    el.bfLinearIssuesStatus.textContent = `Loading ${providerLabel} issues...`;
+    el.bfLinearIssuesStatus.className = "text-[11px] text-slate-700";
+    el.bfLinearIssuesPreview.innerHTML = `<p class="text-slate-700">Fetching issue list from ${escapeHtml(providerLabel)} API.</p>`;
+    return;
+  }
+  if (view.error) {
+    el.bfLinearIssuesStatus.textContent = `Load failed: ${view.error}`;
+    el.bfLinearIssuesStatus.className = "text-[11px] text-rose-700";
+    el.bfLinearIssuesPreview.innerHTML = `<p class="text-rose-700">${escapeHtml(view.error)}</p>`;
+    return;
+  }
+  const issues = Array.isArray(view.issues) ? view.issues : [];
+  if (!issues.length) {
+    el.bfLinearIssuesStatus.textContent = "No issue list loaded.";
+    el.bfLinearIssuesStatus.className = "text-[11px] text-slate-700";
+    el.bfLinearIssuesPreview.innerHTML = `<p class="text-slate-700">Set issue provider and click <strong>Load issues</strong>.</p>`;
+    return;
+  }
+  const team = (view.team && typeof view.team === "object") ? view.team : {};
+  const teamLabel = [team.key, team.name].filter(Boolean).join(" - ");
+  el.bfLinearIssuesStatus.textContent = `${providerLabel} | ${teamLabel || "board"} | ${issues.length} issues loaded`;
+  el.bfLinearIssuesStatus.className = "text-[11px] text-emerald-700";
+  const rows = issues.slice(0, 80).map((issue) => {
+    const id = escapeHtml(issue.identifier || issue.id || "-");
+    const title = escapeHtml(issue.title || "");
+    const stateLabel = escapeHtml(issue.state || "Unknown");
+    const priority = Number(issue.priority || 0);
+    const project = escapeHtml(issue.project || "-");
+    const assignee = escapeHtml(issue.assignee || "Unassigned");
+    const updated = escapeHtml(String(issue.updated_at || "").slice(0, 10) || "-");
+    return `
+      <div class="mb-1 rounded border border-slate-300 bg-slate-50 px-2 py-1">
+        <p class="text-[11px] font-semibold text-slate-900">${id} - ${title}</p>
+        <p class="text-[10px] text-slate-700">State: ${stateLabel} | Priority: ${priority} | Project: ${project}</p>
+        <p class="text-[10px] text-slate-700">Assignee: ${assignee} | Updated: ${updated}</p>
+      </div>
+    `;
+  }).join("");
+  el.bfLinearIssuesPreview.innerHTML = rows;
+}
+
+function renderDiscoverIntegrationPreviews() {
+  renderDiscoverGitHubTreePreview();
+  renderDiscoverLinearIssuesPreview();
+}
+
+function analystBriefRequestKey() {
+  const integration = getIntegrationContext();
+  const brownfield = integration?.brownfield || {};
+  const payload = [
+    String(currentUseCase() || ""),
+    String(modernizationSourceMode() || "manual"),
+    String(integration?.project_state_detected || ""),
+    String(brownfield.repo_provider || ""),
+    String(brownfield.repo_url || ""),
+    String(el.objectives?.value || "").trim().slice(0, 500),
+    String(el.legacyCode?.value || "").trim().slice(0, 500),
+    String(el.includePaths?.value || "").trim(),
+    String(el.excludePaths?.value || "").trim(),
+    String(integration?.sample_dataset_enabled ? "sample" : "live"),
+  ];
+  return payload.join("|");
+}
+
+function renderDiscoverAnalystBrief() {
+  if (!el.discoverAnalystBriefStatus || !el.discoverAnalystBriefPreview) return;
+  const view = state.discoverAnalystBrief || {};
+  if (view.loading) {
+    el.discoverAnalystBriefStatus.textContent = "Analyst Agent is reading sampled source files and inferring functionality...";
+    el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-slate-700";
+    el.discoverAnalystBriefPreview.innerHTML = `<p class="text-slate-700">Running source-aware analysis...</p>`;
+    return;
+  }
+  if (view.error) {
+    el.discoverAnalystBriefStatus.textContent = `Load failed: ${view.error}`;
+    el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-rose-700";
+    el.discoverAnalystBriefPreview.innerHTML = `<p class="text-rose-700">${escapeHtml(view.error)}</p>`;
+    return;
+  }
+  const payload = (view.data && typeof view.data === "object") ? view.data : {};
+  const brief = (payload.analyst_brief && typeof payload.analyst_brief === "object") ? payload.analyst_brief : {};
+  const summary = (brief.summary && typeof brief.summary === "object") ? brief.summary : {};
+  const source = escapeHtml(String(payload.source || "-"));
+  const repo = (payload.repo && typeof payload.repo === "object") ? payload.repo : {};
+  const repoLabel = [repo.owner, repo.repository].filter(Boolean).join("/");
+
+  const overview = escapeHtml(String(summary.overview || ""));
+  const caps = Array.isArray(summary.likely_capabilities) ? summary.likely_capabilities : [];
+  const io = Array.isArray(summary.input_output_contracts) ? summary.input_output_contracts : [];
+  const components = Array.isArray(summary.key_components) ? summary.key_components : [];
+  const interfaces = Array.isArray(summary.interfaces) ? summary.interfaces : [];
+  const dataHints = Array.isArray(summary.data_and_state) ? summary.data_and_state : [];
+  const domainFunctions = Array.isArray(summary.domain_functions) ? summary.domain_functions : [];
+  const dataEntities = Array.isArray(summary.data_entities) ? summary.data_entities : [];
+  const unknowns = Array.isArray(summary.unknowns) ? summary.unknowns : [];
+  const evidenceFiles = Array.isArray(summary.evidence_files) ? summary.evidence_files : [];
+  const stats = (summary.stats && typeof summary.stats === "object") ? summary.stats : {};
+
+  if (!overview && !caps.length && !components.length) {
+    el.discoverAnalystBriefStatus.textContent = "Waiting to analyze connected source code.";
+    el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-slate-700";
+    el.discoverAnalystBriefPreview.innerHTML = "Analyst summary will appear here after Scope → Scan.";
+    return;
+  }
+
+  const list = (rows) => rows.map((row) => `<li>${escapeHtml(String(row || ""))}</li>`).join("");
+  el.discoverAnalystBriefStatus.textContent = `Analyst brief ready (${source}${repoLabel ? ` | ${repoLabel}` : ""})`;
+  el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-emerald-700";
+  el.discoverAnalystBriefPreview.innerHTML = `
+    <p class="font-semibold text-slate-900">${overview}</p>
+    <div class="mt-2 grid gap-2 sm:grid-cols-2">
+      <div><p class="font-semibold text-slate-900">Likely functionality</p><ul class="mt-1 list-disc pl-4">${list(caps.slice(0, 8))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Input/output behavior</p><ul class="mt-1 list-disc pl-4">${list(io.slice(0, 6))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Key components</p><ul class="mt-1 list-disc pl-4">${list(components.slice(0, 8))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Interface hints</p><ul class="mt-1 list-disc pl-4">${list(interfaces.slice(0, 8))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Data/state clues</p><ul class="mt-1 list-disc pl-4">${list(dataHints.slice(0, 6))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Domain functions</p><ul class="mt-1 list-disc pl-4">${list((domainFunctions.length ? domainFunctions : ["No explicit function names extracted."]).slice(0, 8))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Data entities</p><ul class="mt-1 list-disc pl-4">${list((dataEntities.length ? dataEntities : ["No table/entity hints extracted."]).slice(0, 8))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Unknowns</p><ul class="mt-1 list-disc pl-4">${list((unknowns.length ? unknowns : ["No major unknowns reported."]).slice(0, 6))}</ul></div>
+      <div><p class="font-semibold text-slate-900">Evidence files</p><ul class="mt-1 list-disc pl-4">${list((evidenceFiles.length ? evidenceFiles : ["No files were read during this analysis."]).slice(0, 10))}</ul></div>
+    </div>
+    <p class="mt-2 text-[10px] text-slate-700">Sampled files: ${Number(stats.sampled_files || 0)} | Tree entries considered: ${Number(stats.sampled_tree_entries || 0)} | Route hints: ${Number(stats.route_hints || 0)}</p>
+  `;
+}
+
+async function loadDiscoverAnalystBrief({ force = false } = {}) {
+  const reqKey = analystBriefRequestKey();
+  if (!force && reqKey && reqKey === state.discoverAnalystBrief.requestKey && state.discoverAnalystBrief.data) {
+    renderDiscoverAnalystBrief();
+    return;
+  }
+  state.discoverAnalystBrief = { loading: true, error: "", data: null, requestKey: reqKey };
+  renderDiscoverAnalystBrief();
+  const integration = getIntegrationContext();
+  try {
+    const data = await api("/api/discover/analyst-brief", {
+      integration_context: integration,
+      objectives: String(el.objectives?.value || "").trim(),
+      use_case: currentUseCase(),
+      legacy_code: String(el.legacyCode?.value || "").trim(),
+      repo_provider: String(integration?.brownfield?.repo_provider || ""),
+      repo_url: String(integration?.brownfield?.repo_url || "").trim(),
+    }, "POST");
+    state.discoverAnalystBrief = {
+      loading: false,
+      error: "",
+      data,
+      requestKey: reqKey,
+    };
+  } catch (err) {
+    state.discoverAnalystBrief = {
+      loading: false,
+      error: String(err?.message || err || "Failed to run analyst brief."),
+      data: null,
+      requestKey: reqKey,
+    };
+  }
+  renderDiscoverAnalystBrief();
+  renderDiscoverInsights();
+}
+
+async function loadDiscoverGithubTree() {
+  const integration = getIntegrationContext();
+  const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+  if (!repoUrl) {
+    state.discoverGithubTree = { loading: false, error: "Repo URL is required.", repo: null, tree: null };
+    renderDiscoverIntegrationPreviews();
+    renderDiscoverInsights();
+    return;
+  }
+  state.discoverGithubTree = { loading: true, error: "", repo: null, tree: null };
+  renderDiscoverIntegrationPreviews();
+  try {
+    const data = await api("/api/discover/github/tree", {
+      integration_context: integration,
+      repo_url: repoUrl,
+      max_entries: 1200,
+      sample_dataset_enabled: !!integration.sample_dataset_enabled,
+    }, "POST");
+    state.discoverGithubTree = {
+      loading: false,
+      error: "",
+      repo: data.repo || null,
+      tree: data.tree || null,
+    };
+  } catch (err) {
+    state.discoverGithubTree = { loading: false, error: String(err?.message || err || "Failed to load repo tree."), repo: null, tree: null };
+  }
+  renderDiscoverIntegrationPreviews();
+  renderDiscoverInsights();
+}
+
+async function loadDiscoverLinearIssues() {
+  const integration = getIntegrationContext();
+  const issueProvider = String(integration?.brownfield?.issue_provider || "").toLowerCase();
+  if (!integration.sample_dataset_enabled && issueProvider && !["linear", "jira"].includes(issueProvider)) {
+    state.discoverLinearIssues = {
+      loading: false,
+      error: `Issue provider ${issueProvider.toUpperCase()} is not supported yet for preview.`,
+      team: null,
+      issues: [],
+      source: "",
+    };
+    renderDiscoverIntegrationPreviews();
+    renderDiscoverInsights();
+    return;
+  }
+  state.discoverLinearIssues = { loading: true, error: "", team: null, issues: [], source: "" };
+  renderDiscoverIntegrationPreviews();
+  try {
+    const data = await api("/api/discover/issues", {
+      integration_context: integration,
+      issue_provider: issueProvider || "linear",
+      issue_project: String(integration?.brownfield?.issue_project || "").trim(),
+      max_issues: 80,
+      sample_dataset_enabled: !!integration.sample_dataset_enabled,
+    }, "POST");
+    state.discoverLinearIssues = {
+      loading: false,
+      error: "",
+      team: data.team || null,
+      issues: Array.isArray(data.issues) ? data.issues : [],
+      source: String(data.source || ""),
+    };
+  } catch (err) {
+    state.discoverLinearIssues = {
+      loading: false,
+      error: String(err?.message || err || "Failed to load issues."),
+      team: null,
+      issues: [],
+      source: "",
+    };
+  }
+  renderDiscoverIntegrationPreviews();
+  renderDiscoverInsights();
+}
+
+function autoTriggerDiscoverExternalViews({ force = false } = {}) {
+  const integration = getIntegrationContext();
+  const detectedState = String(integration?.project_state_detected || state.projectState.detected || "").toLowerCase();
+  if (detectedState !== "brownfield") return;
+
+  const repoProvider = String(integration?.brownfield?.repo_provider || "").toLowerCase();
+  const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+  const issueProvider = String(integration?.brownfield?.issue_provider || "").toLowerCase();
+  const issueProject = String(integration?.brownfield?.issue_project || "").trim();
+
+  if (repoProvider === "github" && repoUrl) {
+    const githubKey = `${repoProvider}|${repoUrl}|${integration.sample_dataset_enabled ? "sample" : "live"}`;
+    if (force || githubKey !== state.discoverAutoFetch.githubKey) {
+      state.discoverAutoFetch.githubKey = githubKey;
+      loadDiscoverGithubTree().catch((err) => {
+        state.discoverGithubTree = {
+          loading: false,
+          error: String(err?.message || err || "Failed to load repo tree."),
+          repo: null,
+          tree: null,
+        };
+        renderDiscoverIntegrationPreviews();
+      });
+    }
+  }
+
+  if (["linear", "jira"].includes(issueProvider) && issueProject) {
+    const linearKey = `${issueProvider}|${issueProject}|${integration.sample_dataset_enabled ? "sample" : "live"}`;
+    if (force || linearKey !== state.discoverAutoFetch.linearKey) {
+      state.discoverAutoFetch.linearKey = linearKey;
+      loadDiscoverLinearIssues().catch((err) => {
+        state.discoverLinearIssues = {
+          loading: false,
+          error: String(err?.message || err || "Failed to load issues."),
+          team: null,
+          issues: [],
+          source: "",
+        };
+        renderDiscoverIntegrationPreviews();
+      });
+    }
+  }
+}
+
 function getIntegrationContext() {
+  const analystData = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : {};
+  const analystSummary = (analystData.analyst_brief && typeof analystData.analyst_brief === "object" && analystData.analyst_brief.summary && typeof analystData.analyst_brief.summary === "object")
+    ? analystData.analyst_brief.summary
+    : null;
   return {
     project_state_mode: String(el.projectStateMode?.value || "auto"),
     project_state_detected: String(state.projectState.detected || ""),
@@ -1416,9 +3005,22 @@ function getIntegrationContext() {
     scan_scope: {
       analysis_depth: String(el.analysisDepth?.value || "standard"),
       telemetry_mode: String(el.telemetryMode?.value || "off"),
+      modernization_source_mode: String(el.modernizationSourceMode?.value || "manual"),
       include_paths: parseLines(el.includePaths?.value || ""),
       exclude_paths: parseLines(el.excludePaths?.value || ""),
     },
+    discover_cache: {
+      analyst_source: String(analystData.source || ""),
+      analyst_repo: (analystData.repo && typeof analystData.repo === "object") ? analystData.repo : {},
+      analyst_summary: analystSummary ? {
+        overview: String(analystSummary.overview || ""),
+        likely_capabilities: Array.isArray(analystSummary.likely_capabilities) ? analystSummary.likely_capabilities.slice(0, 12) : [],
+        key_components: Array.isArray(analystSummary.key_components) ? analystSummary.key_components.slice(0, 12) : [],
+        evidence_files: Array.isArray(analystSummary.evidence_files) ? analystSummary.evidence_files.slice(0, 24) : [],
+      } : {},
+    },
+    cloud_promotion_enabled: !!el.enableCloudPromotion?.checked,
+    sample_dataset_enabled: !!state.projectState.sampleDatasetEnabled,
   };
 }
 
@@ -1429,6 +3031,7 @@ function applyIntegrationContext(ctx) {
   const detected = String(ctx.project_state_detected || "");
   const confidence = Number(ctx.project_state_confidence || 0);
   const reason = String(ctx.project_state_reason || "");
+  state.projectState.sampleDatasetEnabled = !!ctx.sample_dataset_enabled;
   if (detected) {
     applyProjectStateResult({ detected, confidence, reason: reason || "Loaded from run context." });
   } else if (mode === "greenfield" || mode === "brownfield") {
@@ -1455,15 +3058,41 @@ function applyIntegrationContext(ctx) {
   const scope = (ctx.scan_scope && typeof ctx.scan_scope === "object") ? ctx.scan_scope : {};
   if (el.analysisDepth) el.analysisDepth.value = String(scope.analysis_depth || "standard");
   if (el.telemetryMode) el.telemetryMode.value = String(scope.telemetry_mode || "off");
+  if (el.modernizationSourceMode) el.modernizationSourceMode.value = String(scope.modernization_source_mode || "manual");
   if (el.includePaths) el.includePaths.value = Array.isArray(scope.include_paths) ? scope.include_paths.join("\n") : "";
   if (el.excludePaths) el.excludePaths.value = Array.isArray(scope.exclude_paths) ? scope.exclude_paths.join("\n") : "";
+  const discoverCache = (ctx.discover_cache && typeof ctx.discover_cache === "object") ? ctx.discover_cache : {};
+  const cachedSummary = (discoverCache.analyst_summary && typeof discoverCache.analyst_summary === "object")
+    ? discoverCache.analyst_summary
+    : {};
+  const hasCachedAnalyst = !!String(cachedSummary.overview || "").trim()
+    || (Array.isArray(cachedSummary.evidence_files) && cachedSummary.evidence_files.length > 0);
+  if (hasCachedAnalyst) {
+    state.discoverAnalystBrief = {
+      loading: false,
+      error: "",
+      data: {
+        source: String(discoverCache.analyst_source || ""),
+        repo: (discoverCache.analyst_repo && typeof discoverCache.analyst_repo === "object") ? discoverCache.analyst_repo : {},
+        analyst_brief: {
+          title: "Analyst functionality understanding",
+          summary: cachedSummary,
+        },
+      },
+      requestKey: analystBriefRequestKey(),
+    };
+  }
+  if (el.enableCloudPromotion) el.enableCloudPromotion.checked = !!ctx.cloud_promotion_enabled;
+  toggleCloudConfig();
   renderDiscoverStepper();
 }
 
 function discoverStepCompletion() {
   const integration = getIntegrationContext();
+  const sampleMode = !!integration.sample_dataset_enabled;
   const projectStateReady = !!integration.project_state_detected;
   let connectComplete = projectStateReady;
+  if (sampleMode) connectComplete = true;
   if (integration.project_state_detected === "brownfield") {
     connectComplete = connectComplete
       && !!integration.brownfield.repo_provider
@@ -1478,7 +3107,17 @@ function discoverStepCompletion() {
   }
   const objective = String(el.objectives?.value || "").trim();
   const scopeComplete = !!objective
-    && (!isCodeModernizationMode() || !!String(el.legacyCode?.value || "").trim())
+    && (
+      !isCodeModernizationMode()
+      || (
+        isModernizationRepoScanMode()
+          ? (
+            String(integration.brownfield.repo_provider || "").toLowerCase() === "github"
+            && !!String(integration.brownfield.repo_url || "").trim()
+          )
+          : !!String(el.legacyCode?.value || "").trim()
+      )
+    )
     && (!isDatabaseConversionMode() || !!String(el.dbSchema?.value || "").trim());
   const scanComplete = !!String(el.analysisDepth?.value || "").trim();
   const resultsComplete = connectComplete && scopeComplete && scanComplete;
@@ -1498,6 +3137,9 @@ function setDiscoverStep(step) {
     const isActive = (idx + 1) === target;
     entry.panel?.classList.toggle("discover-panel-hidden", !isActive);
   });
+  if (target === 3) {
+    loadDiscoverAnalystBrief({ force: false }).catch(() => {});
+  }
   renderDiscoverStepper();
 }
 
@@ -1538,7 +3180,8 @@ function renderDiscoverStepper() {
       const ready = completion.resultsComplete
         ? "Baseline artifacts are published and ready for review."
         : "Complete missing fields to publish baseline artifacts.";
-      el.discoverResultsSummary.textContent = `${ready} ${integration.project_state_reason || ""}`.trim();
+      const sampleNote = integration.sample_dataset_enabled ? "Demo dataset mode enabled." : "";
+      el.discoverResultsSummary.textContent = `${ready} ${sampleNote} ${integration.project_state_reason || ""}`.trim();
     }
     el.discoverResultsState.textContent = `Project state: ${integration.project_state_detected || "pending"} (${Math.round((integration.project_state_confidence || 0) * 100)}%)`;
     if (integration.project_state_detected === "brownfield") {
@@ -1560,13 +3203,16 @@ function renderDiscoverStepper() {
     const excludeCount = integration.scan_scope.exclude_paths.length;
     el.discoverResultsScan.textContent = `Scan profile: ${integration.scan_scope.analysis_depth} | telemetry=${integration.scan_scope.telemetry_mode} | include=${includeCount} | exclude=${excludeCount}`;
   }
+  renderDiscoverAnalystBrief();
+  renderDiscoverIntegrationPreviews();
+  renderDiscoverInsights();
   renderDiscoverResultsView();
 }
 
 function validateDiscoverStep(step) {
   const c = discoverStepCompletion();
   if (step === 1 && !c.connectComplete) {
-    alert("Complete Connect sources: detect project state and configure required integrations.");
+    alert("Complete Connect sources, or use the sample dataset option to continue without external integrations.");
     return false;
   }
   if (step === 2 && !c.scopeComplete) {
@@ -1801,6 +3447,8 @@ function setMode(mode) {
   if (mode === MODES.DISCOVER) setWizardStep(1);
   if (mode === MODES.BUILD) setWizardStep(2);
   if (mode === MODES.VERIFY || mode === MODES.PLAN) refreshTasks().catch(() => {});
+  if (mode === MODES.PLAN) refreshWorkItems().catch(() => {});
+  if (mode === MODES.VERIFY) renderVerifyPanels();
   if (mode === MODES.SETTINGS) loadSettings().catch((err) => setSettingsMessage(`Settings load failed: ${err.message}`, true));
 }
 
@@ -1897,6 +3545,7 @@ async function refreshTasks() {
   state.tasks = data.tasks || [];
   state.dashboardTasks = state.tasks.slice();
   renderTasks();
+  renderVerifyPanels();
   renderPerspectiveDashboard();
 }
 
@@ -1943,6 +3592,267 @@ function renderTasks() {
       await cloneTaskToWorkbench(runId);
     });
   });
+}
+
+function _statusPill(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "done" || s === "completed") return "border-emerald-300 bg-emerald-50 text-emerald-900";
+  if (s === "in_progress" || s === "running") return "border-sky-300 bg-sky-50 text-sky-900";
+  if (s === "blocked" || s === "failed") return "border-rose-300 bg-rose-50 text-rose-900";
+  return "border-slate-300 bg-slate-100 text-slate-800";
+}
+
+async function refreshWorkItems() {
+  const data = await api("/api/work-items", null);
+  state.workItems = Array.isArray(data.work_items) ? data.work_items : [];
+  renderWorkItems();
+}
+
+function renderWorkItems() {
+  if (!el.workItemsList) return;
+  const rows = Array.isArray(state.workItems) ? state.workItems : [];
+  if (!rows.length) {
+    el.workItemsList.innerHTML = "<div class='rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-700'>No work items yet. Create one to start planning.</div>";
+    return;
+  }
+  el.workItemsList.innerHTML = rows.map((item) => `
+    <div class="rounded-lg border border-slate-300 bg-white p-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p class="text-sm font-semibold text-slate-900">${escapeHtml(item.title || "")}</p>
+          <p class="text-[11px] text-slate-700">${escapeHtml((item.type || "").toUpperCase())} · recommended=${escapeHtml((item.recommended_type || "").toUpperCase())} · governance=${escapeHtml(item.governance_tier || "")}</p>
+        </div>
+        <span class="rounded border px-2 py-0.5 text-[10px] font-semibold ${_statusPill(item.status)}">${escapeHtml(String(item.status || "open").toUpperCase())}</span>
+      </div>
+      <p class="mt-2 text-xs text-slate-700">${escapeHtml(item.description || "")}</p>
+      <p class="mt-1 text-[11px] text-slate-600">Risk: ${escapeHtml(item.risk_tier || "n/a")} · Complexity: ${escapeHtml(item.complexity_score)} · Blast radius: ${escapeHtml(item.blast_radius)}</p>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <button data-work-status="${escapeHtml(item.id)}::in_progress" class="btn-light rounded-md px-2 py-1 text-xs font-semibold">Start</button>
+        <button data-work-status="${escapeHtml(item.id)}::done" class="btn-light rounded-md px-2 py-1 text-xs font-semibold">Mark done</button>
+        <button data-work-status="${escapeHtml(item.id)}::blocked" class="btn-light rounded-md px-2 py-1 text-xs font-semibold">Block</button>
+      </div>
+    </div>
+  `).join("");
+  el.workItemsList.querySelectorAll("[data-work-status]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const raw = btn.getAttribute("data-work-status") || "";
+      const [id, status] = raw.split("::");
+      if (!id || !status) return;
+      try {
+        await api(`/api/work-items/${encodeURIComponent(id)}/status`, { status });
+        await refreshWorkItems();
+      } catch (err) {
+        alert(`Failed to update work item: ${err.message}`);
+      }
+    });
+  });
+}
+
+async function createWorkItem() {
+  const title = String(el.workItemTitle?.value || "").trim();
+  const description = String(el.workItemDescription?.value || "").trim();
+  if (!title || !description) {
+    alert("Work item title and description are required.");
+    return;
+  }
+  const payload = {
+    title,
+    description,
+    type: String(el.workItemType?.value || "auto").toLowerCase(),
+    governance_tier: String(el.workItemGovernance?.value || "standard").toLowerCase(),
+    linked_issue: String(el.workItemLinkedIssue?.value || "").trim(),
+    run_id: String(state.currentRunId || ""),
+    source: "manual",
+  };
+  const data = await api("/api/work-items", payload);
+  if (el.workItemRecommendation) {
+    const rec = data.recommendation || {};
+    el.workItemRecommendation.textContent = `Recommended: ${(rec.recommended_type || "").toUpperCase()} | risk=${rec.risk_tier || "n/a"} | complexity=${rec.complexity_score || 0} | blast radius=${rec.blast_radius || 0}`;
+  }
+  if (el.workItemTitle) el.workItemTitle.value = "";
+  if (el.workItemDescription) el.workItemDescription.value = "";
+  await refreshWorkItems();
+}
+
+function buildEvidencePack(run) {
+  const r = run || {};
+  const p = (r.pipeline_state && typeof r.pipeline_state === "object") ? r.pipeline_state : {};
+  const stageStatus = (r.stage_status && typeof r.stage_status === "object") ? r.stage_status : {};
+  const completedStages = Object.values(stageStatus).filter((s) => String(s).toLowerCase() === "completed").length;
+  const failedStages = Object.entries(stageStatus).filter(([, s]) => String(s).toLowerCase() === "failed").map(([k]) => k);
+  const ref = (p.context_vault_ref && typeof p.context_vault_ref === "object") ? p.context_vault_ref : {};
+  return {
+    generated_at: new Date().toISOString(),
+    run_id: r.run_id || "",
+    objective: p.business_objectives || "",
+    use_case: p.use_case || "",
+    status: r.status || "",
+    stage_summary: {
+      completed_stages: completedStages,
+      total_stages: AGENTS.length,
+      failed_stages: failedStages,
+    },
+    context_bundle: {
+      version_id: ref.version_id || "",
+      repo: ref.repo || "",
+      branch: ref.branch || "",
+      commit_sha: ref.commit_sha || "",
+    },
+    policy: {
+      strict_security_mode: !!p.strict_security_mode,
+      human_approval: !!p.human_approval,
+      deployment_target: p.deployment_target || "local",
+    },
+    traceability: [
+      { from: "requirement", to: "architecture", status: completedStages >= 2 ? "linked" : "pending" },
+      { from: "architecture", to: "implementation", status: completedStages >= 3 ? "linked" : "pending" },
+      { from: "implementation", to: "verification", status: completedStages >= 6 ? "linked" : "pending" },
+      { from: "verification", to: "deployment", status: completedStages >= 8 ? "linked" : "pending" },
+    ],
+    security_gate: {
+      strict_mode: !!p.strict_security_mode,
+      outcome: String(r.status || "").toLowerCase() === "failed" ? "failed_or_blocked" : "passed_or_pending",
+    },
+  };
+}
+
+async function exportEvidencePack(runId) {
+  const data = await api(`/api/runs/${encodeURIComponent(runId)}`, null);
+  const pack = buildEvidencePack(data.run || {});
+  const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `evidence-pack-${runId}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildDiscoverBaselineReport() {
+  const integration = getIntegrationContext();
+  const data = _discoverData();
+  const analyst = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : {};
+  const repo = (state.discoverGithubTree?.repo && typeof state.discoverGithubTree.repo === "object")
+    ? state.discoverGithubTree.repo
+    : {};
+  const tree = (state.discoverGithubTree?.tree && typeof state.discoverGithubTree.tree === "object")
+    ? state.discoverGithubTree.tree
+    : {};
+  return {
+    generated_at: new Date().toISOString(),
+    project_state: {
+      mode: integration.project_state_mode,
+      detected: integration.project_state_detected,
+      confidence: integration.project_state_confidence,
+      reason: integration.project_state_reason,
+      sample_dataset_enabled: !!integration.sample_dataset_enabled,
+    },
+    integrations: {
+      brownfield: integration.brownfield || {},
+      greenfield: integration.greenfield || {},
+    },
+    scan_scope: integration.scan_scope || {},
+    repo_snapshot: {
+      owner: repo.owner || "",
+      repository: repo.repository || "",
+      default_branch: repo.default_branch || "",
+      total_entries: Number(tree.total_entries || 0),
+      folders: Number(tree.folders || 0),
+      files: Number(tree.files || 0),
+      source: String(tree.source || ""),
+    },
+    analyst_brief: analyst.analyst_brief || {},
+    metrics: {
+      graph_nodes: Number((data.nodes || []).length),
+      graph_edges: Number((data.edges || []).length),
+      convention_rules: Number((data.rules || []).length),
+      findings: Number((data.findings || []).length),
+      backlog_items: Number((data.backlog || []).length),
+      issue_preview_count: Number((state.discoverLinearIssues?.issues || []).length),
+    },
+    artifacts: {
+      system_context_model_preview: {
+        nodes: data.nodes || [],
+        edges: data.edges || [],
+      },
+      convention_profile_preview: {
+        rules: data.rules || [],
+      },
+      health_assessment_preview: {
+        findings: data.findings || [],
+        backlog: data.backlog || [],
+      },
+    },
+  };
+}
+
+function exportDiscoverBaselineReport() {
+  const report = buildDiscoverBaselineReport();
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `discover-baseline-report-${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderVerifyPanels() {
+  if (!el.verifyTraceability || !el.verifyEvidence || !el.verifySecurityGates) return;
+  const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+  const runs = Array.isArray(state.dashboardRuns) ? state.dashboardRuns : [];
+  const runMap = {};
+  runs.forEach((r) => {
+    if (r?.run_id) runMap[String(r.run_id)] = r;
+  });
+
+  const traceRows = tasks.slice(0, 16).map((t) => {
+    const run = runMap[String(t.run_id || "")] || {};
+    const status = String(run.status || t.status || "unknown").toUpperCase();
+    const objective = String(t.objective_preview || "").slice(0, 110);
+    return `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>${escapeHtml(t.run_id || "")}</strong> · ${escapeHtml(status)} · ${escapeHtml(objective)}</div>`;
+  }).join("");
+  el.verifyTraceability.innerHTML = traceRows || "<p class='text-slate-700'>No traceability records yet. Run a pipeline to generate linked specs, tests, and evidence.</p>";
+
+  const evidenceRuns = tasks.filter((t) => {
+    const s = String((runMap[String(t.run_id || "")] || {}).status || t.status || "").toLowerCase();
+    return s === "completed" || s === "failed";
+  }).slice(0, 16);
+  el.verifyEvidence.innerHTML = evidenceRuns.length
+    ? evidenceRuns.map((t) => {
+      const run = runMap[String(t.run_id || "")] || {};
+      return `
+        <div class="rounded border border-slate-300 bg-white px-2 py-1">
+          <div class="flex items-center justify-between gap-2">
+            <span><strong>${escapeHtml(t.run_id || "")}</strong> · ${escapeHtml(String(run.status || t.status || "").toUpperCase())}</span>
+            <button data-export-evidence="${escapeHtml(t.run_id || "")}" class="btn-light rounded px-2 py-0.5 text-[11px] font-semibold">Export JSON</button>
+          </div>
+        </div>
+      `;
+    }).join("")
+    : "<p class='text-slate-700'>No evidence packs generated yet. Evidence appears once verification starts.</p>";
+  el.verifyEvidence.querySelectorAll("[data-export-evidence]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const runId = btn.getAttribute("data-export-evidence") || "";
+      if (!runId) return;
+      try {
+        await exportEvidencePack(runId);
+      } catch (err) {
+        alert(`Failed to export evidence pack: ${err.message}`);
+      }
+    });
+  });
+
+  const gates = runs.slice(0, 20).map((r) => {
+    const strict = r?.config?.strict_security_mode ? "strict" : "standard";
+    const status = String(r.status || "unknown").toLowerCase();
+    const tone = status === "failed" ? "text-rose-700" : (status === "completed" ? "text-emerald-700" : "text-slate-700");
+    return `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 ${tone}"><strong>${escapeHtml(r.run_id || "")}</strong> · ${escapeHtml(status.toUpperCase())} · ${strict}</div>`;
+  }).join("");
+  el.verifySecurityGates.innerHTML = gates || "<p class='text-slate-700'>No security gates recorded yet.</p>";
 }
 
 async function cloneTaskToWorkbench(runId) {
@@ -2037,10 +3947,16 @@ function renderTaskSummary() {
     : getIntegrationContext();
   const detectedState = String(integration.project_state_detected || state.projectState.detected || "pending");
   const analysisDepth = String(integration.scan_scope?.analysis_depth || el.analysisDepth?.value || "standard");
+  const cloudPromotionEnabled = Boolean(
+    integration.cloud_promotion_enabled
+      ?? (deploymentTarget === "cloud" && el.enableCloudPromotion?.checked)
+      ?? false
+  );
 
   const detailItems = [
     { label: "Team", value: teamName },
     { label: "Deployment", value: deploymentTarget === "cloud" ? "Cloud" : "Local Docker" },
+    { label: "Cloud Promotion", value: cloudPromotionEnabled ? "Enabled" : "Disabled" },
     { label: "Human Approval", value: humanApproval ? "Enabled" : "Disabled" },
     { label: "Strict Security", value: strictSecurity ? "Enabled" : "Disabled" },
     { label: "Parallel Sub-agents", value: String(parallelAgents) },
@@ -2128,8 +4044,11 @@ function renderContextLayerCard() {
   const branch = String(ref.branch || "-");
   const commit = String(ref.commit_sha || "");
   const shortCommit = commit ? commit.slice(0, 12) : "-";
-  const nodes = Array.isArray(scm.nodes) ? scm.nodes.length : 0;
-  const edges = Array.isArray(scm.edges) ? scm.edges.length : 0;
+  const graph = (scm.graph && typeof scm.graph === "object") ? scm.graph : {};
+  const nodeList = Array.isArray(graph.nodes) ? graph.nodes : (Array.isArray(scm.nodes) ? scm.nodes : []);
+  const edgeList = Array.isArray(graph.edges) ? graph.edges : (Array.isArray(scm.edges) ? scm.edges : []);
+  const nodes = nodeList.length;
+  const edges = edgeList.length;
   const rules = Array.isArray(cp.rules) ? cp.rules.length : 0;
   const backlog = rb.length;
   const deltaText = delta.status
@@ -2155,7 +4074,18 @@ function renderContextDrawer() {
     : `${savedPack.charAt(0).toUpperCase()}${savedPack.slice(1)} policy pack`;
   const runId = run?.run_id || "-";
   const status = run?.status || "idle";
-  const evidence = status === "completed" ? "Ready for export" : (status === "failed" ? "Run failed; partial evidence" : "In progress");
+  let evidence = status === "completed" ? "Ready for export" : (status === "failed" ? "Run failed; partial evidence" : "In progress");
+  const githubExport = (p.github_export && typeof p.github_export === "object") ? p.github_export : {};
+  const exportStatus = String(githubExport.status || "").toLowerCase();
+  if (exportStatus === "exported") {
+    evidence = `Exported to GitHub (${githubExport.base_path || "configured path"})`;
+  } else if (exportStatus === "partial") {
+    evidence = `GitHub export partial (${Number(githubExport.exported_files || 0)} files exported)`;
+  } else if (exportStatus === "failed") {
+    evidence = `GitHub export failed: ${String(githubExport.reason || "unknown error")}`;
+  } else if (exportStatus === "skipped") {
+    evidence = `GitHub export skipped: ${String(githubExport.reason || "disabled")}`;
+  }
 
   const runIntegration = (p.integration_context && typeof p.integration_context === "object")
     ? p.integration_context
@@ -2185,6 +4115,99 @@ function renderContextDrawer() {
     el.drawerLinkedSystems.textContent = `Run ${runId} | ${linked}`;
   }
   if (el.drawerEvidenceStatus) el.drawerEvidenceStatus.textContent = evidence;
+
+  if (el.contextOpsOutput) {
+    const existing = String(el.contextOpsOutput.textContent || "").trim();
+    if (!existing || existing === "-") {
+      const scm = (p.system_context_model && typeof p.system_context_model === "object") ? p.system_context_model : {};
+      const graph = (scm.graph && typeof scm.graph === "object") ? scm.graph : {};
+      const nodes = Array.isArray(graph.nodes) ? graph.nodes.length : (Array.isArray(scm.nodes) ? scm.nodes.length : 0);
+      const edges = Array.isArray(graph.edges) ? graph.edges.length : (Array.isArray(scm.edges) ? scm.edges.length : 0);
+      const cp = (p.convention_profile && typeof p.convention_profile === "object") ? p.convention_profile : {};
+      const rules = Array.isArray(cp.rules) ? cp.rules.length : 0;
+      const findings = Array.isArray(p.remediation_backlog) ? p.remediation_backlog.length : 0;
+      const statusText = String(p.context_layer_status || (p.sil_ready ? "ready" : "pending")).toUpperCase();
+      el.contextOpsOutput.textContent = [
+        `SIL status: ${statusText}`,
+        `Context bundle: ${version} @ ${commit}`,
+        `Graph nodes: ${nodes} | edges: ${edges} | CP rules: ${rules} | backlog: ${findings}`,
+        "Use Impact Forecast or Drift Scan to generate deeper analysis output here.",
+      ].join("\n");
+    }
+  }
+}
+
+function renderImpactDiff() {
+  if (!el.impactDiffContent) return;
+  const run = state.currentRun;
+  const p = run?.pipeline_state || {};
+  const scm = (p.system_context_model && typeof p.system_context_model === "object") ? p.system_context_model : {};
+  const graph = (scm.graph && typeof scm.graph === "object") ? scm.graph : {};
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : (Array.isArray(scm.nodes) ? scm.nodes : []);
+  const edges = Array.isArray(graph.edges) ? graph.edges : (Array.isArray(scm.edges) ? scm.edges : []);
+  const cp = (p.convention_profile && typeof p.convention_profile === "object") ? p.convention_profile : {};
+  const rules = Array.isArray(cp.rules) ? cp.rules : [];
+  const health = (p.health_assessment && typeof p.health_assessment === "object") ? p.health_assessment : {};
+  const findings = Array.isArray(health.findings) ? health.findings : [];
+  const backlog = Array.isArray(p.remediation_backlog) ? p.remediation_backlog : [];
+  const validation = (p.context_contract_validation && typeof p.context_contract_validation === "object")
+    ? p.context_contract_validation
+    : {};
+  const semIssues = Array.isArray(validation.semantic_issues) ? validation.semantic_issues : [];
+  const schemaIssues = Array.isArray(validation.schema_issues) ? validation.schema_issues : [];
+  const delta = (p.context_vault_ref && typeof p.context_vault_ref === "object" && p.context_vault_ref.delta && typeof p.context_vault_ref.delta === "object")
+    ? p.context_vault_ref.delta
+    : {};
+  const testerResult = latestResultByStage(run, 6);
+  const retryPlan = (p.retry_plan && typeof p.retry_plan === "object") ? p.retry_plan : {};
+
+  const tab = String(state.impactDiffTab || "topology");
+  let html = "";
+  if (tab === "topology") {
+    const samples = edges.slice(0, 12).map((e) => `<li>${escapeHtml(e.from || "")} → ${escapeHtml(e.to || "")} (${escapeHtml(e.type || "")})</li>`).join("");
+    html = `
+      <p><strong>Topology summary:</strong> nodes=${nodes.length}, edges=${edges.length}, delta=${escapeHtml(delta.status || "n/a")}</p>
+      <p class="mt-1 text-slate-700">This tab highlights dependency and boundary movement inferred from SCM.</p>
+      <ul class="mt-2 list-disc pl-4">${samples || "<li>No topology edges available.</li>"}</ul>
+    `;
+  } else if (tab === "contract") {
+    const ruleRows = rules.slice(0, 8).map((r) => `<li>${escapeHtml(r.category || "rule")} · ${escapeHtml(r.title || r.statement || r.id || "")}</li>`).join("");
+    const issues = semIssues.concat(schemaIssues).slice(0, 8).map((x) => `<li>${escapeHtml(String(x))}</li>`).join("");
+    html = `
+      <p><strong>Contract summary:</strong> convention rules=${rules.length}, semantic issues=${semIssues.length}, schema issues=${schemaIssues.length}</p>
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">
+        <div><p class="font-semibold text-slate-900">Key convention rules</p><ul class="mt-1 list-disc pl-4">${ruleRows || "<li>No convention rules found.</li>"}</ul></div>
+        <div><p class="font-semibold text-slate-900">Validation issues</p><ul class="mt-1 list-disc pl-4">${issues || "<li>No contract validation issues.</li>"}</ul></div>
+      </div>
+    `;
+  } else if (tab === "data") {
+    const dataEdges = edges.filter((e) => ["reads", "writes"].includes(String(e.type || "").toLowerCase())).slice(0, 12);
+    const dataRows = dataEdges.map((e) => `<li>${escapeHtml(e.from || "")} ${escapeHtml(e.type || "")} ${escapeHtml(e.to || "")}</li>`).join("");
+    const dbNodes = nodes.filter((n) => String(n.type || "").toLowerCase().includes("database") || String(n.type || "").toLowerCase().includes("table"));
+    html = `
+      <p><strong>Data summary:</strong> database/table nodes=${dbNodes.length}, read/write edges=${dataEdges.length}</p>
+      <p class="mt-1 text-slate-700">Use this view to assess schema/flow impact and migration risk.</p>
+      <ul class="mt-2 list-disc pl-4">${dataRows || "<li>No read/write edges detected.</li>"}</ul>
+    `;
+  } else {
+    const critical = Array.isArray(retryPlan.critical_failures) ? retryPlan.critical_failures : [];
+    const planned = Array.isArray(retryPlan.planned_self_heal_actions) ? retryPlan.planned_self_heal_actions : [];
+    html = `
+      <p><strong>Risk/quality summary:</strong> findings=${findings.length}, backlog=${backlog.length}, run status=${escapeHtml(run?.status || "idle")}</p>
+      <p class="mt-1 text-slate-700">Tester: ${escapeHtml(testerResult?.summary || "No tester summary yet.")}</p>
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">
+        <div><p class="font-semibold text-slate-900">Critical failures</p><ul class="mt-1 list-disc pl-4">${critical.slice(0, 6).map((x) => `<li>${escapeHtml(String(x))}</li>`).join("") || "<li>None</li>"}</ul></div>
+        <div><p class="font-semibold text-slate-900">Planned mitigations</p><ul class="mt-1 list-disc pl-4">${planned.slice(0, 6).map((x) => `<li>${escapeHtml(String(x))}</li>`).join("") || "<li>No self-heal plan yet</li>"}</ul></div>
+      </div>
+    `;
+  }
+  el.impactDiffContent.innerHTML = html;
+  document.querySelectorAll("[data-impact-tab]").forEach((btn) => {
+    if (!(btn instanceof HTMLElement)) return;
+    const active = String(btn.getAttribute("data-impact-tab") || "") === tab;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
 }
 
 function latestResultByStage(run, stage) {
@@ -2263,8 +4286,10 @@ function renderAnalystReadable(output) {
   const walkthrough = output.analysis_walkthrough || {};
   const legacyContract = output.legacy_functional_contract || [];
   const risks = output.risks || [];
+  const revised = String(output.human_revised_document_markdown || "").trim();
   return `
     <h5 class="text-sm font-semibold text-ink-950">Technical Requirements Document</h5>
+    ${revised ? `<div class="mt-2 rounded border border-slate-300 bg-white p-2"><strong>Human revised document:</strong><pre class="mono mt-1 whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(revised.slice(0, 2000))}${revised.length > 2000 ? "\n...[truncated]" : ""}</pre></div>` : ""}
     <div><strong>Project:</strong> ${escapeHtml(output.project_name || "Untitled")}</div>
     <div><strong>Summary:</strong> ${escapeHtml(output.executive_summary || "")}</div>
     <div class="mt-2"><strong>Business Objective Summary:</strong> ${escapeHtml(walkthrough.business_objective_summary || "")}</div>
@@ -2321,10 +4346,12 @@ function renderArchitectReadable(output, useCase) {
 
 function renderDeveloperReadable(output) {
   const implementations = output.implementations || [];
+  const artifactRoot = String(output.artifact_root || "").trim();
   return `
     <div><strong>Total LOC:</strong> ${Number(output.total_loc || 0).toLocaleString()}</div>
     <div><strong>Components:</strong> ${Number(output.total_components || 0)}</div>
     <div><strong>Files:</strong> ${Number(output.total_files || 0)}</div>
+    ${artifactRoot ? `<div><strong>Local Artifact Path:</strong> <span class="mono">${escapeHtml(artifactRoot)}</span></div>` : ""}
     <div class="mt-2"><strong>Component Breakdown</strong></div>
     <ul class="list-disc pl-5">${implementations.map((impl) => `
       <li>
@@ -2506,11 +4533,22 @@ function renderAgentTabPanel() {
       </div>
     </div>
     <div class="mt-2 text-xs text-slate-700">${escapeHtml(result?.summary || "No output yet.")}</div>
+    ${stage === 1 && run?.run_id ? `
+      <div class="mt-2 rounded-lg border border-slate-300 bg-white p-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <button data-analyst-export class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Req</button>
+          <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
+          <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
+        </div>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export the analyst document or upload an updated version.</p>
+      </div>
+    ` : ""}
     <div class="mt-2 rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs text-slate-800">${renderReadableOutput(stage, result?.output || {}, runUseCase)}</div>
     <pre class="log-window mono mt-2 h-[120px] overflow-auto rounded-lg border border-slate-300 p-3 text-[11px]">${escapeHtml(logs)}</pre>
   `;
   const openBtn = el.agentTabPanel.querySelector("[data-open-stage]");
   if (openBtn) openBtn.addEventListener("click", () => openStageModal(Number(openBtn.getAttribute("data-open-stage"))));
+  if (stage === 1 && run?.run_id) wireAnalystDocActions(el.agentTabPanel, run);
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
 }
 
@@ -2522,13 +4560,28 @@ function openStageModal(stage) {
 
   el.modalTitle.textContent = `Stage ${stage}: ${agent.name}`;
   el.modalSummary.textContent = result.summary || "";
-  el.modalReadable.innerHTML = renderReadableOutput(stage, result.output || {}, runUseCase);
+  if (stage === 1 && state.currentRun?.run_id) {
+    el.modalReadable.innerHTML = `
+      <div class="rounded-lg border border-slate-300 bg-white p-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <button data-analyst-export class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Req</button>
+          <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
+          <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
+        </div>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export the analyst document or upload an updated version.</p>
+      </div>
+      <div class="mt-2">${renderReadableOutput(stage, result.output || {}, runUseCase)}</div>
+    `;
+  } else {
+    el.modalReadable.innerHTML = renderReadableOutput(stage, result.output || {}, runUseCase);
+  }
   el.modalLogs.textContent = (result.logs || []).join("\n");
   if (stage === 7) {
     el.modalOutput.textContent = "Validation report is intentionally rendered as a human-readable summary in the Readable Output pane.";
   } else {
     el.modalOutput.textContent = JSON.stringify(result.output || {}, null, 2);
   }
+  if (stage === 1 && state.currentRun?.run_id) wireAnalystDocActions(el.modalReadable, state.currentRun);
   el.outputModal.showModal();
   setTimeout(() => renderMermaidBlocks(el.outputModal), 0);
 }
@@ -2595,8 +4648,11 @@ function renderRun() {
   renderCurrentAgentPanel();
   renderAgentTabs();
   renderAgentTabPanel();
+  renderImpactDiff();
   renderLogs();
   renderFlowDiagram();
+  renderDiscoverInsights();
+  renderVerifyPanels();
   setTimeout(() => renderMermaidBlocks(document), 0);
 }
 
@@ -2714,6 +4770,7 @@ async function refreshRunHistory() {
   const runs = data.runs || [];
   state.dashboardRuns = runs.slice();
   renderPerspectiveDashboard();
+  renderVerifyPanels();
   ensureDashboardRunDetails().then(() => renderPerspectiveDashboard()).catch(() => {});
   if (!runs.length) {
     el.runHistory.innerHTML = `<option value="">No runs yet</option>`;
@@ -2822,16 +4879,36 @@ async function startRun() {
     alert("Business challenge is required.");
     return;
   }
-  const apiKey = (el.apiKey.value || "").trim();
-  if (!apiKey) {
-    alert("API key is required.");
+
+  if (!state.settings) {
+    try {
+      await loadSettings(false);
+    } catch (_) {
+      // keep existing UX below for missing credentials
+    }
+  }
+  const selectedProvider = String(el.provider.value || "anthropic").toLowerCase();
+  const llmProvider = state.settings?.llm?.providers?.[selectedProvider] || {};
+  if (!llmProvider.has_secret) {
+    alert(`No ${selectedProvider} API key is configured. Save it in Settings > LLM credentials.`);
+    setMode(MODES.SETTINGS);
     return;
   }
 
   const useCase = currentUseCase();
-  if (useCase === "code_modernization" && !(el.legacyCode.value || "").trim()) {
-    alert("Legacy code is required for code modernization use case.");
-    return;
+  if (useCase === "code_modernization") {
+    if (isModernizationRepoScanMode()) {
+      const integration = getIntegrationContext();
+      const provider = String(integration?.brownfield?.repo_provider || "").toLowerCase();
+      const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+      if (provider !== "github" || !repoUrl) {
+        alert("Code modernization repository scan mode requires a connected GitHub repository in Discover Connect.");
+        return;
+      }
+    } else if (!(el.legacyCode.value || "").trim()) {
+      alert("Legacy code is required for code modernization use case.");
+      return;
+    }
   }
   if (useCase === "database_conversion" && !(el.dbSchema.value || "").trim()) {
     alert("Legacy schema/SQL is required for database conversion use case.");
@@ -2841,6 +4918,10 @@ async function startRun() {
     alert("Complete Discover wizard steps (Connect, Scope, Scan) before starting a run.");
     setMode(MODES.DISCOVER);
     setWizardStep(1);
+    return;
+  }
+  if (String(el.deploymentTarget.value || "local").toLowerCase() === "cloud" && !el.enableCloudPromotion?.checked) {
+    alert("Cloud target is locked by local-first policy. Enable 'cloud promotion for this run' to continue.");
     return;
   }
 
@@ -2879,7 +4960,6 @@ async function startRun() {
     stage_agent_ids: selectedStageAgentIdsForRun(),
     provider: el.provider.value,
     model: el.model.value,
-    api_key: apiKey,
     temperature: Number(el.temperature.value || 0.3),
     parallel_agents: Number(el.parallelAgents.value || 5),
     max_retries: Number(el.maxRetries.value || 2),
@@ -2966,6 +5046,7 @@ function readTextFile(file, onSuccess) {
 }
 
 function bindEvents() {
+  el.brandHomeBtn?.addEventListener("click", () => setMode(MODES.DASHBOARDS));
   el.navHome.addEventListener("click", () => setMode(MODES.DASHBOARDS));
   el.navWork.addEventListener("click", () => {
     setMode(MODES.DISCOVER);
@@ -2983,7 +5064,7 @@ function bindEvents() {
     const hidden = el.contextDrawer?.classList.toggle("hidden-drawer");
     el.shellGrid?.classList.toggle("drawer-collapsed", !!hidden);
     if (el.contextDrawerToggle) {
-      el.contextDrawerToggle.textContent = hidden ? "Show Context Drawer" : "Hide Context Drawer";
+      el.contextDrawerToggle.textContent = hidden ? "Show Intelligence Drawer" : "Hide Intelligence Drawer";
     }
   });
   el.cmdPaletteBtn?.addEventListener("click", () => {
@@ -3059,6 +5140,12 @@ function bindEvents() {
   });
 
   el.settingsRefresh?.addEventListener("click", () => loadSettings(true).catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsLlmAnthropicConnect?.addEventListener("click", () => saveLlmProvider("anthropic").catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsLlmAnthropicTest?.addEventListener("click", () => testLlmProvider("anthropic").catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsLlmAnthropicDisconnect?.addEventListener("click", () => disconnectLlmProvider("anthropic").catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsLlmOpenaiConnect?.addEventListener("click", () => saveLlmProvider("openai").catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsLlmOpenaiTest?.addEventListener("click", () => testLlmProvider("openai").catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsLlmOpenaiDisconnect?.addEventListener("click", () => disconnectLlmProvider("openai").catch((err) => setSettingsMessage(err.message, true)));
   el.settingsGithubConnect?.addEventListener("click", () => saveIntegration("github").catch((err) => setSettingsMessage(err.message, true)));
   el.settingsGithubTest?.addEventListener("click", () => testIntegration("github").catch((err) => setSettingsMessage(err.message, true)));
   el.settingsGithubDisconnect?.addEventListener("click", () => disconnectIntegration("github").catch((err) => setSettingsMessage(err.message, true)));
@@ -3096,19 +5183,76 @@ function bindEvents() {
   el.discoverOpenSystemMap?.addEventListener("click", () => setDiscoverResultsView("system"));
   el.discoverOpenHealthDebt?.addEventListener("click", () => setDiscoverResultsView("health"));
   el.discoverOpenConventions?.addEventListener("click", () => setDiscoverResultsView("conventions"));
+  document.querySelectorAll("[data-city-overlay]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.cityOverlay = String(btn.getAttribute("data-city-overlay") || "none");
+      document.querySelectorAll("[data-city-overlay]").forEach((b) => {
+        if (!(b instanceof HTMLElement)) return;
+        const active = String(b.getAttribute("data-city-overlay") || "") === state.cityOverlay;
+        b.classList.toggle("btn-dark", active);
+        b.classList.toggle("btn-light", !active);
+      });
+      renderDiscoverInsights();
+    });
+  });
+  el.cityMapReset?.addEventListener("click", () => {
+    state.graphView.city = { x: 0, y: 0, scale: 1 };
+    state.graphSelected.city = "";
+    renderDiscoverInsights();
+  });
+  el.systemMapSearch?.addEventListener("input", () => {
+    state.systemSearch = String(el.systemMapSearch.value || "").trim().toLowerCase();
+    renderDiscoverInsights();
+  });
+  el.systemMapClear?.addEventListener("click", () => {
+    state.systemSearch = "";
+    if (el.systemMapSearch) el.systemMapSearch.value = "";
+    state.graphSelected.system = "";
+    state.graphView.system = { x: 0, y: 0, scale: 1 };
+    renderDiscoverInsights();
+  });
   el.discoverExportBaseline?.addEventListener("click", () => {
-    setMode(MODES.VERIFY);
-    setGlobalSearchStatus("Baseline report export queued. Open Evidence locker to retrieve it.");
+    try {
+      exportDiscoverBaselineReport();
+      setGlobalSearchStatus("Baseline report exported from Discover.");
+    } catch (err) {
+      setGlobalSearchStatus(`Baseline export failed: ${err.message || err}`, true);
+    }
   });
   el.wizardPrevDiscover?.addEventListener("click", () => {
     if (state.discoverStep > 1) setDiscoverStep(state.discoverStep - 1);
   });
   el.projectStateMode?.addEventListener("change", () => {
+    state.projectState.sampleDatasetEnabled = false;
     const result = detectProjectStateHeuristic();
     applyProjectStateResult(result);
+    autoTriggerDiscoverExternalViews({ force: true });
   });
   el.detectProjectState?.addEventListener("click", () => {
+    state.projectState.sampleDatasetEnabled = false;
     applyProjectStateResult(detectProjectStateHeuristic());
+    autoTriggerDiscoverExternalViews({ force: true });
+  });
+  el.discoverUseSample?.addEventListener("click", () => {
+    applySampleDatasetPreset();
+  });
+  el.discoverRunAnalystBrief?.addEventListener("click", () => {
+    loadDiscoverAnalystBrief({ force: true }).catch((err) => {
+      state.discoverAnalystBrief = { loading: false, error: String(err?.message || err || "Failed to run analyst brief."), data: null, requestKey: "" };
+      renderDiscoverAnalystBrief();
+    });
+  });
+  el.bfLoadGithubTree?.addEventListener("click", () => {
+    loadDiscoverGithubTree().catch((err) => {
+      state.discoverGithubTree = { loading: false, error: String(err?.message || err || "Failed to load repo tree."), repo: null, tree: null };
+      renderDiscoverIntegrationPreviews();
+    });
+  });
+  el.bfLoadLinearIssues?.addEventListener("click", () => {
+    loadDiscoverLinearIssues().catch((err) => {
+      state.discoverLinearIssues = { loading: false, error: String(err?.message || err || "Failed to load issues."), team: null, issues: [], source: "" };
+      renderDiscoverIntegrationPreviews();
+    });
   });
   [
     el.bfRepoProvider,
@@ -3127,7 +5271,14 @@ function bindEvents() {
     el.telemetryMode,
     el.includePaths,
     el.excludePaths,
-  ].forEach((node) => node?.addEventListener("input", () => renderDiscoverStepper()));
+  ].forEach((node) => node?.addEventListener("input", () => {
+    state.discoverGithubTree = { loading: false, error: "", repo: null, tree: null };
+    state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
+    state.discoverAutoFetch.githubKey = "";
+    state.discoverAutoFetch.linearKey = "";
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    renderDiscoverStepper();
+  }));
   [
     el.bfRepoProvider,
     el.bfIssueProvider,
@@ -3136,9 +5287,18 @@ function bindEvents() {
     el.gfTrackerProvider,
     el.gfSaveGenerated,
     el.gfReadWriteTracker,
+    el.modernizationSourceMode,
     el.analysisDepth,
     el.telemetryMode,
-  ].forEach((node) => node?.addEventListener("change", () => renderDiscoverStepper()));
+  ].forEach((node) => node?.addEventListener("change", () => {
+    state.discoverGithubTree = { loading: false, error: "", repo: null, tree: null };
+    state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
+    state.discoverAutoFetch.githubKey = "";
+    state.discoverAutoFetch.linearKey = "";
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    toggleUseCasePanel();
+    renderDiscoverStepper();
+  }));
 
   el.provider.addEventListener("change", () => {
     setDefaultModelByProvider();
@@ -3155,7 +5315,12 @@ function bindEvents() {
     toggleCloudConfig();
     renderTaskSummary();
   });
+  el.enableCloudPromotion?.addEventListener("change", () => {
+    toggleCloudConfig();
+    renderTaskSummary();
+  });
   el.taskType.addEventListener("change", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     toggleUseCasePanel();
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
@@ -3167,6 +5332,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.modernizationLanguage.addEventListener("change", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     if (isCodeModernizationMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -3175,6 +5341,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbSource.addEventListener("change", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     if (isDatabaseConversionMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -3183,6 +5350,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbTarget.addEventListener("change", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     if (isDatabaseConversionMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -3191,6 +5359,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.objectives.addEventListener("input", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     el.objectives.dataset.autogen = "0";
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
@@ -3200,6 +5369,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.legacyCode.addEventListener("input", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
     }
@@ -3207,6 +5377,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbSchema.addEventListener("input", () => {
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
     }
@@ -3216,8 +5387,12 @@ function bindEvents() {
 
   el.wizardContinue.addEventListener("click", async () => {
     if (state.discoverStep < 4) {
+      const previousStep = state.discoverStep;
       if (!validateDiscoverStep(state.discoverStep)) return;
       setDiscoverStep(state.discoverStep + 1);
+      if (previousStep === 2 && state.discoverStep === 3) {
+        await loadDiscoverAnalystBrief({ force: true }).catch(() => {});
+      }
       return;
     }
     const objectives = String(el.objectives.value || "").trim();
@@ -3225,9 +5400,19 @@ function bindEvents() {
       alert("Please provide the business challenge first.");
       return;
     }
-    if (isCodeModernizationMode() && !(el.legacyCode.value || "").trim()) {
-      alert("Please provide legacy code for code modernization.");
-      return;
+    if (isCodeModernizationMode()) {
+      if (isModernizationRepoScanMode()) {
+        const integration = getIntegrationContext();
+        const provider = String(integration?.brownfield?.repo_provider || "").toLowerCase();
+        const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+        if (provider !== "github" || !repoUrl) {
+          alert("For repository scan mode, connect a GitHub repository in Discover Connect.");
+          return;
+        }
+      } else if (!(el.legacyCode.value || "").trim()) {
+        alert("Please provide legacy code for code modernization, or switch source mode to repository scan.");
+        return;
+      }
     }
     if (isDatabaseConversionMode() && !(el.dbSchema.value || "").trim()) {
       alert("Please provide legacy schema/SQL for database conversion.");
@@ -3255,6 +5440,8 @@ function bindEvents() {
   el.cloneAgentBtn.addEventListener("click", () => cloneAgentFromBuilder().catch((err) => alert(err.message)));
 
   el.tasksRefresh.addEventListener("click", () => refreshTasks().catch((err) => alert(err.message)));
+  el.workItemsRefresh?.addEventListener("click", () => refreshWorkItems().catch((err) => alert(err.message)));
+  el.workItemCreate?.addEventListener("click", () => createWorkItem().catch((err) => alert(err.message)));
 
   el.uploadObjectives.addEventListener("click", () => el.objectivesFile.click());
   el.objectivesFile.addEventListener("change", () => {
@@ -3313,10 +5500,23 @@ function bindEvents() {
   el.viewArtifact.addEventListener("click", () => openSelectedArtifact().catch((err) => alert(err.message)));
   el.runImpactForecast?.addEventListener("click", () => runImpactForecastNow().catch((err) => alert(err.message)));
   el.runDriftScan?.addEventListener("click", () => runDriftScanNow().catch((err) => alert(err.message)));
+  document.querySelectorAll("[data-impact-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.getAttribute("data-impact-tab") || "topology";
+      state.impactDiffTab = tab;
+      renderImpactDiff();
+    });
+  });
   el.closeModal.addEventListener("click", () => el.outputModal.close());
 }
 
 async function init() {
+  [el.brandLogoSidebar, el.brandLogoHero].forEach((imgNode) => {
+    if (!imgNode) return;
+    imgNode.addEventListener("error", () => {
+      imgNode.classList.add("hidden");
+    });
+  });
   bindEvents();
   setDefaultModelByProvider();
   toggleUseCasePanel();
@@ -3329,9 +5529,11 @@ async function init() {
   await refreshRunHistory();
   await refreshArtifactsList();
   await refreshTasks().catch(() => {});
+  await refreshWorkItems().catch(() => {});
   await loadSettings().catch(() => {});
 
   renderRun();
+  renderVerifyPanels();
   setMode(MODES.DASHBOARDS);
 }
 

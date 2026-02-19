@@ -5,6 +5,7 @@ Docker deployment helper for deploying generated components as runnable containe
 from __future__ import annotations
 
 import json
+import re
 import socket
 import time
 import urllib.error
@@ -60,6 +61,86 @@ class DockerDeployer:
             )
 
     @staticmethod
+    def _normalize_node_dockerfile(comp_dir: Path) -> None:
+        dockerfile = comp_dir / "Dockerfile"
+        if not dockerfile.exists():
+            return
+        package_lock = comp_dir / "package-lock.json"
+        if package_lock.exists():
+            return
+        try:
+            text = dockerfile.read_text()
+        except Exception:
+            return
+
+        updated = text
+        updated = updated.replace("COPY package.json package-lock.json ./", "COPY package*.json ./")
+        updated = updated.replace("COPY package.json package-lock.json .", "COPY package*.json .")
+        updated = updated.replace("RUN npm ci", "RUN npm install")
+        if updated != text:
+            dockerfile.write_text(updated)
+
+    @staticmethod
+    def _sync_node_dependencies(comp_dir: Path) -> None:
+        pkg_path = comp_dir / "package.json"
+        if not pkg_path.exists():
+            return
+        try:
+            package_json = json.loads(pkg_path.read_text())
+        except Exception:
+            return
+        if not isinstance(package_json, dict):
+            return
+
+        deps = package_json.get("dependencies", {})
+        dev_deps = package_json.get("devDependencies", {})
+        if not isinstance(deps, dict):
+            deps = {}
+        if not isinstance(dev_deps, dict):
+            dev_deps = {}
+
+        builtin_modules = {
+            "assert", "buffer", "child_process", "cluster", "crypto", "dgram", "dns", "events",
+            "fs", "http", "https", "net", "os", "path", "querystring", "readline", "stream",
+            "string_decoder", "timers", "tls", "tty", "url", "util", "vm", "zlib", "process",
+            "module", "worker_threads", "perf_hooks",
+        }
+
+        require_pat = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
+        import_pat = re.compile(r"""from\s+['"]([^'"]+)['"]""")
+        bare_import_pat = re.compile(r"""^\s*import\s+['"]([^'"]+)['"]""", re.MULTILINE)
+
+        detected: set[str] = set()
+        for js_file in comp_dir.rglob("*.js"):
+            if not js_file.is_file():
+                continue
+            rel = js_file.relative_to(comp_dir).as_posix()
+            if rel.startswith("test/") or "/test/" in rel:
+                continue
+            try:
+                content = js_file.read_text()
+            except Exception:
+                continue
+            for match in require_pat.findall(content) + import_pat.findall(content) + bare_import_pat.findall(content):
+                mod = str(match or "").strip()
+                if not mod or mod.startswith(".") or mod.startswith("/"):
+                    continue
+                pkg = mod.split("/", 1)[0] if not mod.startswith("@") else "/".join(mod.split("/", 2)[:2])
+                if pkg and pkg not in builtin_modules:
+                    detected.add(pkg)
+
+        changed = False
+        for pkg in sorted(detected):
+            if pkg in deps or pkg in dev_deps:
+                continue
+            deps[pkg] = "*"
+            changed = True
+
+        if changed:
+            package_json["dependencies"] = deps
+            pkg_path.write_text(json.dumps(package_json, indent=2, ensure_ascii=True) + "\n")
+
+    @staticmethod
     def _healthcheck(url: str, timeout_sec: int = 60) -> dict[str, Any]:
         start = time.time()
         while time.time() - start < timeout_sec:
@@ -88,6 +169,11 @@ class DockerDeployer:
         comp_dir = ensure_dir(self.root / safe_name(comp_name))
         written = write_files(comp_dir, implementation.get("files", []))
         self._ensure_dockerfile(comp_dir, language)
+        # Generated Dockerfiles from LLM output often require package-lock.json.
+        # Normalize when lockfile is absent so local Docker builds do not fail.
+        if ("node" in str(language).lower()) or ("javascript" in str(language).lower()) or ("typescript" in str(language).lower()):
+            self._sync_node_dependencies(comp_dir)
+            self._normalize_node_dockerfile(comp_dir)
 
         image_tag = f"agent-{safe_name(comp_name)}:{safe_name(str(int(time.time())))}"
         container_name = f"agent-{safe_name(comp_name)}-{safe_name(str(int(time.time())))}"
