@@ -33,7 +33,7 @@ class PipelineRunStore:
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str))
         tmp.replace(path)
 
@@ -176,3 +176,25 @@ class PipelineRunStore:
             return json.loads(state_path.read_text())
         except json.JSONDecodeError:
             return None
+
+    def load_meta(self, run_id: str) -> dict[str, Any] | None:
+        meta_path = self._run_dir(run_id) / "meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            payload = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def load_stage_snapshot(self, run_id: str, stage: int) -> dict[str, Any] | None:
+        if stage < 0:
+            return None
+        path = self._run_dir(run_id) / f"stage_{stage}.json"
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None

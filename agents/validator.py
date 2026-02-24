@@ -80,14 +80,15 @@ Respond ONLY with the JSON, no other text."""
         developer_output = state.get("developer_output", {})
         db_output = state.get("database_engineer_output", {})
         security_output = state.get("security_engineer_output", {})
+        legacy_contract = requirements.get("legacy_functional_contract", []) if isinstance(requirements, dict) else []
 
         return f"""Validate the implementation against the original requirements and acceptance criteria.
 
 ORIGINAL REQUIREMENTS:
-{json.dumps(requirements, indent=2)}
+{self._json_for_prompt(requirements, max_chars=5000, max_depth=4, max_items=12, max_str=300)}
 
 TEST RESULTS:
-{json.dumps(test_results.get("overall_results", {}), indent=2)}
+{self._json_for_prompt(test_results.get("overall_results", {}), max_chars=1800, max_depth=3, max_items=10, max_str=240)}
 
 Test Suites Summary:
 - Unit Tests: {test_results.get("test_suites", {}).get("unit_tests", {}).get("total_tests", 0)} tests, {test_results.get("test_suites", {}).get("unit_tests", {}).get("coverage_percent", 0)}% coverage
@@ -102,13 +103,13 @@ IMPLEMENTATION STATS:
 - Components: {developer_output.get("total_components", 0)}
 
 DATABASE ENGINEER OUTPUT:
-{json.dumps(db_output, indent=2)}
+{self._json_for_prompt(db_output, max_chars=1800, max_depth=3, max_items=10, max_str=220)}
 
 SECURITY ENGINEER OUTPUT:
-{json.dumps(security_output, indent=2)}
+{self._json_for_prompt(security_output, max_chars=1800, max_depth=3, max_items=10, max_str=220)}
 
 LEGACY FUNCTIONAL CONTRACT (if available):
-{json.dumps(requirements.get("legacy_functional_contract", []), indent=2)}
+{self._json_for_prompt(legacy_contract, max_chars=1600, max_depth=3, max_items=8, max_str=220)}
 
 Verify each requirement's acceptance criteria against the implementation and test evidence."""
 

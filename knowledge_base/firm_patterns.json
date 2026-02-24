@@ -1,0 +1,37 @@
+{
+  "documents": [
+    {
+      "id": "firm-pattern-idempotency-v1",
+      "title": "Idempotent financial writes",
+      "content": "Financial write endpoints should require an idempotency key, persist request hash, and return the original response for retried keys with the same payload.",
+      "tags": [
+        "payments",
+        "reliability",
+        "api"
+      ],
+      "source_class": "firm_pattern"
+    },
+    {
+      "id": "firm-pattern-audit-v1",
+      "title": "Audit evidence chain",
+      "content": "Every regulated requirement should map to tests and release evidence. Audit events should include actor, action, timestamp, correlation_id, and outcome.",
+      "tags": [
+        "audit",
+        "compliance",
+        "traceability"
+      ],
+      "source_class": "firm_pattern"
+    },
+    {
+      "id": "firm-pattern-pii-v1",
+      "title": "PII-safe logging",
+      "content": "Logs must avoid raw personal identifiers. Use central redaction, field allowlists, and explicit data retention windows per tenant policy.",
+      "tags": [
+        "privacy",
+        "security",
+        "logging"
+      ],
+      "source_class": "firm_pattern"
+    }
+  ]
+}

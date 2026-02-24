@@ -61,32 +61,36 @@ Return JSON:
         security_output = state.get("security_engineer_output", {})
         deployment_target = str(state.get("deployment_target", "local"))
         cloud_config = state.get("cloud_config", {})
+        implementation_summary = [
+            {
+                "component": i.get("component_name"),
+                "language": i.get("language"),
+                "files": [f.get("path") for f in i.get("files", [])][:16],
+            }
+            for i in developer_output.get("implementations", [])
+        ] if isinstance(developer_output.get("implementations", []), list) else []
         return f"""Plan deployment for this modernization.
 
 ARCHITECTURE:
-{json.dumps(architecture, indent=2)}
+{self._json_for_prompt(architecture, max_chars=3200, max_depth=3, max_items=12, max_str=260)}
 
 IMPLEMENTATIONS:
-{json.dumps([{
-  "component": i.get("component_name"),
-  "language": i.get("language"),
-  "files": [f.get("path") for f in i.get("files", [])]
-} for i in developer_output.get("implementations", [])], indent=2)}
+{self._json_for_prompt(implementation_summary, max_chars=2600, max_depth=3, max_items=12, max_str=240)}
 
 VALIDATION:
-{json.dumps(validation.get("overall_verdict", {}), indent=2)}
+{self._json_for_prompt(validation.get("overall_verdict", {}), max_chars=1200, max_depth=2, max_items=10, max_str=220)}
 
 DATABASE ENGINEERING:
-{json.dumps(db_output, indent=2)}
+{self._json_for_prompt(db_output, max_chars=1800, max_depth=3, max_items=10, max_str=220)}
 
 SECURITY ENGINEERING:
-{json.dumps(security_output, indent=2)}
+{self._json_for_prompt(security_output, max_chars=1800, max_depth=3, max_items=10, max_str=220)}
 
 DEPLOYMENT TARGET:
 {deployment_target}
 
 CLOUD CONFIG (if target=cloud):
-{json.dumps(cloud_config, indent=2)}
+{self._json_for_prompt(cloud_config, max_chars=1200, max_depth=2, max_items=10, max_str=180)}
 
 If target is local: provide Docker-first deployment details.
 If target is cloud: provide an explicit cloud deployment plan aligned to the given platform."""

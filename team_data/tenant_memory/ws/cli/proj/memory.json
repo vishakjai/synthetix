@@ -1,0 +1,79 @@
+{
+  "scope": {
+    "workspace_id": "ws",
+    "client_id": "cli",
+    "project_id": "proj"
+  },
+  "updated_at": "2026-02-19T20:42:13.394747+00:00",
+  "threads": {
+    "smoke-thread": {
+      "messages": [
+        {
+          "id": "memmsg-00169b6844fd",
+          "timestamp": "2026-02-19T20:13:13.274111+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Modernize legacy payments workflow with audit logging",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-634baebba051",
+          "timestamp": "2026-02-19T20:13:13.274669+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Deterministic requirements pack generated via persona + domain pack + knowledge gateway + memory constraints.",
+          "metadata": {
+            "source": "api"
+          }
+        }
+      ]
+    },
+    "summary-fix-smoke": {
+      "messages": [
+        {
+          "id": "memmsg-e6554d0a0a64",
+          "timestamp": "2026-02-19T20:41:41.899046+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Explain business objective and functionality of legacy ASP checkout code",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-5e72e22f8aa8",
+          "timestamp": "2026-02-19T20:41:41.900071+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Deterministic requirements pack generated via persona + domain pack + knowledge gateway + memory constraints.",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-2ec0fa1bf902",
+          "timestamp": "2026-02-19T20:42:13.393954+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Explain business objective and functionality of legacy ASP checkout code",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-24865dfae9fc",
+          "timestamp": "2026-02-19T20:42:13.394736+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Objective understood: Explain business objective and functionality of legacy ASP checkout code Primary functional requirements drafted: Core business flow. Generated requirements pack with 1 functional requirements, 1 BDD feature(s), 0 compliance control(s), and 1 open question(s). Ask me to expand inputs/outputs, acceptance criteria, or compliance rationale.",
+          "metadata": {
+            "source": "api"
+          }
+        }
+      ]
+    }
+  },
+  "constraints": []
+}

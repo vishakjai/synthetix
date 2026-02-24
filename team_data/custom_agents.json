@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "id": "custom-agent-5efb20cbd6",
+    "stage": 1,
+    "role": "Analyst Agent",
+    "display_name": "Strategic Analyst (Clone)",
+    "persona": "Translate business ambiguity into structured, testable requirements with explicit acceptance criteria.",
+    "requirements_pack_profile": "requirements-pack-v2-banking",
+    "is_custom": true,
+    "based_on": "analyst-strategist"
+  }
+]

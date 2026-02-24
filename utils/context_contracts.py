@@ -159,6 +159,41 @@ def _norm_edge_type(raw: str) -> str:
     return _EDGE_MAP.get(key, "depends_on")
 
 
+def _norm_protocol(raw: Any) -> dict[str, Any]:
+    """
+    Normalize protocol metadata to the strict SCM schema contract.
+
+    Allowed keys:
+      - http_method
+      - http_path
+      - topic
+      - queue
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    out: dict[str, Any] = {}
+
+    http_method = raw.get("http_method") or raw.get("method") or raw.get("httpMethod") or raw.get("verb")
+    if http_method:
+        out["http_method"] = str(http_method).strip().upper()
+
+    http_path = raw.get("http_path") or raw.get("path") or raw.get("route") or raw.get("url")
+    if http_path:
+        out["http_path"] = str(http_path).strip()
+
+    topic = raw.get("topic") or raw.get("channel") or raw.get("stream")
+    if topic:
+        out["topic"] = str(topic).strip()
+
+    queue = raw.get("queue") or raw.get("queue_name")
+    if queue:
+        out["queue"] = str(queue).strip()
+
+    # Drop any unsupported keys so schema validation stays strict.
+    return {k: v for k, v in out.items() if v not in ("", None)}
+
+
 def _severity_to_tier(sev: str) -> tuple[int, int, int, str]:
     s = str(sev or "").strip().lower()
     if s == "critical":
@@ -259,13 +294,28 @@ def _build_scm(sil: dict[str, Any], repo_ref: dict[str, Any], generated_by: dict
 
     nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
+    endpoint_alias: dict[str, str] = {}
+
+    def _alias(key: Any, node_id: str) -> None:
+        token = str(key or "").strip()
+        if not token:
+            return
+        endpoint_alias.setdefault(token, node_id)
+        endpoint_alias.setdefault(token.lower(), node_id)
+        tail = token.split(":", 1)[-1]
+        if tail:
+            endpoint_alias.setdefault(tail, node_id)
+            endpoint_alias.setdefault(tail.lower(), node_id)
+
     for idx, raw in enumerate(src_nodes, start=1):
         if not isinstance(raw, dict):
             continue
-        node_id = str(raw.get("id", "")).strip() or f"node:{idx}"
+        original_id = str(raw.get("id", "")).strip()
+        node_id = original_id or f"node:{idx}"
         while node_id in node_ids:
             node_id = f"{node_id}-{idx}"
         node_ids.add(node_id)
+        _alias(original_id, node_id)
 
         metadata = raw.get("metadata", {}) if isinstance(raw.get("metadata", {}), dict) else {}
         repo_paths = metadata.get("repo_paths", []) if isinstance(metadata.get("repo_paths", []), list) else []
@@ -282,12 +332,17 @@ def _build_scm(sil: dict[str, Any], repo_ref: dict[str, Any], generated_by: dict
             if inferred_paths:
                 # Preserve order while removing duplicates.
                 repo_paths = list(dict.fromkeys(inferred_paths))
+        node_name = str(raw.get("name", node_id))
+        _alias(node_name, node_id)
+        for path in repo_paths:
+            _alias(path, node_id)
+            _alias(str(path).replace("\\", "/").rsplit("/", 1)[-1], node_id)
 
         nodes.append(
             {
                 "id": node_id,
                 "type": _norm_node_type(str(raw.get("type", "component"))),
-                "name": str(raw.get("name", node_id)),
+                "name": node_name,
                 "description": str(raw.get("description", "")),
                 "labels": {"source": "sil"},
                 "language": str(metadata.get("language", "")),
@@ -301,12 +356,59 @@ def _build_scm(sil: dict[str, Any], repo_ref: dict[str, Any], generated_by: dict
             }
         )
 
+    def _resolve_or_create_endpoint(token: Any, edge_payload: dict[str, Any]) -> str:
+        raw_token = str(token or "").strip()
+        if not raw_token:
+            return ""
+        if raw_token in node_ids:
+            return raw_token
+        mapped = endpoint_alias.get(raw_token) or endpoint_alias.get(raw_token.lower())
+        if mapped:
+            return mapped
+        tail = raw_token.split(":", 1)[-1]
+        mapped = endpoint_alias.get(tail) or endpoint_alias.get(tail.lower())
+        if mapped:
+            return mapped
+
+        inferred_id = raw_token if ":" in raw_token else f"node:{raw_token}"
+        suffix = 2
+        while inferred_id in node_ids:
+            inferred_id = f"{inferred_id}-{suffix}"
+            suffix += 1
+        evidence = _evidence_list(edge_payload.get("evidence", []))
+        inferred_evidence = evidence or [{"kind": "manual", "note": "inferred endpoint from SIL edge"}]
+        nodes.append(
+            {
+                "id": inferred_id,
+                "type": "component",
+                "name": tail or inferred_id,
+                "description": "Inferred node created to satisfy edge endpoint integrity",
+                "labels": {"source": "sil", "inferred": "true"},
+                "language": "",
+                "repo_paths": [],
+                "runtime": {},
+                "interfaces": [],
+                "data": {},
+                "attributes": {"inferred_from_edge": True},
+                "evidence": inferred_evidence,
+                "confidence": _confidence(0.45, f"inferred from edge endpoint `{raw_token}`"),
+            }
+        )
+        node_ids.add(inferred_id)
+        _alias(raw_token, inferred_id)
+        _alias(tail, inferred_id)
+        return inferred_id
+
     edges: list[dict[str, Any]] = []
     for idx, raw in enumerate(src_edges, start=1):
         if not isinstance(raw, dict):
             continue
-        src = str(raw.get("from", "")).strip()
-        dst = str(raw.get("to", "")).strip()
+        src = str(raw.get("from", "") or raw.get("source", "")).strip()
+        dst = str(raw.get("to", "") or raw.get("target", "")).strip()
+        if not src or not dst:
+            continue
+        src = _resolve_or_create_endpoint(src, raw)
+        dst = _resolve_or_create_endpoint(dst, raw)
         if not src or not dst:
             continue
         edges.append(
@@ -316,7 +418,7 @@ def _build_scm(sil: dict[str, Any], repo_ref: dict[str, Any], generated_by: dict
                 "from": src,
                 "to": dst,
                 "labels": {"source": "sil"},
-                "protocol": raw.get("protocol_metadata", {}) if isinstance(raw.get("protocol_metadata", {}), dict) else {},
+                "protocol": _norm_protocol(raw.get("protocol_metadata", raw.get("protocol", {}))),
                 "evidence": _evidence_list(raw.get("evidence", [])),
                 "confidence": _confidence(raw.get("confidence", 0.55), "from SIL edge extraction"),
             }

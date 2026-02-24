@@ -1,0 +1,56 @@
+{
+  "scope": {
+    "workspace_id": "ws-demo",
+    "client_id": "acme",
+    "project_id": "payments-modernization"
+  },
+  "updated_at": "2026-02-19T20:02:10.465150+00:00",
+  "threads": {
+    "th-001": {
+      "messages": [
+        {
+          "id": "memmsg-967111ee25b9",
+          "timestamp": "2026-02-19T19:59:57.274464+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Enable instant payment initiation with idempotency, audit logging, and GDPR-safe customer status visibility for web and mobile channels.",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-02275bda1014",
+          "timestamp": "2026-02-19T19:59:57.275021+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Deterministic requirements pack generated via persona + domain pack + knowledge gateway + memory constraints.",
+          "metadata": {
+            "source": "api"
+          }
+        }
+      ]
+    }
+  },
+  "constraints": [
+    {
+      "id": "constraint-6991648b7f",
+      "text": "No eventual consistency for ledger writes.",
+      "priority": "critical",
+      "source": "manual",
+      "created_by": "local-user",
+      "created_at": "2026-02-19T20:02:10.464333+00:00",
+      "status": "active",
+      "applies_to": "all"
+    },
+    {
+      "id": "constraint-b26d9d0eca",
+      "text": "At Client ACME, ledger writes must not use eventual consistency.",
+      "priority": "critical",
+      "source": "manual",
+      "created_by": "local-user",
+      "created_at": "2026-02-19T20:00:06.647538+00:00",
+      "status": "active",
+      "applies_to": "all"
+    }
+  ]
+}

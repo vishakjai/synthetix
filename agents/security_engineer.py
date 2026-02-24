@@ -68,23 +68,23 @@ STRICT SECURITY MODE:
 {strict_mode}
 
 ANALYST OUTPUT:
-{json.dumps(analyst, indent=2)}
+{self._json_for_prompt(analyst, max_chars=2600, max_depth=3, max_items=10, max_str=240)}
 
 ARCHITECT OUTPUT:
-{json.dumps(architect, indent=2)}
+{self._json_for_prompt(architect, max_chars=2600, max_depth=3, max_items=10, max_str=240)}
 
 DEVELOPER OUTPUT SUMMARY:
-{json.dumps({
+{self._json_for_prompt({
     "total_components": developer.get("total_components", 0) if isinstance(developer, dict) else 0,
     "total_files": developer.get("total_files", 0) if isinstance(developer, dict) else 0,
     "components": [
         {"name": c.get("component_name"), "language": c.get("language")}
         for c in (developer.get("implementations", []) if isinstance(developer, dict) else [])
     ],
-}, indent=2)}
+}, max_chars=1800, max_depth=3, max_items=12, max_str=220)}
 
 DATABASE ENGINEERING OUTPUT:
-{json.dumps(db_output, indent=2)}
+{self._json_for_prompt(db_output, max_chars=2200, max_depth=3, max_items=10, max_str=240)}
 """
 
     def parse_output(self, raw: str) -> dict[str, Any]:

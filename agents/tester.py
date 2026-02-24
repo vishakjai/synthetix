@@ -52,23 +52,27 @@ Be detailed and implementation-oriented. Provide at least 5 focus_areas and 5 cr
         requirements = state.get("analyst_output", {})
         security_output = state.get("security_engineer_output", {})
         db_output = state.get("database_engineer_output", {})
+        implementation_summary = [
+            {
+                "component": i.get("component_name"),
+                "language": i.get("language"),
+                "files": [f.get("path") for f in i.get("files", [])][:18],
+            }
+            for i in developer_output.get("implementations", [])
+        ] if isinstance(developer_output.get("implementations", []), list) else []
         return f"""Plan practical QA checks for this implementation.
 
 IMPLEMENTATION SUMMARY:
-{json.dumps([{
-  "component": i.get("component_name"),
-  "language": i.get("language"),
-  "files": [f.get("path") for f in i.get("files", [])]
-} for i in developer_output.get("implementations", [])], indent=2)}
+{self._json_for_prompt(implementation_summary, max_chars=3000, max_depth=3, max_items=12, max_str=260)}
 
 REQUIREMENTS:
-{json.dumps(requirements.get("functional_requirements", []), indent=2)}
+{self._json_for_prompt(requirements.get("functional_requirements", []), max_chars=2200, max_depth=3, max_items=10, max_str=260)}
 
 SECURITY ENGINEERING CONTEXT:
-{json.dumps(security_output, indent=2)}
+{self._json_for_prompt(security_output, max_chars=2200, max_depth=3, max_items=10, max_str=240)}
 
 DATABASE ENGINEERING CONTEXT:
-{json.dumps(db_output, indent=2)}"""
+{self._json_for_prompt(db_output, max_chars=2200, max_depth=3, max_items=10, max_str=240)}"""
 
     def parse_output(self, raw: str) -> dict[str, Any]:
         return self.extract_json(raw)

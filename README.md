@@ -24,7 +24,7 @@ This version supports a concrete modernization workflow:
 ## Quick Start
 
 ```bash
-# 1. Create an isolated env (recommended to avoid FastAPI/Gradio conflicts)
+# 1. Create an isolated env (recommended to avoid dependency conflicts)
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -32,13 +32,12 @@ python -m pip install --upgrade pip
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Set your API key
+# 3. Set your API key (optional for deterministic mode)
 export ANTHROPIC_API_KEY="sk-ant-..."
 # or
 export OPENAI_API_KEY="sk-..."
 
-# 4. Run the app
-cd agent_pipeline
+# 4. Run the app from repo root
 python web/server.py
 # Open http://127.0.0.1:8788
 ```
@@ -90,6 +89,32 @@ agent_pipeline/
 - **Persistent run history** — stage outputs/logs are saved to disk and can be reloaded
 - **Export** full pipeline results as JSON
 - **Sample objectives** for quick demos (e-commerce, chat app, ML platform, SaaS)
+- **Analyst Agent-as-a-Service endpoint** with LangGraph DAG, persona registry, tenant memory, and knowledge retrieval
+
+## Analyst AAS API
+
+New API endpoints:
+
+- `GET /api/agents/personas?role=analyst`
+- `POST /api/agents/personas`
+- `POST /api/agents/analyst/analyze-requirement`
+- `POST /api/memory/constraints`
+- `GET /api/memory/thread`
+
+Example:
+
+```bash
+curl -X POST http://127.0.0.1:8788/api/agents/analyst/analyze-requirement \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspace_id": "ws-demo",
+    "client_id": "acme",
+    "project_id": "payments-modernization",
+    "thread_id": "th-001",
+    "persona_id": "senior-banking-analyst",
+    "requirement": "Enable instant payment initiation with idempotency and audit logging."
+  }'
+```
 
 ## Runtime Prerequisites
 

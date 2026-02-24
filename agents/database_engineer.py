@@ -65,6 +65,7 @@ Respond ONLY with JSON, no additional text."""
         target_engine = str(state.get("database_target", "")).strip() or "target_db"
         schema_input = str(state.get("database_schema", "")).strip()
         use_case = str(state.get("use_case", "business_objectives")).strip().lower()
+        schema_excerpt = self._truncate_text(schema_input, max_chars=2400)
 
         return f"""Generate database migration artifacts for this task.
 
@@ -79,14 +80,14 @@ TARGET ENGINE:
 
 LEGACY SCHEMA / SQL INPUT:
 ```sql
-{schema_input}
+{schema_excerpt}
 ```
 
 ANALYST REQUIREMENTS:
-{json.dumps(analyst, indent=2)}
+{self._json_for_prompt(analyst, max_chars=3000, max_depth=3, max_items=12, max_str=260)}
 
 ARCHITECTURE CONTEXT:
-{json.dumps(architect, indent=2)}
+{self._json_for_prompt(architect, max_chars=3000, max_depth=3, max_items=12, max_str=260)}
 
 If use_case is not database_conversion, still provide database hardening/migration guidance for persistence layers."""
 

@@ -117,6 +117,29 @@ Respond ONLY with the JSON, no other text."""
             if legacy_mode
             else "Focus on the target architecture Mermaid diagram; omit legacy/current diagram unless truly needed for context."
         )
+        requirements_compact = self._json_for_prompt(
+            requirements,
+            max_chars=7000,
+            max_depth=4,
+            max_items=12,
+            max_str=420,
+        )
+        legacy_chunks = self._chunk_text_for_prompt(
+            legacy_code,
+            chunk_chars=1800,
+            max_chunks=4,
+        )
+        legacy_sections = (
+            "\n\n".join(
+                [
+                    f"LEGACY CODE CHUNK {idx + 1}/{len(legacy_chunks)}:\n```text\n{chunk}\n```"
+                    for idx, chunk in enumerate(legacy_chunks)
+                ]
+            )
+            if legacy_chunks
+            else "No inline legacy code provided."
+        )
+        db_schema_excerpt = self._truncate_text(db_schema, max_chars=1800)
         return f"""Design a system architecture for the following requirements.
 Optimize for latency, security, and scalability.
 
@@ -124,12 +147,10 @@ USE CASE:
 {use_case}
 
 REQUIREMENTS DOCUMENT:
-{json.dumps(requirements, indent=2)}
+{requirements_compact}
 
 LEGACY CODE CONTEXT:
-```asp
-{legacy_code}
-```
+{legacy_sections}
 
 MODERNIZATION TARGET LANGUAGE:
 {target_lang or "Not specified"}
@@ -138,7 +159,7 @@ DATABASE CONVERSION CONTEXT:
 - Source engine: {db_source or "Not specified"}
 - Target engine: {db_target or "Not specified"}
 ```sql
-{db_schema}
+{db_schema_excerpt}
 ```
 
 DEPLOYMENT TARGET PREFERENCE:

@@ -219,6 +219,14 @@ const el = {
   telemetryMode: document.getElementById("telemetry-mode"),
   includePaths: document.getElementById("include-paths"),
   excludePaths: document.getElementById("exclude-paths"),
+  domainPackSelect: document.getElementById("domain-pack-select"),
+  domainJurisdiction: document.getElementById("domain-jurisdiction"),
+  domainDataClassification: document.getElementById("domain-data-classification"),
+  customDomainPackPanel: document.getElementById("custom-domain-pack-panel"),
+  domainPackJson: document.getElementById("domain-pack-json"),
+  domainPackStatus: document.getElementById("domain-pack-status"),
+  domainPackFile: document.getElementById("domain-pack-file"),
+  uploadDomainPack: document.getElementById("upload-domain-pack"),
   discoverRunAnalystBrief: document.getElementById("discover-run-analyst-brief"),
   discoverAnalystBriefStatus: document.getElementById("discover-analyst-brief-status"),
   discoverAnalystBriefPreview: document.getElementById("discover-analyst-brief-preview"),
@@ -242,6 +250,8 @@ const el = {
   cloneBaseAgent: document.getElementById("clone-base-agent"),
   cloneAgentName: document.getElementById("clone-agent-name"),
   cloneAgentPersona: document.getElementById("clone-agent-persona"),
+  cloneRequirementsPackProfile: document.getElementById("clone-requirements-pack-profile"),
+  cloneRequirementsPackTemplate: document.getElementById("clone-requirements-pack-template"),
   cloneAgentBtn: document.getElementById("clone-agent-btn"),
   cloneAgentMessage: document.getElementById("clone-agent-message"),
   teamAgentCatalog: document.getElementById("team-agent-catalog"),
@@ -257,9 +267,17 @@ const el = {
   workItemCreate: document.getElementById("work-item-create"),
   workItemRecommendation: document.getElementById("work-item-recommendation"),
   workItemsList: document.getElementById("work-items-list"),
-  verifyTraceability: document.getElementById("verify-traceability"),
-  verifyEvidence: document.getElementById("verify-evidence"),
-  verifySecurityGates: document.getElementById("verify-security-gates"),
+  verifyHeaderSubtitle: document.getElementById("verify-header-subtitle"),
+  verifyRunSelect: document.getElementById("verify-run-select"),
+  verifyRefresh: document.getElementById("verify-refresh"),
+  verifyExportPdf: document.getElementById("verify-export-pdf"),
+  verifyExportJson: document.getElementById("verify-export-json"),
+  verifyReleaseReadiness: document.getElementById("verify-release-readiness"),
+  verifyApprovalsPending: document.getElementById("verify-approvals-pending"),
+  verifyLastUpdated: document.getElementById("verify-last-updated"),
+  verifyBaselineDiff: document.getElementById("verify-baseline-diff"),
+  verifyTabButtons: document.getElementById("verify-tab-buttons"),
+  verifyTabContent: document.getElementById("verify-tab-content"),
 
   provider: document.getElementById("provider"),
   model: document.getElementById("model"),
@@ -277,6 +295,7 @@ const el = {
   dbTarget: document.getElementById("db-target"),
   dbSchema: document.getElementById("db-schema"),
   dbFile: document.getElementById("db-file"),
+  dbUploadStatus: document.getElementById("db-upload-status"),
   uploadDb: document.getElementById("upload-db"),
   humanApproval: document.getElementById("human-approval"),
   strictSecurityMode: document.getElementById("strict-security-mode"),
@@ -304,6 +323,11 @@ const el = {
   legacyFile: document.getElementById("legacy-file"),
   uploadLegacy: document.getElementById("upload-legacy"),
   runPipeline: document.getElementById("run-pipeline"),
+  runPause: document.getElementById("run-pause"),
+  runResume: document.getElementById("run-resume"),
+  runRerunStage: document.getElementById("run-rerun-stage"),
+  runIntervene: document.getElementById("run-intervene"),
+  runAbort: document.getElementById("run-abort"),
   taskSummaryCard: document.getElementById("task-summary-card"),
   taskSummaryUseCase: document.getElementById("task-summary-use-case"),
   taskSummaryObjective: document.getElementById("task-summary-objective"),
@@ -332,6 +356,10 @@ const el = {
   currentAgentPanel: document.getElementById("current-agent-panel"),
   agentTabs: document.getElementById("agent-tabs"),
   agentTabPanel: document.getElementById("agent-tab-panel"),
+  collaborationPanel: document.getElementById("collaboration-panel"),
+  collabStageLabel: document.getElementById("collab-stage-label"),
+  collabTabButtons: document.getElementById("collab-tab-buttons"),
+  collabTabContent: document.getElementById("collab-tab-content"),
   liveLogs: document.getElementById("live-logs"),
   flowDiagramSection: document.getElementById("flow-diagram-section"),
 
@@ -409,7 +437,9 @@ const state = {
     error: "",
     data: null,
     requestKey: "",
+    threadId: "",
   },
+  domainPackCatalog: [],
   currentRunId: "",
   currentRun: null,
   eventSource: null,
@@ -445,6 +475,18 @@ const state = {
   teamBuilder: {
     stageAgentIds: {},
   },
+  collaboration: {
+    selectedTab: "chat",
+    cache: {},
+    loadingKey: "",
+    errorByKey: {},
+    drafts: {},
+  },
+  verify: {
+    selectedTab: "summary",
+    selectedRunId: "",
+    loadingRunId: "",
+  },
 };
 
 let mermaidInitialized = false;
@@ -459,6 +501,27 @@ async function api(path, payload, method = "POST") {
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+function setDbUploadStatus(message, isError = false) {
+  if (!el.dbUploadStatus) return;
+  el.dbUploadStatus.textContent = String(message || "").trim() || "Upload SQL/DDL text or Microsoft Access files (.mdb/.accdb).";
+  el.dbUploadStatus.className = `mt-1 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
+}
+
+async function parseAccessDatabaseFile(file) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("target_engine", String(el.dbTarget?.value || "PostgreSQL"));
+  const res = await fetch("/api/discover/access/inspect", {
+    method: "POST",
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(String(data.error || `HTTP ${res.status}`));
   }
   return data;
 }
@@ -493,6 +556,176 @@ function parseLines(text) {
     .filter(Boolean);
 }
 
+function parseCommaValues(text) {
+  return String(text || "")
+    .split(/[\n,]/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function slugifyValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizeCustomDomainPack(rawPack) {
+  if (!rawPack || typeof rawPack !== "object" || Array.isArray(rawPack)) return null;
+  const pack = { ...rawPack };
+  const id = String(pack.id || "").trim() || `custom-${slugifyValue(pack.name || "domain-pack") || "domain-pack"}-v1`;
+  const name = String(pack.name || "").trim() || "Custom Domain Pack";
+  const version = String(pack.version || "").trim() || "1.0.0";
+  const ontology = (pack.ontology && typeof pack.ontology === "object" && !Array.isArray(pack.ontology))
+    ? pack.ontology
+    : {};
+  const capabilities = Array.isArray(ontology.capabilities)
+    ? ontology.capabilities.filter((item) => item && typeof item === "object")
+    : [];
+  return {
+    id,
+    name,
+    version,
+    ontology: {
+      framework: String(ontology.framework || "Capability Taxonomy"),
+      capabilities,
+    },
+    standards: Array.isArray(pack.standards) ? pack.standards.filter((item) => item && typeof item === "object") : [],
+    regulations: Array.isArray(pack.regulations) ? pack.regulations.filter((item) => item && typeof item === "object") : [],
+    gold_patterns: Array.isArray(pack.gold_patterns) ? pack.gold_patterns.filter((item) => item && typeof item === "object") : [],
+    rules: (pack.rules && typeof pack.rules === "object" && !Array.isArray(pack.rules))
+      ? pack.rules
+      : {
+          non_negotiables: [],
+          completeness_checklist: [],
+        },
+    evaluation_harness: (pack.evaluation_harness && typeof pack.evaluation_harness === "object" && !Array.isArray(pack.evaluation_harness))
+      ? pack.evaluation_harness
+      : {
+          minimum_functional_requirements: 6,
+          minimum_non_functional_requirements: 4,
+          minimum_bdd_scenarios: 4,
+          required_quality_gates: ["gherkin_syntax", "requirements_completeness"],
+        },
+  };
+}
+
+function currentDomainPackConfig() {
+  const selected = String(el.domainPackSelect?.value || "auto").trim() || "auto";
+  const jurisdictionRaw = String(el.domainJurisdiction?.value || "AUTO").trim().toUpperCase();
+  const jurisdiction = jurisdictionRaw === "AUTO" ? "" : jurisdictionRaw;
+  const classes = parseCommaValues(el.domainDataClassification?.value || "")
+    .map((entry) => entry.toUpperCase())
+    .filter(Boolean);
+  const dedupClasses = [...new Set(classes)];
+  const payload = {
+    selected,
+    jurisdiction,
+    data_classification: dedupClasses,
+    domain_pack_id: "",
+    custom_domain_pack: null,
+    error: "",
+  };
+  if (selected === "auto") return payload;
+  if (selected === "custom") {
+    const rawJson = String(el.domainPackJson?.value || "").trim();
+    if (!rawJson) {
+      payload.error = "Custom Domain Pack JSON is required when custom mode is selected.";
+      return payload;
+    }
+    try {
+      const parsed = JSON.parse(rawJson);
+      const normalized = normalizeCustomDomainPack(parsed);
+      if (!normalized) {
+        payload.error = "Custom Domain Pack JSON must be a valid object.";
+        return payload;
+      }
+      payload.domain_pack_id = String(normalized.id || "").trim();
+      payload.custom_domain_pack = normalized;
+      return payload;
+    } catch (err) {
+      payload.error = `Invalid JSON: ${err.message || err}`;
+      return payload;
+    }
+  }
+  payload.domain_pack_id = selected;
+  return payload;
+}
+
+function renderDomainPackControls() {
+  const selected = String(el.domainPackSelect?.value || "auto").trim() || "auto";
+  if (el.customDomainPackPanel) {
+    el.customDomainPackPanel.classList.toggle("hidden", selected !== "custom");
+  }
+  const config = currentDomainPackConfig();
+  if (!el.domainPackStatus) return;
+  if (config.error) {
+    el.domainPackStatus.textContent = config.error;
+    el.domainPackStatus.className = "mt-2 text-[11px] text-rose-700";
+    return;
+  }
+  if (selected === "auto") {
+    el.domainPackStatus.textContent = "Using automatic domain-pack selection from objective context.";
+    el.domainPackStatus.className = "mt-2 text-[11px] text-slate-700";
+    return;
+  }
+  if (selected === "custom") {
+    const packName = String(config.custom_domain_pack?.name || "Custom Domain Pack");
+    const packId = String(config.custom_domain_pack?.id || "");
+    el.domainPackStatus.textContent = `Custom Domain Pack ready: ${packName}${packId ? ` (${packId})` : ""}.`;
+    el.domainPackStatus.className = "mt-2 text-[11px] text-emerald-700";
+    return;
+  }
+  const catalog = Array.isArray(state.domainPackCatalog) ? state.domainPackCatalog : [];
+  const found = catalog.find((item) => String(item.id || "") === selected);
+  const name = found?.name || selected;
+  el.domainPackStatus.textContent = `Using built-in Domain Pack: ${name}${found?.version ? ` (v${found.version})` : ""}.`;
+  el.domainPackStatus.className = "mt-2 text-[11px] text-slate-700";
+}
+
+function renderDomainPackCatalog() {
+  if (!el.domainPackSelect) return;
+  const selected = String(el.domainPackSelect.value || "auto").trim() || "auto";
+  const fallback = [
+    { id: "banking-core-v1", name: "Banking Core Domain Pack", version: "1.0.0" },
+    { id: "software-general-v1", name: "General Software Domain Pack", version: "1.0.0" },
+  ];
+  const catalog = Array.isArray(state.domainPackCatalog) && state.domainPackCatalog.length
+    ? state.domainPackCatalog
+    : fallback;
+  const options = [
+    `<option value="auto">Auto-detect from objective</option>`,
+    ...catalog.map((pack) => {
+      const id = String(pack.id || "").trim();
+      if (!id) return "";
+      const name = String(pack.name || id);
+      const version = String(pack.version || "").trim();
+      const label = version ? `${name} (v${version})` : name;
+      return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+    }),
+    `<option value="custom">Custom Domain Pack (JSON)</option>`,
+  ].filter(Boolean);
+  el.domainPackSelect.innerHTML = options.join("");
+  if ([...el.domainPackSelect.options].some((opt) => String(opt.value) === selected)) {
+    el.domainPackSelect.value = selected;
+  } else {
+    el.domainPackSelect.value = "auto";
+  }
+  renderDomainPackControls();
+}
+
+async function loadDomainPackCatalog() {
+  try {
+    const data = await api("/api/domain-packs", null);
+    state.domainPackCatalog = Array.isArray(data?.domain_packs)
+      ? data.domain_packs.filter((item) => item && typeof item === "object" && String(item.id || "").trim())
+      : [];
+  } catch (_err) {
+    state.domainPackCatalog = [];
+  }
+  renderDomainPackCatalog();
+}
+
 function downloadText(filename, content, mimeType = "text/plain;charset=utf-8") {
   const blob = new Blob([String(content || "")], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -510,6 +743,221 @@ function getAnalystOutput(run) {
   return (fromState && typeof fromState === "object") ? fromState : {};
 }
 
+function resolveLegacyInventory(output) {
+  if (!output || typeof output !== "object") return {};
+  const reqPack = (output.requirements_pack && typeof output.requirements_pack === "object")
+    ? output.requirements_pack
+    : {};
+  const direct = (output.legacy_code_inventory && typeof output.legacy_code_inventory === "object")
+    ? output.legacy_code_inventory
+    : {};
+  const fromPack = (reqPack.legacy_code_inventory && typeof reqPack.legacy_code_inventory === "object")
+    ? reqPack.legacy_code_inventory
+    : {};
+  const base = Object.keys(direct).length ? direct : fromPack;
+  if (Object.keys(base).length) {
+    const vb6 = (output.vb6_analysis && typeof output.vb6_analysis === "object")
+      ? output.vb6_analysis
+      : ((reqPack.vb6_analysis && typeof reqPack.vb6_analysis === "object") ? reqPack.vb6_analysis : {});
+    if (!Array.isArray(base.vb6_projects) && Array.isArray(vb6.projects)) {
+      return { ...base, vb6_projects: vb6.projects };
+    }
+    return base;
+  }
+
+  const vb6 = (output.vb6_analysis && typeof output.vb6_analysis === "object")
+    ? output.vb6_analysis
+    : ((reqPack.vb6_analysis && typeof reqPack.vb6_analysis === "object") ? reqPack.vb6_analysis : {});
+  if (!Object.keys(vb6).length) return {};
+  const formsRaw = Array.isArray(vb6.forms) ? vb6.forms : [];
+  const forms = formsRaw.slice(0, 80).map((row) => {
+    const raw = String(row || "").trim();
+    let formType = "Form";
+    let formName = raw;
+    if (raw.includes(":")) {
+      const [head, ...rest] = raw.split(":");
+      formType = String(head || "Form").trim() || "Form";
+      formName = String(rest.join(":") || raw).trim();
+    }
+    return {
+      form_name: formName || "Form",
+      form_type: formType,
+      business_use: "Business workflow executed through event-driven UI controls.",
+      controls: [],
+      event_handlers: [],
+    };
+  });
+  const activex = Array.isArray(vb6.activex_dependencies) ? vb6.activex_dependencies : [];
+  const projects = Array.isArray(vb6.projects) ? vb6.projects : [];
+  return {
+    summary: `Detected ${projects.length} VB6 project(s), ${forms.length} forms/usercontrols, ${Array.isArray(vb6.controls) ? vb6.controls.length : 0} controls, ${activex.length} ActiveX/COM dependencies.`,
+    vb6_projects: projects,
+    forms,
+    activex_controls: activex,
+    dll_dependencies: activex.filter((x) => String(x || "").toUpperCase().endsWith(".DLL")),
+    ocx_dependencies: activex.filter((x) => String(x || "").toUpperCase().endsWith(".OCX")),
+    event_handlers: Array.isArray(vb6.event_handlers) ? vb6.event_handlers : [],
+    project_members: Array.isArray(vb6.project_members) ? vb6.project_members : [],
+    database_tables: [],
+    procedures: [],
+    input_signals: [],
+    side_effect_patterns: [],
+    business_rules_catalog: Array.isArray(vb6.business_rules_catalog) ? vb6.business_rules_catalog : [],
+    vb6_analysis: vb6,
+  };
+}
+
+function resolveLegacyForms(legacyInventory) {
+  const fromInventory = Array.isArray(legacyInventory?.forms) ? legacyInventory.forms : [];
+  const projects = Array.isArray(legacyInventory?.vb6_projects) ? legacyInventory.vb6_projects : [];
+  const synthesized = [];
+  projects.forEach((project, idx) => {
+    const projectName = String(project?.project_name || `VB6-Project-${idx + 1}`).trim();
+    const forms = Array.isArray(project?.forms) ? project.forms : [];
+    forms.forEach((raw) => {
+      const text = String(raw || "").trim();
+      if (!text) return;
+      let formType = "Form";
+      let formName = text;
+      if (text.includes(":")) {
+        const [head, ...rest] = text.split(":");
+        formType = String(head || "Form").trim() || "Form";
+        formName = String(rest.join(":") || text).trim();
+      }
+      synthesized.push({
+        form_name: `${projectName}::${formName}`,
+        form_type: formType,
+        business_use: "Business workflow executed through event-driven UI controls.",
+        controls: [],
+        event_handlers: [],
+      });
+    });
+  });
+  const merged = [...fromInventory, ...synthesized];
+  const deduped = [];
+  const seen = new Set();
+  merged.forEach((row, idx) => {
+    if (!row || typeof row !== "object") return;
+    const formType = String(row.form_type || "Form").trim() || "Form";
+    const formName = String(row.form_name || `Form-${idx + 1}`).trim();
+    if (!formName) return;
+    const key = `${formType}|${formName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push({
+      form_name: formName,
+      form_type: formType,
+      business_use: String(row.business_use || "Business workflow executed through event-driven UI controls."),
+      controls: Array.isArray(row.controls) ? row.controls : [],
+      event_handlers: Array.isArray(row.event_handlers) ? row.event_handlers : [],
+    });
+  });
+  return deduped;
+}
+
+function resolveBusinessRulesCatalog(output, legacyInventory) {
+  const reqPack = (output?.requirements_pack && typeof output.requirements_pack === "object")
+    ? output.requirements_pack
+    : {};
+  const direct = Array.isArray(output?.business_rules_catalog) ? output.business_rules_catalog : [];
+  const fromLegacy = Array.isArray(legacyInventory?.business_rules_catalog) ? legacyInventory.business_rules_catalog : [];
+  const fromPack = Array.isArray(reqPack.business_rules_catalog) ? reqPack.business_rules_catalog : [];
+  const vb6 = (legacyInventory?.vb6_analysis && typeof legacyInventory.vb6_analysis === "object")
+    ? legacyInventory.vb6_analysis
+    : {};
+  const fromVb6 = Array.isArray(vb6.business_rules_catalog) ? vb6.business_rules_catalog : [];
+  const rows = direct.length ? direct : (fromLegacy.length ? fromLegacy : (fromPack.length ? fromPack : fromVb6));
+  const normalized = [];
+  const seen = new Set();
+  rows.forEach((row, idx) => {
+    if (typeof row === "string") {
+      const text = String(row || "").trim();
+      if (!text) return;
+      const key = `text|${text}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      normalized.push({
+        id: `BR-${String(idx + 1).padStart(3, "0")}`,
+        rule_type: "derived_rule",
+        statement: text,
+        scope: "legacy-code",
+        evidence: "",
+      });
+      return;
+    }
+    if (!row || typeof row !== "object") return;
+    const statement = String(row.statement || "").trim();
+    if (!statement) return;
+    const id = String(row.id || `BR-${String(idx + 1).padStart(3, "0")}`).trim();
+    const ruleType = String(row.rule_type || "derived_rule").trim() || "derived_rule";
+    const scope = String(row.scope || "legacy-code").trim() || "legacy-code";
+    const evidence = String(row.evidence || "").trim();
+    const key = `${ruleType}|${statement}|${scope}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    normalized.push({ id, rule_type: ruleType, statement, scope, evidence, confidence: row.confidence });
+  });
+  return normalized;
+}
+
+function groupBusinessRulesByType(rules) {
+  const rows = Array.isArray(rules) ? rules : [];
+  const order = [
+    "business_objective",
+    "workflow_orchestration",
+    "calculation_logic",
+    "threshold_rule",
+    "decision_branching",
+    "input_validation",
+    "date_rule",
+    "data_persistence",
+    "derived_rule",
+  ];
+  const rank = new Map(order.map((key, idx) => [key, idx]));
+  const pretty = (value) => String(value || "derived_rule")
+    .replace(/[_\s]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+
+  const groups = new Map();
+  rows.forEach((row) => {
+    if (!row || typeof row !== "object") return;
+    const key = String(row.rule_type || "derived_rule").trim() || "derived_rule";
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label: pretty(key),
+        count: 0,
+        rules: [],
+      });
+    }
+    const group = groups.get(key);
+    group.count += 1;
+    group.rules.push(row);
+  });
+
+  return [...groups.values()].sort((a, b) => {
+    const ar = rank.has(a.key) ? rank.get(a.key) : 999;
+    const br = rank.has(b.key) ? rank.get(b.key) : 999;
+    if (ar !== br) return ar - br;
+    return String(a.label).localeCompare(String(b.label));
+  });
+}
+
+function resolveLegacySkillProfile(output) {
+  if (!output || typeof output !== "object") return {};
+  const reqPack = (output.requirements_pack && typeof output.requirements_pack === "object")
+    ? output.requirements_pack
+    : {};
+  const direct = (output.legacy_skill_profile && typeof output.legacy_skill_profile === "object")
+    ? output.legacy_skill_profile
+    : {};
+  const fromPack = (reqPack.legacy_skill_profile && typeof reqPack.legacy_skill_profile === "object")
+    ? reqPack.legacy_skill_profile
+    : {};
+  return Object.keys(direct).length ? direct : fromPack;
+}
+
 function buildAnalystTechReqMarkdown(output) {
   if (!output || typeof output !== "object") {
     return "# Technical Requirements Document\n\nNo analyst output available.";
@@ -521,7 +969,96 @@ function buildAnalystTechReqMarkdown(output) {
   const functional = Array.isArray(output.functional_requirements) ? output.functional_requirements : [];
   const nonFunctional = Array.isArray(output.non_functional_requirements) ? output.non_functional_requirements : [];
   const contracts = Array.isArray(output.legacy_functional_contract) ? output.legacy_functional_contract : [];
+  const legacyInventory = resolveLegacyInventory(output);
+  const reqPack = (output.requirements_pack && typeof output.requirements_pack === "object") ? output.requirements_pack : {};
+  const legacySkill = resolveLegacySkillProfile(output);
+  const legacyForms = resolveLegacyForms(legacyInventory);
+  const vb6Projects = Array.isArray(legacyInventory.vb6_projects) ? legacyInventory.vb6_projects : [];
+  const legacyRules = resolveBusinessRulesCatalog(output, legacyInventory);
+  const groupedLegacyRules = groupBusinessRulesByType(legacyRules);
+  const vb6Analysis = (legacyInventory.vb6_analysis && typeof legacyInventory.vb6_analysis === "object")
+    ? legacyInventory.vb6_analysis
+    : {};
+  const uiEventMap = Array.isArray(legacyInventory.ui_event_map)
+    ? legacyInventory.ui_event_map
+    : (Array.isArray(vb6Analysis.ui_event_map) ? vb6Analysis.ui_event_map : []);
+  const sqlCatalog = Array.isArray(legacyInventory.sql_query_catalog)
+    ? legacyInventory.sql_query_catalog
+    : (Array.isArray(vb6Analysis.sql_query_catalog) ? vb6Analysis.sql_query_catalog : []);
+  const comSurface = (legacyInventory.com_surface_map && typeof legacyInventory.com_surface_map === "object")
+    ? legacyInventory.com_surface_map
+    : ((vb6Analysis.com_surface_map && typeof vb6Analysis.com_surface_map === "object") ? vb6Analysis.com_surface_map : {});
+  const win32Declares = Array.isArray(legacyInventory.win32_declares)
+    ? legacyInventory.win32_declares
+    : (Array.isArray(vb6Analysis.win32_declares) ? vb6Analysis.win32_declares : []);
+  const errorProfile = (legacyInventory.error_handling_profile && typeof legacyInventory.error_handling_profile === "object")
+    ? legacyInventory.error_handling_profile
+    : ((vb6Analysis.error_handling_profile && typeof vb6Analysis.error_handling_profile === "object") ? vb6Analysis.error_handling_profile : {});
+  const pitfallDetectors = Array.isArray(legacyInventory.pitfall_detectors)
+    ? legacyInventory.pitfall_detectors
+    : (Array.isArray(vb6Analysis.pitfall_detectors) ? vb6Analysis.pitfall_detectors : []);
+  const readiness = (legacyInventory.modernization_readiness && typeof legacyInventory.modernization_readiness === "object")
+    ? legacyInventory.modernization_readiness
+    : ((vb6Analysis.modernization_readiness && typeof vb6Analysis.modernization_readiness === "object") ? vb6Analysis.modernization_readiness : {});
+  const sourceTargetProfile = (legacyInventory.source_target_modernization_profile && typeof legacyInventory.source_target_modernization_profile === "object")
+    ? legacyInventory.source_target_modernization_profile
+    : ((vb6Analysis.source_target_modernization_profile && typeof vb6Analysis.source_target_modernization_profile === "object")
+      ? vb6Analysis.source_target_modernization_profile
+      : ((output.source_target_modernization_profile && typeof output.source_target_modernization_profile === "object")
+        ? output.source_target_modernization_profile
+        : ((reqPack.source_target_modernization_profile && typeof reqPack.source_target_modernization_profile === "object")
+          ? reqPack.source_target_modernization_profile
+          : {})));
+  const projectBusinessSummaries = Array.isArray(legacyInventory.project_business_summaries)
+    ? legacyInventory.project_business_summaries
+    : (Array.isArray(vb6Analysis.project_business_summaries)
+      ? vb6Analysis.project_business_summaries
+      : (Array.isArray(output.project_business_summaries)
+        ? output.project_business_summaries
+        : (Array.isArray(reqPack.project_business_summaries) ? reqPack.project_business_summaries : [])));
+  const fileTypeCoverage = (legacyInventory.vb6_file_type_coverage && typeof legacyInventory.vb6_file_type_coverage === "object")
+    ? legacyInventory.vb6_file_type_coverage
+    : ((vb6Analysis.vb6_file_type_coverage && typeof vb6Analysis.vb6_file_type_coverage === "object") ? vb6Analysis.vb6_file_type_coverage : {});
+  const basModuleSummary = (legacyInventory.bas_module_summary && typeof legacyInventory.bas_module_summary === "object")
+    ? legacyInventory.bas_module_summary
+    : ((vb6Analysis.bas_module_summary && typeof vb6Analysis.bas_module_summary === "object") ? vb6Analysis.bas_module_summary : {});
+  const binaryCompanionFiles = Array.isArray(legacyInventory.binary_companion_files)
+    ? legacyInventory.binary_companion_files
+    : (Array.isArray(vb6Analysis.binary_companion_files) ? vb6Analysis.binary_companion_files : []);
+  const projectFormCount = vb6Projects.reduce((acc, project) => {
+    const explicit = Number(project?.forms_count || 0);
+    if (Number.isFinite(explicit) && explicit > 0) return acc + explicit;
+    return acc + (Array.isArray(project?.forms) ? project.forms.length : 0);
+  }, 0);
+  const formsDisplayCount = Math.max(legacyForms.length, projectFormCount);
+  const activexControls = Array.isArray(legacyInventory.activex_controls) ? legacyInventory.activex_controls : [];
+  const dllDeps = Array.isArray(legacyInventory.dll_dependencies) ? legacyInventory.dll_dependencies : [];
+  const ocxDeps = Array.isArray(legacyInventory.ocx_dependencies) ? legacyInventory.ocx_dependencies : [];
+  const legacyEvents = Array.isArray(legacyInventory.event_handlers) ? legacyInventory.event_handlers : [];
+  const legacyMembers = Array.isArray(legacyInventory.project_members) ? legacyInventory.project_members : [];
+  const legacyTables = Array.isArray(legacyInventory.database_tables) ? legacyInventory.database_tables : [];
+  const legacyProcedures = Array.isArray(legacyInventory.procedures) ? legacyInventory.procedures : [];
+  const legacyInputs = Array.isArray(legacyInventory.input_signals) ? legacyInventory.input_signals : [];
+  const legacySideEffects = Array.isArray(legacyInventory.side_effect_patterns) ? legacyInventory.side_effect_patterns : [];
   const risks = Array.isArray(output.risks) ? output.risks : [];
+  const domainPack = (output.domain_pack && typeof output.domain_pack === "object")
+    ? output.domain_pack
+    : ((reqPack.domain_pack_ref && typeof reqPack.domain_pack_ref === "object") ? reqPack.domain_pack_ref : {});
+  const capabilityMapping = (output.capability_mapping && typeof output.capability_mapping === "object")
+    ? output.capability_mapping
+    : ((reqPack.capability_mapping && typeof reqPack.capability_mapping === "object") ? reqPack.capability_mapping : {});
+  const regulatoryConstraints = Array.isArray(output.regulatory_constraints)
+    ? output.regulatory_constraints
+    : (Array.isArray(reqPack.regulatory_constraints_applied) ? reqPack.regulatory_constraints_applied : []);
+  const bddContract = (output.bdd_contract && typeof output.bdd_contract === "object")
+    ? output.bdd_contract
+    : ((reqPack.bdd_contract && typeof reqPack.bdd_contract === "object") ? reqPack.bdd_contract : {});
+  const bddFeatures = Array.isArray(bddContract.features) ? bddContract.features : [];
+  const qualityGates = Array.isArray(output.quality_gates) ? output.quality_gates : (Array.isArray(reqPack.quality_gates) ? reqPack.quality_gates : []);
+  const acceptanceMap = Array.isArray(output.acceptance_test_mapping)
+    ? output.acceptance_test_mapping
+    : (Array.isArray(reqPack.acceptance_test_mapping) ? reqPack.acceptance_test_mapping : []);
+  const openQuestions = Array.isArray(output.open_questions) ? output.open_questions : (Array.isArray(reqPack.open_questions) ? reqPack.open_questions : []);
   const lines = [
     "# Technical Requirements Document",
     "",
@@ -533,6 +1070,11 @@ function buildAnalystTechReqMarkdown(output) {
     "",
     "## Business Objective Summary",
     String(walkthrough.business_objective_summary || "Not provided"),
+    "",
+    "## Selected Legacy Skill",
+    `- Skill: ${String(legacySkill.selected_skill_name || "Generic Legacy Skill")} (${String(legacySkill.selected_skill_id || "generic_legacy")})`,
+    `- Confidence: ${String(legacySkill.confidence || "n/a")}`,
+    `- Rationale: ${Array.isArray(legacySkill.reasons) ? legacySkill.reasons.map((x) => String(x || "")).filter(Boolean).join("; ") || "n/a" : "n/a"}`,
     "",
     "## Requirements Understanding",
   ];
@@ -586,6 +1128,193 @@ function buildAnalystTechReqMarkdown(output) {
   });
   if (!contracts.length) lines.push("- Not provided");
 
+  lines.push("", "## Legacy Code Inventory");
+  lines.push(String(legacyInventory.summary || "No granular legacy inventory available."));
+  lines.push("", `### VB6 projects (${vb6Projects.length})`);
+  vb6Projects.forEach((project, idx) => {
+    const projectName = String(project.project_name || `VB6-Project-${idx + 1}`);
+    const projectFile = String(project.project_file || "n/a");
+    const projectType = String(project.project_type || "unknown");
+    const startup = String(project.startup_object || "n/a");
+    const memberCount = Number(project.member_count || 0);
+    const members = Array.isArray(project.member_files) ? project.member_files : [];
+    const forms = Array.isArray(project.forms) ? project.forms : [];
+    const controls = Array.isArray(project.controls) ? project.controls : [];
+    const activex = Array.isArray(project.activex_dependencies) ? project.activex_dependencies : [];
+    const objective = String(project.business_objective_hypothesis || "").trim();
+    const capabilities = Array.isArray(project.key_business_capabilities) ? project.key_business_capabilities : [];
+    const workflows = Array.isArray(project.primary_workflows) ? project.primary_workflows : [];
+    const technical = (project.technical_components && typeof project.technical_components === "object") ? project.technical_components : {};
+    const touchpoints = (project.data_touchpoints && typeof project.data_touchpoints === "object") ? project.data_touchpoints : {};
+    const integrationHints = Array.isArray(technical.integration_hints) ? technical.integration_hints : [];
+    const tables = Array.isArray(touchpoints.tables) ? touchpoints.tables : [];
+    const procedures = Array.isArray(touchpoints.procedures) ? touchpoints.procedures : [];
+    const inputSignals = Array.isArray(touchpoints.input_signals) ? touchpoints.input_signals : [];
+    const outputSignals = Array.isArray(touchpoints.output_signals) ? touchpoints.output_signals : [];
+    const modernization = Array.isArray(project.modernization_considerations) ? project.modernization_considerations : [];
+    lines.push(`- ${projectName} | file: ${projectFile} | type: ${projectType} | startup: ${startup}`);
+    if (objective) lines.push(`  - Business objective hypothesis: ${objective}`);
+    if (capabilities.length) lines.push(`  - Key business capabilities: ${capabilities.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
+    lines.push(`  - Members (${memberCount || members.length}): ${members.slice(0, 25).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+    lines.push(`  - Forms (${forms.length}): ${forms.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+    lines.push(`  - Controls (${controls.length}): ${controls.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+    lines.push(`  - ActiveX/COM (${activex.length}): ${activex.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+    lines.push(`  - Data touchpoints | tables: ${tables.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"} | procedures: ${procedures.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"}`);
+    lines.push(`  - I/O signals | inputs: ${inputSignals.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"} | outputs: ${outputSignals.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"}`);
+    if (integrationHints.length) lines.push(`  - Integration hints: ${integrationHints.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
+    if (workflows.length) lines.push(`  - Primary workflows: ${workflows.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(" | ")}`);
+    if (modernization.length) lines.push(`  - Modernization considerations: ${modernization.slice(0, 10).map((x) => String(x || "")).filter(Boolean).join(" | ")}`);
+  });
+  if (!vb6Projects.length) lines.push("- No VB6 project-level metadata extracted.");
+  lines.push("", "### VB6 file-type coverage");
+  const fileTypeRows = Object.entries(fileTypeCoverage || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  lines.push(`- Coverage: ${fileTypeRows.map(([k, v]) => `${String(k)}=${String(v)}`).join(", ") || "none"}`);
+  lines.push(`- .bas module summary: modules=${String(basModuleSummary.module_count ?? 0)}, procedures=${String(basModuleSummary.procedure_count ?? 0)}`);
+  if (Array.isArray(basModuleSummary.modules) && basModuleSummary.modules.length) {
+    lines.push(`- .bas modules: ${basModuleSummary.modules.slice(0, 40).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
+  }
+  if (binaryCompanionFiles.length) {
+    lines.push(`- Binary companions (${binaryCompanionFiles.length}): ${binaryCompanionFiles.slice(0, 40).map((row) => String(row.path || "")).filter(Boolean).join(", ")}`);
+  }
+  lines.push("", `### Project-by-project business summary (${projectBusinessSummaries.length})`);
+  projectBusinessSummaries.forEach((row, idx) => {
+    const projectName = String(row.project_name || `Project-${idx + 1}`);
+    const objective = String(row.business_objective || "").trim();
+    const capabilities = Array.isArray(row.business_capabilities) ? row.business_capabilities : [];
+    const workflows = Array.isArray(row.primary_workflows) ? row.primary_workflows : [];
+    const technical = (row.technical_components && typeof row.technical_components === "object") ? row.technical_components : {};
+    const dependencies = Array.isArray(technical.dependencies) ? technical.dependencies : [];
+    const risk = (row.risk && typeof row.risk === "object") ? row.risk : {};
+    const variants = (row.summary_variants && typeof row.summary_variants === "object") ? row.summary_variants : {};
+    lines.push(`- ${projectName} | risk=${String(risk.tier || "n/a")} (${String(risk.score ?? "n/a")})`);
+    if (objective) lines.push(`  - Objective: ${objective}`);
+    if (capabilities.length) lines.push(`  - Capabilities: ${capabilities.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
+    if (workflows.length) lines.push(`  - Workflows: ${workflows.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(" | ")}`);
+    lines.push(`  - Components: forms=${Array.isArray(technical.forms) ? technical.forms.length : 0}, controls=${Array.isArray(technical.controls) ? technical.controls.length : 0}, dependencies=${dependencies.length}`);
+    if (String(variants.quick || "").trim()) lines.push(`  - Quick summary: ${String(variants.quick || "").trim()}`);
+    if (String(variants.technical || "").trim()) lines.push(`  - Technical summary: ${String(variants.technical || "").trim()}`);
+    if (String(variants.risk || "").trim()) lines.push(`  - Risk summary: ${String(variants.risk || "").trim()}`);
+  });
+  if (!projectBusinessSummaries.length) lines.push("- No per-project business summary generated.");
+
+  lines.push("", `### Forms and business use (${formsDisplayCount})`);
+  if (formsDisplayCount !== legacyForms.length) {
+    lines.push(`- Showing ${legacyForms.length} extracted form entries; project inventory indicates ${formsDisplayCount} total forms/usercontrols.`);
+  }
+  legacyForms.forEach((form, idx) => {
+    const formType = String(form.form_type || "Form");
+    const formName = String(form.form_name || `Form-${idx + 1}`);
+    const businessUse = String(form.business_use || "Business workflow executed through event-driven UI controls.");
+    const controls = Array.isArray(form.controls) ? form.controls : [];
+    const handlers = Array.isArray(form.event_handlers) ? form.event_handlers : [];
+    lines.push(`- ${formType} ${formName} | Business use: ${businessUse}`);
+    lines.push(`  - Controls (${controls.length}): ${controls.slice(0, 25).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+    lines.push(`  - Event handlers (${handlers.length}): ${handlers.slice(0, 25).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  });
+  if (!legacyForms.length) lines.push("- No VB6 form/usercontrol metadata extracted.");
+
+  lines.push("", `### Business Rules catalog (${legacyRules.length})`);
+  if (groupedLegacyRules.length) {
+    lines.push(`- Rule groups: ${groupedLegacyRules.map((g) => `${g.label} (${g.count})`).join(", ")}`);
+  }
+  groupedLegacyRules.forEach((group) => {
+    lines.push(`- ${group.label} (${group.count})`);
+    group.rules.forEach((rule, idx) => {
+      const rid = String(rule.id || `BR-${String(idx + 1).padStart(3, "0")}`);
+      const statement = String(rule.statement || "");
+      const scope = String(rule.scope || "legacy-code");
+      const evidence = String(rule.evidence || "");
+      lines.push(`  - ${rid}: ${statement}`);
+      lines.push(`    - Scope: ${scope}`);
+      if (evidence) lines.push(`    - Evidence: ${evidence}`);
+    });
+  });
+  if (!legacyRules.length) lines.push("- No deterministic business rules extracted from legacy code.");
+
+  lines.push("", "### VB6 modernization readiness");
+  lines.push(`- Score: ${String(readiness.score ?? "n/a")}/100`);
+  lines.push(`- Risk tier: ${String(readiness.risk_tier || "n/a")}`);
+  lines.push(`- Recommended strategy: ${String(readiness.recommended_strategy?.name || readiness.recommended_strategy?.id || "n/a")}`);
+  if (String(readiness.recommended_strategy?.rationale || "").trim()) {
+    lines.push(`- Rationale: ${String(readiness.recommended_strategy.rationale)}`);
+  }
+  const requiredActions = Array.isArray(readiness.required_actions) ? readiness.required_actions : [];
+  if (requiredActions.length) {
+    lines.push(`- Required actions: ${requiredActions.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
+  }
+  const sourceProfile = (sourceTargetProfile.source && typeof sourceTargetProfile.source === "object") ? sourceTargetProfile.source : {};
+  const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object") ? sourceTargetProfile.target : {};
+  const summaryVariants = (sourceTargetProfile.summary_variants && typeof sourceTargetProfile.summary_variants === "object")
+    ? sourceTargetProfile.summary_variants
+    : {};
+  const modernizationRisks = Array.isArray(sourceTargetProfile.modernization_risks) ? sourceTargetProfile.modernization_risks : [];
+  lines.push("", "### Source and target modernization profile");
+  lines.push(`- Source: ${String(sourceProfile.language || "Unknown")} | ecosystem=${String(sourceProfile.ecosystem || "n/a")} | repo=${String(sourceProfile.repo || "n/a")} | projects=${String(sourceProfile.project_count ?? "n/a")}`);
+  lines.push(`- Target: ${String(targetProfile.language || "Not specified")} | platform=${String(targetProfile.platform || "n/a")} | deployment=${String(targetProfile.deployment_target || "n/a")} | repo=${String(targetProfile.repo || "n/a")}`);
+  if (String(summaryVariants.brief || "").trim()) lines.push(`- Brief summary: ${String(summaryVariants.brief).trim()}`);
+  if (String(summaryVariants.technical || "").trim()) lines.push(`- Technical summary: ${String(summaryVariants.technical).trim()}`);
+  if (String(summaryVariants.risk || "").trim()) lines.push(`- Risk summary: ${String(summaryVariants.risk).trim()}`);
+  if (modernizationRisks.length) {
+    lines.push("- Modernization risks:");
+    modernizationRisks.slice(0, 12).forEach((risk) => lines.push(`  - ${String(risk || "").trim()}`));
+  }
+
+  lines.push("", `### Pitfall detectors (${pitfallDetectors.length})`);
+  pitfallDetectors.forEach((row) => {
+    lines.push(`- ${String(row.id || "VB6-DET")} [${String(row.severity || "medium")}] count=${String(row.count || 0)} | ${String(row.evidence || "")}`);
+  });
+  if (!pitfallDetectors.length) lines.push("- No detector hits");
+
+  lines.push("", `### UI Event Map (${uiEventMap.length})`);
+  uiEventMap.slice(0, 40).forEach((row) => {
+    const handler = String(row.event_handler || "handler");
+    const form = String(row.form || "n/a");
+    const control = String(row.control || "n/a");
+    const evt = String(row.event || "n/a");
+    const calls = Array.isArray(row.procedure_calls) ? row.procedure_calls.slice(0, 6).join(", ") : "";
+    const sql = Array.isArray(row.sql_touches) ? row.sql_touches.slice(0, 2).join(" | ") : "";
+    lines.push(`- ${handler} | form=${form} | control=${control} | event=${evt}`);
+    if (calls) lines.push(`  - Calls: ${calls}`);
+    if (sql) lines.push(`  - SQL touches: ${sql}`);
+  });
+  if (!uiEventMap.length) lines.push("- No UI event map extracted");
+
+  lines.push("", `### SQL Query Catalog (${sqlCatalog.length})`);
+  sqlCatalog.slice(0, 40).forEach((q) => lines.push(`- ${String(q || "")}`));
+  if (!sqlCatalog.length) lines.push("- No SQL query literals extracted");
+
+  lines.push("", `### ActiveX/COM dependencies (${activexControls.length})`);
+  lines.push(`- ${activexControls.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push("", "### COM Surface Map");
+  lines.push(`- Late-bound ProgIDs: ${(Array.isArray(comSurface.late_bound_progids) ? comSurface.late_bound_progids : []).slice(0, 40).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"}`);
+  lines.push(`- CallByName sites: ${String(comSurface.call_by_name_sites || 0)}`);
+  lines.push(`- CreateObject/GetObject sites: ${String(comSurface.createobject_getobject_sites || 0)}`);
+  lines.push("", `### DLL dependencies (${dllDeps.length})`);
+  lines.push(`- ${dllDeps.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push("", `### OCX dependencies (${ocxDeps.length})`);
+  lines.push(`- ${ocxDeps.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push("", `### Win32 Declares (${win32Declares.length})`);
+  lines.push(`- ${win32Declares.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push("", `### Event handlers (${legacyEvents.length})`);
+  lines.push(`- ${legacyEvents.slice(0, 120).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push("", `### Project members (${legacyMembers.length})`);
+  lines.push(`- ${legacyMembers.slice(0, 120).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push("", "### Error Handling Profile");
+  lines.push(`- On Error Resume Next: ${String(errorProfile.on_error_resume_next || 0)}`);
+  lines.push(`- On Error GoTo: ${String(errorProfile.on_error_goto || 0)}`);
+  lines.push(`- On Error GoTo 0: ${String(errorProfile.on_error_goto0 || 0)}`);
+  lines.push(`- Control array markers: ${String(errorProfile.control_array_index_markers || 0)}`);
+  lines.push(`- Late-bound COM calls: ${String(errorProfile.late_bound_com_calls || 0)}`);
+  lines.push(`- Variant declarations: ${String(errorProfile.variant_declarations || 0)}`);
+  lines.push(`- Default instance refs: ${String(errorProfile.default_instance_references || 0)}`);
+  lines.push(`- DoEvents calls: ${String(errorProfile.doevents_calls || 0)}`);
+  lines.push(`- Registry operations: ${String(errorProfile.registry_operations || 0)}`);
+  lines.push("", "### Other modernization-critical elements");
+  lines.push(`- Database tables/entities: ${legacyTables.slice(0, 60).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push(`- Procedures/subroutines: ${legacyProcedures.slice(0, 120).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push(`- Input signals: ${legacyInputs.slice(0, 60).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+  lines.push(`- Side effects: ${legacySideEffects.slice(0, 60).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
+
   lines.push("", "## Risks");
   risks.forEach((risk) => {
     lines.push(
@@ -593,6 +1322,59 @@ function buildAnalystTechReqMarkdown(output) {
     );
   });
   if (!risks.length) lines.push("- None");
+
+  lines.push("", "## Domain Pack");
+  lines.push(`- ID: ${String(domainPack.id || "software-general-v1")}`);
+  lines.push(`- Name: ${String(domainPack.name || "General Software Domain Pack")}`);
+  lines.push(`- Version: ${String(domainPack.version || "1.0.0")}`);
+
+  lines.push("", "## Capability Mapping");
+  lines.push(`Framework: ${String(capabilityMapping.framework || "Not specified")}`);
+  const primaryCaps = Array.isArray(capabilityMapping.primary_capabilities) ? capabilityMapping.primary_capabilities : [];
+  primaryCaps.forEach((cap) => {
+    lines.push(
+      `- ${String(cap.id || "capability")} | ${String(cap.service_domain || "")} | ${String(cap.business_capability || "")} | confidence=${String(cap.confidence || "")}`
+    );
+  });
+  if (!primaryCaps.length) lines.push("- Not provided");
+
+  lines.push("", "## Regulatory Constraints Applied");
+  regulatoryConstraints.forEach((constraint) => {
+    lines.push(`- ${String(constraint.id || "constraint")} (${String(constraint.name || "")})`);
+    const actions = Array.isArray(constraint.software_actions) ? constraint.software_actions : [];
+    if (actions.length) {
+      actions.forEach((action) => lines.push(`  - action: ${String(action || "")}`));
+    }
+  });
+  if (!regulatoryConstraints.length) lines.push("- None");
+
+  lines.push("", "## BDD Contract");
+  bddFeatures.forEach((feature, idx) => {
+    const featureId = String(feature.id || `BDD-${idx + 1}`);
+    lines.push("", `### ${featureId} ${String(feature.title || "").trim()}`.trim());
+    lines.push("```gherkin");
+    lines.push(String(feature.gherkin || ""));
+    lines.push("```");
+  });
+  if (!bddFeatures.length) lines.push("- No BDD features generated");
+
+  lines.push("", "## Quality Gates");
+  qualityGates.forEach((gate) => {
+    lines.push(`- ${String(gate.name || "gate")}: ${String(gate.status || "UNKNOWN")} | ${String(gate.message || "")}`);
+  });
+  if (!qualityGates.length) lines.push("- No quality gates captured");
+
+  lines.push("", "## Acceptance Criteria to Test Mapping");
+  acceptanceMap.forEach((entry) => {
+    const tests = Array.isArray(entry.test_types) ? entry.test_types.join(", ") : "";
+    const scenarios = Array.isArray(entry.bdd_scenarios) ? entry.bdd_scenarios.join(", ") : "";
+    lines.push(`- ${String(entry.requirement_id || "requirement")} | tests: ${tests || "n/a"} | scenarios: ${scenarios || "n/a"}`);
+  });
+  if (!acceptanceMap.length) lines.push("- Not mapped");
+
+  lines.push("", "## Open Questions");
+  openQuestions.forEach((q) => lines.push(`- ${String(q || "")}`));
+  if (!openQuestions.length) lines.push("- None");
 
   return lines.join("\n");
 }
@@ -1531,6 +2313,10 @@ function applySampleDatasetPreset() {
   if (el.telemetryMode) el.telemetryMode.value = "staging";
   if (el.includePaths) el.includePaths.value = "services/\nlegacy/\ninfra/";
   if (el.excludePaths) el.excludePaths.value = "node_modules/\ndist/\nvendor/";
+  if (el.domainPackSelect) el.domainPackSelect.value = "auto";
+  if (el.domainJurisdiction) el.domainJurisdiction.value = "AUTO";
+  if (el.domainDataClassification) el.domainDataClassification.value = "";
+  if (el.domainPackJson) el.domainPackJson.value = "";
   if (el.taskType) el.taskType.value = "business_objectives";
   if (el.objectives) {
     el.objectives.value = "Improve payment reliability and compliance for ACME checkout while reducing duplicate charges and increasing traceability.";
@@ -1542,6 +2328,7 @@ function applySampleDatasetPreset() {
     reason: "Using sample ACME brownfield dataset for guided demo.",
   });
   autoTriggerDiscoverExternalViews({ force: true });
+  renderDomainPackControls();
   setDiscoverStep(4);
   setDiscoverResultsView("city");
   renderDiscoverInsights();
@@ -2546,7 +3333,9 @@ function toggleUseCasePanel() {
   const dbMode = isDatabaseConversionMode();
 
   el.modernizationPanel.classList.toggle("hidden", !codeMode);
-  el.databasePanel.classList.toggle("hidden", !dbMode);
+  if (el.databasePanel) {
+    el.databasePanel.classList.remove("hidden");
+  }
   if (el.modernizationManualInputs) {
     const hideManual = codeMode && isModernizationRepoScanMode();
     el.modernizationManualInputs.classList.toggle("hidden", hideManual);
@@ -2750,6 +3539,7 @@ function analystBriefRequestKey() {
     String(brownfield.repo_url || ""),
     String(el.objectives?.value || "").trim().slice(0, 500),
     String(el.legacyCode?.value || "").trim().slice(0, 500),
+    String(el.dbSchema?.value || "").trim().slice(0, 500),
     String(el.includePaths?.value || "").trim(),
     String(el.excludePaths?.value || "").trim(),
     String(integration?.sample_dataset_enabled ? "sample" : "live"),
@@ -2775,6 +3565,22 @@ function renderDiscoverAnalystBrief() {
   const payload = (view.data && typeof view.data === "object") ? view.data : {};
   const brief = (payload.analyst_brief && typeof payload.analyst_brief === "object") ? payload.analyst_brief : {};
   const summary = (brief.summary && typeof brief.summary === "object") ? brief.summary : {};
+  const aas = (payload.aas && typeof payload.aas === "object") ? payload.aas : {};
+  const requirementsPack = (payload.requirements_pack && typeof payload.requirements_pack === "object")
+    ? payload.requirements_pack
+    : ((aas.requirements_pack && typeof aas.requirements_pack === "object") ? aas.requirements_pack : {});
+  const aasSummary = String(payload.assistant_summary || aas.assistant_summary || "").trim();
+  const qualityGates = Array.isArray(payload.quality_gates)
+    ? payload.quality_gates
+    : (Array.isArray(aas.quality_gates) ? aas.quality_gates : []);
+  const gateRows = qualityGates
+    .map((row) => {
+      const name = escapeHtml(String(row?.name || row?.gate || "gate"));
+      const status = escapeHtml(String(row?.status || "unknown"));
+      const message = escapeHtml(String(row?.message || ""));
+      return `<li><strong>${name}</strong>: ${status}${message ? ` — ${message}` : ""}</li>`;
+    })
+    .join("");
   const source = escapeHtml(String(payload.source || "-"));
   const repo = (payload.repo && typeof payload.repo === "object") ? payload.repo : {};
   const repoLabel = [repo.owner, repo.repository].filter(Boolean).join("/");
@@ -2789,7 +3595,13 @@ function renderDiscoverAnalystBrief() {
   const dataEntities = Array.isArray(summary.data_entities) ? summary.data_entities : [];
   const unknowns = Array.isArray(summary.unknowns) ? summary.unknowns : [];
   const evidenceFiles = Array.isArray(summary.evidence_files) ? summary.evidence_files : [];
+  const legacySkillProfile = (summary.legacy_skill_profile && typeof summary.legacy_skill_profile === "object")
+    ? summary.legacy_skill_profile
+    : {};
   const stats = (summary.stats && typeof summary.stats === "object") ? summary.stats : {};
+  const rpFunctional = Array.isArray(requirementsPack?.requirements?.functional) ? requirementsPack.requirements.functional : [];
+  const rpControls = Array.isArray(requirementsPack?.compliance?.controls_triggered) ? requirementsPack.compliance.controls_triggered : [];
+  const rpOpenQuestions = Array.isArray(requirementsPack?.open_questions) ? requirementsPack.open_questions : [];
 
   if (!overview && !caps.length && !components.length) {
     el.discoverAnalystBriefStatus.textContent = "Waiting to analyze connected source code.";
@@ -2803,6 +3615,8 @@ function renderDiscoverAnalystBrief() {
   el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-emerald-700";
   el.discoverAnalystBriefPreview.innerHTML = `
     <p class="font-semibold text-slate-900">${overview}</p>
+    ${Object.keys(legacySkillProfile).length ? `<p class="mt-1 text-[11px] text-slate-800"><strong>Selected legacy skill:</strong> ${escapeHtml(String(legacySkillProfile.selected_skill_name || "Generic Legacy Skill"))} (${escapeHtml(String(legacySkillProfile.selected_skill_id || "generic_legacy"))}), confidence=${escapeHtml(String(legacySkillProfile.confidence || "n/a"))}</p>` : ""}
+    ${aasSummary ? `<p class="mt-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1 text-slate-900"><strong>Analyst AAS summary:</strong> ${escapeHtml(aasSummary)}</p>` : ""}
     <div class="mt-2 grid gap-2 sm:grid-cols-2">
       <div><p class="font-semibold text-slate-900">Likely functionality</p><ul class="mt-1 list-disc pl-4">${list(caps.slice(0, 8))}</ul></div>
       <div><p class="font-semibold text-slate-900">Input/output behavior</p><ul class="mt-1 list-disc pl-4">${list(io.slice(0, 6))}</ul></div>
@@ -2814,6 +3628,14 @@ function renderDiscoverAnalystBrief() {
       <div><p class="font-semibold text-slate-900">Unknowns</p><ul class="mt-1 list-disc pl-4">${list((unknowns.length ? unknowns : ["No major unknowns reported."]).slice(0, 6))}</ul></div>
       <div><p class="font-semibold text-slate-900">Evidence files</p><ul class="mt-1 list-disc pl-4">${list((evidenceFiles.length ? evidenceFiles : ["No files were read during this analysis."]).slice(0, 10))}</ul></div>
     </div>
+    ${requirementsPack && Object.keys(requirementsPack).length ? `
+      <div class="mt-2 rounded-md border border-slate-300 bg-white px-2 py-2">
+        <p class="font-semibold text-slate-900">Requirements pack</p>
+        <p class="text-[10px] text-slate-700">Artifact: ${escapeHtml(String(requirementsPack.artifact_id || "n/a"))}</p>
+        <p class="text-[11px] text-slate-800">Functional requirements: ${rpFunctional.length} | Controls: ${rpControls.length} | Open questions: ${rpOpenQuestions.length}</p>
+        ${gateRows ? `<ul class="mt-1 list-disc pl-4 text-[11px] text-slate-800">${gateRows}</ul>` : ""}
+      </div>
+    ` : ""}
     <p class="mt-2 text-[10px] text-slate-700">Sampled files: ${Number(stats.sampled_files || 0)} | Tree entries considered: ${Number(stats.sampled_tree_entries || 0)} | Route hints: ${Number(stats.route_hints || 0)}</p>
   `;
 }
@@ -2824,23 +3646,78 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
     renderDiscoverAnalystBrief();
     return;
   }
-  state.discoverAnalystBrief = { loading: true, error: "", data: null, requestKey: reqKey };
+  const previousThreadId = String(state.discoverAnalystBrief?.threadId || state.discoverAnalystBrief?.data?.thread_id || "").trim();
+  state.discoverAnalystBrief = { loading: true, error: "", data: null, requestKey: reqKey, threadId: previousThreadId };
   renderDiscoverAnalystBrief();
   const integration = getIntegrationContext();
   try {
-    const data = await api("/api/discover/analyst-brief", {
+    const discoverData = await api("/api/discover/analyst-brief", {
       integration_context: integration,
       objectives: String(el.objectives?.value || "").trim(),
       use_case: currentUseCase(),
       legacy_code: String(el.legacyCode?.value || "").trim(),
+      database_source: String(el.dbSource?.value || "").trim(),
+      database_target: String(el.dbTarget?.value || "").trim(),
+      database_schema: String(el.dbSchema?.value || "").trim(),
       repo_provider: String(integration?.brownfield?.repo_provider || ""),
       repo_url: String(integration?.brownfield?.repo_url || "").trim(),
     }, "POST");
+
+    const candidateThreadParts = [
+      String(integration?.project_state_detected || ""),
+      String(integration?.brownfield?.repo_url || ""),
+      String(integration?.greenfield?.repo_target || ""),
+      String(currentUseCase() || ""),
+    ].filter(Boolean);
+    const inferredThreadId = previousThreadId || `discover-${slugifyValue(candidateThreadParts.join("-")) || "thread"}`;
+
+    const requirement = String(el.objectives?.value || "").trim()
+      || String(discoverData?.analyst_brief?.summary?.overview || "").trim()
+      || "Analyze repository context and produce a requirements pack.";
+
+    let aasData = (discoverData?.aas && typeof discoverData.aas === "object") ? discoverData.aas : null;
+    if (!aasData) {
+      try {
+        aasData = await api("/api/agents/analyst/analyze-requirement", {
+          requirement,
+          business_objective: requirement,
+          use_case: currentUseCase(),
+          thread_id: inferredThreadId,
+          workspace_id: "default-workspace",
+          client_id: "default-client",
+          project_id: slugifyValue(String(integration?.brownfield?.repo_url || integration?.greenfield?.repo_target || "default-project")) || "default-project",
+          domain_pack_id: String(integration?.domain_pack_id || ""),
+          domain_pack: integration?.custom_domain_pack || null,
+          jurisdiction: String(integration?.jurisdiction || ""),
+          data_classification: Array.isArray(integration?.data_classification) ? integration.data_classification : [],
+          integration_context: integration,
+        }, "POST");
+      } catch (_aasErr) {
+        aasData = null;
+      }
+    }
+
+    const mergedData = {
+      ...(discoverData && typeof discoverData === "object" ? discoverData : {}),
+    };
+    if (aasData && typeof aasData === "object") {
+      mergedData.aas = aasData;
+      mergedData.assistant_summary = String(aasData.assistant_summary || "");
+      mergedData.requirements_pack = (aasData.requirements_pack && typeof aasData.requirements_pack === "object")
+        ? aasData.requirements_pack
+        : {};
+      mergedData.quality_gates = Array.isArray(aasData.quality_gates) ? aasData.quality_gates : [];
+      mergedData.thread_id = String(aasData.thread_id || inferredThreadId);
+    } else {
+      mergedData.thread_id = inferredThreadId;
+    }
+
     state.discoverAnalystBrief = {
       loading: false,
       error: "",
-      data,
+      data: mergedData,
       requestKey: reqKey,
+      threadId: String(mergedData.thread_id || inferredThreadId),
     };
   } catch (err) {
     state.discoverAnalystBrief = {
@@ -2848,6 +3725,7 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
       error: String(err?.message || err || "Failed to run analyst brief."),
       data: null,
       requestKey: reqKey,
+      threadId: previousThreadId,
     };
   }
   renderDiscoverAnalystBrief();
@@ -2981,6 +3859,13 @@ function getIntegrationContext() {
   const analystSummary = (analystData.analyst_brief && typeof analystData.analyst_brief === "object" && analystData.analyst_brief.summary && typeof analystData.analyst_brief.summary === "object")
     ? analystData.analyst_brief.summary
     : null;
+  const analystReqPack = (analystData.requirements_pack && typeof analystData.requirements_pack === "object")
+    ? analystData.requirements_pack
+    : null;
+  const analystAas = (analystData.aas && typeof analystData.aas === "object")
+    ? analystData.aas
+    : {};
+  const domainPack = currentDomainPackConfig();
   return {
     project_state_mode: String(el.projectStateMode?.value || "auto"),
     project_state_detected: String(state.projectState.detected || ""),
@@ -3009,15 +3894,33 @@ function getIntegrationContext() {
       include_paths: parseLines(el.includePaths?.value || ""),
       exclude_paths: parseLines(el.excludePaths?.value || ""),
     },
+    domain_pack_selection: String(domainPack.selected || "auto"),
+    domain_pack_id: String(domainPack.domain_pack_id || ""),
+    custom_domain_pack: domainPack.custom_domain_pack || null,
+    domain_pack_error: String(domainPack.error || ""),
+    jurisdiction: String(domainPack.jurisdiction || ""),
+    data_classification: Array.isArray(domainPack.data_classification) ? domainPack.data_classification : [],
     discover_cache: {
       analyst_source: String(analystData.source || ""),
       analyst_repo: (analystData.repo && typeof analystData.repo === "object") ? analystData.repo : {},
+      analyst_thread_id: String(state.discoverAnalystBrief?.threadId || analystData.thread_id || analystAas.thread_id || ""),
+      analyst_aas_summary: String(analystData.assistant_summary || analystAas.assistant_summary || ""),
       analyst_summary: analystSummary ? {
         overview: String(analystSummary.overview || ""),
         likely_capabilities: Array.isArray(analystSummary.likely_capabilities) ? analystSummary.likely_capabilities.slice(0, 12) : [],
         key_components: Array.isArray(analystSummary.key_components) ? analystSummary.key_components.slice(0, 12) : [],
         evidence_files: Array.isArray(analystSummary.evidence_files) ? analystSummary.evidence_files.slice(0, 24) : [],
+        input_output_contracts: Array.isArray(analystSummary.input_output_contracts) ? analystSummary.input_output_contracts.slice(0, 16) : [],
+        domain_functions: Array.isArray(analystSummary.domain_functions) ? analystSummary.domain_functions.slice(0, 40) : [],
+        data_entities: Array.isArray(analystSummary.data_entities) ? analystSummary.data_entities.slice(0, 40) : [],
+        legacy_skill_profile: (analystSummary.legacy_skill_profile && typeof analystSummary.legacy_skill_profile === "object")
+          ? analystSummary.legacy_skill_profile
+          : {},
+        vb6_analysis: (analystSummary.vb6_analysis && typeof analystSummary.vb6_analysis === "object")
+          ? analystSummary.vb6_analysis
+          : {},
       } : {},
+      analyst_requirements_pack: analystReqPack ? analystReqPack : null,
     },
     cloud_promotion_enabled: !!el.enableCloudPromotion?.checked,
     sample_dataset_enabled: !!state.projectState.sampleDatasetEnabled,
@@ -3061,12 +3964,48 @@ function applyIntegrationContext(ctx) {
   if (el.modernizationSourceMode) el.modernizationSourceMode.value = String(scope.modernization_source_mode || "manual");
   if (el.includePaths) el.includePaths.value = Array.isArray(scope.include_paths) ? scope.include_paths.join("\n") : "";
   if (el.excludePaths) el.excludePaths.value = Array.isArray(scope.exclude_paths) ? scope.exclude_paths.join("\n") : "";
+
+  const selection = String(
+    ctx.domain_pack_selection
+    || (ctx.custom_domain_pack ? "custom" : "")
+    || (ctx.domain_pack_id || "auto")
+  ).trim() || "auto";
+  if (el.domainPackSelect) {
+    renderDomainPackCatalog();
+    if ([...el.domainPackSelect.options].some((opt) => String(opt.value) === selection)) {
+      el.domainPackSelect.value = selection;
+    } else if (selection && selection !== "custom" && selection !== "auto") {
+      const opt = document.createElement("option");
+      opt.value = selection;
+      opt.textContent = `${selection} (from run context)`;
+      el.domainPackSelect.appendChild(opt);
+      el.domainPackSelect.value = selection;
+    } else {
+      el.domainPackSelect.value = "auto";
+    }
+  }
+  if (el.domainJurisdiction) el.domainJurisdiction.value = String(ctx.jurisdiction || "AUTO") || "AUTO";
+  if (el.domainDataClassification) {
+    const dc = Array.isArray(ctx.data_classification) ? ctx.data_classification : [];
+    el.domainDataClassification.value = dc.join(", ");
+  }
+  if (el.domainPackJson) {
+    const customPack = (ctx.custom_domain_pack && typeof ctx.custom_domain_pack === "object") ? ctx.custom_domain_pack : null;
+    el.domainPackJson.value = customPack ? JSON.stringify(customPack, null, 2) : "";
+  }
   const discoverCache = (ctx.discover_cache && typeof ctx.discover_cache === "object") ? ctx.discover_cache : {};
   const cachedSummary = (discoverCache.analyst_summary && typeof discoverCache.analyst_summary === "object")
     ? discoverCache.analyst_summary
     : {};
+  const cachedReqPack = (discoverCache.analyst_requirements_pack && typeof discoverCache.analyst_requirements_pack === "object")
+    ? discoverCache.analyst_requirements_pack
+    : null;
+  const cachedAasSummary = String(discoverCache.analyst_aas_summary || "").trim();
+  const cachedThreadId = String(discoverCache.analyst_thread_id || "").trim();
   const hasCachedAnalyst = !!String(cachedSummary.overview || "").trim()
-    || (Array.isArray(cachedSummary.evidence_files) && cachedSummary.evidence_files.length > 0);
+    || (Array.isArray(cachedSummary.evidence_files) && cachedSummary.evidence_files.length > 0)
+    || !!cachedReqPack
+    || !!cachedAasSummary;
   if (hasCachedAnalyst) {
     state.discoverAnalystBrief = {
       loading: false,
@@ -3078,11 +4017,18 @@ function applyIntegrationContext(ctx) {
           title: "Analyst functionality understanding",
           summary: cachedSummary,
         },
+        requirements_pack: cachedReqPack || {},
+        assistant_summary: cachedAasSummary,
+        thread_id: cachedThreadId,
       },
       requestKey: analystBriefRequestKey(),
+      threadId: cachedThreadId,
     };
+  } else if (cachedThreadId) {
+    state.discoverAnalystBrief.threadId = cachedThreadId;
   }
   if (el.enableCloudPromotion) el.enableCloudPromotion.checked = !!ctx.cloud_promotion_enabled;
+  renderDomainPackControls();
   toggleCloudConfig();
   renderDiscoverStepper();
 }
@@ -3106,6 +4052,11 @@ function discoverStepCompletion() {
       && (!!integration.greenfield.tracker_provider === false || integration.greenfield.tracker_provider === "none" || !!integration.greenfield.tracker_project);
   }
   const objective = String(el.objectives?.value || "").trim();
+  const customDomainPackValid = !String(integration.domain_pack_error || "").trim()
+    && (
+      String(integration.domain_pack_selection || "auto") !== "custom"
+      || !!(integration.custom_domain_pack && typeof integration.custom_domain_pack === "object")
+    );
   const scopeComplete = !!objective
     && (
       !isCodeModernizationMode()
@@ -3118,7 +4069,8 @@ function discoverStepCompletion() {
           : !!String(el.legacyCode?.value || "").trim()
       )
     )
-    && (!isDatabaseConversionMode() || !!String(el.dbSchema?.value || "").trim());
+    && (!isDatabaseConversionMode() || !!String(el.dbSchema?.value || "").trim())
+    && customDomainPackValid;
   const scanComplete = !!String(el.analysisDepth?.value || "").trim();
   const resultsComplete = connectComplete && scopeComplete && scanComplete;
   return { connectComplete, scopeComplete, scanComplete, resultsComplete };
@@ -3201,7 +4153,12 @@ function renderDiscoverStepper() {
     }
     const includeCount = integration.scan_scope.include_paths.length;
     const excludeCount = integration.scan_scope.exclude_paths.length;
-    el.discoverResultsScan.textContent = `Scan profile: ${integration.scan_scope.analysis_depth} | telemetry=${integration.scan_scope.telemetry_mode} | include=${includeCount} | exclude=${excludeCount}`;
+    const domainLabel = String(integration.domain_pack_selection || "auto") === "auto"
+      ? "auto"
+      : (String(integration.domain_pack_selection || "") === "custom"
+        ? (integration.custom_domain_pack?.id || "custom")
+        : String(integration.domain_pack_id || integration.domain_pack_selection || "auto"));
+    el.discoverResultsScan.textContent = `Scan profile: ${integration.scan_scope.analysis_depth} | telemetry=${integration.scan_scope.telemetry_mode} | domain_pack=${domainLabel} | include=${includeCount} | exclude=${excludeCount}`;
   }
   renderDiscoverAnalystBrief();
   renderDiscoverIntegrationPreviews();
@@ -3216,7 +4173,7 @@ function validateDiscoverStep(step) {
     return false;
   }
   if (step === 2 && !c.scopeComplete) {
-    alert("Complete Define scope: provide objectives and required legacy/database inputs.");
+    alert("Complete Define scope: provide objectives, required legacy/database inputs, and a valid domain pack configuration.");
     return false;
   }
   if (step === 3 && !c.scanComplete) {
@@ -3314,6 +4271,10 @@ function derivePersonasFromStageMap(stageAgentIds) {
       agent_id: agent?.id || "",
       display_name: agent?.display_name || "",
       persona: agent?.persona || "",
+      requirements_pack_profile: agent?.requirements_pack_profile || "",
+      requirements_pack_template: (agent?.requirements_pack_template && typeof agent.requirements_pack_template === "object")
+        ? agent.requirements_pack_template
+        : {},
     };
   });
   return personas;
@@ -3355,11 +4316,15 @@ function renderWorkTeamSelection() {
   el.workTeamRoster.innerHTML = STAGES.map((stage) => {
     const persona = s.agentPersonas?.[stage] || {};
     const stageName = AGENTS.find((a) => a.stage === Number(stage))?.name || `Stage ${stage}`;
+    const reqPack = Number(stage) === 1
+      ? String(persona.requirements_pack_profile || "").trim()
+      : "";
     return `
       <div class="rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-800">
         <div class="font-semibold text-slate-900">Stage ${stage}: ${escapeHtml(stageName)}</div>
         <div class="mt-1 text-slate-900">${escapeHtml(persona.display_name || "Unassigned")}</div>
         <div class="mt-1 text-slate-700">${escapeHtml(persona.persona || "")}</div>
+        ${reqPack ? `<div class="mt-1 text-[11px] text-sky-800"><strong>Requirements Pack:</strong> ${escapeHtml(reqPack)}</div>` : ""}
       </div>
     `;
   }).join("");
@@ -3372,11 +4337,13 @@ function stageSelectorHtml(stage, selectedId) {
     .map((a) => `<option value="${escapeHtml(a.id)}" ${String(a.id) === String(selectedId) ? "selected" : ""}>${escapeHtml(a.display_name)}${a.is_custom ? " (custom)" : ""}</option>`)
     .join("");
   const current = options.find((o) => String(o.id) === String(selectedId)) || options[0] || {};
+  const reqPack = Number(stage) === 1 ? String(current.requirements_pack_profile || "").trim() : "";
   return `
     <div class="rounded-lg border border-slate-300 bg-slate-50 p-3" data-stage="${stage}">
       <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Stage ${stage}: ${escapeHtml(stageInfo?.name || "")}</label>
       <select data-team-stage="${stage}" class="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900">${selectOptions}</select>
       <p class="mt-2 text-xs text-slate-700" data-team-persona="${stage}">${escapeHtml(current.persona || "")}</p>
+      ${reqPack ? `<p class="mt-1 text-[11px] text-sky-800"><strong>Requirements Pack:</strong> ${escapeHtml(reqPack)}</p>` : ""}
     </div>
   `;
 }
@@ -3406,10 +4373,17 @@ function renderAgentCatalog() {
         <span class="rounded border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-700">S${escapeHtml(agent.stage)}</span>
       </div>
       <p class="mt-1 text-[11px] text-slate-700">${escapeHtml(agent.persona || "")}</p>
+      ${Number(agent.stage || 0) === 1 && String(agent.requirements_pack_profile || "").trim() ? `<p class="mt-1 text-[11px] text-sky-800"><strong>Req Pack:</strong> ${escapeHtml(agent.requirements_pack_profile)}</p>` : ""}
     </div>
   `).join("") : "<p class='text-xs text-slate-700'>No agents available.</p>";
 
-  el.cloneBaseAgent.innerHTML = all.map((agent) => `<option value="${escapeHtml(agent.id)}">S${agent.stage} | ${escapeHtml(agent.display_name || agent.role || agent.id)}</option>`).join("");
+  el.cloneBaseAgent.innerHTML = all.map((agent) => {
+    const reqPack = Number(agent.stage || 0) === 1 && String(agent.requirements_pack_profile || "").trim()
+      ? ` | RP: ${agent.requirements_pack_profile}`
+      : "";
+    return `<option value="${escapeHtml(agent.id)}">S${agent.stage} | ${escapeHtml(agent.display_name || agent.role || agent.id)}${escapeHtml(reqPack)}</option>`;
+  }).join("");
+  refreshCloneRequirementsPackFields();
 }
 
 function renderTeamsDropdown() {
@@ -3447,7 +4421,6 @@ function setMode(mode) {
   if (mode === MODES.DISCOVER) setWizardStep(1);
   if (mode === MODES.BUILD) setWizardStep(2);
   if (mode === MODES.VERIFY || mode === MODES.PLAN) refreshTasks().catch(() => {});
-  if (mode === MODES.PLAN) refreshWorkItems().catch(() => {});
   if (mode === MODES.VERIFY) renderVerifyPanels();
   if (mode === MODES.SETTINGS) loadSettings().catch((err) => setSettingsMessage(`Settings load failed: ${err.message}`, true));
 }
@@ -3513,20 +4486,62 @@ async function saveTeamFromBuilder() {
   await loadAgentsAndTeams();
 }
 
+function refreshCloneRequirementsPackFields() {
+  const selectedProfile = String(el.cloneRequirementsPackProfile?.value || "").trim();
+  const baseAgentId = String(el.cloneBaseAgent?.value || "").trim();
+  const baseAgent = (state.agents.all || []).find((agent) => String(agent.id || "") === baseAgentId) || {};
+  const isAnalyst = Number(baseAgent.stage || 0) === 1;
+  if (el.cloneRequirementsPackProfile) {
+    el.cloneRequirementsPackProfile.disabled = !isAnalyst;
+  }
+  if (el.cloneRequirementsPackTemplate) {
+    const showTemplate = isAnalyst && selectedProfile === "custom-template";
+    el.cloneRequirementsPackTemplate.classList.toggle("hidden", !showTemplate);
+  }
+}
+
 async function cloneAgentFromBuilder() {
   const baseAgentId = String(el.cloneBaseAgent.value || "").trim();
   if (!baseAgentId) {
     alert("Choose a base agent to clone.");
     return;
   }
+  const selectedProfile = String(el.cloneRequirementsPackProfile?.value || "").trim();
+  const profile = selectedProfile === "custom-template" ? "requirements-pack-v2-custom" : selectedProfile;
+  let template = {};
+  if (selectedProfile === "custom-template") {
+    const rawTemplate = String(el.cloneRequirementsPackTemplate?.value || "").trim();
+    if (!rawTemplate) {
+      alert("Provide a custom requirements pack template JSON.");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(rawTemplate);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        alert("Custom requirements pack template must be a JSON object.");
+        return;
+      }
+      template = parsed;
+    } catch (err) {
+      alert(`Invalid custom requirements pack template JSON: ${err.message || err}`);
+      return;
+    }
+  }
   const data = await api("/api/agents/clone", {
     base_agent_id: baseAgentId,
     display_name: String(el.cloneAgentName.value || "").trim(),
     persona: String(el.cloneAgentPersona.value || "").trim(),
+    requirements_pack_profile: profile,
+    requirements_pack_template: template,
   });
   el.cloneAgentMessage.textContent = `Cloned ${data.agent?.display_name || "agent"}`;
   el.cloneAgentName.value = "";
   el.cloneAgentPersona.value = "";
+  if (el.cloneRequirementsPackProfile) el.cloneRequirementsPackProfile.value = "";
+  if (el.cloneRequirementsPackTemplate) {
+    el.cloneRequirementsPackTemplate.value = "";
+    el.cloneRequirementsPackTemplate.classList.add("hidden");
+  }
   await loadAgentsAndTeams();
 }
 
@@ -3674,51 +4689,276 @@ async function createWorkItem() {
   await refreshWorkItems();
 }
 
-function buildEvidencePack(run) {
-  const r = run || {};
-  const p = (r.pipeline_state && typeof r.pipeline_state === "object") ? r.pipeline_state : {};
-  const stageStatus = (r.stage_status && typeof r.stage_status === "object") ? r.stage_status : {};
-  const completedStages = Object.values(stageStatus).filter((s) => String(s).toLowerCase() === "completed").length;
-  const failedStages = Object.entries(stageStatus).filter(([, s]) => String(s).toLowerCase() === "failed").map(([k]) => k);
-  const ref = (p.context_vault_ref && typeof p.context_vault_ref === "object") ? p.context_vault_ref : {};
+function _runPipelineState(run) {
+  return (run?.pipeline_state && typeof run.pipeline_state === "object") ? run.pipeline_state : {};
+}
+
+function _stageResult(run, stageNum) {
+  const p = _runPipelineState(run);
+  const rows = Array.isArray(p.agent_results) ? p.agent_results : [];
+  for (let idx = rows.length - 1; idx >= 0; idx -= 1) {
+    const row = rows[idx];
+    if (!row || typeof row !== "object") continue;
+    if (Number(row.stage || 0) === Number(stageNum)) return row;
+  }
+  return null;
+}
+
+function _stageOutput(run, stageNum) {
+  const row = _stageResult(run, stageNum);
+  const out = row?.output;
+  return (out && typeof out === "object") ? out : {};
+}
+
+function _topologySnapshot(run) {
+  const p = _runPipelineState(run);
+  const scm = (p.system_context_model && typeof p.system_context_model === "object") ? p.system_context_model : {};
+  const graph = (scm.graph && typeof scm.graph === "object") ? scm.graph : {};
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  const nodeSet = new Set(
+    nodes
+      .map((n) => (n && typeof n === "object" ? String(n.id || n.name || "").trim() : ""))
+      .filter(Boolean)
+  );
+  const edgeSet = new Set(
+    edges
+      .map((e) => {
+        if (!e || typeof e !== "object") return "";
+        return `${String(e.from || "").trim()}|${String(e.type || "").trim()}|${String(e.to || "").trim()}`;
+      })
+      .filter(Boolean)
+  );
+  return { nodeSet, edgeSet, nodes: nodeSet.size, edges: edgeSet.size };
+}
+
+function _contractSnapshot(run) {
+  const endpoints = new Set();
+  const p = _runPipelineState(run);
+  const scm = (p.system_context_model && typeof p.system_context_model === "object") ? p.system_context_model : {};
+  const graph = (scm.graph && typeof scm.graph === "object") ? scm.graph : {};
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  nodes.forEach((node) => {
+    if (!node || typeof node !== "object") return;
+    const t = String(node.type || "").toLowerCase();
+    if (t !== "endpoint" && t !== "route") return;
+    const name = String(node.name || node.id || "").trim();
+    if (name) endpoints.add(name);
+  });
+
+  const architectOut = _stageOutput(run, 2);
+  const candidates = []
+    .concat(Array.isArray(architectOut.api_contracts) ? architectOut.api_contracts : [])
+    .concat(Array.isArray(architectOut.endpoints) ? architectOut.endpoints : []);
+  candidates.forEach((row) => {
+    if (typeof row === "string") {
+      const x = row.trim();
+      if (x) endpoints.add(x);
+      return;
+    }
+    if (!row || typeof row !== "object") return;
+    const method = String(row.method || "").trim().toUpperCase();
+    const path = String(row.path || row.route || "").trim();
+    if (path) endpoints.add(`${method ? `${method} ` : ""}${path}`.trim());
+  });
+
+  const cp = (p.convention_profile && typeof p.convention_profile === "object") ? p.convention_profile : {};
+  const rules = Array.isArray(cp.rules) ? cp.rules : [];
+  const ruleSet = new Set(rules.map((r) => String((r && typeof r === "object" ? (r.id || r.title || "") : "")).trim()).filter(Boolean));
+  return { endpoints, ruleSet };
+}
+
+function _diffSnapshot(currentRun, previousRun) {
+  if (!currentRun || !previousRun) {
+    return {
+      topology: { added_nodes: 0, removed_nodes: 0, added_edges: 0, removed_edges: 0, examples: [] },
+      contract: { added_endpoints: 0, removed_endpoints: 0, rule_changes: 0, examples: [] },
+    };
+  }
+  const curTopo = _topologySnapshot(currentRun);
+  const prevTopo = _topologySnapshot(previousRun);
+  const addedNodes = [...curTopo.nodeSet].filter((x) => !prevTopo.nodeSet.has(x));
+  const removedNodes = [...prevTopo.nodeSet].filter((x) => !curTopo.nodeSet.has(x));
+  const addedEdges = [...curTopo.edgeSet].filter((x) => !prevTopo.edgeSet.has(x));
+  const removedEdges = [...prevTopo.edgeSet].filter((x) => !curTopo.edgeSet.has(x));
+
+  const curContract = _contractSnapshot(currentRun);
+  const prevContract = _contractSnapshot(previousRun);
+  const addedEndpoints = [...curContract.endpoints].filter((x) => !prevContract.endpoints.has(x));
+  const removedEndpoints = [...prevContract.endpoints].filter((x) => !curContract.endpoints.has(x));
+  const addedRules = [...curContract.ruleSet].filter((x) => !prevContract.ruleSet.has(x));
+  const removedRules = [...prevContract.ruleSet].filter((x) => !curContract.ruleSet.has(x));
+
   return {
-    generated_at: new Date().toISOString(),
-    run_id: r.run_id || "",
-    objective: p.business_objectives || "",
-    use_case: p.use_case || "",
-    status: r.status || "",
-    stage_summary: {
-      completed_stages: completedStages,
-      total_stages: AGENTS.length,
-      failed_stages: failedStages,
+    topology: {
+      added_nodes: addedNodes.length,
+      removed_nodes: removedNodes.length,
+      added_edges: addedEdges.length,
+      removed_edges: removedEdges.length,
+      examples: []
+        .concat(addedNodes.slice(0, 2).map((x) => `+ node ${x}`))
+        .concat(removedNodes.slice(0, 2).map((x) => `- node ${x}`))
+        .concat(addedEdges.slice(0, 2).map((x) => `+ edge ${x}`))
+        .concat(removedEdges.slice(0, 2).map((x) => `- edge ${x}`)),
     },
-    context_bundle: {
-      version_id: ref.version_id || "",
-      repo: ref.repo || "",
-      branch: ref.branch || "",
-      commit_sha: ref.commit_sha || "",
-    },
-    policy: {
-      strict_security_mode: !!p.strict_security_mode,
-      human_approval: !!p.human_approval,
-      deployment_target: p.deployment_target || "local",
-    },
-    traceability: [
-      { from: "requirement", to: "architecture", status: completedStages >= 2 ? "linked" : "pending" },
-      { from: "architecture", to: "implementation", status: completedStages >= 3 ? "linked" : "pending" },
-      { from: "implementation", to: "verification", status: completedStages >= 6 ? "linked" : "pending" },
-      { from: "verification", to: "deployment", status: completedStages >= 8 ? "linked" : "pending" },
-    ],
-    security_gate: {
-      strict_mode: !!p.strict_security_mode,
-      outcome: String(r.status || "").toLowerCase() === "failed" ? "failed_or_blocked" : "passed_or_pending",
+    contract: {
+      added_endpoints: addedEndpoints.length,
+      removed_endpoints: removedEndpoints.length,
+      rule_changes: addedRules.length + removedRules.length,
+      examples: []
+        .concat(addedEndpoints.slice(0, 3).map((x) => `+ endpoint ${x}`))
+        .concat(removedEndpoints.slice(0, 3).map((x) => `- endpoint ${x}`))
+        .concat(addedRules.slice(0, 2).map((x) => `+ rule ${x}`))
+        .concat(removedRules.slice(0, 2).map((x) => `- rule ${x}`)),
     },
   };
 }
 
-async function exportEvidencePack(runId) {
-  const data = await api(`/api/runs/${encodeURIComponent(runId)}`, null);
-  const pack = buildEvidencePack(data.run || {});
+function _controlsFromRun(run) {
+  const analystOut = _stageOutput(run, 1);
+  const reqPack = (analystOut.requirements_pack && typeof analystOut.requirements_pack === "object")
+    ? analystOut.requirements_pack
+    : {};
+  const compliance = (reqPack.compliance && typeof reqPack.compliance === "object")
+    ? reqPack.compliance
+    : {};
+  const controls = Array.isArray(compliance.controls_triggered) ? compliance.controls_triggered : [];
+  const status = String(run?.status || "").toLowerCase();
+  return controls.map((row, idx) => ({
+    control_id: String((row && typeof row === "object" ? (row.id || row.control_id || `CTRL-${idx + 1}`) : `CTRL-${idx + 1}`)),
+    framework: String((row && typeof row === "object" ? (row.framework || "CONTROL") : "CONTROL")),
+    objective: String((row && typeof row === "object" ? (row.control_objective || row.objective || row.name || "") : "")),
+    status: status === "completed" ? "PASS" : (status === "failed" ? "FAIL" : "AT_RISK"),
+  }));
+}
+
+function _testsFromRun(run) {
+  const testerOut = _stageOutput(run, 6);
+  const overall = (testerOut.overall_results && typeof testerOut.overall_results === "object") ? testerOut.overall_results : {};
+  const failedChecks = Array.isArray(testerOut.failed_checks) ? testerOut.failed_checks : [];
+  const total = Number(overall.total_tests || 0);
+  const passed = Number(overall.passed || 0);
+  const failed = Number(overall.failed || failedChecks.length || 0);
+  const passRate = total > 0 ? passed / total : 0;
+  return {
+    summary: {
+      p0_required: true,
+      p0_automated_percent: Math.round(passRate * 100),
+      overall_pass_rate: Math.round(passRate * 1000) / 1000,
+      status: failed > 0 ? "NEEDS_CHANGES" : "PASS",
+    },
+    failed_scenarios: failedChecks.slice(0, 12).map((x, idx) => ({
+      scenario_id: String(x?.name || `CHECK-${idx + 1}`),
+      reason: String(x?.reason || x?.root_cause || "Check failed"),
+      maps_to: Array.isArray(x?.maps_to) ? x.maps_to : [],
+    })),
+  };
+}
+
+function buildEvidencePackFragment(run, baselineRun = null) {
+  const r = run || {};
+  const p = _runPipelineState(r);
+  const ref = (p.context_vault_ref && typeof p.context_vault_ref === "object") ? p.context_vault_ref : {};
+  const runStatus = String(r.status || "unknown").toLowerCase();
+  const testerOut = _stageOutput(r, 6);
+  const qualityGate = String(testerOut?.overall_results?.quality_gate || "").toLowerCase();
+  const readiness = (runStatus === "completed" && qualityGate !== "fail") ? "PASS" : "BLOCKED";
+  const pendingApprovals = []
+    .concat(p.pending_approval ? [p.pending_approval] : [])
+    .concat(Array.isArray(p.approvals_required) ? p.approvals_required : []);
+  const tests = _testsFromRun(r);
+  const diff = _diffSnapshot(r, baselineRun);
+  const controls = _controlsFromRun(r);
+  const traceabilityLinks = Array.isArray(_stageOutput(r, 1)?.requirements_pack?.traceability?.links)
+    ? _stageOutput(r, 1).requirements_pack.traceability.links
+    : [];
+
+  return {
+    artifact_type: "evidence_pack_fragment",
+    artifact_version: "1.0",
+    artifact_id: `EVID-${String(r.run_id || "unknown")}`,
+    generated_at: new Date().toISOString(),
+    generated_by: {
+      agent_name: "Validation Analyst Agent",
+      persona_version: "1.0",
+      mode: "evidence_compiler",
+    },
+    references: {
+      run_context: {
+        run_id: String(r.run_id || ""),
+        pipeline: "Discover -> Plan -> Build -> Verify",
+        governance_tier: p.strict_security_mode ? "Strict" : "Standard",
+        environment: "local",
+      },
+      change_context: {
+        repo: String(ref.repo || ""),
+        branch: String(ref.branch || ""),
+        commit_sha: String(ref.commit_sha || ""),
+        scm_version: String(p?.system_context_model?.version || "1.0"),
+        cp_version: String(p?.convention_profile?.version || "1.0"),
+        ha_version: String(p?.health_assessment?.version || "1.0"),
+      },
+    },
+    client_readout: {
+      release_readiness: {
+        status: readiness,
+        summary: readiness === "PASS"
+          ? "Release gates are satisfied for current run."
+          : "Release is blocked due to failed stages, quality gate issues, or pending approvals.",
+        blocking_items: runStatus === "completed" ? [] : [{ id: "BLOCK-001", type: "pipeline", title: `Run status is ${String(r.status || "").toUpperCase()}`, recommended_action: "Resolve failed stages and rerun verify gates." }],
+        pending_approvals: pendingApprovals.map((appr, idx) => ({
+          id: String(appr.id || `APR-${idx + 1}`),
+          role: String(appr.role || "Reviewer"),
+          title: String(appr.title || appr.message || "Approval required"),
+          status: "PENDING",
+        })),
+      },
+      what_changed: [
+        `Topology deltas: +${diff.topology.added_nodes} nodes, -${diff.topology.removed_nodes} nodes, +${diff.topology.added_edges} edges, -${diff.topology.removed_edges} edges.`,
+        `Contract deltas: +${diff.contract.added_endpoints} endpoints, -${diff.contract.removed_endpoints} endpoints, ${diff.contract.rule_changes} convention rule changes.`,
+      ],
+      risk_posture: {
+        overall: readiness === "PASS" ? "LOW_TO_MEDIUM" : "HIGH",
+        notes: readiness === "PASS" ? ["No blocking release issues detected in latest verify gate."] : ["One or more release blockers need remediation before production promotion."],
+      },
+    },
+    engineering_detail: {
+      system_map_delta: {
+        topology_changes: diff.topology.examples,
+        contract_changes: diff.contract.examples,
+      },
+    },
+    controls_and_compliance: {
+      controls_triggered: controls,
+    },
+    test_evidence: tests,
+    security_gates: {
+      status: runStatus === "completed" ? "PASS_WITH_NOTES" : "NEEDS_REVIEW",
+      scans: [],
+      notes: [p.strict_security_mode ? "Strict security mode was enabled for this run." : "Standard security mode used."],
+    },
+    traceability_matrix: {
+      status: traceabilityLinks.length ? "PARTIAL" : "MISSING",
+      links: traceabilityLinks.slice(0, 50),
+    },
+    approvals_and_exceptions: {
+      approvals_required: pendingApprovals,
+      exceptions: Array.isArray(p.policy_exceptions) ? p.policy_exceptions : [],
+    },
+    final_gate_summary: {
+      overall_status: readiness,
+      release_candidate: readiness === "PASS",
+    },
+    exports: {
+      available: [
+        { type: "json", path: `artifacts/evidence/evidence-pack-${String(r.run_id || "run")}.json` },
+        { type: "pdf", path: `artifacts/evidence/evidence-pack-${String(r.run_id || "run")}.pdf` },
+      ],
+    },
+  };
+}
+
+function downloadEvidencePackJson(pack, runId) {
   const blob = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -3726,6 +4966,66 @@ async function exportEvidencePack(runId) {
   a.download = `evidence-pack-${runId}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function generateEvidencePackPdf(pack, runId) {
+  const safeJson = escapeHtml(JSON.stringify(pack, null, 2));
+  const html = `
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Evidence Pack ${escapeHtml(runId)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; color: #0f172a; }
+      h1 { font-size: 20px; margin-bottom: 8px; }
+      h2 { font-size: 14px; margin-top: 20px; margin-bottom: 8px; }
+      .meta { font-size: 12px; color: #334155; margin-bottom: 16px; }
+      pre { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; font-size: 11px; white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body>
+    <h1>Synthetix Evidence Pack</h1>
+    <div class="meta">Run: ${escapeHtml(runId)} | Generated: ${escapeHtml(new Date().toISOString())}</div>
+    <h2>Client Readout</h2>
+    <pre>${escapeHtml(JSON.stringify(pack.client_readout || {}, null, 2))}</pre>
+    <h2>Controls, Traceability, Tests, Security</h2>
+    <pre>${escapeHtml(JSON.stringify({
+      controls_and_compliance: pack.controls_and_compliance || {},
+      traceability_matrix: pack.traceability_matrix || {},
+      test_evidence: pack.test_evidence || {},
+      security_gates: pack.security_gates || {},
+      approvals_and_exceptions: pack.approvals_and_exceptions || {},
+      final_gate_summary: pack.final_gate_summary || {},
+    }, null, 2))}</pre>
+    <h2>Full JSON</h2>
+    <pre>${safeJson}</pre>
+  </body>
+</html>`;
+  const win = window.open("", "_blank", "noopener,noreferrer");
+  if (!win) {
+    alert("Popup blocked. Allow popups to generate PDF.");
+    return;
+  }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => {
+    win.print();
+  }, 150);
+}
+
+async function exportEvidencePack(runId) {
+  const data = await api(`/api/runs/${encodeURIComponent(runId)}`, null);
+  const runs = Array.isArray(state.dashboardRuns) ? state.dashboardRuns : [];
+  const currentRun = data.run || {};
+  const baselineMeta = runs
+    .filter((r) => String(r.run_id || "") !== String(runId) && String(r.status || "").toLowerCase() !== "running")
+    .sort((a, b) => asMs(b.updated_at) - asMs(a.updated_at))[0] || null;
+  const baselineRun = baselineMeta ? (runDetail(String(baselineMeta.run_id || "")) || baselineMeta) : null;
+  const pack = buildEvidencePackFragment(currentRun, baselineRun);
+  downloadEvidencePackJson(pack, runId);
 }
 
 function buildDiscoverBaselineReport() {
@@ -3754,6 +5054,15 @@ function buildDiscoverBaselineReport() {
       greenfield: integration.greenfield || {},
     },
     scan_scope: integration.scan_scope || {},
+    domain_pack: {
+      selection: integration.domain_pack_selection || "auto",
+      domain_pack_id: integration.domain_pack_id || "",
+      jurisdiction: integration.jurisdiction || "",
+      data_classification: Array.isArray(integration.data_classification) ? integration.data_classification : [],
+      custom_domain_pack: (integration.custom_domain_pack && typeof integration.custom_domain_pack === "object")
+        ? integration.custom_domain_pack
+        : null,
+    },
     repo_snapshot: {
       owner: repo.owner || "",
       repository: repo.repository || "",
@@ -3764,6 +5073,16 @@ function buildDiscoverBaselineReport() {
       source: String(tree.source || ""),
     },
     analyst_brief: analyst.analyst_brief || {},
+    analyst_aas: {
+      thread_id: String(analyst.thread_id || analyst.aas?.thread_id || ""),
+      assistant_summary: String(analyst.assistant_summary || analyst.aas?.assistant_summary || ""),
+      requirements_pack: (analyst.requirements_pack && typeof analyst.requirements_pack === "object")
+        ? analyst.requirements_pack
+        : ((analyst.aas?.requirements_pack && typeof analyst.aas.requirements_pack === "object") ? analyst.aas.requirements_pack : {}),
+      quality_gates: Array.isArray(analyst.quality_gates)
+        ? analyst.quality_gates
+        : (Array.isArray(analyst.aas?.quality_gates) ? analyst.aas.quality_gates : []),
+    },
     metrics: {
       graph_nodes: Number((data.nodes || []).length),
       graph_edges: Number((data.edges || []).length),
@@ -3800,59 +5119,271 @@ function exportDiscoverBaselineReport() {
   URL.revokeObjectURL(url);
 }
 
-function renderVerifyPanels() {
-  if (!el.verifyTraceability || !el.verifyEvidence || !el.verifySecurityGates) return;
-  const tasks = Array.isArray(state.tasks) ? state.tasks : [];
-  const runs = Array.isArray(state.dashboardRuns) ? state.dashboardRuns : [];
-  const runMap = {};
-  runs.forEach((r) => {
-    if (r?.run_id) runMap[String(r.run_id)] = r;
+function renderVerifyTabButtons() {
+  if (!el.verifyTabButtons) return;
+  const selected = String(state.verify.selectedTab || "summary");
+  el.verifyTabButtons.querySelectorAll("[data-verify-tab]").forEach((btn) => {
+    const tab = String(btn.getAttribute("data-verify-tab") || "");
+    const active = tab === selected;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
   });
+}
 
-  const traceRows = tasks.slice(0, 16).map((t) => {
-    const run = runMap[String(t.run_id || "")] || {};
-    const status = String(run.status || t.status || "unknown").toUpperCase();
-    const objective = String(t.objective_preview || "").slice(0, 110);
-    return `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>${escapeHtml(t.run_id || "")}</strong> · ${escapeHtml(status)} · ${escapeHtml(objective)}</div>`;
-  }).join("");
-  el.verifyTraceability.innerHTML = traceRows || "<p class='text-slate-700'>No traceability records yet. Run a pipeline to generate linked specs, tests, and evidence.</p>";
+function _verifyRunCandidates() {
+  const runs = Array.isArray(state.dashboardRuns) ? state.dashboardRuns.slice() : [];
+  return runs
+    .filter((r) => {
+      const s = String(r?.status || "").toLowerCase();
+      return s === "completed" || s === "failed" || s === "aborted" || s === "waiting_approval";
+    })
+    .sort((a, b) => asMs(b.updated_at) - asMs(a.updated_at));
+}
 
-  const evidenceRuns = tasks.filter((t) => {
-    const s = String((runMap[String(t.run_id || "")] || {}).status || t.status || "").toLowerCase();
-    return s === "completed" || s === "failed";
-  }).slice(0, 16);
-  el.verifyEvidence.innerHTML = evidenceRuns.length
-    ? evidenceRuns.map((t) => {
-      const run = runMap[String(t.run_id || "")] || {};
-      return `
+function _verifySelectedRun() {
+  const candidates = _verifyRunCandidates();
+  if (!candidates.length) return null;
+  const selected = String(state.verify.selectedRunId || state.currentRunId || "").trim();
+  const match = selected ? candidates.find((r) => String(r.run_id || "") === selected) : null;
+  const chosen = match || candidates[0];
+  state.verify.selectedRunId = String(chosen.run_id || "");
+  if (el.verifyRunSelect && String(el.verifyRunSelect.value || "") !== state.verify.selectedRunId) {
+    el.verifyRunSelect.value = state.verify.selectedRunId;
+  }
+  return runDetail(state.verify.selectedRunId) || chosen;
+}
+
+async function ensureVerifyRunDetail(runId) {
+  const id = String(runId || "").trim();
+  if (!id) return;
+  if (runDetail(id)) return;
+  if (state.verify.loadingRunId === id) return;
+  state.verify.loadingRunId = id;
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(id)}`, null);
+    if (data?.run?.run_id) {
+      state.dashboardRunDetails[id] = data.run;
+      if (state.currentRun?.run_id === id) state.currentRun = data.run;
+    }
+  } catch (_err) {
+    // keep verify view usable on summary metadata only
+  } finally {
+    state.verify.loadingRunId = "";
+    renderVerifyPanels();
+  }
+}
+
+function _verifyBaselineRun(selectedRunId) {
+  const candidates = _verifyRunCandidates().filter((r) => String(r.run_id || "") !== String(selectedRunId || ""));
+  if (!candidates.length) return null;
+  const baselineMeta = candidates[0];
+  return runDetail(String(baselineMeta.run_id || "")) || baselineMeta;
+}
+
+function _renderVerifySummaryTab(pack) {
+  const readout = (pack.client_readout && typeof pack.client_readout === "object") ? pack.client_readout : {};
+  const rr = (readout.release_readiness && typeof readout.release_readiness === "object") ? readout.release_readiness : {};
+  const whatChanged = Array.isArray(readout.what_changed) ? readout.what_changed : [];
+  const risk = (readout.risk_posture && typeof readout.risk_posture === "object") ? readout.risk_posture : {};
+  return `
+    <div class="grid gap-3 lg:grid-cols-2">
+      <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Release Summary</p>
+        <p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(String(rr.status || "UNKNOWN"))}</p>
+        <p class="mt-1 text-xs text-slate-700">${escapeHtml(String(rr.summary || ""))}</p>
+      </div>
+      <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Risk Posture</p>
+        <p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(String(risk.overall || "n/a"))}</p>
+        <ul class="mt-1 list-disc pl-4 text-xs text-slate-700">
+          ${(Array.isArray(risk.notes) ? risk.notes : []).slice(0, 4).map((x) => `<li>${escapeHtml(String(x || ""))}</li>`).join("") || "<li>No risk notes.</li>"}
+        </ul>
+      </div>
+    </div>
+    <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">What Changed Since Last Baseline</p>
+      <ul class="mt-1 list-disc pl-4 text-xs text-slate-700">
+        ${whatChanged.slice(0, 6).map((x) => `<li>${escapeHtml(String(x || ""))}</li>`).join("") || "<li>No change summary available.</li>"}
+      </ul>
+    </div>
+  `;
+}
+
+function _renderVerifyControlsTab(pack) {
+  const rows = Array.isArray(pack?.controls_and_compliance?.controls_triggered)
+    ? pack.controls_and_compliance.controls_triggered
+    : [];
+  if (!rows.length) return "<p class='text-slate-700'>No controls captured for this run.</p>";
+  return rows.map((row) => `
+    <div class="mb-2 rounded-lg border border-slate-300 bg-slate-50 p-2">
+      <p class="text-sm font-semibold text-slate-900">${escapeHtml(String(row.control_id || row.framework || "Control"))} · ${escapeHtml(String(row.status || "UNKNOWN"))}</p>
+      <p class="text-xs text-slate-700">${escapeHtml(String(row.objective || ""))}</p>
+    </div>
+  `).join("");
+}
+
+function _renderVerifyTraceabilityTab(pack) {
+  const links = Array.isArray(pack?.traceability_matrix?.links) ? pack.traceability_matrix.links : [];
+  if (!links.length) return "<p class='text-slate-700'>No traceability links found.</p>";
+  return `
+    <div class="space-y-1">
+      ${links.slice(0, 80).map((l) => `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">${escapeHtml(String(l.from || ""))} → ${escapeHtml(String(l.to || ""))} <span class="text-slate-500">(${escapeHtml(String(l.type || ""))})</span></div>`).join("")}
+    </div>
+  `;
+}
+
+function _renderVerifyTestsTab(pack) {
+  const summary = (pack?.test_evidence?.summary && typeof pack.test_evidence.summary === "object") ? pack.test_evidence.summary : {};
+  const failed = Array.isArray(pack?.test_evidence?.failed_scenarios) ? pack.test_evidence.failed_scenarios : [];
+  return `
+    <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+      <p class="text-sm font-semibold text-slate-900">Status: ${escapeHtml(String(summary.status || "UNKNOWN"))}</p>
+      <p class="text-xs text-slate-700">Overall pass rate: ${escapeHtml(String(summary.overall_pass_rate ?? "n/a"))}</p>
+      <p class="text-xs text-slate-700">P0 automated: ${escapeHtml(String(summary.p0_automated_percent ?? "n/a"))}%</p>
+    </div>
+    <div class="mt-2 space-y-1">
+      ${(failed.length ? failed : [{ scenario_id: "none", reason: "No failing scenarios." }]).map((f) => `
         <div class="rounded border border-slate-300 bg-white px-2 py-1">
-          <div class="flex items-center justify-between gap-2">
-            <span><strong>${escapeHtml(t.run_id || "")}</strong> · ${escapeHtml(String(run.status || t.status || "").toUpperCase())}</span>
-            <button data-export-evidence="${escapeHtml(t.run_id || "")}" class="btn-light rounded px-2 py-0.5 text-[11px] font-semibold">Export JSON</button>
-          </div>
+          <strong>${escapeHtml(String(f.scenario_id || ""))}</strong>: ${escapeHtml(String(f.reason || ""))}
         </div>
-      `;
-    }).join("")
-    : "<p class='text-slate-700'>No evidence packs generated yet. Evidence appears once verification starts.</p>";
-  el.verifyEvidence.querySelectorAll("[data-export-evidence]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const runId = btn.getAttribute("data-export-evidence") || "";
-      if (!runId) return;
-      try {
-        await exportEvidencePack(runId);
-      } catch (err) {
-        alert(`Failed to export evidence pack: ${err.message}`);
-      }
-    });
-  });
+      `).join("")}
+    </div>
+  `;
+}
 
-  const gates = runs.slice(0, 20).map((r) => {
-    const strict = r?.config?.strict_security_mode ? "strict" : "standard";
-    const status = String(r.status || "unknown").toLowerCase();
-    const tone = status === "failed" ? "text-rose-700" : (status === "completed" ? "text-emerald-700" : "text-slate-700");
-    return `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 ${tone}"><strong>${escapeHtml(r.run_id || "")}</strong> · ${escapeHtml(status.toUpperCase())} · ${strict}</div>`;
-  }).join("");
-  el.verifySecurityGates.innerHTML = gates || "<p class='text-slate-700'>No security gates recorded yet.</p>";
+function _renderVerifySecurityTab(pack) {
+  const security = (pack?.security_gates && typeof pack.security_gates === "object") ? pack.security_gates : {};
+  const scans = Array.isArray(security.scans) ? security.scans : [];
+  const notes = Array.isArray(security.notes) ? security.notes : [];
+  return `
+    <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+      <p class="text-sm font-semibold text-slate-900">Security gate status: ${escapeHtml(String(security.status || "UNKNOWN"))}</p>
+    </div>
+    <div class="mt-2">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Scans</p>
+      <div class="mt-1 space-y-1">
+        ${(scans.length ? scans : [{ type: "n/a", status: "No scan entries." }]).map((s) => `
+          <div class="rounded border border-slate-300 bg-white px-2 py-1">${escapeHtml(String(s.type || ""))} · ${escapeHtml(String(s.status || ""))}</div>
+        `).join("")}
+      </div>
+      <ul class="mt-2 list-disc pl-4 text-xs text-slate-700">
+        ${(notes.length ? notes : ["No security notes."]).map((n) => `<li>${escapeHtml(String(n))}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function _renderVerifyApprovalsTab(pack) {
+  const approvals = Array.isArray(pack?.approvals_and_exceptions?.approvals_required)
+    ? pack.approvals_and_exceptions.approvals_required
+    : [];
+  const exceptions = Array.isArray(pack?.approvals_and_exceptions?.exceptions)
+    ? pack.approvals_and_exceptions.exceptions
+    : [];
+  return `
+    <div>
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Approvals</p>
+      <div class="mt-1 space-y-1">
+        ${(approvals.length ? approvals : [{ message: "No pending approvals." }]).map((a, idx) => `
+          <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">
+            <strong>${escapeHtml(String(a.approval_id || a.id || `APR-${idx + 1}`))}</strong> · ${escapeHtml(String(a.role || "Reviewer"))} · ${escapeHtml(String(a.status || "PENDING"))}
+          </div>
+        `).join("")}
+      </div>
+      <p class="mt-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Exceptions</p>
+      <div class="mt-1 space-y-1">
+        ${(exceptions.length ? exceptions : [{ policy: "none", status: "No exceptions." }]).map((e) => `
+          <div class="rounded border border-slate-300 bg-white px-2 py-1">${escapeHtml(String(e.policy || e.exception_id || "Exception"))} · ${escapeHtml(String(e.status || ""))}</div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function _renderVerifyExportsTab(pack, runId) {
+  const exports = Array.isArray(pack?.exports?.available) ? pack.exports.available : [];
+  return `
+    <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+      <p class="text-xs text-slate-700">Use one-click exports above to generate audit artifacts for run <strong>${escapeHtml(runId)}</strong>.</p>
+    </div>
+    <div class="mt-2 space-y-1">
+      ${(exports.length ? exports : [{ type: "json", path: "n/a" }]).map((x) => `
+        <div class="rounded border border-slate-300 bg-white px-2 py-1">${escapeHtml(String(x.type || "").toUpperCase())} · ${escapeHtml(String(x.path || ""))}</div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderVerifyPanels() {
+  if (!el.verifyTabContent || !el.verifyRunSelect) return;
+  const candidates = _verifyRunCandidates();
+  if (!candidates.length) {
+    el.verifyRunSelect.innerHTML = "<option value=''>No runs available</option>";
+    if (el.verifyReleaseReadiness) el.verifyReleaseReadiness.textContent = "Unknown";
+    if (el.verifyApprovalsPending) el.verifyApprovalsPending.textContent = "0";
+    if (el.verifyLastUpdated) el.verifyLastUpdated.textContent = "n/a";
+    if (el.verifyBaselineDiff) el.verifyBaselineDiff.innerHTML = "No baseline comparison available yet.";
+    el.verifyTabContent.innerHTML = "<p class='text-slate-700'>No verification records yet. Run a pipeline to generate evidence.</p>";
+    renderVerifyTabButtons();
+    return;
+  }
+
+  const selectedId = String(state.verify.selectedRunId || state.currentRunId || "");
+  el.verifyRunSelect.innerHTML = candidates
+    .map((r) => `<option value="${escapeHtml(String(r.run_id || ""))}" ${String(r.run_id || "") === selectedId ? "selected" : ""}>${escapeHtml(String(r.run_id || ""))} · ${escapeHtml(String(r.status || "").toUpperCase())}</option>`)
+    .join("");
+
+  const selectedRun = _verifySelectedRun();
+  if (!selectedRun) return;
+  const selectedRunId = String(selectedRun.run_id || "");
+  const selectedPipeline = _runPipelineState(selectedRun);
+  if ((!selectedPipeline || !Object.keys(selectedPipeline).length) && selectedRunId) {
+    ensureVerifyRunDetail(selectedRunId).catch(() => {});
+  }
+  const baselineRun = _verifyBaselineRun(String(selectedRun.run_id || ""));
+  const pack = buildEvidencePackFragment(selectedRun, baselineRun);
+  state.verify.currentPack = pack;
+
+  const readiness = String(pack?.client_readout?.release_readiness?.status || "UNKNOWN").toUpperCase();
+  const readinessClass = readiness === "PASS" ? "text-emerald-700" : "text-rose-700";
+  if (el.verifyReleaseReadiness) {
+    el.verifyReleaseReadiness.textContent = readiness;
+    el.verifyReleaseReadiness.classList.remove("text-emerald-700", "text-rose-700", "text-slate-900");
+    el.verifyReleaseReadiness.classList.add(readinessClass);
+  }
+  const pendingApprovals = Array.isArray(pack?.client_readout?.release_readiness?.pending_approvals)
+    ? pack.client_readout.release_readiness.pending_approvals.length
+    : 0;
+  if (el.verifyApprovalsPending) el.verifyApprovalsPending.textContent = String(pendingApprovals);
+  if (el.verifyLastUpdated) el.verifyLastUpdated.textContent = String(selectedRun.updated_at || selectedRun.created_at || "n/a").replace("T", " ").slice(0, 19);
+  if (el.verifyHeaderSubtitle) {
+    el.verifyHeaderSubtitle.textContent = `Selected run ${String(selectedRun.run_id || "")} · ${String(selectedRun.status || "").toUpperCase()} · governance=${_runPipelineState(selectedRun).strict_security_mode ? "Strict" : "Standard"}`;
+  }
+
+  const topo = pack?.engineering_detail?.system_map_delta || {};
+  const topoChanges = Array.isArray(topo.topology_changes) ? topo.topology_changes : [];
+  const contractChanges = Array.isArray(topo.contract_changes) ? topo.contract_changes : [];
+  if (el.verifyBaselineDiff) {
+    el.verifyBaselineDiff.innerHTML = `
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">What changed since last baseline</p>
+      <p class="mt-1 text-xs text-slate-700">Topology deltas: ${escapeHtml(String(topoChanges.length))} | Contract deltas: ${escapeHtml(String(contractChanges.length))}</p>
+      <ul class="mt-1 list-disc pl-4 text-xs text-slate-700">
+        ${topoChanges.slice(0, 3).map((x) => `<li>${escapeHtml(String(x || ""))}</li>`).join("")}
+        ${contractChanges.slice(0, 3).map((x) => `<li>${escapeHtml(String(x || ""))}</li>`).join("")}
+      </ul>
+    `;
+  }
+
+  const tab = String(state.verify.selectedTab || "summary");
+  if (tab === "controls") el.verifyTabContent.innerHTML = _renderVerifyControlsTab(pack);
+  else if (tab === "traceability") el.verifyTabContent.innerHTML = _renderVerifyTraceabilityTab(pack);
+  else if (tab === "tests") el.verifyTabContent.innerHTML = _renderVerifyTestsTab(pack);
+  else if (tab === "security") el.verifyTabContent.innerHTML = _renderVerifySecurityTab(pack);
+  else if (tab === "approvals") el.verifyTabContent.innerHTML = _renderVerifyApprovalsTab(pack);
+  else if (tab === "exports") el.verifyTabContent.innerHTML = _renderVerifyExportsTab(pack, String(selectedRun.run_id || ""));
+  else el.verifyTabContent.innerHTML = _renderVerifySummaryTab(pack);
+
+  renderVerifyTabButtons();
 }
 
 async function cloneTaskToWorkbench(runId) {
@@ -3947,6 +5478,12 @@ function renderTaskSummary() {
     : getIntegrationContext();
   const detectedState = String(integration.project_state_detected || state.projectState.detected || "pending");
   const analysisDepth = String(integration.scan_scope?.analysis_depth || el.analysisDepth?.value || "standard");
+  const domainPackSelection = String(integration.domain_pack_selection || "auto");
+  const domainPackId = String(
+    domainPackSelection === "custom"
+      ? (integration.custom_domain_pack?.id || "custom")
+      : (integration.domain_pack_id || domainPackSelection || "auto")
+  );
   const cloudPromotionEnabled = Boolean(
     integration.cloud_promotion_enabled
       ?? (deploymentTarget === "cloud" && el.enableCloudPromotion?.checked)
@@ -3968,6 +5505,7 @@ function renderTaskSummary() {
   }
   detailItems.push({ label: "Project State", value: detectedState });
   detailItems.push({ label: "Scan Depth", value: analysisDepth });
+  detailItems.push({ label: "Domain Pack", value: domainPackId });
 
   if (useCase === "code_modernization") {
     const lang = String(pipeline.modernization_language || el.modernizationLanguage.value || "Python");
@@ -4285,18 +5823,163 @@ function renderAnalystReadable(output) {
   const nfr = output.non_functional_requirements || [];
   const walkthrough = output.analysis_walkthrough || {};
   const legacyContract = output.legacy_functional_contract || [];
+  const legacyInventory = resolveLegacyInventory(output);
+  const legacySkill = resolveLegacySkillProfile(output);
+  const legacyForms = resolveLegacyForms(legacyInventory);
+  const vb6Projects = Array.isArray(legacyInventory.vb6_projects) ? legacyInventory.vb6_projects : [];
+  const legacyRules = resolveBusinessRulesCatalog(output, legacyInventory);
+  const groupedLegacyRules = groupBusinessRulesByType(legacyRules);
+  const vb6Analysis = (legacyInventory.vb6_analysis && typeof legacyInventory.vb6_analysis === "object")
+    ? legacyInventory.vb6_analysis
+    : {};
+  const uiEventMap = Array.isArray(legacyInventory.ui_event_map)
+    ? legacyInventory.ui_event_map
+    : (Array.isArray(vb6Analysis.ui_event_map) ? vb6Analysis.ui_event_map : []);
+  const sqlCatalog = Array.isArray(legacyInventory.sql_query_catalog)
+    ? legacyInventory.sql_query_catalog
+    : (Array.isArray(vb6Analysis.sql_query_catalog) ? vb6Analysis.sql_query_catalog : []);
+  const comSurface = (legacyInventory.com_surface_map && typeof legacyInventory.com_surface_map === "object")
+    ? legacyInventory.com_surface_map
+    : ((vb6Analysis.com_surface_map && typeof vb6Analysis.com_surface_map === "object") ? vb6Analysis.com_surface_map : {});
+  const win32Declares = Array.isArray(legacyInventory.win32_declares)
+    ? legacyInventory.win32_declares
+    : (Array.isArray(vb6Analysis.win32_declares) ? vb6Analysis.win32_declares : []);
+  const errorProfile = (legacyInventory.error_handling_profile && typeof legacyInventory.error_handling_profile === "object")
+    ? legacyInventory.error_handling_profile
+    : ((vb6Analysis.error_handling_profile && typeof vb6Analysis.error_handling_profile === "object") ? vb6Analysis.error_handling_profile : {});
+  const pitfallDetectors = Array.isArray(legacyInventory.pitfall_detectors)
+    ? legacyInventory.pitfall_detectors
+    : (Array.isArray(vb6Analysis.pitfall_detectors) ? vb6Analysis.pitfall_detectors : []);
+  const readiness = (legacyInventory.modernization_readiness && typeof legacyInventory.modernization_readiness === "object")
+    ? legacyInventory.modernization_readiness
+    : ((vb6Analysis.modernization_readiness && typeof vb6Analysis.modernization_readiness === "object") ? vb6Analysis.modernization_readiness : {});
+  const projectFormCount = vb6Projects.reduce((acc, project) => {
+    const explicit = Number(project?.forms_count || 0);
+    if (Number.isFinite(explicit) && explicit > 0) return acc + explicit;
+    return acc + (Array.isArray(project?.forms) ? project.forms.length : 0);
+  }, 0);
+  const formsDisplayCount = Math.max(legacyForms.length, projectFormCount);
+  const activexControls = Array.isArray(legacyInventory.activex_controls) ? legacyInventory.activex_controls : [];
+  const dllDeps = Array.isArray(legacyInventory.dll_dependencies) ? legacyInventory.dll_dependencies : [];
+  const ocxDeps = Array.isArray(legacyInventory.ocx_dependencies) ? legacyInventory.ocx_dependencies : [];
+  const legacyEvents = Array.isArray(legacyInventory.event_handlers) ? legacyInventory.event_handlers : [];
+  const legacyMembers = Array.isArray(legacyInventory.project_members) ? legacyInventory.project_members : [];
   const risks = output.risks || [];
+  const requirementsPack = (output.requirements_pack && typeof output.requirements_pack === "object") ? output.requirements_pack : {};
+  const sourceTargetProfile = (legacyInventory.source_target_modernization_profile && typeof legacyInventory.source_target_modernization_profile === "object")
+    ? legacyInventory.source_target_modernization_profile
+    : ((vb6Analysis.source_target_modernization_profile && typeof vb6Analysis.source_target_modernization_profile === "object")
+      ? vb6Analysis.source_target_modernization_profile
+      : ((output.source_target_modernization_profile && typeof output.source_target_modernization_profile === "object")
+        ? output.source_target_modernization_profile
+        : ((requirementsPack.source_target_modernization_profile && typeof requirementsPack.source_target_modernization_profile === "object")
+          ? requirementsPack.source_target_modernization_profile
+          : {})));
+  const sourceProfile = (sourceTargetProfile.source && typeof sourceTargetProfile.source === "object") ? sourceTargetProfile.source : {};
+  const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object") ? sourceTargetProfile.target : {};
+  const sourceTargetSummaries = (sourceTargetProfile.summary_variants && typeof sourceTargetProfile.summary_variants === "object")
+    ? sourceTargetProfile.summary_variants
+    : {};
+  const sourceTargetRisks = Array.isArray(sourceTargetProfile.modernization_risks) ? sourceTargetProfile.modernization_risks : [];
+  const projectBusinessSummaries = Array.isArray(legacyInventory.project_business_summaries)
+    ? legacyInventory.project_business_summaries
+    : (Array.isArray(vb6Analysis.project_business_summaries)
+      ? vb6Analysis.project_business_summaries
+      : (Array.isArray(output.project_business_summaries)
+        ? output.project_business_summaries
+        : (Array.isArray(requirementsPack.project_business_summaries) ? requirementsPack.project_business_summaries : [])));
+  const fileTypeCoverage = (legacyInventory.vb6_file_type_coverage && typeof legacyInventory.vb6_file_type_coverage === "object")
+    ? legacyInventory.vb6_file_type_coverage
+    : ((vb6Analysis.vb6_file_type_coverage && typeof vb6Analysis.vb6_file_type_coverage === "object") ? vb6Analysis.vb6_file_type_coverage : {});
+  const basModuleSummary = (legacyInventory.bas_module_summary && typeof legacyInventory.bas_module_summary === "object")
+    ? legacyInventory.bas_module_summary
+    : ((vb6Analysis.bas_module_summary && typeof vb6Analysis.bas_module_summary === "object") ? vb6Analysis.bas_module_summary : {});
+  const binaryCompanionFiles = Array.isArray(legacyInventory.binary_companion_files)
+    ? legacyInventory.binary_companion_files
+    : (Array.isArray(vb6Analysis.binary_companion_files) ? vb6Analysis.binary_companion_files : []);
+  const domainPack = (output.domain_pack && typeof output.domain_pack === "object")
+    ? output.domain_pack
+    : ((requirementsPack.domain_pack_ref && typeof requirementsPack.domain_pack_ref === "object") ? requirementsPack.domain_pack_ref : {});
+  const capabilityMapping = (output.capability_mapping && typeof output.capability_mapping === "object")
+    ? output.capability_mapping
+    : ((requirementsPack.capability_mapping && typeof requirementsPack.capability_mapping === "object") ? requirementsPack.capability_mapping : {});
+  const primaryCapabilities = Array.isArray(capabilityMapping.primary_capabilities) ? capabilityMapping.primary_capabilities : [];
+  const alternativeCapabilities = Array.isArray(capabilityMapping.alternative_capabilities) ? capabilityMapping.alternative_capabilities : [];
+  const regulatory = Array.isArray(output.regulatory_constraints)
+    ? output.regulatory_constraints
+    : (Array.isArray(requirementsPack.regulatory_constraints_applied) ? requirementsPack.regulatory_constraints_applied : []);
+  const standards = Array.isArray(output.standards_guidance)
+    ? output.standards_guidance
+    : (Array.isArray(requirementsPack.standards_guidance) ? requirementsPack.standards_guidance : []);
+  const bddContract = (output.bdd_contract && typeof output.bdd_contract === "object")
+    ? output.bdd_contract
+    : ((requirementsPack.bdd_contract && typeof requirementsPack.bdd_contract === "object") ? requirementsPack.bdd_contract : {});
+  const bddFeatures = Array.isArray(bddContract.features) ? bddContract.features : [];
+  const bddLint = (bddContract.lint && typeof bddContract.lint === "object") ? bddContract.lint : {};
+  const qualityGates = Array.isArray(output.quality_gates) ? output.quality_gates : (Array.isArray(requirementsPack.quality_gates) ? requirementsPack.quality_gates : []);
+  const openQuestions = Array.isArray(output.open_questions) ? output.open_questions : (Array.isArray(requirementsPack.open_questions) ? requirementsPack.open_questions : []);
+  const acceptanceMap = Array.isArray(output.acceptance_test_mapping)
+    ? output.acceptance_test_mapping
+    : (Array.isArray(requirementsPack.acceptance_test_mapping) ? requirementsPack.acceptance_test_mapping : []);
+  const domainModel = (output.domain_model_excerpt && typeof output.domain_model_excerpt === "object")
+    ? output.domain_model_excerpt
+    : ((requirementsPack.domain_model_excerpt && typeof requirementsPack.domain_model_excerpt === "object") ? requirementsPack.domain_model_excerpt : {});
+  const domainEntities = Array.isArray(domainModel.entities) ? domainModel.entities : [];
+  const lifecycleStates = Array.isArray(domainModel.lifecycle_states) ? domainModel.lifecycle_states : [];
+  const relationships = Array.isArray(domainModel.relationships) ? domainModel.relationships : [];
+  const gateBadge = (status) => {
+    const s = String(status || "").toUpperCase();
+    if (s === "PASS") return "inline-flex rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900";
+    if (s === "FAIL") return "inline-flex rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-900";
+    return "inline-flex rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900";
+  };
   const revised = String(output.human_revised_document_markdown || "").trim();
   return `
     <h5 class="text-sm font-semibold text-ink-950">Technical Requirements Document</h5>
     ${revised ? `<div class="mt-2 rounded border border-slate-300 bg-white p-2"><strong>Human revised document:</strong><pre class="mono mt-1 whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(revised.slice(0, 2000))}${revised.length > 2000 ? "\n...[truncated]" : ""}</pre></div>` : ""}
+    <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+      <strong>Domain Pack:</strong>
+      <span class="ml-1">${escapeHtml(domainPack.name || "General Software Domain Pack")}</span>
+      <span class="ml-2 text-[11px] text-slate-700">(${escapeHtml(domainPack.id || "software-general-v1")} / v${escapeHtml(domainPack.version || "1.0.0")})</span>
+    </div>
     <div><strong>Project:</strong> ${escapeHtml(output.project_name || "Untitled")}</div>
     <div><strong>Summary:</strong> ${escapeHtml(output.executive_summary || "")}</div>
+    <div class="mt-1 text-[11px] text-slate-800"><strong>Selected legacy skill:</strong> ${escapeHtml(String(legacySkill.selected_skill_name || "Generic Legacy Skill"))} (${escapeHtml(String(legacySkill.selected_skill_id || "generic_legacy"))}) | confidence=${escapeHtml(String(legacySkill.confidence || "n/a"))}</div>
+    ${Array.isArray(legacySkill.reasons) && legacySkill.reasons.length ? `<div class="text-[11px] text-slate-800"><strong>Skill rationale:</strong> ${escapeHtml(legacySkill.reasons.slice(0, 4).join(" | "))}</div>` : ""}
     <div class="mt-2"><strong>Business Objective Summary:</strong> ${escapeHtml(walkthrough.business_objective_summary || "")}</div>
     <div class="mt-2"><strong>Requirements Understanding</strong></div>
     <ul class="list-disc pl-5">${(walkthrough.requirements_understanding || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>None captured</li>"}</ul>
     <div class="mt-2"><strong>Tech Conversion Plan</strong></div>
     <ul class="list-disc pl-5">${(walkthrough.conversion_to_technical_requirements || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>None captured</li>"}</ul>
+    <div class="mt-2"><strong>Capability Mapping</strong></div>
+    <div class="text-[11px] text-slate-800">Framework: ${escapeHtml(capabilityMapping.framework || "Not specified")}</div>
+    <ul class="list-disc pl-5">${primaryCapabilities.map((cap) => `
+      <li>
+        <strong>${escapeHtml(cap.id || "capability")}</strong>
+        ${escapeHtml(cap.service_domain || "")} (${escapeHtml(cap.business_capability || "")})
+        <span class="text-[11px] text-slate-700">confidence ${escapeHtml(cap.confidence || "")}</span>
+      </li>
+    `).join("") || "<li>No primary capabilities mapped</li>"}</ul>
+    ${alternativeCapabilities.length ? `<div class="mt-1 text-[11px] text-slate-800"><strong>Alternatives:</strong> ${alternativeCapabilities.map((cap) => escapeHtml(cap.id || cap.service_domain || "capability")).join(", ")}</div>` : ""}
+    <div class="mt-2"><strong>Domain Model Excerpt</strong></div>
+    <div class="text-[11px] text-slate-800"><strong>Entities:</strong> ${escapeHtml(domainEntities.join(", ") || "None")}</div>
+    <div class="text-[11px] text-slate-800"><strong>Lifecycle states:</strong> ${escapeHtml(lifecycleStates.join(", ") || "None")}</div>
+    <ul class="list-disc pl-5">${relationships.map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>No relationships captured</li>"}</ul>
+    <div class="mt-2"><strong>Compliance Constraints Applied (${regulatory.length})</strong></div>
+    <ul class="list-disc pl-5">${regulatory.map((c) => `
+      <li>
+        <strong>${escapeHtml(c.id || "constraint")}</strong> ${escapeHtml(c.name || "")}
+        <div>${escapeHtml(c.control_objective || "")}</div>
+        <ul class="list-disc pl-5">${(c.software_actions || []).map((a) => `<li>${escapeHtml(a)}</li>`).join("") || "<li>No software actions provided</li>"}</ul>
+      </li>
+    `).join("") || "<li>No regulatory constraints selected for this objective</li>"}</ul>
+    <div class="mt-2"><strong>Standards Guidance (${standards.length})</strong></div>
+    <ul class="list-disc pl-5">${standards.map((s) => `
+      <li>
+        <strong>${escapeHtml(s.id || "standard")}</strong> ${escapeHtml(s.name || "")}
+        <ul class="list-disc pl-5">${(s.engineering_actions || []).map((a) => `<li>${escapeHtml(a)}</li>`).join("") || "<li>No actions listed</li>"}</ul>
+      </li>
+    `).join("") || "<li>No standards guidance applied</li>"}</ul>
     <div class="mt-2"><strong>Functional Requirements (${fr.length})</strong></div>
     <ul class="list-disc pl-5">${fr.map((r) => `
       <li>
@@ -4316,8 +5999,145 @@ function renderAnalystReadable(output) {
     `).join("") || "<li>No non-functional requirements found</li>"}</ul>
     <div class="mt-2"><strong>Legacy Functional Contract (${legacyContract.length})</strong></div>
     <ul class="list-disc pl-5">${legacyContract.map((c) => `<li><strong>${escapeHtml(c.function_name || "function")}</strong> | inputs: ${escapeHtml((c.inputs || []).join(", "))} | outputs: ${escapeHtml((c.outputs || []).join(", "))}</li>`).join("") || "<li>Not provided</li>"}</ul>
+    <div class="mt-2"><strong>Legacy Code Inventory</strong></div>
+    <div class="text-[11px] text-slate-800">${escapeHtml(String(legacyInventory.summary || "No granular legacy inventory available."))}</div>
+    <div class="mt-1"><strong>VB6 projects (${vb6Projects.length})</strong></div>
+    <ul class="list-disc pl-5">${vb6Projects.slice(0, 12).map((project, idx) => `
+      <li>
+        <strong>${escapeHtml(String(project.project_name || `VB6-Project-${idx + 1}`))}</strong>
+        <div class="text-[11px] text-slate-800">
+          file=${escapeHtml(String(project.project_file || "n/a"))}
+          | type=${escapeHtml(String(project.project_type || "unknown"))}
+          | startup=${escapeHtml(String(project.startup_object || "n/a"))}
+          | members=${escapeHtml(String(project.member_count || (Array.isArray(project.member_files) ? project.member_files.length : 0)))}
+          | forms=${escapeHtml(String(project.forms_count || (Array.isArray(project.forms) ? project.forms.length : 0)))}
+        </div>
+        ${String(project.business_objective_hypothesis || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Objective:</strong> ${escapeHtml(String(project.business_objective_hypothesis || ""))}</div>` : ""}
+        ${Array.isArray(project.key_business_capabilities) && project.key_business_capabilities.length ? `<div class="text-[11px] text-slate-800"><strong>Capabilities:</strong> ${escapeHtml(project.key_business_capabilities.slice(0, 10).join(", "))}</div>` : ""}
+        <div class="text-[11px] text-slate-800">Top members: ${escapeHtml((Array.isArray(project.member_files) ? project.member_files.slice(0, 10) : []).join(", ") || "none extracted")}</div>
+        <div class="text-[11px] text-slate-800">Tables: ${escapeHtml((Array.isArray(project.data_touchpoints?.tables) ? project.data_touchpoints.tables.slice(0, 10) : []).join(", ") || "none")}</div>
+        <div class="text-[11px] text-slate-800">Procedures: ${escapeHtml((Array.isArray(project.data_touchpoints?.procedures) ? project.data_touchpoints.procedures.slice(0, 10) : []).join(", ") || "none")}</div>
+        <div class="text-[11px] text-slate-800">Workflows: ${escapeHtml((Array.isArray(project.primary_workflows) ? project.primary_workflows.slice(0, 6) : []).join(" | ") || "none")}</div>
+        <div class="text-[11px] text-slate-800">Modernization notes: ${escapeHtml((Array.isArray(project.modernization_considerations) ? project.modernization_considerations.slice(0, 4) : []).join(" | ") || "none")}</div>
+      </li>
+    `).join("") || "<li>No VB6 project-level metadata extracted</li>"}</ul>
+    <div class="mt-1"><strong>VB6 file-type coverage</strong></div>
+    <div class="text-[11px] text-slate-800">${escapeHtml(Object.entries(fileTypeCoverage || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([k, v]) => `${String(k)}=${String(v)}`).join(", ") || "none")}</div>
+    <div class="text-[11px] text-slate-800"><strong>.bas module summary:</strong> modules=${escapeHtml(String(basModuleSummary.module_count ?? 0))}, procedures=${escapeHtml(String(basModuleSummary.procedure_count ?? 0))}</div>
+    ${Array.isArray(basModuleSummary.modules) && basModuleSummary.modules.length ? `<div class="text-[11px] text-slate-800"><strong>.bas modules:</strong> ${escapeHtml(basModuleSummary.modules.slice(0, 20).join(", "))}</div>` : ""}
+    ${binaryCompanionFiles.length ? `<div class="text-[11px] text-slate-800"><strong>Binary companions (${binaryCompanionFiles.length}):</strong> ${escapeHtml(binaryCompanionFiles.slice(0, 20).map((row) => String(row.path || "")).join(", "))}</div>` : ""}
+    <div class="mt-1"><strong>Project-by-project business summary (${projectBusinessSummaries.length})</strong></div>
+    <ul class="list-disc pl-5">${projectBusinessSummaries.slice(0, 16).map((row, idx) => `
+      <li>
+        <strong>${escapeHtml(String(row.project_name || `Project-${idx + 1}`))}</strong>
+        <div class="text-[11px] text-slate-800">Risk=${escapeHtml(String(row.risk?.tier || "n/a"))} (${escapeHtml(String(row.risk?.score ?? "n/a"))})</div>
+        ${String(row.business_objective || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Objective:</strong> ${escapeHtml(String(row.business_objective || ""))}</div>` : ""}
+        ${Array.isArray(row.business_capabilities) && row.business_capabilities.length ? `<div class="text-[11px] text-slate-800"><strong>Capabilities:</strong> ${escapeHtml(row.business_capabilities.slice(0, 12).join(", "))}</div>` : ""}
+        ${Array.isArray(row.primary_workflows) && row.primary_workflows.length ? `<div class="text-[11px] text-slate-800"><strong>Workflows:</strong> ${escapeHtml(row.primary_workflows.slice(0, 10).join(" | "))}</div>` : ""}
+        <div class="text-[11px] text-slate-800">Components: forms=${escapeHtml(String(Array.isArray(row.technical_components?.forms) ? row.technical_components.forms.length : 0))}, controls=${escapeHtml(String(Array.isArray(row.technical_components?.controls) ? row.technical_components.controls.length : 0))}, dependencies=${escapeHtml(String(Array.isArray(row.technical_components?.dependencies) ? row.technical_components.dependencies.length : 0))}</div>
+        ${String(row.summary_variants?.quick || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Quick:</strong> ${escapeHtml(String(row.summary_variants.quick || ""))}</div>` : ""}
+        ${String(row.summary_variants?.technical || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Technical:</strong> ${escapeHtml(String(row.summary_variants.technical || ""))}</div>` : ""}
+        ${String(row.summary_variants?.risk || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Risk:</strong> ${escapeHtml(String(row.summary_variants.risk || ""))}</div>` : ""}
+      </li>
+    `).join("") || "<li>No per-project business summary generated</li>"}</ul>
+    <div class="mt-1"><strong>Forms and business use (${formsDisplayCount})</strong></div>
+    ${formsDisplayCount !== legacyForms.length ? `<div class="text-[11px] text-slate-700">Showing ${escapeHtml(String(legacyForms.length))} extracted entries; project inventory indicates ${escapeHtml(String(formsDisplayCount))} total forms/usercontrols.</div>` : ""}
+    <ul class="list-disc pl-5">${legacyForms.slice(0, 16).map((form, idx) => `
+      <li>
+        <strong>${escapeHtml(`${String(form.form_type || "Form")} ${String(form.form_name || `Form-${idx + 1}`)}`)}</strong>
+        <div>${escapeHtml(String(form.business_use || "Business workflow executed through event-driven UI controls."))}</div>
+        <div class="text-[11px] text-slate-800">Controls: ${escapeHtml((Array.isArray(form.controls) ? form.controls.slice(0, 12) : []).join(", ") || "none extracted")}</div>
+        <div class="text-[11px] text-slate-800">Handlers: ${escapeHtml((Array.isArray(form.event_handlers) ? form.event_handlers.slice(0, 12) : []).join(", ") || "none extracted")}</div>
+      </li>
+    `).join("") || "<li>No VB6 form/usercontrol metadata extracted</li>"}</ul>
+    <div class="mt-1 text-[11px] text-slate-800"><strong>ActiveX/COM:</strong> ${escapeHtml(activexControls.slice(0, 24).join(", ") || "none extracted")}</div>
+    <div class="text-[11px] text-slate-800"><strong>DLL:</strong> ${escapeHtml(dllDeps.slice(0, 24).join(", ") || "none extracted")}</div>
+    <div class="text-[11px] text-slate-800"><strong>OCX:</strong> ${escapeHtml(ocxDeps.slice(0, 24).join(", ") || "none extracted")}</div>
+    <div class="text-[11px] text-slate-800"><strong>Event handlers (${legacyEvents.length}):</strong> ${escapeHtml(legacyEvents.slice(0, 24).join(", ") || "none extracted")}</div>
+    <div class="text-[11px] text-slate-800"><strong>Project members (${legacyMembers.length}):</strong> ${escapeHtml(legacyMembers.slice(0, 24).join(", ") || "none extracted")}</div>
+    <div class="text-[11px] text-slate-800"><strong>Win32 declares (${win32Declares.length}):</strong> ${escapeHtml(win32Declares.slice(0, 12).join(", ") || "none extracted")}</div>
+    <div class="text-[11px] text-slate-800"><strong>COM surface:</strong> ProgIDs=${escapeHtml((Array.isArray(comSurface.late_bound_progids) ? comSurface.late_bound_progids.slice(0, 12) : []).join(", ") || "none")} | CallByName=${escapeHtml(String(comSurface.call_by_name_sites || 0))} | Create/GetObject=${escapeHtml(String(comSurface.createobject_getobject_sites || 0))}</div>
+    <div class="text-[11px] text-slate-800"><strong>Error profile:</strong> ResumeNext=${escapeHtml(String(errorProfile.on_error_resume_next || 0))}, GoTo=${escapeHtml(String(errorProfile.on_error_goto || 0))}, GoTo0=${escapeHtml(String(errorProfile.on_error_goto0 || 0))}, ControlArray=${escapeHtml(String(errorProfile.control_array_index_markers || 0))}, LateBound=${escapeHtml(String(errorProfile.late_bound_com_calls || 0))}</div>
+    <div class="mt-2"><strong>Business Rules catalog (${legacyRules.length})</strong></div>
+    ${groupedLegacyRules.length ? `<div class="text-[11px] text-slate-700">Rule groups: ${escapeHtml(groupedLegacyRules.map((g) => `${g.label} (${g.count})`).join(", "))}</div>` : ""}
+    <ul class="list-disc pl-5">${groupedLegacyRules.slice(0, 8).map((group) => `
+      <li>
+        <strong>${escapeHtml(String(group.label || "Rule Group"))} (${Number(group.count || 0)})</strong>
+        <ul class="list-disc pl-5">${(Array.isArray(group.rules) ? group.rules : []).slice(0, 12).map((rule, idx) => `
+          <li>
+            <strong>${escapeHtml(String(rule.id || `BR-${String(idx + 1).padStart(3, "0")}`))}</strong>
+            ${escapeHtml(String(rule.statement || ""))}
+            <div class="text-[11px] text-slate-800">Scope: ${escapeHtml(String(rule.scope || "legacy-code"))}</div>
+            ${String(rule.evidence || "").trim() ? `<div class="text-[11px] text-slate-800">Evidence: ${escapeHtml(String(rule.evidence || ""))}</div>` : ""}
+          </li>
+        `).join("") || "<li>No rules in this group</li>"}</ul>
+      </li>
+    `).join("") || "<li>No deterministic business rules extracted</li>"}</ul>
+    <div class="mt-2"><strong>VB6 Modernization readiness</strong></div>
+    <div class="text-[11px] text-slate-800">
+      score=${escapeHtml(String(readiness.score ?? "n/a"))}/100
+      | risk=${escapeHtml(String(readiness.risk_tier || "n/a"))}
+      | strategy=${escapeHtml(String(readiness.recommended_strategy?.name || readiness.recommended_strategy?.id || "n/a"))}
+    </div>
+    ${String(readiness.recommended_strategy?.rationale || "").trim() ? `<div class="text-[11px] text-slate-800">${escapeHtml(String(readiness.recommended_strategy.rationale || ""))}</div>` : ""}
+    ${Array.isArray(readiness.required_actions) && readiness.required_actions.length ? `<div class="text-[11px] text-slate-800"><strong>Required actions:</strong> ${escapeHtml(readiness.required_actions.slice(0, 10).join(", "))}</div>` : ""}
+    <div class="mt-2"><strong>Source and target modernization profile</strong></div>
+    <div class="text-[11px] text-slate-800">Source=${escapeHtml(String(sourceProfile.language || "Unknown"))} | ecosystem=${escapeHtml(String(sourceProfile.ecosystem || "n/a"))} | repo=${escapeHtml(String(sourceProfile.repo || "n/a"))} | projects=${escapeHtml(String(sourceProfile.project_count ?? "n/a"))}</div>
+    <div class="text-[11px] text-slate-800">Target=${escapeHtml(String(targetProfile.language || "Not specified"))} | platform=${escapeHtml(String(targetProfile.platform || "n/a"))} | deployment=${escapeHtml(String(targetProfile.deployment_target || "n/a"))} | repo=${escapeHtml(String(targetProfile.repo || "n/a"))}</div>
+    ${String(sourceTargetSummaries.brief || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Brief:</strong> ${escapeHtml(String(sourceTargetSummaries.brief || ""))}</div>` : ""}
+    ${String(sourceTargetSummaries.technical || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Technical:</strong> ${escapeHtml(String(sourceTargetSummaries.technical || ""))}</div>` : ""}
+    ${String(sourceTargetSummaries.risk || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Risk:</strong> ${escapeHtml(String(sourceTargetSummaries.risk || ""))}</div>` : ""}
+    ${sourceTargetRisks.length ? `<ul class="list-disc pl-5">${sourceTargetRisks.slice(0, 8).map((r) => `<li>${escapeHtml(String(r || ""))}</li>`).join("")}</ul>` : ""}
+    <div class="mt-1"><strong>Pitfall detectors (${pitfallDetectors.length})</strong></div>
+    <ul class="list-disc pl-5">${pitfallDetectors.slice(0, 16).map((row) => `
+      <li>
+        <strong>${escapeHtml(String(row.id || "VB6-DET"))}</strong>
+        [${escapeHtml(String(row.severity || "medium"))}]
+        count=${escapeHtml(String(row.count || 0))}
+        <div class="text-[11px] text-slate-800">${escapeHtml(String(row.evidence || ""))}</div>
+      </li>
+    `).join("") || "<li>No detector hits</li>"}</ul>
+    <div class="mt-1"><strong>UI Event Map (${uiEventMap.length})</strong></div>
+    <ul class="list-disc pl-5">${uiEventMap.slice(0, 16).map((row) => `
+      <li>
+        <strong>${escapeHtml(String(row.event_handler || "handler"))}</strong>
+        <div class="text-[11px] text-slate-800">
+          form=${escapeHtml(String(row.form || "n/a"))}
+          | control=${escapeHtml(String(row.control || "n/a"))}
+          | event=${escapeHtml(String(row.event || "n/a"))}
+        </div>
+        <div class="text-[11px] text-slate-800">calls: ${escapeHtml((Array.isArray(row.procedure_calls) ? row.procedure_calls.slice(0, 6) : []).join(", ") || "none")}</div>
+      </li>
+    `).join("") || "<li>No UI event map extracted</li>"}</ul>
+    <div class="text-[11px] text-slate-800"><strong>SQL query catalog (${sqlCatalog.length}):</strong> ${escapeHtml(sqlCatalog.slice(0, 8).join(" | ") || "none extracted")}</div>
     <div class="mt-2"><strong>Risks (${risks.length})</strong></div>
     <ul class="list-disc pl-5">${risks.map((r) => `<li><strong>${escapeHtml((r.impact || "").toUpperCase())}</strong> ${escapeHtml(r.description || "")} | Mitigation: ${escapeHtml(r.mitigation || "")}</li>`).join("") || "<li>None</li>"}</ul>
+    <div class="mt-2"><strong>BDD Contract (${bddFeatures.length} features)</strong></div>
+    <div class="text-[11px] text-slate-800">Lint: ${bddLint.pass === true ? "PASS" : (bddLint.pass === false ? "FAIL" : "Unknown")} | scenarios=${Number(bddLint.scenario_count || 0)}</div>
+    <ul class="list-disc pl-5">${bddFeatures.slice(0, 8).map((f) => `
+      <li>
+        <strong>${escapeHtml(f.id || "BDD")}</strong> ${escapeHtml(f.title || "")}
+        <pre class="mono mt-1 whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(String(f.gherkin || "").slice(0, 1200))}${String(f.gherkin || "").length > 1200 ? "\n...[truncated]" : ""}</pre>
+      </li>
+    `).join("") || "<li>No BDD features generated</li>"}</ul>
+    <div class="mt-2"><strong>Quality Gates (${qualityGates.length})</strong></div>
+    <ul class="list-disc pl-5">${qualityGates.map((g) => `
+      <li>
+        <span class="${gateBadge(g.status)}">${escapeHtml(g.status || "UNKNOWN")}</span>
+        <strong class="ml-1">${escapeHtml(g.name || "gate")}</strong>
+        <div class="text-[11px] text-slate-800">${escapeHtml(g.message || "")}</div>
+      </li>
+    `).join("") || "<li>No gates recorded</li>"}</ul>
+    <div class="mt-2"><strong>Acceptance-to-Test Mapping (${acceptanceMap.length})</strong></div>
+    <ul class="list-disc pl-5">${acceptanceMap.slice(0, 12).map((m) => `
+      <li>
+        <strong>${escapeHtml(m.requirement_id || "requirement")}</strong>
+        | tests: ${escapeHtml((m.test_types || []).join(", "))}
+        | scenarios: ${escapeHtml((m.bdd_scenarios || []).join(", "))}
+      </li>
+    `).join("") || "<li>No mapping generated</li>"}</ul>
+    <div class="mt-2"><strong>Open Questions (${openQuestions.length})</strong></div>
+    <ul class="list-disc pl-5">${openQuestions.map((q) => `<li>${escapeHtml(q)}</li>`).join("") || "<li>None</li>"}</ul>
   `;
 }
 
@@ -4465,6 +6285,7 @@ function renderCurrentAgentPanel() {
   const status = stageStatus[agent.stage] || "pending";
   const result = latestResultByStage(run, agent.stage);
   const persona = personaForStage(run, agent.stage);
+  const personaReqPack = Number(agent.stage) === 1 ? String(persona.requirements_pack_profile || "").trim() : "";
 
   el.currentAgentPanel.innerHTML = `
     <div class="flex flex-wrap items-start justify-between gap-3 ${status === "running" ? "running-glow" : ""}">
@@ -4473,6 +6294,7 @@ function renderCurrentAgentPanel() {
         <h3 class="mt-1 text-xl font-semibold text-ink-950">Stage ${agent.stage}: ${agent.icon} ${agent.name}</h3>
         <p class="mt-1 text-sm text-slate-700">${agent.desc}</p>
         <p class="mt-1 text-xs text-slate-700"><strong>Persona:</strong> ${escapeHtml(persona.display_name || "Default")}</p>
+        ${personaReqPack ? `<p class="mt-1 text-xs text-sky-800"><strong>Requirements Pack Profile:</strong> ${escapeHtml(personaReqPack)}</p>` : ""}
         <p class="mono mt-2 text-xs text-slate-700">${escapeHtml(result?.summary || "No output yet.")}</p>
       </div>
       <div class="text-right">
@@ -4505,6 +6327,7 @@ function renderAgentTabs() {
       state.selectedStage = Number(btn.getAttribute("data-select-stage"));
       renderAgentTabs();
       renderAgentTabPanel();
+      renderCollaborationPanel();
     });
   });
 }
@@ -4552,6 +6375,444 @@ function renderAgentTabPanel() {
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
 }
 
+function collabCacheKey(runId, stage) {
+  return `${String(runId || "")}::${Number(stage || 0)}`;
+}
+
+function collabDraftKey(stage) {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  return collabCacheKey(runId, stage);
+}
+
+function currentCollabStage() {
+  return Number(state.selectedStage || determineCurrentStage(state.currentRun) || 1);
+}
+
+function collabRecord(stage) {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  if (!runId) return null;
+  const key = collabCacheKey(runId, stage);
+  return state.collaboration.cache[key] || null;
+}
+
+function syncRunFromApiResponse(run) {
+  if (!run || !run.run_id) return;
+  state.currentRun = run;
+  state.currentRunId = String(run.run_id);
+  state.dashboardRunDetails[state.currentRunId] = run;
+}
+
+function invalidateCollaborationCache(runId) {
+  const prefix = `${String(runId || "")}::`;
+  Object.keys(state.collaboration.cache || {}).forEach((key) => {
+    if (key.startsWith(prefix)) delete state.collaboration.cache[key];
+  });
+  Object.keys(state.collaboration.errorByKey || {}).forEach((key) => {
+    if (key.startsWith(prefix)) delete state.collaboration.errorByKey[key];
+  });
+}
+
+function parseJsonLoose(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text) return "";
+  try {
+    return JSON.parse(text);
+  } catch (_err) {
+    return text;
+  }
+}
+
+async function ensureCollaborationLoaded(stage, force = false) {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  if (!runId) return;
+  const key = collabCacheKey(runId, stage);
+  if (!force && state.collaboration.cache[key]) return;
+  if (state.collaboration.loadingKey === key) return;
+  state.collaboration.loadingKey = key;
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/stages/${stage}/collaboration`, null);
+    state.collaboration.cache[key] = data.collaboration || null;
+    if (data.run?.run_id) syncRunFromApiResponse(data.run);
+    delete state.collaboration.errorByKey[key];
+  } catch (err) {
+    state.collaboration.errorByKey[key] = String(err?.message || err || "Failed to load collaboration state.");
+  } finally {
+    state.collaboration.loadingKey = "";
+    renderCollaborationPanel();
+  }
+}
+
+function collabStatusBadge(status) {
+  const value = String(status || "pending").toLowerCase();
+  if (value === "applied") return "border-emerald-300 bg-emerald-50 text-emerald-800";
+  if (value === "rejected") return "border-rose-300 bg-rose-50 text-rose-800";
+  return "border-slate-300 bg-slate-100 text-slate-800";
+}
+
+function formatLlmFallbackReason(rawReason) {
+  const reason = String(rawReason || "").trim();
+  if (!reason || reason === "stage_not_enabled") return "";
+  if (reason === "no_api_key") return "LLM key not configured";
+  if (reason === "disabled") return "LLM responses are disabled for this chat";
+  if (reason === "empty_response") return "LLM returned an empty response";
+  if (reason.startsWith("credential_resolution_failed")) return "LLM credentials could not be resolved";
+  if (reason.startsWith("llm_invoke_failed:")) {
+    const detail = reason.slice("llm_invoke_failed:".length);
+    if (detail.includes("insufficient_quota") || detail.includes("Error code: 429") || detail.includes("429")) {
+      return "LLM quota exceeded; using deterministic artifact-based response";
+    }
+    return "LLM call failed; using deterministic artifact-based response";
+  }
+  return "Deterministic artifact-based fallback is active";
+}
+
+function renderCollabChatTab(stage, record) {
+  const draft = String(state.collaboration.drafts[collabDraftKey(stage)] || "");
+  const chat = Array.isArray(record?.chat) ? record.chat : [];
+  const llmMeta = (record?.llm_chat && typeof record.llm_chat === "object") ? record.llm_chat : {};
+  const llmUsed = !!llmMeta.used;
+  const llmLabel = llmUsed
+    ? `LLM response enabled (${String(llmMeta.provider || "").toUpperCase()} · ${escapeHtml(String(llmMeta.model || ""))})`
+    : "Deterministic artifact-based response mode";
+  const llmReason = String(llmMeta.reason || "").trim();
+  const llmReasonDisplay = formatLlmFallbackReason(llmReason);
+  const thread = chat.length
+    ? chat.slice(-16).map((row) => {
+      const role = String(row.role || "assistant");
+      const cls = role === "user" ? "border-sky-300 bg-sky-50" : "border-slate-300 bg-slate-50";
+      return `
+        <div class="rounded-md border ${cls} p-2">
+          <div class="mb-1 flex items-center justify-between gap-2">
+            <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700">${escapeHtml(role)}</span>
+            <span class="mono text-[10px] text-slate-600">${escapeHtml(String(row.created_at || "").replace("T", " ").slice(0, 19))}</span>
+          </div>
+          <div class="whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(row.message || "")}</div>
+        </div>
+      `;
+    }).join("")
+    : "<p class='text-slate-700'>No collaboration messages yet for this stage.</p>";
+  return `
+    <div class="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+      <div>
+        <div class="mb-1 text-[11px] ${llmUsed ? "text-emerald-800" : "text-slate-700"}">
+          ${llmLabel}${!llmUsed && llmReasonDisplay ? ` (${escapeHtml(llmReasonDisplay)})` : ""}
+        </div>
+        <div class="max-h-[270px] space-y-2 overflow-auto rounded-lg border border-slate-300 bg-white p-2">${thread}</div>
+        <textarea id="collab-chat-input" rows="3" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="Ask the agent to explain, compare options, or suggest a targeted change...">${escapeHtml(draft)}</textarea>
+        <div class="mt-2 flex flex-wrap items-center gap-3">
+          <label class="inline-flex items-center gap-2 text-[11px] text-slate-800"><input id="collab-save-directive" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Save as directive</label>
+          <label class="inline-flex items-center gap-2 text-[11px] text-slate-800"><input id="collab-create-proposal" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Create proposal diff</label>
+          <button id="collab-chat-send" class="btn-dark rounded-md px-3 py-1.5 text-xs font-semibold">Send</button>
+        </div>
+      </div>
+      <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Guidance</p>
+        <ul class="mt-1 list-disc pl-4 text-[11px] text-slate-700">
+          <li>Use chat for explain, options, and constraints.</li>
+          <li>Use directives for persistent "must/should not" constraints.</li>
+          <li>Approve proposals before artifact outputs are changed.</li>
+        </ul>
+      </div>
+    </div>
+  `;
+}
+
+function renderCollabProposalsTab(stage, record) {
+  const proposals = Array.isArray(record?.proposals) ? record.proposals : [];
+  const rows = proposals.length
+    ? proposals.slice().reverse().map((proposal) => {
+      const patch = Array.isArray(proposal.patch) ? proposal.patch : [];
+      const patchPreview = patch.slice(0, 5).map((op) => `${op.op || "?"} ${op.path || ""}`).join("\n");
+      const pending = String(proposal.status || "").toLowerCase() === "pending";
+      return `
+        <div class="rounded-lg border border-slate-300 bg-white p-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="text-xs font-semibold text-slate-900">${escapeHtml(proposal.title || "Proposal")}</p>
+            <span class="rounded border px-2 py-0.5 text-[10px] font-semibold ${collabStatusBadge(proposal.status)}">${escapeHtml(String(proposal.status || "pending").toUpperCase())}</span>
+          </div>
+          <p class="mt-1 text-[11px] text-slate-700">${escapeHtml(proposal.summary || "")}</p>
+          <p class="mono mt-1 text-[10px] text-slate-600">${escapeHtml(String(proposal.id || ""))}</p>
+          <pre class="mono mt-1 max-h-28 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[10px] text-slate-800">${escapeHtml(patchPreview || "(no patch ops)")}</pre>
+          ${pending ? `
+            <div class="mt-2 flex gap-2">
+              <button data-collab-approve="${escapeHtml(proposal.id || "")}" class="btn-success rounded-md px-2 py-1 text-[11px] font-semibold">Approve & Apply</button>
+              <button data-collab-reject="${escapeHtml(proposal.id || "")}" class="btn-danger rounded-md px-2 py-1 text-[11px] font-semibold">Reject</button>
+            </div>
+          ` : ""}
+        </div>
+      `;
+    }).join("")
+    : "<p class='text-slate-700'>No proposals yet. Send a chat message with 'Create proposal diff' enabled.</p>";
+
+  return `
+    <div class="grid gap-3 lg:grid-cols-[1.3fr_1fr]">
+      <div class="max-h-[330px] space-y-2 overflow-auto rounded-lg border border-slate-300 bg-slate-50 p-2">${rows}</div>
+      <div class="rounded-lg border border-slate-300 bg-white p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Manual proposal</p>
+        <input id="collab-proposal-title" class="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Proposal title" />
+        <input id="collab-proposal-summary" class="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Summary" />
+        <div class="mt-1 grid gap-1 sm:grid-cols-[90px_minmax(0,1fr)]">
+          <select id="collab-proposal-op" class="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+            <option value="add">add</option>
+            <option value="replace">replace</option>
+            <option value="remove">remove</option>
+          </select>
+          <input id="collab-proposal-path" class="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="/path/to/field" />
+        </div>
+        <textarea id="collab-proposal-value" rows="4" class="mono mt-1 w-full rounded border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-900" placeholder='JSON value or plain text (ignored for remove)'></textarea>
+        <button id="collab-proposal-create" class="btn-dark mt-2 rounded-md px-3 py-1.5 text-xs font-semibold">Create proposal</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCollabEvidenceTab(record) {
+  const evidence = Array.isArray(record?.evidence) ? record.evidence : [];
+  if (!evidence.length) {
+    return "<p class='text-slate-700'>No evidence pointers available yet for this stage.</p>";
+  }
+  return `
+    <div class="space-y-2">
+      ${evidence.map((ev) => `
+        <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="text-[11px] font-semibold text-slate-900">${escapeHtml(ev.label || ev.kind || "evidence")}</span>
+            <span class="mono text-[10px] text-slate-600">confidence=${escapeHtml(String(ev.confidence ?? ""))}</span>
+          </div>
+          <div class="mt-1 break-all text-[11px] text-slate-700">${escapeHtml(ev.ref || "")}</div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderCollabDecisionsTab(record) {
+  const directives = Array.isArray(record?.directives) ? record.directives : [];
+  const decisions = Array.isArray(record?.decisions) ? record.decisions : [];
+  return `
+    <div class="grid gap-3 lg:grid-cols-2">
+      <div class="rounded-lg border border-slate-300 bg-white p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Directives</p>
+        <div class="mt-1 max-h-[260px] space-y-2 overflow-auto">
+          ${directives.length ? directives.slice().reverse().map((row) => `
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold text-slate-900">${escapeHtml(row.priority || "medium")} priority</p>
+              <p class="mt-1 text-[11px] text-slate-700">${escapeHtml(row.text || "")}</p>
+            </div>
+          `).join("") : "<p class='text-slate-700'>No directives saved yet.</p>"}
+        </div>
+      </div>
+      <div class="rounded-lg border border-slate-300 bg-white p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Decisions</p>
+        <div class="mt-1 max-h-[260px] space-y-2 overflow-auto">
+          ${decisions.length ? decisions.slice().reverse().map((row) => `
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-[11px] font-semibold text-slate-900">${escapeHtml(String(row.decision || "").toUpperCase())}</p>
+                <p class="mono text-[10px] text-slate-600">${escapeHtml(String(row.proposal_id || ""))}</p>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-700">${escapeHtml(row.rationale || "No rationale provided.")}</p>
+              ${Array.isArray(row.changed_paths) && row.changed_paths.length ? `<p class="mono mt-1 text-[10px] text-slate-600">${escapeHtml(row.changed_paths.join(", "))}</p>` : ""}
+            </div>
+          `).join("") : "<p class='text-slate-700'>No decisions recorded yet.</p>"}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function submitCollabChat(stage) {
+  const safeStage = Number(stage || currentCollabStage() || 1);
+  const input = document.getElementById("collab-chat-input");
+  const saveDirective = document.getElementById("collab-save-directive");
+  const createProposal = document.getElementById("collab-create-proposal");
+  const message = String(input?.value || "").trim();
+  if (!message) {
+    alert("Enter a message first.");
+    return;
+  }
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  if (!runId) return;
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/stages/${safeStage}/collaboration/chat`, {
+      message,
+      save_as_directive: !!saveDirective?.checked,
+      propose_change: !!createProposal?.checked,
+      llm: {
+        enabled: true,
+        provider: String(el.provider?.value || ""),
+        model: String(el.model?.value || ""),
+        temperature: Number(el.temperature?.value || 0.2),
+      },
+    });
+    const key = collabCacheKey(runId, safeStage);
+    const serverRecord = (data.collaboration && typeof data.collaboration === "object") ? data.collaboration : null;
+    if (serverRecord && Array.isArray(serverRecord.chat) && serverRecord.chat.length) {
+      state.collaboration.cache[key] = serverRecord;
+    } else {
+      const existing = state.collaboration.cache[key] && typeof state.collaboration.cache[key] === "object"
+        ? { ...state.collaboration.cache[key] }
+        : { stage: safeStage, agent_name: "", chat: [], directives: [], proposals: [], decisions: [], evidence: [] };
+      const chat = Array.isArray(existing.chat) ? existing.chat.slice() : [];
+      const nowIso = new Date().toISOString();
+      chat.push({ id: `local_user_${Date.now()}`, role: "user", stage: safeStage, created_at: nowIso, message });
+      chat.push({
+        id: `local_assistant_${Date.now()}`,
+        role: "assistant",
+        stage: safeStage,
+        created_at: nowIso,
+        message: String(data.assistant_message || "Response received."),
+      });
+      existing.chat = chat.slice(-100);
+      existing.updated_at = nowIso;
+      state.collaboration.cache[key] = existing;
+    }
+    if (data.run?.run_id) syncRunFromApiResponse(data.run);
+    state.collaboration.drafts[collabDraftKey(safeStage)] = "";
+    if (input) input.value = "";
+    renderRun();
+  } catch (err) {
+    alert(`Chat failed: ${err.message || err}`);
+  }
+}
+
+async function createCollabProposal(stage) {
+  const safeStage = Number(stage || currentCollabStage() || 1);
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  if (!runId) return;
+  const title = String(document.getElementById("collab-proposal-title")?.value || "").trim();
+  const summary = String(document.getElementById("collab-proposal-summary")?.value || "").trim();
+  const op = String(document.getElementById("collab-proposal-op")?.value || "add").trim().toLowerCase();
+  const path = String(document.getElementById("collab-proposal-path")?.value || "").trim();
+  const rawValue = String(document.getElementById("collab-proposal-value")?.value || "");
+  if (!path) {
+    alert("JSON pointer path is required.");
+    return;
+  }
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/stages/${safeStage}/collaboration/proposals`, {
+      title,
+      summary,
+      op,
+      path,
+      value: parseJsonLoose(rawValue),
+    });
+    const key = collabCacheKey(runId, safeStage);
+    state.collaboration.cache[key] = data.collaboration || null;
+    if (data.run?.run_id) syncRunFromApiResponse(data.run);
+    renderRun();
+  } catch (err) {
+    alert(`Create proposal failed: ${err.message || err}`);
+  }
+}
+
+async function decideCollabProposal(stage, proposalId, decision) {
+  const safeStage = Number(stage || currentCollabStage() || 1);
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  if (!runId || !proposalId) return;
+  const rationale = prompt(`Provide rationale for ${decision}:`, "");
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/stages/${safeStage}/collaboration/proposals/${encodeURIComponent(proposalId)}/decision`, {
+      decision,
+      rationale: String(rationale || "").trim(),
+    });
+    const key = collabCacheKey(runId, safeStage);
+    state.collaboration.cache[key] = data.collaboration || null;
+    if (data.run?.run_id) syncRunFromApiResponse(data.run);
+    renderRun();
+  } catch (err) {
+    alert(`Decision failed: ${err.message || err}`);
+  }
+}
+
+function bindCollaborationPanelEvents(stage) {
+  const safeStage = Number(stage || currentCollabStage() || 1);
+  const sendBtn = document.getElementById("collab-chat-send");
+  if (sendBtn) sendBtn.addEventListener("click", () => submitCollabChat(safeStage));
+  const chatInput = document.getElementById("collab-chat-input");
+  if (chatInput) {
+    chatInput.addEventListener("input", () => {
+      state.collaboration.drafts[collabDraftKey(safeStage)] = String(chatInput.value || "");
+    });
+    chatInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        submitCollabChat(safeStage);
+      }
+    });
+  }
+
+  const createBtn = document.getElementById("collab-proposal-create");
+  if (createBtn) createBtn.addEventListener("click", () => createCollabProposal(safeStage));
+
+  el.collabTabContent?.querySelectorAll("[data-collab-approve]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const proposalId = btn.getAttribute("data-collab-approve") || "";
+      decideCollabProposal(safeStage, proposalId, "approve");
+    });
+  });
+  el.collabTabContent?.querySelectorAll("[data-collab-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const proposalId = btn.getAttribute("data-collab-reject") || "";
+      decideCollabProposal(safeStage, proposalId, "reject");
+    });
+  });
+}
+
+function renderCollaborationPanel() {
+  if (!el.collaborationPanel || !el.collabTabContent) return;
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "");
+  if (!runId) {
+    el.collaborationPanel.classList.add("hidden");
+    return;
+  }
+  el.collaborationPanel.classList.remove("hidden");
+  const stage = currentCollabStage();
+  if (el.collabStageLabel) {
+    const agent = AGENTS.find((a) => a.stage === stage);
+    el.collabStageLabel.textContent = `Stage ${stage}${agent ? ` · ${agent.name}` : ""}`;
+  }
+  if (!["chat", "proposals", "evidence", "decisions"].includes(state.collaboration.selectedTab)) {
+    state.collaboration.selectedTab = "chat";
+  }
+  el.collabTabButtons?.querySelectorAll("[data-collab-tab]").forEach((btn) => {
+    const tab = String(btn.getAttribute("data-collab-tab") || "chat");
+    const active = tab === state.collaboration.selectedTab;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
+
+  const key = collabCacheKey(runId, stage);
+  const loading = state.collaboration.loadingKey === key;
+  const loadError = state.collaboration.errorByKey[key];
+  const record = collabRecord(stage);
+  if (loading && !record) {
+    el.collabTabContent.innerHTML = "<p class='text-slate-700'>Loading collaboration state...</p>";
+    return;
+  }
+  if (loadError && !record) {
+    el.collabTabContent.innerHTML = `<p class='text-rose-700'>${escapeHtml(loadError)}</p>`;
+    return;
+  }
+  if (!record) {
+    el.collabTabContent.innerHTML = "<p class='text-slate-700'>No collaboration data yet.</p>";
+    ensureCollaborationLoaded(stage);
+    return;
+  }
+
+  if (state.collaboration.selectedTab === "chat") {
+    el.collabTabContent.innerHTML = renderCollabChatTab(stage, record);
+  } else if (state.collaboration.selectedTab === "proposals") {
+    el.collabTabContent.innerHTML = renderCollabProposalsTab(stage, record);
+  } else if (state.collaboration.selectedTab === "evidence") {
+    el.collabTabContent.innerHTML = renderCollabEvidenceTab(record);
+  } else {
+    el.collabTabContent.innerHTML = renderCollabDecisionsTab(record);
+  }
+  bindCollaborationPanelEvents(stage);
+  ensureCollaborationLoaded(stage);
+}
+
 function openStageModal(stage) {
   const agent = AGENTS.find((a) => a.stage === stage);
   const result = latestResultByStage(state.currentRun, stage);
@@ -4595,6 +6856,74 @@ function renderLogs() {
 function renderFlowDiagram() {
   const status = state.currentRun?.status;
   el.flowDiagramSection.classList.toggle("hidden", !(status === "completed" || status === "failed"));
+}
+
+function renderRunControls() {
+  const status = String(state.currentRun?.status || "").toLowerCase();
+  const hasRun = Boolean(state.currentRunId);
+  const canPause = hasRun && (status === "running" || status === "waiting_approval");
+  const canResume = hasRun && status === "paused";
+  const canRerun = hasRun && status && status !== "running";
+  const canAbort = hasRun && !["completed", "failed", "aborted"].includes(status);
+  const canIntervene = hasRun && (status === "running" || status === "waiting_approval");
+
+  if (el.runPause) el.runPause.disabled = !canPause;
+  if (el.runResume) el.runResume.disabled = !canResume;
+  if (el.runRerunStage) el.runRerunStage.disabled = !canRerun;
+  if (el.runAbort) el.runAbort.disabled = !canAbort;
+  if (el.runIntervene) el.runIntervene.disabled = !canIntervene;
+}
+
+async function runControl(action, payload = {}) {
+  const runId = state.currentRunId;
+  if (!runId) {
+    alert("Select a run first.");
+    return;
+  }
+  try {
+    await api(`/api/runs/${encodeURIComponent(runId)}/${action}`, payload);
+    await syncRun(runId);
+    await refreshRunHistory();
+  } catch (err) {
+    alert(`${action} failed: ${err.message}`);
+  }
+}
+
+async function pauseRun() {
+  await runControl("pause");
+}
+
+async function resumeRun() {
+  await runControl("resume");
+}
+
+async function rerunSelectedStage() {
+  const run = state.currentRun || {};
+  const suggestedStage = Number(state.selectedStage || run.current_stage || 1);
+  const stage = Number(window.prompt("Rerun from stage number (1-8):", String(Math.max(1, Math.min(8, suggestedStage)))) || "");
+  if (!Number.isFinite(stage) || stage < 1 || stage > 8) {
+    alert("Stage must be between 1 and 8.");
+    return;
+  }
+  await runControl("rerun", { stage });
+}
+
+async function abortRun() {
+  const reason = String(window.prompt("Reason for abort:", "Manual abort requested") || "").trim();
+  if (!reason) {
+    alert("Abort reason is required.");
+    return;
+  }
+  await runControl("abort", { reason });
+}
+
+async function interveneRun() {
+  await pauseRun();
+  const run = state.currentRun || {};
+  const p = run.pipeline_state || {};
+  const branch = `synthetix/run-${run.run_id || "current"}`;
+  const contextVersion = p?.context_vault_ref?.version_id || "latest";
+  setGlobalSearchStatus(`Takeover session ready on ${branch} using context ${contextVersion}.`);
 }
 
 function renderApprovalPanel() {
@@ -4648,9 +6977,11 @@ function renderRun() {
   renderCurrentAgentPanel();
   renderAgentTabs();
   renderAgentTabPanel();
+  renderCollaborationPanel();
   renderImpactDiff();
   renderLogs();
   renderFlowDiagram();
+  renderRunControls();
   renderDiscoverInsights();
   renderVerifyPanels();
   setTimeout(() => renderMermaidBlocks(document), 0);
@@ -4672,6 +7003,7 @@ function upsertLog(line) {
 
 async function fetchRunSnapshot(runId) {
   const data = await api(`/api/runs/${runId}`, null);
+  invalidateCollaborationCache(data.run?.run_id || runId);
   state.currentRun = data.run;
   if (data.run?.run_id) state.dashboardRunDetails[data.run.run_id] = data.run;
   state.selectedStage = determineCurrentStage(state.currentRun);
@@ -4706,6 +7038,7 @@ function startStreaming(runId) {
     try {
       const payload = JSON.parse(evt.data);
       if (payload.run) {
+        invalidateCollaborationCache(payload.run?.run_id || runId);
         state.currentRun = payload.run;
         state.selectedStage = determineCurrentStage(state.currentRun);
         renderRun();
@@ -4717,6 +7050,7 @@ function startStreaming(runId) {
     try {
       const payload = JSON.parse(evt.data);
       if (payload.run) {
+        invalidateCollaborationCache(payload.run?.run_id || runId);
         state.currentRun = payload.run;
         state.selectedStage = determineCurrentStage(state.currentRun);
         renderRun();
@@ -4879,6 +7213,14 @@ async function startRun() {
     alert("Business challenge is required.");
     return;
   }
+  const integrationContext = getIntegrationContext();
+  if (String(integrationContext.domain_pack_error || "").trim()) {
+    alert(`Domain Pack configuration error: ${integrationContext.domain_pack_error}`);
+    setMode(MODES.DISCOVER);
+    setWizardStep(1);
+    setDiscoverStep(2);
+    return;
+  }
 
   if (!state.settings) {
     try {
@@ -4898,7 +7240,7 @@ async function startRun() {
   const useCase = currentUseCase();
   if (useCase === "code_modernization") {
     if (isModernizationRepoScanMode()) {
-      const integration = getIntegrationContext();
+      const integration = integrationContext;
       const provider = String(integration?.brownfield?.repo_provider || "").toLowerCase();
       const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
       if (provider !== "github" || !repoUrl) {
@@ -4967,7 +7309,7 @@ async function startRun() {
     cluster_name: el.clusterName.value || "agent-pipeline",
     namespace: el.namespace.value || "agent-app",
     deploy_output_dir: el.deployOutputDir.value || "./deploy_output",
-    integration_context: getIntegrationContext(),
+    integration_context: integrationContext,
   };
 
   try {
@@ -5238,7 +7580,7 @@ function bindEvents() {
   });
   el.discoverRunAnalystBrief?.addEventListener("click", () => {
     loadDiscoverAnalystBrief({ force: true }).catch((err) => {
-      state.discoverAnalystBrief = { loading: false, error: String(err?.message || err || "Failed to run analyst brief."), data: null, requestKey: "" };
+      state.discoverAnalystBrief = { loading: false, error: String(err?.message || err || "Failed to run analyst brief."), data: null, requestKey: "", threadId: "" };
       renderDiscoverAnalystBrief();
     });
   });
@@ -5271,12 +7613,16 @@ function bindEvents() {
     el.telemetryMode,
     el.includePaths,
     el.excludePaths,
+    el.domainJurisdiction,
+    el.domainDataClassification,
+    el.domainPackJson,
   ].forEach((node) => node?.addEventListener("input", () => {
     state.discoverGithubTree = { loading: false, error: "", repo: null, tree: null };
     state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
     state.discoverAutoFetch.githubKey = "";
     state.discoverAutoFetch.linearKey = "";
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    renderDomainPackControls();
     renderDiscoverStepper();
   }));
   [
@@ -5290,13 +7636,16 @@ function bindEvents() {
     el.modernizationSourceMode,
     el.analysisDepth,
     el.telemetryMode,
+    el.domainPackSelect,
+    el.domainJurisdiction,
   ].forEach((node) => node?.addEventListener("change", () => {
     state.discoverGithubTree = { loading: false, error: "", repo: null, tree: null };
     state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
     state.discoverAutoFetch.githubKey = "";
     state.discoverAutoFetch.linearKey = "";
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     toggleUseCasePanel();
+    renderDomainPackControls();
     renderDiscoverStepper();
   }));
 
@@ -5320,7 +7669,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.taskType.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     toggleUseCasePanel();
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
@@ -5332,7 +7681,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.modernizationLanguage.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     if (isCodeModernizationMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -5341,7 +7690,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbSource.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     if (isDatabaseConversionMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -5350,7 +7699,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbTarget.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     if (isDatabaseConversionMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -5359,7 +7708,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.objectives.addEventListener("input", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     el.objectives.dataset.autogen = "0";
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
@@ -5369,7 +7718,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.legacyCode.addEventListener("input", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
     }
@@ -5377,7 +7726,7 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbSchema.addEventListener("input", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "" };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
     }
@@ -5438,8 +7787,55 @@ function bindEvents() {
   el.teamUseInWorkBtn.addEventListener("click", useBuilderTeamInWork);
   el.teamRefreshBtn.addEventListener("click", () => loadAgentsAndTeams().catch((err) => alert(err.message)));
   el.cloneAgentBtn.addEventListener("click", () => cloneAgentFromBuilder().catch((err) => alert(err.message)));
+  el.cloneBaseAgent?.addEventListener("change", refreshCloneRequirementsPackFields);
+  el.cloneRequirementsPackProfile?.addEventListener("change", refreshCloneRequirementsPackFields);
 
   el.tasksRefresh.addEventListener("click", () => refreshTasks().catch((err) => alert(err.message)));
+  el.verifyRefresh?.addEventListener("click", async () => {
+    await refreshRunHistory().catch((err) => alert(err.message));
+    await refreshTasks().catch((err) => alert(err.message));
+    renderVerifyPanels();
+  });
+  el.verifyRunSelect?.addEventListener("change", () => {
+    state.verify.selectedRunId = String(el.verifyRunSelect?.value || "").trim();
+    renderVerifyPanels();
+  });
+  el.verifyTabButtons?.querySelectorAll("[data-verify-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.verify.selectedTab = String(btn.getAttribute("data-verify-tab") || "summary");
+      renderVerifyPanels();
+    });
+  });
+  el.verifyExportJson?.addEventListener("click", async () => {
+    const runId = String(state.verify.selectedRunId || state.currentRunId || "").trim();
+    if (!runId) {
+      alert("Select a run first.");
+      return;
+    }
+    try {
+      const run = runDetail(runId) || (await api(`/api/runs/${encodeURIComponent(runId)}`, null)).run;
+      const baseline = _verifyBaselineRun(runId);
+      const pack = buildEvidencePackFragment(run, baseline);
+      downloadEvidencePackJson(pack, runId);
+    } catch (err) {
+      alert(`Failed to export JSON evidence pack: ${err.message}`);
+    }
+  });
+  el.verifyExportPdf?.addEventListener("click", async () => {
+    const runId = String(state.verify.selectedRunId || state.currentRunId || "").trim();
+    if (!runId) {
+      alert("Select a run first.");
+      return;
+    }
+    try {
+      const run = runDetail(runId) || (await api(`/api/runs/${encodeURIComponent(runId)}`, null)).run;
+      const baseline = _verifyBaselineRun(runId);
+      const pack = buildEvidencePackFragment(run, baseline);
+      generateEvidencePackPdf(pack, runId);
+    } catch (err) {
+      alert(`Failed to generate PDF evidence pack: ${err.message}`);
+    }
+  });
   el.workItemsRefresh?.addEventListener("click", () => refreshWorkItems().catch((err) => alert(err.message)));
   el.workItemCreate?.addEventListener("click", () => createWorkItem().catch((err) => alert(err.message)));
 
@@ -5477,9 +7873,40 @@ function bindEvents() {
   el.uploadDb.addEventListener("click", () => el.dbFile.click());
   el.dbFile.addEventListener("change", () => {
     const file = el.dbFile.files?.[0];
+    if (!file) return;
+    const lower = String(file.name || "").toLowerCase();
+    const isAccess = lower.endsWith(".mdb") || lower.endsWith(".accdb");
+    if (isAccess) {
+      setDbUploadStatus(`Parsing Access file ${file.name}...`);
+      parseAccessDatabaseFile(file)
+        .then((data) => {
+          const schemaText = String(data.database_schema || "").trim();
+          if (!schemaText) throw new Error("Access parser returned empty schema output.");
+          el.dbSchema.value = schemaText;
+          if (el.dbSource) el.dbSource.value = "Microsoft Access";
+          toggleUseCasePanel();
+          el.objectives.dataset.autogen = "1";
+          setAutogeneratedObjective();
+          const analysis = (data.analysis && typeof data.analysis === "object") ? data.analysis : {};
+          const tableCount = Number(analysis.table_count || 0);
+          const parser = String(analysis.parser || "mdbtools");
+          setDbUploadStatus(`Access parsed via ${parser}: ${tableCount} table(s) extracted into migration-ready schema.`);
+          if (String(el.projectStateMode?.value || "auto") === "auto") {
+            applyProjectStateResult(detectProjectStateHeuristic());
+          }
+          renderDiscoverStepper();
+          renderTaskSummary();
+        })
+        .catch((err) => {
+          setDbUploadStatus(`Access parse failed: ${err.message || err}`, true);
+          alert(`Access parse failed: ${err.message || err}`);
+        });
+      return;
+    }
+
     readTextFile(file, (text) => {
       el.dbSchema.value = text;
-      if (!isDatabaseConversionMode()) el.taskType.value = "database_conversion";
+      setDbUploadStatus(`Loaded text schema file: ${file.name}`);
       toggleUseCasePanel();
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -5491,7 +7918,24 @@ function bindEvents() {
     });
   });
 
+  el.uploadDomainPack?.addEventListener("click", () => el.domainPackFile?.click());
+  el.domainPackFile?.addEventListener("change", () => {
+    const file = el.domainPackFile?.files?.[0];
+    readTextFile(file, (text) => {
+      if (el.domainPackJson) el.domainPackJson.value = text;
+      if (el.domainPackSelect) el.domainPackSelect.value = "custom";
+      renderDomainPackControls();
+      renderDiscoverStepper();
+      renderTaskSummary();
+    });
+  });
+
   el.runPipeline.addEventListener("click", startRun);
+  el.runPause?.addEventListener("click", () => pauseRun().catch((err) => alert(err.message)));
+  el.runResume?.addEventListener("click", () => resumeRun().catch((err) => alert(err.message)));
+  el.runRerunStage?.addEventListener("click", () => rerunSelectedStage().catch((err) => alert(err.message)));
+  el.runIntervene?.addEventListener("click", () => interveneRun().catch((err) => alert(err.message)));
+  el.runAbort?.addEventListener("click", () => abortRun().catch((err) => alert(err.message)));
   el.approveStage.addEventListener("click", () => submitApproval("approve"));
   el.rejectStage.addEventListener("click", () => submitApproval("reject"));
   el.loadRun.addEventListener("click", () => loadRunFromHistory().catch((err) => alert(err.message)));
@@ -5507,6 +7951,13 @@ function bindEvents() {
       renderImpactDiff();
     });
   });
+  el.collabTabButtons?.querySelectorAll("[data-collab-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = String(btn.getAttribute("data-collab-tab") || "chat");
+      state.collaboration.selectedTab = tab;
+      renderCollaborationPanel();
+    });
+  });
   el.closeModal.addEventListener("click", () => el.outputModal.close());
 }
 
@@ -5518,9 +7969,11 @@ async function init() {
     });
   });
   bindEvents();
+  await loadDomainPackCatalog().catch(() => {});
   setDefaultModelByProvider();
   toggleUseCasePanel();
   toggleCloudConfig();
+  renderDomainPackControls();
   setWizardStep(1);
   applyProjectStateResult(detectProjectStateHeuristic());
   setDiscoverStep(1);
@@ -5529,7 +7982,6 @@ async function init() {
   await refreshRunHistory();
   await refreshArtifactsList();
   await refreshTasks().catch(() => {});
-  await refreshWorkItems().catch(() => {});
   await loadSettings().catch(() => {});
 
   renderRun();

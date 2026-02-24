@@ -162,6 +162,8 @@ def _ensure_sil_shape(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
     static = discovery.get("static_analysis", {}) if isinstance(discovery.get("static_analysis", {}), dict) else {}
 
     path_node_index: dict[str, str] = {}
+    node_ids: set[str] = set()
+    node_name_index: dict[str, str] = {}
 
     def _index_path(path: str, node_id: str) -> None:
         raw = str(path or "").strip()
@@ -174,7 +176,7 @@ def _ensure_sil_shape(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
             path_node_index.setdefault(base, node_id)
 
     def _ensure_node(node_id: str, node_type: str, name: str, confidence: float, provenance: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> None:
-        if any(isinstance(n, dict) and str(n.get("id", "")) == node_id for n in nodes):
+        if node_id in node_ids:
             return
         nodes.append(
             {
@@ -186,6 +188,10 @@ def _ensure_sil_shape(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
                 "provenance": provenance or [{"file": "repo-scan", "line": 1, "evidence": "auto-filled provenance"}],
             }
         )
+        node_ids.add(node_id)
+        lowered_name = str(name or "").strip().lower()
+        if lowered_name:
+            node_name_index.setdefault(lowered_name, node_id)
 
     if not nodes:
         modules = static.get("modules", []) if isinstance(static.get("modules", []), list) else []
@@ -320,20 +326,110 @@ def _ensure_sil_shape(payload: dict[str, Any], discovery: dict[str, Any]) -> dic
     for node in nodes:
         if not isinstance(node, dict):
             continue
+        nid = str(node.get("id", "")).strip()
+        if nid:
+            node_ids.add(nid)
+        nname = str(node.get("name", "")).strip().lower()
+        if nid and nname:
+            node_name_index.setdefault(nname, nid)
+        metadata = node.get("metadata", {}) if isinstance(node.get("metadata", {}), dict) else {}
+        path_hint = str(metadata.get("path", "")).strip()
+        if nid and path_hint:
+            _index_path(path_hint, nid)
         node["confidence"] = _ensure_float(node.get("confidence", 0.65), 0.65)
         prov = node.get("provenance", [])
         if not isinstance(prov, list) or not prov:
             node["provenance"] = [{"file": "repo-scan", "line": 1, "evidence": "auto-filled provenance"}]
 
+    def _first_evidence(edge_payload: dict[str, Any]) -> dict[str, Any]:
+        evidence = edge_payload.get("evidence", [])
+        if isinstance(evidence, list):
+            for ev in evidence:
+                if isinstance(ev, dict):
+                    return ev
+        return {"file": "repo-scan", "line": 1, "evidence": "inferred from edge endpoint"}
+
+    def _endpoint_candidates(raw_value: Any) -> list[str]:
+        token = str(raw_value or "").strip()
+        if not token:
+            return []
+        compact = token.replace("\\", "/")
+        stem = compact.rsplit("/", 1)[-1]
+        tail = compact.split(":", 1)[-1] if ":" in compact else compact
+        candidates = [compact, stem, tail]
+        prefixed = [f"node:{stem}", f"node:{tail}"] if stem or tail else []
+        out: list[str] = []
+        for item in [*candidates, *prefixed]:
+            clean = str(item).strip()
+            if clean and clean not in out:
+                out.append(clean)
+        return out
+
+    def _resolve_or_create_endpoint(raw_value: Any, edge_payload: dict[str, Any]) -> str:
+        for candidate in _endpoint_candidates(raw_value):
+            if candidate in node_ids:
+                return candidate
+            lowered = candidate.lower()
+            if lowered in node_name_index:
+                return node_name_index[lowered]
+            if candidate in path_node_index:
+                return path_node_index[candidate]
+
+        token = str(raw_value or "").strip()
+        if not token:
+            return ""
+        inferred_id = token if ":" in token else f"node:{token}"
+        suffix = 2
+        while inferred_id in node_ids:
+            inferred_id = f"{inferred_id}-{suffix}"
+            suffix += 1
+        ev = _first_evidence(edge_payload)
+        inferred_name = token.split(":", 1)[-1] if ":" in token else token
+        _ensure_node(
+            node_id=inferred_id,
+            node_type="Component",
+            name=inferred_name or inferred_id,
+            confidence=0.45,
+            provenance=[
+                {
+                    "file": str(ev.get("file", "repo-scan")),
+                    "line": int(ev.get("line", 1) or 1),
+                    "evidence": f"inferred node from edge endpoint `{token}`",
+                }
+            ],
+            metadata={"inferred": True, "inferred_from_edge": True},
+        )
+        return inferred_id
+
+    sanitized_edges: list[dict[str, Any]] = []
     for edge in edges:
         if not isinstance(edge, dict):
             continue
+        src = edge.get("from")
+        if not src:
+            src = edge.get("source")
+        dst = edge.get("to")
+        if not dst:
+            dst = edge.get("target")
+        resolved_src = _resolve_or_create_endpoint(src, edge)
+        resolved_dst = _resolve_or_create_endpoint(dst, edge)
+        if not resolved_src or not resolved_dst:
+            continue
+
         edge["confidence"] = _ensure_float(edge.get("confidence", 0.55), 0.55)
         evidence = edge.get("evidence", [])
         if not isinstance(evidence, list) or not evidence:
             edge["evidence"] = [{"file": "repo-scan", "line": 1, "evidence": "auto-filled evidence"}]
         edge.setdefault("directionality", "directed")
         edge.setdefault("protocol_metadata", {})
+        edge["from"] = resolved_src
+        edge["to"] = resolved_dst
+        if "source" in edge:
+            edge.pop("source", None)
+        if "target" in edge:
+            edge.pop("target", None)
+        sanitized_edges.append(edge)
+    edges = sanitized_edges
 
     scm_out = {
         "version": str(scm.get("version", "scm-v1")),

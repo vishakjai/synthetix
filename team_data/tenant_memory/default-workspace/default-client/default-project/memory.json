@@ -1,0 +1,35 @@
+{
+  "scope": {
+    "workspace_id": "default-workspace",
+    "client_id": "default-client",
+    "project_id": "default-project"
+  },
+  "updated_at": "2026-02-19T20:01:35.282369+00:00",
+  "threads": {
+    "default-thread": {
+      "messages": [
+        {
+          "id": "memmsg-382724305cb3",
+          "timestamp": "2026-02-19T20:01:35.281620+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Design payment posting flow with ledger updates and retry safety.",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-a13221859bfe",
+          "timestamp": "2026-02-19T20:01:35.282350+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Deterministic requirements pack generated via persona + domain pack + knowledge gateway + memory constraints.",
+          "metadata": {
+            "source": "api"
+          }
+        }
+      ]
+    }
+  },
+  "constraints": []
+}

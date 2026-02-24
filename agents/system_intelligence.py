@@ -136,6 +136,15 @@ Rules:
         db_target = state.get("database_target", "")
         db_schema = state.get("database_schema", "")
         discovery_prompt = self._compact_discovery_for_prompt(discovery if isinstance(discovery, dict) else {})
+        discovery_compact = self._json_for_prompt(
+            discovery_prompt,
+            max_chars=7000,
+            max_depth=4,
+            max_items=14,
+            max_str=280,
+        )
+        legacy_excerpt = self._truncate_text(legacy, max_chars=7000)
+        db_excerpt = self._truncate_text(str(db_schema), max_chars=5000)
 
         return f"""Generate SIL contract artifacts from this repository/context.
 
@@ -147,7 +156,7 @@ USE CASE:
 
 LEGACY CODE (if provided):
 ```text
-{legacy[:12000]}
+{legacy_excerpt}
 ```
 
 TARGET MODERNIZATION LANGUAGE:
@@ -157,11 +166,11 @@ DATABASE CONVERSION CONTEXT:
 - source: {db_source or "not specified"}
 - target: {db_target or "not specified"}
 ```sql
-{str(db_schema)[:12000]}
+{db_excerpt}
 ```
 
 REPOSITORY DISCOVERY SNAPSHOT:
-{json.dumps(discovery_prompt, indent=2)}
+{discovery_compact}
 
 Produce SCM, CP, and HA/RB with actionable enterprise-grade detail and auditable provenance."""
 

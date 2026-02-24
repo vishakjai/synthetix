@@ -5,6 +5,7 @@ Base agent class providing common LLM interaction patterns for all pipeline agen
 from __future__ import annotations
 
 import json
+import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -112,6 +113,278 @@ class BaseAgent(ABC):
         if not additions:
             return prompt
         return f"{prompt}\n\n" + "\n\n".join(additions)
+
+    @staticmethod
+    def _truncate_text(text: Any, max_chars: int = 6000) -> str:
+        raw = str(text or "")
+        if len(raw) <= max_chars:
+            return raw
+        keep_head = int(max_chars * 0.7)
+        keep_tail = max_chars - keep_head
+        return raw[:keep_head] + "\n...[truncated]...\n" + raw[-keep_tail:]
+
+    @staticmethod
+    def _compact_for_prompt(
+        value: Any,
+        *,
+        max_depth: int = 3,
+        max_items: int = 10,
+        max_str: int = 320,
+    ) -> Any:
+        def _walk(obj: Any, depth: int) -> Any:
+            if depth > max_depth:
+                if isinstance(obj, dict):
+                    return {"_truncated": f"dict({len(obj)})"}
+                if isinstance(obj, list):
+                    return [f"... {len(obj)} items ..."]
+                return BaseAgent._truncate_text(obj, max_str)
+            if isinstance(obj, dict):
+                out: dict[str, Any] = {}
+                keys = list(obj.keys())
+                for key in keys[:max_items]:
+                    out[str(key)] = _walk(obj.get(key), depth + 1)
+                if len(keys) > max_items:
+                    out["_truncated_keys"] = len(keys) - max_items
+                return out
+            if isinstance(obj, list):
+                rows = [_walk(item, depth + 1) for item in obj[:max_items]]
+                if len(obj) > max_items:
+                    rows.append(f"... {len(obj) - max_items} more items ...")
+                return rows
+            if isinstance(obj, tuple):
+                rows = [_walk(item, depth + 1) for item in list(obj)[:max_items]]
+                if len(obj) > max_items:
+                    rows.append(f"... {len(obj) - max_items} more items ...")
+                return rows
+            if isinstance(obj, str):
+                return BaseAgent._truncate_text(obj, max_str)
+            return obj
+
+        return _walk(value, 0)
+
+    @staticmethod
+    def _json_for_prompt(
+        value: Any,
+        *,
+        max_chars: int = 7000,
+        max_depth: int = 3,
+        max_items: int = 10,
+        max_str: int = 320,
+    ) -> str:
+        compact = BaseAgent._compact_for_prompt(
+            value,
+            max_depth=max_depth,
+            max_items=max_items,
+            max_str=max_str,
+        )
+        format_pref = str(os.getenv("SYNTHETIX_PROMPT_PAYLOAD_FORMAT", "TOON")).strip().upper()
+        if format_pref == "JSON":
+            try:
+                text = json.dumps(compact, ensure_ascii=True, separators=(",", ":"), default=str)
+            except Exception:
+                text = str(compact)
+        else:
+            text = BaseAgent._toon_for_prompt(
+                compact,
+                max_chars=max_chars,
+                max_depth=max_depth,
+                max_items=max_items,
+                max_str=max_str,
+            )
+        return BaseAgent._truncate_text(text, max_chars=max_chars)
+
+    @staticmethod
+    def _toon_atom(value: Any, *, max_str: int = 320) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        text = BaseAgent._truncate_text(value, max_chars=max_str).replace("\n", "\\n")
+        # Emit unquoted tokens when safe to reduce token load.
+        if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,64}", text):
+            return text
+        return json.dumps(text, ensure_ascii=True)
+
+    @staticmethod
+    def _toon_key(key: Any) -> str:
+        raw = str(key or "").strip()
+        if not raw:
+            return "key"
+        cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", raw).strip("_")
+        return cleaned or "key"
+
+    @staticmethod
+    def _toon_for_prompt(
+        value: Any,
+        *,
+        max_chars: int = 7000,
+        max_depth: int = 3,
+        max_items: int = 10,
+        max_str: int = 320,
+    ) -> str:
+        """
+        TOON (Token-Optimized Object Notation):
+        - Flattened dotted paths with scalar values
+        - Minimal punctuation and no structural braces
+        - Deterministic truncation markers
+        """
+        lines: list[str] = []
+
+        def inline_dict(obj: dict[str, Any]) -> str:
+            parts: list[str] = []
+            for idx, (k, v) in enumerate(list(obj.items())[:max_items]):
+                key = BaseAgent._toon_key(k)
+                if isinstance(v, list):
+                    if all(not isinstance(item, (dict, list, tuple)) for item in v[:6]) and len(v) <= 6:
+                        joined = ",".join(BaseAgent._toon_atom(item, max_str=max_str) for item in v)
+                        parts.append(f"{key}=[{joined}]")
+                    else:
+                        parts.append(f"{key}=<nested_list>")
+                elif isinstance(v, dict):
+                    sub_items = list(v.items())
+                    scalar_small = (
+                        len(sub_items) <= 4
+                        and all(not isinstance(val, (dict, list, tuple)) for _, val in sub_items)
+                    )
+                    if scalar_small:
+                        sub = ",".join(
+                            f"{BaseAgent._toon_key(sk)}:{BaseAgent._toon_atom(sv, max_str=max_str)}"
+                            for sk, sv in sub_items
+                        )
+                        parts.append(f"{key}={{{sub}}}")
+                    else:
+                        parts.append(f"{key}=<nested_obj>")
+                elif isinstance(v, tuple):
+                    parts.append(f"{key}=<nested_tuple>")
+                else:
+                    parts.append(f"{key}={BaseAgent._toon_atom(v, max_str=max_str)}")
+                if idx + 1 >= max_items:
+                    break
+            if len(obj) > max_items:
+                parts.append(f"_truncated_keys={len(obj) - max_items}")
+            return "; ".join(parts)
+
+        def emit(obj: Any, depth: int, key: str | None = None) -> None:
+            if len("\n".join(lines)) > max_chars:
+                return
+            indent = "  " * depth
+            kprefix = f"{BaseAgent._toon_key(key)}" if key else ""
+
+            if depth > max_depth:
+                if kprefix:
+                    lines.append(f"{indent}{kprefix}=<truncated_depth>")
+                else:
+                    lines.append(f"{indent}<truncated_depth>")
+                return
+
+            if isinstance(obj, dict):
+                items = list(obj.items())
+                header = f"{indent}{kprefix}:" if kprefix else None
+                if header:
+                    lines.append(header)
+                if not items:
+                    lines.append(f"{indent}  {{}}")
+                    return
+                for k, v in items[:max_items]:
+                    emit(v, depth + (1 if kprefix else 0), str(k))
+                    if len("\n".join(lines)) > max_chars:
+                        return
+                if len(items) > max_items:
+                    lines.append(
+                        f"{indent}{'  ' if kprefix else ''}_truncated_keys={len(items) - max_items}"
+                    )
+                return
+
+            if isinstance(obj, list):
+                header = f"{indent}{kprefix}:" if kprefix else None
+                if header:
+                    lines.append(header)
+                if not obj:
+                    lines.append(f"{indent}  []")
+                    return
+                scalars = all(not isinstance(item, (dict, list, tuple)) for item in obj[:max_items])
+                if scalars and len(obj) <= max_items:
+                    joined = ",".join(BaseAgent._toon_atom(item, max_str=max_str) for item in obj)
+                    lines.append(f"{indent}{'  ' if kprefix else ''}[{joined}]")
+                    return
+                for item in obj[:max_items]:
+                    if isinstance(item, dict):
+                        lines.append(f"{indent}{'  ' if kprefix else ''}- {inline_dict(item)}")
+                    elif isinstance(item, list):
+                        joined = ",".join(
+                            BaseAgent._toon_atom(x, max_str=max_str)
+                            for x in item[:max_items]
+                            if not isinstance(x, (dict, list, tuple))
+                        )
+                        lines.append(f"{indent}{'  ' if kprefix else ''}- [{joined}]")
+                    else:
+                        lines.append(
+                            f"{indent}{'  ' if kprefix else ''}- {BaseAgent._toon_atom(item, max_str=max_str)}"
+                        )
+                    if len("\n".join(lines)) > max_chars:
+                        return
+                if len(obj) > max_items:
+                    lines.append(
+                        f"{indent}{'  ' if kprefix else ''}_truncated_items={len(obj) - max_items}"
+                    )
+                return
+
+            if kprefix:
+                lines.append(f"{indent}{kprefix}={BaseAgent._toon_atom(obj, max_str=max_str)}")
+            else:
+                lines.append(f"{indent}{BaseAgent._toon_atom(obj, max_str=max_str)}")
+
+        emit(value, 0, None)
+        text = "\n".join(lines)
+        if not text.strip():
+            text = "root=<empty>"
+        return BaseAgent._truncate_text(text, max_chars=max_chars)
+
+    @staticmethod
+    def _chunk_text_for_prompt(
+        text: Any,
+        *,
+        chunk_chars: int = 2200,
+        max_chunks: int = 4,
+        file_marker_pattern: str = r"(?im)(?=^### FILE:\s+)",
+    ) -> list[str]:
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        parts = [p.strip() for p in re.split(file_marker_pattern, raw) if p and p.strip()]
+        if len(parts) <= 1:
+            return [
+                raw[i : i + chunk_chars]
+                for i in range(0, min(len(raw), chunk_chars * max_chunks), chunk_chars)
+            ]
+        chunks: list[str] = []
+        buf = ""
+        for part in parts:
+            block = part + "\n"
+            if len(block) > chunk_chars:
+                if buf.strip():
+                    chunks.append(buf.strip())
+                    buf = ""
+                for i in range(0, len(block), chunk_chars):
+                    piece = block[i : i + chunk_chars].strip()
+                    if piece:
+                        chunks.append(piece)
+                    if len(chunks) >= max_chunks:
+                        return chunks
+                continue
+            if len(buf) + len(block) > chunk_chars:
+                if buf.strip():
+                    chunks.append(buf.strip())
+                buf = block
+            else:
+                buf += block
+            if len(chunks) >= max_chunks:
+                return chunks
+        if buf.strip() and len(chunks) < max_chunks:
+            chunks.append(buf.strip())
+        return chunks
 
     @abstractmethod
     def build_user_message(self, state: dict[str, Any]) -> str:

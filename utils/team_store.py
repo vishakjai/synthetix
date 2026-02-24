@@ -18,6 +18,7 @@ PREMADE_AGENTS: list[dict[str, Any]] = [
         "role": "Analyst Agent",
         "display_name": "Strategic Analyst",
         "persona": "Translate business ambiguity into structured, testable requirements with explicit acceptance criteria.",
+        "requirements_pack_profile": "requirements-pack-v2-general",
         "is_custom": False,
     },
     {
@@ -26,6 +27,7 @@ PREMADE_AGENTS: list[dict[str, Any]] = [
         "role": "Analyst Agent",
         "display_name": "Legacy Modernization Analyst",
         "persona": "Prioritize legacy parity, interface contracts, backward compatibility, and modernization risk documentation.",
+        "requirements_pack_profile": "requirements-pack-v2-general",
         "is_custom": False,
     },
     {
@@ -234,6 +236,8 @@ class TeamStore:
         base_agent_id: str,
         display_name: str,
         persona: str,
+        requirements_pack_profile: str = "",
+        requirements_pack_template: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         base = self.get_agent(base_agent_id)
         if not base:
@@ -244,6 +248,13 @@ class TeamStore:
         cloned["persona"] = persona.strip() or str(base.get("persona", ""))
         cloned["is_custom"] = True
         cloned["based_on"] = base_agent_id
+        if int(cloned.get("stage", 0) or 0) == 1:
+            profile = requirements_pack_profile.strip() or str(base.get("requirements_pack_profile", "")).strip()
+            if profile:
+                cloned["requirements_pack_profile"] = profile
+            template = requirements_pack_template if isinstance(requirements_pack_template, dict) else {}
+            if template:
+                cloned["requirements_pack_template"] = template
 
         existing = _safe_json_load(self.custom_agents_path, [])
         custom_agents = existing if isinstance(existing, list) else []
@@ -348,6 +359,12 @@ class TeamStore:
                 "agent_id": str(agent.get("id", "")) if agent else "",
                 "display_name": str(agent.get("display_name", "")) if agent else "",
                 "persona": str(agent.get("persona", "")) if agent else "",
+                "requirements_pack_profile": str(agent.get("requirements_pack_profile", "")).strip() if agent else "",
+                "requirements_pack_template": (
+                    agent.get("requirements_pack_template", {})
+                    if isinstance(agent.get("requirements_pack_template", {}), dict)
+                    else {}
+                ) if agent else {},
             }
             selected[stage] = personas[stage]["agent_id"]
 

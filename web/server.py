@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import hashlib
 import json
 import os
 import queue
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from urllib.error import HTTPError, URLError
@@ -63,12 +67,35 @@ from utils.run_store import PipelineRunStore  # noqa: E402
 from utils.settings_store import SettingsStore  # noqa: E402
 from utils.team_store import TeamStore  # noqa: E402
 from utils.work_item_store import WorkItemStore  # noqa: E402
+from utils.domain_packs import list_domain_packs  # noqa: E402
+from utils.persona_registry import PersonaRegistry  # noqa: E402
+from utils.knowledge_gateway import KnowledgeGateway  # noqa: E402
+from utils.tenant_memory import TenantMemoryStore  # noqa: E402
+from utils.analyst_aas import AnalystAASService  # noqa: E402
+from utils.legacy_skills import (  # noqa: E402
+    extract_vb6_signals as legacy_extract_vb6_signals,
+    build_vb6_readiness_assessment,
+    build_source_target_modernization_profile,
+    build_project_business_summaries,
+    infer_legacy_skill,
+    list_legacy_skills,
+    vb6_skill_pack_manifest,
+)
 
 
 RUN_STORE = PipelineRunStore(str(ROOT / "pipeline_runs"))
 TEAM_STORE = TeamStore(str(ROOT / "team_data"))
 SETTINGS_STORE = SettingsStore(str(ROOT / "team_data"))
 WORK_ITEM_STORE = WorkItemStore(str(ROOT / "team_data"))
+PERSONA_REGISTRY = PersonaRegistry(str(ROOT / "agent_personas"))
+KNOWLEDGE_GATEWAY = KnowledgeGateway(str(ROOT))
+TENANT_MEMORY_STORE = TenantMemoryStore(str(ROOT / "team_data" / "tenant_memory"))
+ANALYST_AAS = AnalystAASService(
+    persona_registry=PERSONA_REGISTRY,
+    knowledge_gateway=KNOWLEDGE_GATEWAY,
+    memory_store=TENANT_MEMORY_STORE,
+    settings_store=SETTINGS_STORE,
+)
 CONTEXT_VAULT_ROOT = ROOT / "context_vault"
 CONTEXT_GRAPH_DB = CONTEXT_VAULT_ROOT / "context_graph.db"
 CONTRACT_SCHEMA_DIR = ROOT / ".deliveryos" / "schemas"
@@ -97,6 +124,11 @@ DEPLOYMENT_STAGE_INDEX = len(AGENT_SEQUENCE) - 1
 DEPLOYMENT_STAGE_NUM = DEPLOYMENT_STAGE_INDEX + 1
 GITHUB_EXPORT_MAX_FILES = 450
 GITHUB_EXPORT_MAX_FILE_BYTES = 950_000
+STAGE_COLLAB_CHAT_LIMIT = 400
+STAGE_COLLAB_DIRECTIVE_LIMIT = 240
+STAGE_COLLAB_PROPOSAL_LIMIT = 320
+STAGE_COLLAB_DECISION_LIMIT = 320
+STAGE_CHAT_LLM_STAGES = {2, 3, 6}
 
 
 def _utc_now() -> str:
@@ -263,7 +295,7 @@ class PipelineRunManager:
         self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
         self._append_log(record, f"👥 Team selected: {record.team_name or 'Ad-hoc Team'}")
         self._append_log(record, "🧠 System Intelligence Layer scheduled (SCM / CP / HA-RB)")
-        self._append_log(record, "ℹ️ Analyst Q&A disabled in web mode; using direct execution")
+        self._append_log(record, "💬 Stage collaboration enabled (chat, directives, proposals, decisions)")
 
         with self._lock:
             self._records[run_id] = record
@@ -967,6 +999,8 @@ class PipelineRunManager:
     def approve(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             record = self._records.get(run_id)
+        if not record:
+            record = self._hydrate_record(run_id)
 
         if not record:
             return {"ok": False, "error": "run not found or no longer active"}
@@ -1033,6 +1067,266 @@ class PipelineRunManager:
         self._persist(record)
         self._resume_thread(record)
         return {"ok": True, "status": "running", "run_id": run_id}
+
+    @staticmethod
+    def _to_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _build_config_from_summary(self, summary: dict[str, Any]) -> PipelineConfig:
+        provider_raw = str(summary.get("provider", "anthropic")).strip().lower()
+        if provider_raw not in {"anthropic", "openai"}:
+            provider_raw = "anthropic"
+        provider = LLMProvider.ANTHROPIC if provider_raw == "anthropic" else LLMProvider.OPENAI
+        requested_model = str(summary.get("model", "")).strip()
+        credentials = SETTINGS_STORE.resolve_llm_credentials(provider_raw, requested_model=requested_model)
+        api_key = str(credentials.get("api_key", "")).strip()
+        if not api_key:
+            raise ValueError(
+                f"Cannot resume run without a configured {provider_raw} API key. "
+                f"Set it in Settings > LLM credentials."
+            )
+        model = str(credentials.get("model", "")).strip() or (
+            "claude-sonnet-4-20250514" if provider == LLMProvider.ANTHROPIC else "gpt-4o"
+        )
+
+        return PipelineConfig(
+            provider=provider,
+            anthropic_api_key=api_key if provider == LLMProvider.ANTHROPIC else "",
+            openai_api_key=api_key if provider == LLMProvider.OPENAI else "",
+            anthropic_model=model if provider == LLMProvider.ANTHROPIC else "claude-sonnet-4-20250514",
+            openai_model=model if provider == LLMProvider.OPENAI else "gpt-4o",
+            temperature=self._to_float(summary.get("temperature", 0.3), 0.3),
+            developer_parallel_agents=max(1, self._to_int(summary.get("developer_parallel_agents", 5), 5)),
+            max_retries=max(0, self._to_int(summary.get("max_retries", 2), 2)),
+            live_deploy=bool(summary.get("live_deploy", False)),
+            deploy_output_dir=str(summary.get("deploy_output_dir", "./deploy_output")),
+            cluster_name=str(summary.get("cluster_name", "agent-pipeline")),
+            namespace=str(summary.get("namespace", "agent-app")),
+        )
+
+    def _hydrate_record(self, run_id: str) -> RunRecord | None:
+        state_payload = self.store.load_run(run_id)
+        meta = self.store.load_meta(run_id)
+        if not state_payload or not meta:
+            return None
+        config_summary = meta.get("config", {}) if isinstance(meta.get("config", {}), dict) else {}
+        try:
+            cfg = self._build_config_from_summary(config_summary)
+        except Exception:
+            return None
+
+        pipeline_state = (
+            copy.deepcopy(state_payload.get("pipeline_state", {}))
+            if isinstance(state_payload.get("pipeline_state", {}), dict)
+            else {}
+        )
+        raw_stage_status = state_payload.get("stage_status", {})
+        stage_status = {
+            int(k): str(v) for k, v in raw_stage_status.items() if str(k).isdigit()
+        } if isinstance(raw_stage_status, dict) else {}
+
+        with self._lock:
+            existing = self._records.get(run_id)
+            if existing:
+                return existing
+
+        record = RunRecord(
+            run_id=run_id,
+            config=cfg,
+            objectives=str(meta.get("business_objectives", "")).strip() or str(pipeline_state.get("business_objectives", "")).strip(),
+            use_case=str(pipeline_state.get("use_case", "business_objectives")),
+            legacy_code=str(pipeline_state.get("legacy_code", "")),
+            modernization_language=str(pipeline_state.get("modernization_language", "")),
+            database_source=str(pipeline_state.get("database_source", "")),
+            database_target=str(pipeline_state.get("database_target", "")),
+            database_schema=str(pipeline_state.get("database_schema", "")),
+            deployment_target=str(pipeline_state.get("deployment_target", "local")),
+            cloud_config=copy.deepcopy(pipeline_state.get("cloud_config", {}))
+            if isinstance(pipeline_state.get("cloud_config", {}), dict)
+            else {},
+            integration_context=copy.deepcopy(pipeline_state.get("integration_context", {}))
+            if isinstance(pipeline_state.get("integration_context", {}), dict)
+            else {},
+            project_state_mode=str(pipeline_state.get("project_state_mode", "auto")),
+            project_state_detected=str(pipeline_state.get("project_state_detected", "")),
+            human_approval=bool(pipeline_state.get("human_approval", False)),
+            strict_security_mode=bool(pipeline_state.get("strict_security_mode", False)),
+            team_id=str(pipeline_state.get("team_id", "")),
+            team_name=str(pipeline_state.get("team_name", "")),
+            stage_agent_ids=copy.deepcopy(pipeline_state.get("stage_agent_ids", {}))
+            if isinstance(pipeline_state.get("stage_agent_ids", {}), dict)
+            else {},
+            agent_personas=copy.deepcopy(pipeline_state.get("agent_personas", {}))
+            if isinstance(pipeline_state.get("agent_personas", {}), dict)
+            else {},
+            status=str(state_payload.get("pipeline_status", "completed")),
+            created_at=str(meta.get("created_at", "")),
+            updated_at=str(meta.get("updated_at", "")),
+            current_stage=max(stage_status.keys(), default=0),
+            stage_status=stage_status,
+            progress_logs=list(state_payload.get("progress_logs", []))
+            if isinstance(state_payload.get("progress_logs", []), list)
+            else [],
+            pipeline_state=pipeline_state,
+            error_message=str(state_payload.get("error_message", "") or ""),
+            retry_count=self._to_int(pipeline_state.get("retry_count", 0), 0),
+            next_stage_idx=self._to_int(pipeline_state.get("next_stage_idx", 0), 0),
+            pending_approval=copy.deepcopy(pipeline_state.get("pending_approval", None))
+            if isinstance(pipeline_state.get("pending_approval", None), dict)
+            else None,
+        )
+        if record.next_stage_idx <= 0:
+            record.next_stage_idx = max(0, record.current_stage)
+
+        with self._lock:
+            self._records[run_id] = record
+        return record
+
+    def pause(self, run_id: str) -> dict[str, Any]:
+        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        if not record:
+            return {"ok": False, "error": "run not found"}
+        if record.status == "paused":
+            return {"ok": True, "status": "paused", "run_id": run_id}
+        if record.status in {"completed", "failed", "aborted"}:
+            return {"ok": False, "error": f"cannot pause run in `{record.status}` state"}
+        if record.current_stage and str(record.stage_status.get(record.current_stage, "")).strip().lower() == "running":
+            record.stage_status[record.current_stage] = "paused"
+        record.status = "paused"
+        record.updated_at = _utc_now()
+        if isinstance(record.pipeline_state, dict):
+            record.pipeline_state["pipeline_status"] = "paused"
+        self._append_log(record, "⏸️ Run paused by user request")
+        self._persist(record)
+        return {"ok": True, "status": "paused", "run_id": run_id}
+
+    def resume(self, run_id: str) -> dict[str, Any]:
+        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        if not record:
+            return {"ok": False, "error": "run not found"}
+        if record.status == "running":
+            return {"ok": True, "status": "running", "run_id": run_id}
+        if record.pending_approval:
+            return {"ok": False, "error": "run is waiting for approval; use Approve/Reject controls"}
+        if record.status in {"completed", "failed", "aborted"}:
+            return {"ok": False, "error": f"cannot resume run in `{record.status}` state; use rerun stage instead"}
+        if record.status != "paused":
+            return {"ok": False, "error": f"cannot resume run in `{record.status}` state"}
+        if record.current_stage and str(record.stage_status.get(record.current_stage, "")).strip().lower() == "paused":
+            record.stage_status[record.current_stage] = "running"
+        record.status = "running"
+        record.updated_at = _utc_now()
+        if isinstance(record.pipeline_state, dict):
+            record.pipeline_state["pipeline_status"] = "running"
+        self._append_log(record, "▶️ Run resumed by user request")
+        self._persist(record)
+        if not (record.thread and record.thread.is_alive()):
+            self._resume_thread(record)
+        return {"ok": True, "status": "running", "run_id": run_id}
+
+    def abort(self, run_id: str, reason: str = "") -> dict[str, Any]:
+        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        if not record:
+            return {"ok": False, "error": "run not found"}
+        if record.status == "aborted":
+            return {"ok": True, "status": "aborted", "run_id": run_id}
+        if record.status in {"completed", "failed"}:
+            return {"ok": False, "error": f"cannot abort run in `{record.status}` state"}
+        reason_text = str(reason).strip() or "aborted by user"
+        if record.current_stage and str(record.stage_status.get(record.current_stage, "")).strip().lower() in {
+            "running",
+            "paused",
+        }:
+            record.stage_status[record.current_stage] = "aborted"
+        record.pending_approval = None
+        record.status = "aborted"
+        record.error_message = f"Run aborted: {reason_text}"
+        record.updated_at = _utc_now()
+        if isinstance(record.pipeline_state, dict):
+            record.pipeline_state["pipeline_status"] = "aborted"
+            record.pipeline_state["abort_reason"] = reason_text
+        self._append_log(record, f"🛑 Run aborted by user: {reason_text}")
+        self._attempt_github_export(record, final=True)
+        self._persist(record)
+        return {"ok": True, "status": "aborted", "run_id": run_id}
+
+    def rerun_stage(self, run_id: str, stage: int) -> dict[str, Any]:
+        if stage < 1 or stage > TOTAL_STAGES:
+            return {"ok": False, "error": f"stage must be between 1 and {TOTAL_STAGES}"}
+        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        if not record:
+            return {"ok": False, "error": "run not found"}
+        if record.status == "running":
+            return {"ok": False, "error": "run is currently running; pause or wait before rerun"}
+
+        prior_stage = stage - 1
+        stage_snapshot = self.store.load_stage_snapshot(run_id, prior_stage)
+        base_state = (
+            copy.deepcopy(stage_snapshot.get("pipeline_state", {}))
+            if isinstance(stage_snapshot, dict) and isinstance(stage_snapshot.get("pipeline_state", {}), dict)
+            else {}
+        )
+        raw_status = (
+            stage_snapshot.get("stage_status", {})
+            if isinstance(stage_snapshot, dict) and isinstance(stage_snapshot.get("stage_status", {}), dict)
+            else {}
+        )
+        base_stage_status = {
+            int(k): str(v) for k, v in raw_status.items() if str(k).isdigit()
+        } if isinstance(raw_status, dict) else {}
+
+        if not base_state:
+            persisted = self.store.load_run(run_id) or {}
+            base_state = (
+                copy.deepcopy(persisted.get("pipeline_state", {}))
+                if isinstance(persisted.get("pipeline_state", {}), dict)
+                else {}
+            )
+            raw_persisted_status = persisted.get("stage_status", {})
+            if isinstance(raw_persisted_status, dict):
+                base_stage_status = {
+                    int(k): str(v) for k, v in raw_persisted_status.items() if str(k).isdigit()
+                }
+
+        if not base_state:
+            base_state = make_initial_state(record.objectives)
+
+        trimmed_stage_status = {k: v for k, v in base_stage_status.items() if k < stage}
+        for idx in range(stage, TOTAL_STAGES + 1):
+            trimmed_stage_status[idx] = "pending"
+
+        base_state["pipeline_status"] = "running"
+        base_state["pending_approval"] = None
+        base_state["next_stage_idx"] = stage - 1
+        if "retry_plan" in base_state:
+            del base_state["retry_plan"]
+        if "retry_history" in base_state and not isinstance(base_state.get("retry_history"), list):
+            del base_state["retry_history"]
+
+        record.pipeline_state = base_state
+        record.stage_status = trimmed_stage_status
+        record.current_stage = max(0, stage - 1)
+        record.next_stage_idx = stage - 1
+        record.pending_approval = None
+        record.retry_count = 0
+        record.status = "running"
+        record.error_message = None
+        record.updated_at = _utc_now()
+        self._append_log(record, f"🔁 Rerun requested from Stage {stage}")
+        self._persist(record)
+        if not (record.thread and record.thread.is_alive()):
+            self._resume_thread(record)
+        return {"ok": True, "status": "running", "run_id": run_id, "stage": stage}
 
     def _get_record(self, run_id: str) -> RunRecord | None:
         with self._lock:
@@ -1431,6 +1725,15 @@ def _guess_language(path: str) -> str:
         ".asa": "asp_classic",
         ".vb": "vbscript",
         ".vbs": "vbscript",
+        ".bas": "vb6_module",
+        ".cls": "vb6_class",
+        ".frm": "vb6_form",
+        ".frx": "vb6_form_binary",
+        ".ctl": "vb6_usercontrol",
+        ".ctx": "vb6_usercontrol_binary",
+        ".vbp": "vb6_project",
+        ".vbg": "vb6_group",
+        ".res": "vb6_resource",
         ".sql": "sql",
         ".yaml": "yaml",
         ".yml": "yaml",
@@ -1512,12 +1815,21 @@ def _framework_signals(text: str) -> list[str]:
     return out
 
 
+def _extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
+    return legacy_extract_vb6_signals(path, text)
+
+
 def _analyze_source_bundle(
     *,
     objectives: str,
     repo_label: str,
     file_entries: list[dict[str, Any]],
     file_contents: dict[str, str],
+    target_language: str = "",
+    target_platform: str = "",
+    deployment_target: str = "local",
+    source_repo_url: str = "",
+    target_repo_url: str = "",
 ) -> dict[str, Any]:
     language_counts: dict[str, int] = {}
     routes: list[str] = []
@@ -1529,8 +1841,42 @@ def _analyze_source_bundle(
     input_hints: set[str] = set()
     output_hints: set[str] = set()
     table_hints: set[str] = set()
+    vb6_forms: set[str] = set()
+    vb6_controls: set[str] = set()
+    vb6_activex: set[str] = set()
+    vb6_events: set[str] = set()
+    vb6_project_members: set[str] = set()
+    vb6_by_path: dict[str, dict[str, Any]] = {}
+    vb6_project_defs: list[dict[str, Any]] = []
+    vb6_sql_queries: set[str] = set()
+    vb6_win32_declares: set[str] = set()
+    vb6_com_progids: set[str] = set()
+    vb6_com_references: set[str] = set()
+    vb6_file_type_coverage: dict[str, int] = {}
+    vb6_bas_modules: set[str] = set()
+    vb6_bas_procedure_count = 0
+    vb6_binary_companions: list[dict[str, Any]] = []
+    vb6_callbyname_sites = 0
+    vb6_createobject_sites = 0
+    vb6_ui_event_map: dict[str, dict[str, Any]] = {}
+    vb6_pitfalls: dict[str, dict[str, Any]] = {}
+    vb6_error_profile: dict[str, int] = {
+        "on_error_resume_next": 0,
+        "on_error_goto": 0,
+        "on_error_goto0": 0,
+        "control_array_index_markers": 0,
+        "late_bound_com_calls": 0,
+        "variant_declarations": 0,
+        "default_instance_references": 0,
+        "doevents_calls": 0,
+        "registry_operations": 0,
+    }
 
     ordered_paths = [str(item.get("path", "")).strip() for item in file_entries if isinstance(item, dict)]
+    legacy_skill_profile = infer_legacy_skill(
+        file_paths=[path for path in ordered_paths if path],
+        file_contents=file_contents,
+    )
     for path in ordered_paths:
         if path:
             lang = _guess_language(path)
@@ -1571,9 +1917,395 @@ def _analyze_source_bundle(
         for match in re.findall(r'(?i)\bjoin\s+([a-zA-Z_][a-zA-Z0-9_]*)', text):
             if len(table_hints) < 20:
                 table_hints.add(str(match))
+        vb6 = _extract_vb6_signals(path, text)
+        if vb6:
+            vb6_by_path[str(path).replace("\\", "/")] = vb6
+            file_type = str(vb6.get("vb6_file_type", "")).strip() or "unknown"
+            vb6_file_type_coverage[file_type] = int(vb6_file_type_coverage.get(file_type, 0) or 0) + 1
+            if bool(vb6.get("is_binary_companion", False)):
+                info = vb6.get("binary_companion_info", {})
+                if isinstance(info, dict):
+                    vb6_binary_companions.append(
+                        {
+                            "path": str(info.get("path", path)).strip(),
+                            "extension": str(info.get("extension", "")).strip(),
+                            "note": str(info.get("note", "Binary companion file detected.")).strip(),
+                        }
+                    )
+            if str(path).lower().endswith(".bas"):
+                vb6_bas_modules.add(str(path).replace("\\", "/"))
+                vb6_bas_procedure_count += len(vb6.get("procedures", []) if isinstance(vb6.get("procedures", []), list) else [])
+            vb6_forms.update(vb6.get("forms", []) if isinstance(vb6.get("forms", []), list) else [])
+            vb6_controls.update(vb6.get("controls", []) if isinstance(vb6.get("controls", []), list) else [])
+            vb6_activex.update(vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [])
+            vb6_events.update(vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [])
+            vb6_project_members.update(
+                vb6.get("project_members", []) if isinstance(vb6.get("project_members", []), list) else []
+            )
+            vb6_sql_queries.update(vb6.get("sql_queries", []) if isinstance(vb6.get("sql_queries", []), list) else [])
+            vb6_win32_declares.update(vb6.get("win32_declares", []) if isinstance(vb6.get("win32_declares", []), list) else [])
+            for row in vb6.get("ui_event_map", []) if isinstance(vb6.get("ui_event_map", []), list) else []:
+                if not isinstance(row, dict):
+                    continue
+                key = str(row.get("event_handler", "")).strip() or str(row.get("control", "")).strip()
+                if key and key not in vb6_ui_event_map:
+                    vb6_ui_event_map[key] = row
+            com_surface = vb6.get("com_surface_map", {}) if isinstance(vb6.get("com_surface_map", {}), dict) else {}
+            vb6_com_progids.update(
+                com_surface.get("late_bound_progids", [])
+                if isinstance(com_surface.get("late_bound_progids", []), list)
+                else []
+            )
+            vb6_com_references.update(
+                com_surface.get("references", [])
+                if isinstance(com_surface.get("references", []), list)
+                else []
+            )
+            vb6_callbyname_sites += int(com_surface.get("call_by_name_sites", 0) or 0)
+            vb6_createobject_sites += int(com_surface.get("createobject_getobject_sites", 0) or 0)
+            err_profile = vb6.get("error_handling_profile", {}) if isinstance(vb6.get("error_handling_profile", {}), dict) else {}
+            for k in vb6_error_profile:
+                vb6_error_profile[k] = int(vb6_error_profile.get(k, 0) or 0) + int(err_profile.get(k, 0) or 0)
+            for detector in vb6.get("pitfall_detectors", []) if isinstance(vb6.get("pitfall_detectors", []), list) else []:
+                if not isinstance(detector, dict):
+                    continue
+                did = str(detector.get("id", "")).strip()
+                if not did:
+                    continue
+                existing = vb6_pitfalls.get(did)
+                if not existing:
+                    vb6_pitfalls[did] = {
+                        "id": did,
+                        "severity": str(detector.get("severity", "medium")),
+                        "count": int(detector.get("count", 0) or 0),
+                        "requires": detector.get("requires", []) if isinstance(detector.get("requires", []), list) else [],
+                        "evidence": str(detector.get("evidence", "")).strip(),
+                    }
+                else:
+                    existing["count"] = int(existing.get("count", 0) or 0) + int(detector.get("count", 0) or 0)
+                    if not str(existing.get("evidence", "")).strip():
+                        existing["evidence"] = str(detector.get("evidence", "")).strip()
+            project_def = vb6.get("project_definition", {})
+            if isinstance(project_def, dict) and project_def:
+                vb6_project_defs.append(project_def)
+            for evt in vb6_events:
+                if len(function_hints) < 40:
+                    function_hints.add(evt)
+            if vb6_controls:
+                input_hints.add("VB6 form controls indicate user-entered desktop UI input fields")
+
+    known_paths_by_lower = {str(p).replace("\\", "/").lower(): str(p).replace("\\", "/") for p in ordered_paths if p}
+
+    def _project_text_signals(text: str) -> dict[str, list[str]]:
+        raw = str(text or "")
+        lower = raw.lower()
+        procedures: list[str] = []
+        tables: list[str] = []
+        inputs: list[str] = []
+        outputs: list[str] = []
+        integrations: list[str] = []
+        for match in re.findall(r'(?im)^\s*(?:public|private|friend|protected)?\s*(?:function|sub)\s+([a-zA-Z_][a-zA-Z0-9_]*)', raw):
+            name = str(match or "").strip()
+            if name and name not in procedures:
+                procedures.append(name)
+            if len(procedures) >= 80:
+                break
+        for pat in [r'(?i)\bfrom\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'(?i)\bjoin\s+([a-zA-Z_][a-zA-Z0-9_]*)', r'(?i)\binto\s+([a-zA-Z_][a-zA-Z0-9_]*)']:
+            for match in re.findall(pat, raw):
+                t = str(match or "").strip()
+                if t and t.lower() not in {"where", "select"} and t not in tables:
+                    tables.append(t)
+                if len(tables) >= 40:
+                    break
+            if len(tables) >= 40:
+                break
+        req = re.findall(r'(?i)request\.(?:querystring|form)\(\s*"([^"]+)"\s*\)', raw)
+        req += re.findall(r"(?i)request\.(?:querystring|form)\(\s*'([^']+)'\s*\)", raw)
+        for m in req:
+            v = str(m or "").strip()
+            if v and v not in inputs:
+                inputs.append(v)
+        if ("request(" in lower or "request." in lower) and "HTTP request parameters" not in inputs:
+            inputs.append("HTTP request parameters")
+        if "response.write" in lower:
+            outputs.append("HTML/text response output")
+        if "response.redirect" in lower:
+            outputs.append("HTTP redirect output")
+        hints = [
+            ("createobject(", "COM object invocation"),
+            ("msxml2.xmlhttp", "HTTP integration via MSXML"),
+            ("ado", "ADO data access"),
+            ("dao", "DAO data access"),
+            ("scripting.filesystemobject", "Filesystem automation"),
+        ]
+        for token, label in hints:
+            if token in lower and label not in integrations:
+                integrations.append(label)
+        return {
+            "procedures": procedures[:80],
+            "tables": tables[:40],
+            "input_signals": inputs[:20],
+            "output_signals": outputs[:20],
+            "integration_hints": integrations[:12],
+        }
+
+    def _infer_project_objective(name: str, forms: set[str], procedures: set[str], tables: set[str]) -> tuple[str, list[str]]:
+        haystack = " ".join(
+            [str(name or "").lower()]
+            + [str(x).lower() for x in list(forms)[:30]]
+            + [str(x).lower() for x in list(procedures)[:60]]
+            + [str(x).lower() for x in list(tables)[:30]]
+        )
+        mapping = [
+            ("login", "Authenticate users and manage session entry.", "Authentication and user access"),
+            ("auth", "Enforce user authentication and authorization workflows.", "Authentication and user access"),
+            ("customer", "Manage customer profile lookup and maintenance.", "Customer profile operations"),
+            ("account", "Support account operations and account state updates.", "Account operations"),
+            ("payment", "Capture and process payment-related transactions.", "Payment processing"),
+            ("transfer", "Orchestrate transfer initiation and posting workflows.", "Funds transfer"),
+            ("transaction", "Record and process transactional business events.", "Transaction processing"),
+            ("invoice", "Handle billing and invoice workflows.", "Billing and invoicing"),
+            ("report", "Generate reporting and analytics outputs.", "Reporting and analytics"),
+            ("settlement", "Handle settlement and reconciliation workflows.", "Settlement and reconciliation"),
+        ]
+        objective = ""
+        capabilities: list[str] = []
+        for token, desc, cap in mapping:
+            if token in haystack:
+                if not objective:
+                    objective = desc
+                if cap not in capabilities:
+                    capabilities.append(cap)
+        if not objective:
+            objective = "Deliver event-driven desktop workflows through VB6 forms/modules and COM integrations."
+        if not capabilities:
+            capabilities = ["Desktop workflow orchestration"]
+        return objective, capabilities[:8]
+
+    def _resolve_member(member_path: str, project_file: str) -> str:
+        member = str(member_path or "").strip().replace("\\", "/")
+        while member.startswith("./"):
+            member = member[2:]
+        project = str(project_file or "").strip().replace("\\", "/")
+        project_dir = project.rsplit("/", 1)[0] if "/" in project else ""
+        candidates = [member]
+        if project_dir:
+            candidates.insert(0, f"{project_dir}/{member}")
+        for cand in candidates:
+            hit = known_paths_by_lower.get(cand.lower())
+            if hit:
+                return hit
+        return ""
+
+    vb6_projects: list[dict[str, Any]] = []
+    for project in vb6_project_defs:
+        members = project.get("members", []) if isinstance(project.get("members", []), list) else []
+        member_files: set[str] = set()
+        member_type_counts: dict[str, int] = {}
+        forms: set[str] = set()
+        controls: set[str] = set()
+        activex: set[str] = set()
+        events: set[str] = set()
+        procedures: set[str] = set()
+        tables: set[str] = set()
+        input_signals: set[str] = set()
+        output_signals: set[str] = set()
+        integration_hints_project: set[str] = set()
+        project_file = str(project.get("project_file", "")).strip().replace("\\", "/")
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            mtype = str(member.get("member_type", "")).strip()
+            if mtype:
+                member_type_counts[mtype] = int(member_type_counts.get(mtype, 0)) + 1
+            resolved = _resolve_member(str(member.get("member_path", "")), project_file)
+            if not resolved:
+                continue
+            member_files.add(resolved)
+            sig = vb6_by_path.get(resolved, {})
+            forms.update(sig.get("forms", []) if isinstance(sig.get("forms", []), list) else [])
+            controls.update(sig.get("controls", []) if isinstance(sig.get("controls", []), list) else [])
+            activex.update(sig.get("activex_dependencies", []) if isinstance(sig.get("activex_dependencies", []), list) else [])
+            events.update(sig.get("event_handlers", []) if isinstance(sig.get("event_handlers", []), list) else [])
+            file_text = str(file_contents.get(resolved, ""))
+            if file_text:
+                ps = _project_text_signals(file_text)
+                procedures.update(ps.get("procedures", []))
+                tables.update(ps.get("tables", []))
+                input_signals.update(ps.get("input_signals", []))
+                output_signals.update(ps.get("output_signals", []))
+                integration_hints_project.update(ps.get("integration_hints", []))
+        project_name = str(project.get("project_name", "")).strip() or (project_file.rsplit("/", 1)[-1].rsplit(".", 1)[0] if project_file else "VB6 Project")
+        objective, caps = _infer_project_objective(project_name, forms, procedures, tables)
+        workflows: list[str] = []
+        form_names = [str(x).split(":", 1)[-1] for x in sorted(forms)[:8]]
+        for fname in form_names:
+            related = [ev for ev in sorted(events) if str(ev).lower().startswith(str(fname).lower() + "_")][:4]
+            workflows.append(f"{fname}: {'; '.join(related) if related else 'event-driven workflow via UI controls'}")
+        if not workflows and procedures:
+            workflows.append("Procedural workflow: " + ", ".join(sorted(procedures)[:6]))
+        vb6_projects.append(
+            {
+                "project_name": project_name,
+                "project_file": project_file,
+                "project_type": str(project.get("project_type", "")).strip(),
+                "startup_object": str(project.get("startup_object", "")).strip(),
+                "member_count": len(members),
+                "member_files": sorted(member_files)[:120],
+                "member_type_counts": member_type_counts,
+                "forms": sorted(forms)[:40],
+                "controls": sorted(controls)[:80],
+                "activex_dependencies": sorted(activex)[:40],
+                "event_handlers": sorted(events)[:80],
+                "business_objective_hypothesis": objective,
+                "key_business_capabilities": caps,
+                "primary_workflows": workflows[:12],
+                "data_touchpoints": {
+                    "tables": sorted(tables)[:40],
+                    "procedures": sorted(procedures)[:80],
+                    "input_signals": sorted(input_signals)[:20],
+                    "output_signals": sorted(output_signals)[:20],
+                },
+                "technical_components": {
+                    "notable_components": sorted(member_files)[:20],
+                    "external_dependencies": sorted(activex)[:40],
+                    "integration_hints": sorted(integration_hints_project)[:12],
+                },
+                "modernization_considerations": [
+                    "Preserve project boundaries and startup behavior during migration.",
+                    "Maintain VB6 event-handler semantics for equivalent workflows.",
+                ],
+                "forms_count": len(forms),
+                "controls_count": len(controls),
+                "activex_dependency_count": len(activex),
+                "event_handler_count": len(events),
+            }
+        )
+
+    if not vb6_projects and vb6_by_path:
+        grouped: dict[str, dict[str, Any]] = {}
+        for path, sig in vb6_by_path.items():
+            root = path.split("/", 1)[0] if "/" in path else "(root)"
+            bucket = grouped.setdefault(
+                root,
+                {
+                    "project_name": f"Inferred:{root}",
+                    "project_file": "",
+                    "project_type": "inferred",
+                    "startup_object": "",
+                    "member_files": set(),
+                    "member_type_counts": {},
+                    "forms": set(),
+                    "controls": set(),
+                    "activex_dependencies": set(),
+                    "event_handlers": set(),
+                    "procedures": set(),
+                    "tables": set(),
+                    "input_signals": set(),
+                    "output_signals": set(),
+                    "integration_hints": set(),
+                },
+            )
+            bucket["member_files"].add(path)
+            bucket["forms"].update(sig.get("forms", []) if isinstance(sig.get("forms", []), list) else [])
+            bucket["controls"].update(sig.get("controls", []) if isinstance(sig.get("controls", []), list) else [])
+            bucket["activex_dependencies"].update(sig.get("activex_dependencies", []) if isinstance(sig.get("activex_dependencies", []), list) else [])
+            bucket["event_handlers"].update(sig.get("event_handlers", []) if isinstance(sig.get("event_handlers", []), list) else [])
+            path_lower = path.lower()
+            if path_lower.endswith(".frm"):
+                bucket["member_type_counts"]["Form"] = int(bucket["member_type_counts"].get("Form", 0)) + 1
+            elif path_lower.endswith(".bas"):
+                bucket["member_type_counts"]["Module"] = int(bucket["member_type_counts"].get("Module", 0)) + 1
+            elif path_lower.endswith(".cls"):
+                bucket["member_type_counts"]["Class"] = int(bucket["member_type_counts"].get("Class", 0)) + 1
+            elif path_lower.endswith(".ctl"):
+                bucket["member_type_counts"]["UserControl"] = int(bucket["member_type_counts"].get("UserControl", 0)) + 1
+            ps = _project_text_signals(str(file_contents.get(path, "")))
+            bucket["procedures"].update(ps.get("procedures", []))
+            bucket["tables"].update(ps.get("tables", []))
+            bucket["input_signals"].update(ps.get("input_signals", []))
+            bucket["output_signals"].update(ps.get("output_signals", []))
+            bucket["integration_hints"].update(ps.get("integration_hints", []))
+        for row in grouped.values():
+            forms = set(row.get("forms", set()))
+            controls = set(row.get("controls", set()))
+            activex = set(row.get("activex_dependencies", set()))
+            events = set(row.get("event_handlers", set()))
+            members = set(row.get("member_files", set()))
+            procedures = set(row.get("procedures", set()))
+            tables = set(row.get("tables", set()))
+            input_signals = set(row.get("input_signals", set()))
+            output_signals = set(row.get("output_signals", set()))
+            integration_hints_project = set(row.get("integration_hints", set()))
+            objective, caps = _infer_project_objective(str(row.get("project_name", "")), forms, procedures, tables)
+            vb6_projects.append(
+                {
+                    "project_name": str(row.get("project_name", "")),
+                    "project_file": str(row.get("project_file", "")),
+                    "project_type": str(row.get("project_type", "")),
+                    "startup_object": str(row.get("startup_object", "")),
+                    "member_count": len(members),
+                    "member_files": sorted(members)[:120],
+                    "member_type_counts": dict(row.get("member_type_counts", {})),
+                    "forms": sorted(forms)[:40],
+                    "controls": sorted(controls)[:80],
+                    "activex_dependencies": sorted(activex)[:40],
+                    "event_handlers": sorted(events)[:80],
+                    "business_objective_hypothesis": objective,
+                    "key_business_capabilities": caps,
+                    "primary_workflows": [f"{str(x).split(':', 1)[-1]}: event-driven workflow via UI controls" for x in sorted(forms)[:8]],
+                    "data_touchpoints": {
+                        "tables": sorted(tables)[:40],
+                        "procedures": sorted(procedures)[:80],
+                        "input_signals": sorted(input_signals)[:20],
+                        "output_signals": sorted(output_signals)[:20],
+                    },
+                    "technical_components": {
+                        "notable_components": sorted(members)[:20],
+                        "external_dependencies": sorted(activex)[:40],
+                        "integration_hints": sorted(integration_hints_project)[:12],
+                    },
+                    "modernization_considerations": [
+                        "Validate inferred project boundaries and startup flow with stakeholders.",
+                        "Preserve workflow behavior and data contracts during conversion.",
+                    ],
+                    "forms_count": len(forms),
+                    "controls_count": len(controls),
+                    "activex_dependency_count": len(activex),
+                    "event_handler_count": len(events),
+                }
+            )
+
+    vb6_projects = sorted(vb6_projects, key=lambda row: str(row.get("project_name", "")).lower())[:24]
+    vb6_readiness = build_vb6_readiness_assessment(vb6_by_path=vb6_by_path, vb6_projects=vb6_projects)
+    source_target_profile = build_source_target_modernization_profile(
+        legacy_skill_profile=legacy_skill_profile,
+        legacy_inventory={
+            "vb6_projects": vb6_projects,
+            "modernization_readiness": vb6_readiness,
+        },
+        state={
+            "modernization_language": str(target_language or "").strip(),
+            "target_platform": str(target_platform or "").strip(),
+            "deployment_target": str(deployment_target or "local").strip() or "local",
+            "integration_context": {
+                "brownfield": {"repo_url": str(source_repo_url or "").strip()},
+                "exports": {"github": {"repo_url": str(target_repo_url or "").strip()}},
+            },
+        },
+    )
+    project_business_summaries = build_project_business_summaries(
+        vb6_projects=vb6_projects,
+        source_target_profile=source_target_profile,
+        global_readiness=vb6_readiness,
+    )
 
     sample_paths = [p for p in ordered_paths if p][:160]
     capabilities = _domain_capabilities(sample_paths, routes)
+    if vb6_forms or vb6_controls:
+        capabilities.insert(0, "Legacy desktop workflow implemented through VB6 forms and event-driven handlers")
+    if vb6_activex:
+        capabilities.insert(1, "ActiveX/COM components are part of runtime behavior and modernization scope")
     if not capabilities:
         capabilities = [
             "Service exposes business workflows through API/service modules",
@@ -1586,6 +2318,29 @@ def _analyze_source_bundle(
         f"{' ,'.join(sorted(frameworks)) if frameworks else 'a multi-module application'} "
         f"with {len(routes)} discovered route hints."
     )
+    if isinstance(legacy_skill_profile, dict) and legacy_skill_profile.get("selected_skill_id"):
+        overview += (
+            " Legacy skill selected: "
+            f"{str(legacy_skill_profile.get('selected_skill_name', 'Generic Legacy Skill'))} "
+            f"({str(legacy_skill_profile.get('selected_skill_id', 'generic_legacy'))}, "
+            f"confidence={legacy_skill_profile.get('confidence', 'n/a')})."
+        )
+    if vb6_forms:
+        overview += (
+            f" VB6 signals detected: {len(vb6_forms)} forms/usercontrols, "
+            f"{len(vb6_controls)} controls, {len(vb6_activex)} ActiveX/COM dependencies, "
+            f"{len(vb6_projects)} project(s)."
+        )
+        overview += (
+            f" .bas modules={len(vb6_bas_modules)} (procedures={vb6_bas_procedure_count}), "
+            f"binary companions={len(vb6_binary_companions)}."
+        )
+        overview += (
+            f" Readiness={int(vb6_readiness.get('score', 0) or 0)}/100 "
+            f"strategy={str(vb6_readiness.get('recommended_strategy', {}).get('id', 'pending')).replace('_', ' ')}."
+        )
+    if str(target_language or "").strip():
+        overview += f" Target modernization language={str(target_language).strip()}."
     if objectives_line:
         overview += f" Objective alignment used: {objectives_line[:220]}"
 
@@ -1597,12 +2352,34 @@ def _analyze_source_bundle(
         elif parts:
             component_candidates.append(parts[0])
     key_components = sorted({c for c in component_candidates if c})[:10]
+    if vb6_forms:
+        key_components = (key_components + sorted(vb6_forms)[:6])[:16]
 
     io_contracts = []
     if routes:
         io_contracts.append("HTTP endpoints likely accept JSON payloads and return JSON/API responses.")
     if frameworks:
         io_contracts.append(f"Frameworks detected ({', '.join(sorted(frameworks))}) imply controller/handler based request processing.")
+    if vb6_forms:
+        io_contracts.append(
+            "VB6 event-driven contracts detected: form control inputs trigger Sub handlers that drive business transactions."
+        )
+    if vb6_activex:
+        io_contracts.append(
+            f"ActiveX/COM dependency contracts detected: {', '.join(sorted(vb6_activex)[:8])}."
+        )
+    if vb6_projects:
+        io_contracts.append(
+            "VB6 multi-project structure detected: "
+            + "; ".join(
+                [
+                    f"{str(p.get('project_name', 'Project'))}(members={p.get('member_count', 0)}, forms={p.get('forms_count', 0)})"
+                    for p in vb6_projects[:6]
+                    if isinstance(p, dict)
+                ]
+            )
+            + "."
+        )
     if input_hints:
         io_contracts.append(f"Input parameters inferred from request context: {', '.join(sorted(input_hints)[:8])}.")
     if output_hints:
@@ -1615,6 +2392,8 @@ def _analyze_source_bundle(
         unknowns.append("Limited file content available; summary based mostly on folder/file names.")
     if not routes:
         unknowns.append("No explicit route decorators found in sampled files; interfaces may be indirect or in unsampled modules.")
+    if vb6_forms and not vb6_events:
+        unknowns.append("VB6 form files detected but event handler procedures were not extracted from sampled content.")
 
     return {
         "overview": overview,
@@ -1626,6 +2405,48 @@ def _analyze_source_bundle(
         "domain_functions": sorted(function_hints)[:12],
         "data_entities": sorted(table_hints)[:12],
         "integrations": sorted(integration_hints)[:6] or ["No explicit external integration tokens detected in sampled files."],
+        "legacy_skill_profile": legacy_skill_profile,
+        "source_target_modernization_profile": source_target_profile,
+        "project_business_summaries": project_business_summaries,
+        "vb6_file_type_coverage": vb6_file_type_coverage,
+        "bas_module_summary": {
+            "module_count": len(vb6_bas_modules),
+            "modules": sorted(vb6_bas_modules)[:120],
+            "procedure_count": vb6_bas_procedure_count,
+            "note": "Standard module (.bas) files are treated as primary business-logic sources.",
+        },
+        "binary_companion_files": vb6_binary_companions[:120],
+        "vb6_analysis": {
+            "project_count": len(vb6_projects),
+            "projects": vb6_projects,
+            "forms": sorted(vb6_forms)[:24],
+            "controls": sorted(vb6_controls)[:40],
+            "activex_dependencies": sorted(vb6_activex)[:20],
+            "event_handlers": sorted(vb6_events)[:40],
+            "project_members": sorted(vb6_project_members)[:40],
+            "ui_event_map": list(vb6_ui_event_map.values())[:200],
+            "sql_query_catalog": sorted(vb6_sql_queries)[:160],
+            "com_surface_map": {
+                "late_bound_progids": sorted(vb6_com_progids)[:120],
+                "call_by_name_sites": vb6_callbyname_sites,
+                "createobject_getobject_sites": vb6_createobject_sites,
+                "references": sorted(vb6_com_references)[:120],
+            },
+            "win32_declares": sorted(vb6_win32_declares)[:120],
+            "error_handling_profile": vb6_error_profile,
+            "pitfall_detectors": sorted(vb6_pitfalls.values(), key=lambda row: str(row.get("id", "")))[:120],
+            "modernization_readiness": vb6_readiness,
+            "source_target_modernization_profile": source_target_profile,
+            "project_business_summaries": project_business_summaries,
+            "vb6_file_type_coverage": vb6_file_type_coverage,
+            "bas_module_summary": {
+                "module_count": len(vb6_bas_modules),
+                "modules": sorted(vb6_bas_modules)[:120],
+                "procedure_count": vb6_bas_procedure_count,
+            },
+            "binary_companion_files": vb6_binary_companions[:120],
+            "vb6_skill_pack_manifest": vb6_skill_pack_manifest(),
+        },
         "unknowns": unknowns,
         "evidence_files": evidence_files[:14],
         "stats": {
@@ -1633,6 +2454,13 @@ def _analyze_source_bundle(
             "sampled_files": len(file_contents),
             "languages": language_counts,
             "route_hints": len(routes),
+            "vb6_forms": len(vb6_forms),
+            "vb6_controls": len(vb6_controls),
+            "vb6_activex_dependencies": len(vb6_activex),
+            "vb6_projects": len(vb6_projects),
+            "vb6_bas_modules": len(vb6_bas_modules),
+            "vb6_bas_procedures": vb6_bas_procedure_count,
+            "vb6_binary_companion_files": len(vb6_binary_companions),
         },
     }
 
@@ -1655,10 +2483,18 @@ def _fetch_github_file_content(
     encoding = str(payload.get("encoding", "")).strip().lower()
     if not raw_content:
         return ""
+    suffix = Path(path).suffix.lower()
     text = ""
     if encoding == "base64":
         try:
-            text = base64.b64decode(raw_content.encode("utf-8"), validate=False).decode("utf-8", errors="replace")
+            raw_bytes = base64.b64decode(raw_content.encode("utf-8"), validate=False)
+            if suffix in {".frx", ".ctx", ".res"}:
+                digest = hashlib.sha1(raw_bytes).hexdigest()[:16]
+                return (
+                    f"[BINARY_COMPANION] file={path} ext={suffix or 'unknown'} bytes={len(raw_bytes)} "
+                    f"sha1={digest} note=Companion binary/resource file detected."
+                )[:max_chars]
+            text = raw_bytes.decode("utf-8", errors="replace")
         except Exception:
             text = ""
     else:
@@ -1670,6 +2506,7 @@ def _allowed_source_extensions() -> set[str]:
     return {
         ".py", ".js", ".ts", ".tsx", ".go", ".java", ".cs", ".rb", ".php",
         ".asp", ".aspx", ".asa", ".vb", ".vbs",
+        ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".vbp", ".vbg", ".res",
         ".sql", ".md", ".yaml", ".yml", ".json",
     }
 
@@ -1702,23 +2539,37 @@ def _select_source_entries_for_analysis(
         if suffix in allowed_ext or base_name.startswith("readme"):
             candidate_entries.append({"path": normalized, "type": "file", "depth": normalized.count("/")})
 
+    vb6_file_hits = sum(
+        1 for entry in candidate_entries
+        if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res"))
+    )
+    effective_limit = max(limit, 80) if vb6_file_hits >= 8 else limit
+
     priority_rank = []
     for entry in candidate_entries:
         path = entry["path"].lower()
         rank = 99
         if "readme" in path:
             rank = 0
-        elif any(tok in path for tok in ["/main.", "/app.", "/index.", "/server."]):
+        elif path.endswith(".vbp") or path.endswith(".vbg"):
+            rank = 0
+        elif path.endswith(".bas"):
             rank = 1
-        elif "/api/" in path or "/controller" in path or "/routes" in path:
+        elif path.endswith(".frm") or path.endswith(".ctl") or path.endswith(".cls"):
             rank = 2
-        elif "/service" in path or "/handler" in path:
+        elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res"):
             rank = 3
-        elif "/model" in path or "/schema" in path:
+        elif any(tok in path for tok in ["/main.", "/app.", "/index.", "/server."]):
+            rank = 2
+        elif "/api/" in path or "/controller" in path or "/routes" in path:
+            rank = 3
+        elif "/service" in path or "/handler" in path:
             rank = 4
+        elif "/model" in path or "/schema" in path:
+            rank = 5
         priority_rank.append((rank, path, entry))
     priority_rank.sort(key=lambda row: (row[0], row[1]))
-    return [row[2] for row in priority_rank[: max(1, limit)]]
+    return [row[2] for row in priority_rank[: max(1, effective_limit)]]
 
 
 def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: int = 160000) -> str:
@@ -1739,6 +2590,130 @@ def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: 
         if total >= max_total_chars:
             break
     return "".join(chunks).strip()
+
+
+def _normalize_mdbtools_engine(engine: str) -> str:
+    token = str(engine or "").strip().lower()
+    if token in {"postgres", "postgresql"}:
+        return "postgres"
+    if token in {"mysql", "mariadb"}:
+        return "mysql"
+    if token in {"oracle"}:
+        return "oracle"
+    if token in {"access", "jet"}:
+        return "access"
+    if token in {"sqlite"}:
+        # mdb-schema does not consistently provide SQLite flavor in all builds.
+        return "postgres"
+    if token in {"sqlserver", "sql server", "mssql"}:
+        return "postgres"
+    return "postgres"
+
+
+def _run_command(args: list[str], timeout: int = 60) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as exc:
+        return 1, "", str(exc)
+    stdout = proc.stdout.decode("utf-8", errors="replace") if isinstance(proc.stdout, (bytes, bytearray)) else str(proc.stdout or "")
+    stderr = proc.stderr.decode("utf-8", errors="replace") if isinstance(proc.stderr, (bytes, bytearray)) else str(proc.stderr or "")
+    return int(proc.returncode), stdout, stderr
+
+
+def _parse_mdb_table_list(raw: str) -> list[str]:
+    tables: list[str] = []
+    for line in str(raw or "").splitlines():
+        for token in re.split(r"[,\s]+", line.strip()):
+            name = str(token or "").strip()
+            if not name:
+                continue
+            if name not in tables:
+                tables.append(name)
+    return tables
+
+
+def _inspect_access_database(file_path: Path, *, target_engine: str = "postgres") -> dict[str, Any]:
+    mdb_tables = shutil.which("mdb-tables")
+    mdb_schema = shutil.which("mdb-schema")
+    if not mdb_tables or not mdb_schema:
+        missing = []
+        if not mdb_tables:
+            missing.append("mdb-tables")
+        if not mdb_schema:
+            missing.append("mdb-schema")
+        return {
+            "ok": False,
+            "error": (
+                f"Access parser requires mdbtools commands: {', '.join(missing)}. "
+                "Install mdbtools to enable .mdb/.accdb schema extraction."
+            ),
+            "parser": "mdbtools",
+            "warnings": [
+                "Fallback unavailable for binary Access files without mdbtools.",
+            ],
+        }
+
+    rc_tables, out_tables, err_tables = _run_command([mdb_tables, "-1", str(file_path)], timeout=40)
+    if rc_tables != 0:
+        return {
+            "ok": False,
+            "error": f"Failed to read Access tables: {err_tables.strip() or 'unknown mdb-tables error'}",
+            "parser": "mdbtools",
+        }
+
+    all_tables = _parse_mdb_table_list(out_tables)
+    user_tables = [t for t in all_tables if not str(t).lower().startswith("msys")]
+    system_tables = [t for t in all_tables if str(t).lower().startswith("msys")]
+    if not user_tables:
+        return {
+            "ok": False,
+            "error": "No user tables found in Access database.",
+            "parser": "mdbtools",
+        }
+
+    backend = _normalize_mdbtools_engine(target_engine)
+    rc_schema, out_schema, err_schema = _run_command([mdb_schema, str(file_path), backend], timeout=120)
+    if rc_schema != 0 or not str(out_schema).strip():
+        # Retry with default backend if selected backend flavor is unsupported by local mdbtools build.
+        rc_schema, out_schema, err_schema = _run_command([mdb_schema, str(file_path)], timeout=120)
+    if rc_schema != 0:
+        return {
+            "ok": False,
+            "error": f"Failed to extract Access schema: {err_schema.strip() or 'unknown mdb-schema error'}",
+            "parser": "mdbtools",
+        }
+
+    schema_text = str(out_schema or "").strip()
+    header = [
+        "-- Source database: Microsoft Access",
+        f"-- Parsed with: mdbtools",
+        f"-- User tables detected: {len(user_tables)}",
+        f"-- Sample tables: {', '.join(user_tables[:12])}",
+    ]
+    if system_tables:
+        header.append(f"-- System tables ignored: {len(system_tables)}")
+    final_schema = "\n".join(header) + "\n\n" + schema_text
+
+    warnings: list[str] = []
+    if str(file_path.suffix).lower() == ".accdb":
+        warnings.append("ACCDB parsing support depends on local mdbtools build; verify output accuracy.")
+
+    return {
+        "ok": True,
+        "parser": "mdbtools",
+        "target_flavor": backend,
+        "table_count": len(user_tables),
+        "tables": user_tables[:200],
+        "system_table_count": len(system_tables),
+        "warnings": warnings,
+        "database_schema": final_schema[:600000],
+    }
 
 
 def _config_from_payload(payload: dict[str, Any]) -> PipelineConfig:
@@ -1922,6 +2897,107 @@ async def api_samples(_request):
             "agents": AGENT_CARDS,
         }
     )
+
+
+async def api_domain_packs(_request):
+    packs = list_domain_packs()
+    rows: list[dict[str, Any]] = []
+    for pack in packs:
+        if not isinstance(pack, dict):
+            continue
+        ontology = pack.get("ontology", {}) if isinstance(pack.get("ontology", {}), dict) else {}
+        capabilities = ontology.get("capabilities", []) if isinstance(ontology.get("capabilities", []), list) else []
+        rows.append(
+            {
+                "id": str(pack.get("id", "")).strip(),
+                "name": str(pack.get("name", "")).strip() or "Domain Pack",
+                "version": str(pack.get("version", "")).strip() or "1.0.0",
+                "framework": str(ontology.get("framework", "")).strip() or "Capability Taxonomy",
+                "capability_count": len([x for x in capabilities if isinstance(x, dict)]),
+            }
+        )
+    rows.sort(key=lambda x: str(x.get("name", "")).lower())
+    return JSONResponse({"ok": True, "domain_packs": rows})
+
+
+async def api_legacy_skills(_request):
+    rows = list_legacy_skills()
+    rows.sort(key=lambda x: str(x.get("name", "")).lower())
+    return JSONResponse({"ok": True, "legacy_skills": rows})
+
+
+async def api_agent_personas(request):
+    params = request.query_params
+    role = str(params.get("role", "")).strip().lower()
+    persona_id = str(params.get("persona_id", "")).strip().lower()
+    version = str(params.get("version", "")).strip()
+    if persona_id:
+        persona = PERSONA_REGISTRY.get_persona(persona_id, version=version)
+        if not persona:
+            return JSONResponse({"ok": False, "error": "persona not found"}, status_code=404)
+        return JSONResponse({"ok": True, "persona": persona})
+    return JSONResponse({"ok": True, "personas": PERSONA_REGISTRY.list_personas(role=role)})
+
+
+async def api_agent_persona_upsert(request):
+    payload = _get_json(await request.body())
+    try:
+        persona = PERSONA_REGISTRY.upsert_persona(payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "persona": persona})
+
+
+async def api_analyst_aas_analyze(request):
+    payload = _get_json(await request.body())
+    requirement = str(payload.get("requirement") or payload.get("business_objective") or "").strip()
+    if not requirement:
+        return JSONResponse({"ok": False, "error": "requirement is required"}, status_code=400)
+    try:
+        result = ANALYST_AAS.analyze(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"analyst AAS failed: {exc}"}, status_code=500)
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+async def api_memory_add_constraint(request):
+    payload = _get_json(await request.body())
+    scope = {
+        "workspace_id": str(payload.get("workspace_id", "default-workspace")),
+        "client_id": str(payload.get("client_id", "default-client")),
+        "project_id": str(payload.get("project_id", "default-project")),
+    }
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "text is required"}, status_code=400)
+    try:
+        row = TENANT_MEMORY_STORE.add_constraint(
+            scope,
+            text=text,
+            source=str(payload.get("source", "manual")),
+            created_by=_request_actor(request),
+            priority=str(payload.get("priority", "medium")),
+            applies_to=str(payload.get("applies_to", "all")),
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "constraint": row})
+
+
+async def api_memory_thread(request):
+    params = request.query_params
+    scope = {
+        "workspace_id": str(params.get("workspace_id", "default-workspace")),
+        "client_id": str(params.get("client_id", "default-client")),
+        "project_id": str(params.get("project_id", "default-project")),
+    }
+    thread_id = str(params.get("thread_id", "default-thread"))
+    limit = int(str(params.get("limit", "60")) or 60)
+    rows = TENANT_MEMORY_STORE.get_thread(scope, thread_id=thread_id, limit=max(1, min(limit, 200)))
+    return JSONResponse({"ok": True, "thread_id": thread_id, "messages": rows})
 
 
 def _request_actor(request) -> str:
@@ -2149,31 +3225,106 @@ async def api_discover_analyst_brief(request):
     objectives = str(payload.get("objectives", "")).strip()
     use_case = str(payload.get("use_case", "business_objectives")).strip().lower() or "business_objectives"
     legacy_code = str(payload.get("legacy_code", "")).strip()
+    modernization_language = str(payload.get("modernization_language", "")).strip()
+    target_platform = str(payload.get("target_platform", "")).strip()
+    deployment_target = str(payload.get("deployment_target", "local")).strip().lower() or "local"
+    database_source = str(payload.get("database_source", "")).strip()
+    database_target = str(payload.get("database_target", "")).strip()
+    database_schema = str(payload.get("database_schema", "")).strip()
     repo_provider = str(payload.get("repo_provider") or brownfield.get("repo_provider") or "").strip().lower()
     repo_url = str(payload.get("repo_url") or brownfield.get("repo_url") or "").strip()
     include_paths = _normalize_lines(integration_ctx.get("scan_scope", {}).get("include_paths", []))
     exclude_paths = _normalize_lines(integration_ctx.get("scan_scope", {}).get("exclude_paths", []))
+    exports_cfg = integration_ctx.get("exports", {}) if isinstance(integration_ctx.get("exports", {}), dict) else {}
+    exports_gh = exports_cfg.get("github", {}) if isinstance(exports_cfg.get("github", {}), dict) else {}
+    target_repo_url = str(
+        payload.get("target_repo_url")
+        or integration_ctx.get("export_repo_url")
+        or exports_gh.get("repo_url")
+        or ""
+    ).strip()
+
+    def _enrich_with_analyst_aas(response_payload: dict[str, Any], *, fallback_requirement: str) -> dict[str, Any]:
+        req = str(objectives or "").strip() or str(fallback_requirement or "").strip()
+        if not req:
+            return response_payload
+        repo_hint = str(repo_url or "discover").strip().lower()
+        repo_hint = re.sub(r"[^a-z0-9]+", "-", repo_hint).strip("-")[:80] or "discover"
+        aas_payload: dict[str, Any] = {
+            "requirement": req,
+            "business_objective": req,
+            "use_case": use_case,
+            "thread_id": str(payload.get("thread_id", "")).strip() or f"discover-{repo_hint}",
+            "workspace_id": str(payload.get("workspace_id", "default-workspace")),
+            "client_id": str(payload.get("client_id", "default-client")),
+            "project_id": str(payload.get("project_id", repo_hint or "discover-project")),
+            "integration_context": integration_ctx,
+            "repo_provider": repo_provider,
+            "repo_url": repo_url,
+            "legacy_code": legacy_code[:20000] if legacy_code else "",
+            "database_source": database_source,
+            "database_target": database_target,
+            "database_schema": database_schema[:20000] if database_schema else "",
+        }
+        domain_pack_id = str(integration_ctx.get("domain_pack_id", "")).strip()
+        if domain_pack_id:
+            aas_payload["domain_pack_id"] = domain_pack_id
+        custom_pack = integration_ctx.get("custom_domain_pack")
+        if isinstance(custom_pack, dict) and custom_pack:
+            aas_payload["domain_pack"] = custom_pack
+        jurisdiction = str(integration_ctx.get("jurisdiction", "")).strip()
+        if jurisdiction:
+            aas_payload["jurisdiction"] = jurisdiction
+        data_classes = integration_ctx.get("data_classification", [])
+        if isinstance(data_classes, list) and data_classes:
+            aas_payload["data_classification"] = data_classes
+
+        try:
+            aas_result = ANALYST_AAS.analyze(aas_payload, actor=_request_actor(request))
+        except Exception as exc:
+            response_payload["aas"] = {"ok": False, "error": f"analyst AAS enrichment failed: {exc}"}
+            return response_payload
+
+        response_payload["aas"] = aas_result
+        response_payload["thread_id"] = str(aas_result.get("thread_id", "")).strip()
+        response_payload["assistant_summary"] = str(aas_result.get("assistant_summary", "")).strip()
+        if isinstance(aas_result.get("requirements_pack", {}), dict):
+            response_payload["requirements_pack"] = aas_result.get("requirements_pack", {})
+        if isinstance(aas_result.get("quality_gates", []), list):
+            response_payload["quality_gates"] = aas_result.get("quality_gates", [])
+        return response_payload
 
     # Legacy modernization path: analyze provided code directly.
     if legacy_code and use_case == "code_modernization":
         file_entries = [{"path": "inline/legacy_code.txt", "type": "file", "depth": 1}]
         file_contents = {"inline/legacy_code.txt": legacy_code[:25000]}
+        if database_schema:
+            file_entries.append({"path": "inline/database_schema.sql", "type": "file", "depth": 1})
+            file_contents["inline/database_schema.sql"] = database_schema[:50000]
         analysis = _analyze_source_bundle(
             objectives=objectives,
             repo_label="provided legacy code",
             file_entries=file_entries,
             file_contents=file_contents,
+            target_language=modernization_language,
+            target_platform=target_platform,
+            deployment_target=deployment_target,
+            source_repo_url=repo_url,
+            target_repo_url=target_repo_url,
         )
-        return JSONResponse(
-            {
-                "ok": True,
-                "source": "inline_legacy_code",
-                "analyst_brief": {
-                    "title": "Analyst functionality understanding",
-                    "summary": analysis,
-                },
-            }
+        response_payload = {
+            "ok": True,
+            "source": "inline_legacy_code",
+            "analyst_brief": {
+                "title": "Analyst functionality understanding",
+                "summary": analysis,
+            },
+        }
+        response_payload = _enrich_with_analyst_aas(
+            response_payload,
+            fallback_requirement=str(analysis.get("overview", "")).strip() or "Analyze provided legacy code.",
         )
+        return JSONResponse(response_payload)
 
     if repo_provider and repo_provider != "github" and not sample_mode:
         return JSONResponse(
@@ -2190,6 +3341,37 @@ async def api_discover_analyst_brief(request):
     owner = parsed_owner or owner
     repository = parsed_repo or repository
     if not owner or not repository:
+        if database_schema:
+            db_label = f"{database_source or 'source-db'} -> {database_target or 'target-db'}"
+            file_entries = [{"path": "inline/database_schema.sql", "type": "file", "depth": 1}]
+            file_contents = {"inline/database_schema.sql": database_schema[:50000]}
+            analysis = _analyze_source_bundle(
+                objectives=objectives,
+                repo_label=f"provided database schema ({db_label})",
+                file_entries=file_entries,
+                file_contents=file_contents,
+                target_language=modernization_language,
+                target_platform=target_platform,
+                deployment_target=deployment_target,
+                source_repo_url=repo_url,
+                target_repo_url=target_repo_url,
+            )
+            response_payload = {
+                "ok": True,
+                "source": "inline_database_schema",
+                "analyst_brief": {
+                    "title": "Analyst functionality understanding",
+                    "summary": analysis,
+                },
+            }
+            response_payload = _enrich_with_analyst_aas(
+                response_payload,
+                fallback_requirement=(
+                    str(analysis.get("overview", "")).strip()
+                    or "Analyze provided legacy database schema and migration objectives."
+                ),
+            )
+            return JSONResponse(response_payload)
         return JSONResponse(
             {
                 "ok": False,
@@ -2209,23 +3391,36 @@ async def api_discover_analyst_brief(request):
             "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
             "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
         }
+        if database_schema:
+            sample_contents["inline/database_schema.sql"] = database_schema[:50000]
         analysis = _analyze_source_bundle(
             objectives=objectives,
             repo_label=f"{owner}/{repository}",
-            file_entries=[item for item in entries if isinstance(item, dict)],
+            file_entries=(
+                [item for item in entries if isinstance(item, dict)]
+                + ([{"path": "inline/database_schema.sql", "type": "file", "depth": 1}] if database_schema else [])
+            ),
             file_contents=sample_contents,
+            target_language=modernization_language,
+            target_platform=target_platform,
+            deployment_target=deployment_target,
+            source_repo_url=repo_url,
+            target_repo_url=target_repo_url,
         )
-        return JSONResponse(
-            {
-                "ok": True,
-                "source": "sample_dataset",
-                "repo": {"owner": owner, "repository": repository, "default_branch": sample_tree.get("repo", {}).get("default_branch", "main")},
-                "analyst_brief": {
-                    "title": "Analyst functionality understanding",
-                    "summary": analysis,
-                },
-            }
+        response_payload = {
+            "ok": True,
+            "source": "sample_dataset",
+            "repo": {"owner": owner, "repository": repository, "default_branch": sample_tree.get("repo", {}).get("default_branch", "main")},
+            "analyst_brief": {
+                "title": "Analyst functionality understanding",
+                "summary": analysis,
+            },
+        }
+        response_payload = _enrich_with_analyst_aas(
+            response_payload,
+            fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
         )
+        return JSONResponse(response_payload)
 
     github_cfg = SETTINGS_STORE.get_integration_config("github")
     token = str(github_cfg.get("token", "")).strip()
@@ -2294,28 +3489,40 @@ async def api_discover_analyst_brief(request):
             if len(fetch_errors) < 5:
                 fetch_errors.append(f"{path}: {exc}")
 
+    if database_schema:
+        selected_entries.append({"path": "inline/database_schema.sql", "type": "file", "depth": 1})
+        file_contents["inline/database_schema.sql"] = database_schema[:50000]
+
     analysis = _analyze_source_bundle(
         objectives=objectives,
         repo_label=f"{owner}/{repository}",
         file_entries=selected_entries,
         file_contents=file_contents,
+        target_language=modernization_language,
+        target_platform=target_platform,
+        deployment_target=deployment_target,
+        source_repo_url=repo_url,
+        target_repo_url=target_repo_url,
     )
     if fetch_errors:
         analysis.setdefault("unknowns", []).append(
             f"Some files could not be read from GitHub API: {' | '.join(fetch_errors)}"
         )
 
-    return JSONResponse(
-        {
-            "ok": True,
-            "source": "github_api",
-            "repo": {"owner": owner, "repository": repository, "default_branch": branch, "url": repo_url},
-            "analyst_brief": {
-                "title": "Analyst functionality understanding",
-                "summary": analysis,
-            },
-        }
+    response_payload = {
+        "ok": True,
+        "source": "github_api",
+        "repo": {"owner": owner, "repository": repository, "default_branch": branch, "url": repo_url},
+        "analyst_brief": {
+            "title": "Analyst functionality understanding",
+            "summary": analysis,
+        },
+    }
+    response_payload = _enrich_with_analyst_aas(
+        response_payload,
+        fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
     )
+    return JSONResponse(response_payload)
 
 
 def _discover_linear_issues_response(payload: dict[str, Any]) -> JSONResponse:
@@ -2754,6 +3961,10 @@ async def api_clone_agent(request):
     base_agent_id = str(payload.get("base_agent_id", "")).strip()
     display_name = str(payload.get("display_name", "")).strip()
     persona = str(payload.get("persona", "")).strip()
+    requirements_pack_profile = str(payload.get("requirements_pack_profile", "")).strip()
+    requirements_pack_template = payload.get("requirements_pack_template", {})
+    if not isinstance(requirements_pack_template, dict):
+        requirements_pack_template = {}
     if not base_agent_id:
         return JSONResponse({"ok": False, "error": "base_agent_id is required"}, status_code=400)
     try:
@@ -2761,6 +3972,8 @@ async def api_clone_agent(request):
             base_agent_id=base_agent_id,
             display_name=display_name,
             persona=persona,
+            requirements_pack_profile=requirements_pack_profile,
+            requirements_pack_template=requirements_pack_template,
         )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -3028,6 +4241,66 @@ async def api_clone_task(request):
     return JSONResponse({"ok": True, "template": template})
 
 
+async def api_discover_access_inspect(request):
+    try:
+        form = await request.form()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Invalid multipart form data: {exc}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None:
+        return JSONResponse({"ok": False, "error": "file is required"}, status_code=400)
+
+    filename = str(getattr(upload, "filename", "") or "").strip()
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".mdb", ".accdb"}:
+        return JSONResponse({"ok": False, "error": "Only .mdb or .accdb files are supported by this endpoint."}, status_code=400)
+
+    try:
+        blob = await upload.read()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Failed to read uploaded file: {exc}"}, status_code=400)
+
+    if not blob:
+        return JSONResponse({"ok": False, "error": "Uploaded file is empty."}, status_code=400)
+    if len(blob) > 60 * 1024 * 1024:
+        return JSONResponse({"ok": False, "error": "Uploaded Access file is too large (max 60MB)."}, status_code=400)
+
+    target_engine = str(form.get("target_engine", "postgres")).strip()
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            temp_path = Path(tmp.name)
+            tmp.write(blob)
+        inspected = _inspect_access_database(temp_path, target_engine=target_engine)
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if not bool(inspected.get("ok")):
+        return JSONResponse(inspected, status_code=400)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "source": "access_file",
+            "file_name": filename,
+            "database_schema": str(inspected.get("database_schema", "")),
+            "analysis": {
+                "parser": inspected.get("parser", "mdbtools"),
+                "target_flavor": inspected.get("target_flavor", "postgres"),
+                "table_count": int(inspected.get("table_count", 0) or 0),
+                "tables": inspected.get("tables", []),
+                "system_table_count": int(inspected.get("system_table_count", 0) or 0),
+                "warnings": inspected.get("warnings", []),
+            },
+        }
+    )
+
+
 async def api_start_run(request):
     payload = _get_json(await request.body())
     objectives = str(payload.get("objectives", "")).strip()
@@ -3191,7 +4464,108 @@ async def api_approve_run(request):
     return JSONResponse(result, status_code=status_code)
 
 
-def _merge_analyst_output_into_state(state: dict[str, Any], analyst_output: dict[str, Any], markdown_doc: str = "") -> None:
+async def api_pause_run(request):
+    run_id = request.path_params.get("run_id", "")
+    result = MANAGER.pause(run_id)
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+async def api_resume_run(request):
+    run_id = request.path_params.get("run_id", "")
+    result = MANAGER.resume(run_id)
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+async def api_abort_run(request):
+    run_id = request.path_params.get("run_id", "")
+    payload = _get_json(await request.body())
+    reason = str(payload.get("reason", "")).strip()
+    result = MANAGER.abort(run_id, reason=reason)
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+async def api_rerun_stage(request):
+    run_id = request.path_params.get("run_id", "")
+    payload = _get_json(await request.body())
+    stage = _coerce_stage(payload.get("stage", 0))
+    if stage <= 0:
+        current = MANAGER.get_run(run_id) or {}
+        stage = _coerce_stage(current.get("current_stage", 1) or 1)
+        if stage <= 0:
+            stage = 1
+    result = MANAGER.rerun_stage(run_id, stage=stage)
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
+def _append_analyst_conversation_change(
+    analyst_output: dict[str, Any],
+    run_id: str,
+    summary: str,
+    proposed_patch: list[dict[str, Any]],
+) -> dict[str, Any]:
+    output = dict(analyst_output) if isinstance(analyst_output, dict) else {}
+    audit = output.get("conversation_audit", {})
+    if not isinstance(audit, dict):
+        audit = {}
+    changes = audit.get("changes", [])
+    if not isinstance(changes, list):
+        changes = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    change = {
+        "change_id": f"chg_{stamp}",
+        "requested_by": "user",
+        "summary": summary,
+        "proposed_patch": [p for p in proposed_patch if isinstance(p, dict)],
+        "approved_by": "user",
+        "applied": True,
+        "timestamp": _utc_now(),
+    }
+    changes.append(change)
+    audit["thread_id"] = str(audit.get("thread_id", "")).strip() or (f"THREAD-{run_id}" if run_id else f"THREAD-{stamp}")
+    audit["changes"] = changes[-200:]
+    output["conversation_audit"] = audit
+    return output
+
+
+def _merge_analyst_output_into_state(
+    state: dict[str, Any],
+    analyst_output: dict[str, Any],
+    markdown_doc: str = "",
+    upload_format: str = "markdown",
+) -> None:
+    run_id = str(state.get("run_id", "")).strip()
+    if upload_format == "markdown":
+        analyst_output = _append_analyst_conversation_change(
+            analyst_output,
+            run_id=run_id,
+            summary="Human revised technical requirements markdown uploaded",
+            proposed_patch=[
+                {
+                    "op": "replace",
+                    "path": "/human_revised_document_markdown",
+                    "value": markdown_doc[:2000] if markdown_doc else "[updated]",
+                }
+            ],
+        )
+    elif upload_format == "json":
+        analyst_output = _append_analyst_conversation_change(
+            analyst_output,
+            run_id=run_id,
+            summary="Human revised requirements pack JSON uploaded",
+            proposed_patch=[
+                {
+                    "op": "replace",
+                    "path": "/requirements_pack",
+                    "value": {"artifact_type": str(analyst_output.get("requirements_pack", {}).get("artifact_type", "requirements_pack"))}
+                    if isinstance(analyst_output.get("requirements_pack", {}), dict)
+                    else {"artifact_type": "requirements_pack"},
+                }
+            ],
+        )
     state["analyst_output"] = analyst_output
     if markdown_doc:
         state["analyst_document_markdown"] = markdown_doc
@@ -3260,7 +4634,12 @@ async def api_update_analyst_doc(request):
 
     active = MANAGER._get_record(run_id)
     if active and isinstance(active.pipeline_state, dict):
-        _merge_analyst_output_into_state(active.pipeline_state, analyst_output, markdown_doc=markdown_doc)
+        _merge_analyst_output_into_state(
+            active.pipeline_state,
+            analyst_output,
+            markdown_doc=markdown_doc,
+            upload_format=fmt,
+        )
         active.updated_at = _utc_now()
         MANAGER._append_log(active, "📝 Analyst tech requirements document updated from uploaded file")
         MANAGER._persist(active)
@@ -3270,7 +4649,12 @@ async def api_update_analyst_doc(request):
     if not persisted:
         return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
     state = persisted.get("pipeline_state", {}) if isinstance(persisted.get("pipeline_state", {}), dict) else {}
-    _merge_analyst_output_into_state(state, analyst_output, markdown_doc=markdown_doc)
+    _merge_analyst_output_into_state(
+        state,
+        analyst_output,
+        markdown_doc=markdown_doc,
+        upload_format=fmt,
+    )
 
     logs = list(persisted.get("progress_logs", [])) if isinstance(persisted.get("progress_logs", []), list) else []
     logs.append(f"[{_ts()}] 📝 Analyst tech requirements document updated from uploaded file")
@@ -3287,6 +4671,2081 @@ async def api_update_analyst_doc(request):
     )
     updated = MANAGER.get_run(run_id)
     return JSONResponse({"ok": True, "run": updated})
+
+
+def _coerce_stage(stage_raw: Any) -> int:
+    try:
+        stage = int(stage_raw)
+    except (TypeError, ValueError):
+        stage = 0
+    return stage
+
+
+def _stage_output_key(stage: int) -> str:
+    idx = stage - 1
+    if idx < 0 or idx >= len(AGENT_SEQUENCE):
+        return ""
+    _, output_key = AGENT_SEQUENCE[idx]
+    return str(output_key or "")
+
+
+def _stage_agent_name(stage: int) -> str:
+    for card in AGENT_CARDS:
+        if int(card.get("stage", 0) or 0) == stage:
+            return str(card.get("name", f"Stage {stage}"))
+    return f"Stage {stage}"
+
+
+def _next_collab_id(prefix: str) -> str:
+    return f"{prefix}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{uuid.uuid4().hex[:6]}"
+
+
+def _stage_latest_result(state: dict[str, Any], stage: int) -> tuple[int, dict[str, Any] | None]:
+    results = state.get("agent_results", []) if isinstance(state.get("agent_results", []), list) else []
+    for idx in range(len(results) - 1, -1, -1):
+        item = results[idx]
+        if not isinstance(item, dict):
+            continue
+        try:
+            item_stage = int(item.get("stage", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if item_stage == stage:
+            return idx, item
+    return -1, None
+
+
+def _stage_output_snapshot(state: dict[str, Any], stage: int) -> dict[str, Any]:
+    _, result = _stage_latest_result(state, stage)
+    if isinstance(result, dict) and isinstance(result.get("output", {}), dict):
+        return copy.deepcopy(result.get("output", {}))
+    output_key = _stage_output_key(stage)
+    output = state.get(output_key, {}) if output_key else {}
+    if isinstance(output, dict):
+        return copy.deepcopy(output)
+    return {}
+
+
+def _set_stage_output(state: dict[str, Any], stage: int, updated_output: dict[str, Any], summary: str) -> None:
+    output_key = _stage_output_key(stage)
+    if output_key:
+        state[output_key] = updated_output
+
+    results = list(state.get("agent_results", [])) if isinstance(state.get("agent_results", []), list) else []
+    idx, result = _stage_latest_result(state, stage)
+    stage_note = summary or f"Human collaboration update applied to Stage {stage}"
+    if idx >= 0 and isinstance(result, dict):
+        current = dict(result)
+        current["output"] = updated_output
+        current["status"] = str(current.get("status", "success") or "success")
+        current["summary"] = stage_note
+        logs = list(current.get("logs", [])) if isinstance(current.get("logs", []), list) else []
+        logs.append(stage_note)
+        current["logs"] = logs[-80:]
+        results[idx] = current
+    else:
+        results.append(
+            {
+                "agent_name": _stage_agent_name(stage),
+                "stage": stage,
+                "status": "success",
+                "summary": stage_note,
+                "output": updated_output,
+                "tokens_used": 0,
+                "latency_ms": 0,
+                "logs": [stage_note],
+            }
+        )
+    state["agent_results"] = results
+
+
+def _append_collab_log(progress_logs: list[str], message: str) -> None:
+    progress_logs.append(f"[{_ts()}] 💬 {message}")
+    if len(progress_logs) > 2000:
+        del progress_logs[:-2000]
+
+
+def _stage_collaboration_bucket(state: dict[str, Any], stage: int, *, create: bool) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        raise ValueError("pipeline state is missing")
+    root_existing = state.get("agent_collaboration")
+    if not isinstance(root_existing, dict):
+        root = {}
+        state["agent_collaboration"] = root
+    else:
+        root = root_existing
+        # Ensure the root is attached even when key was previously absent and a default
+        # local dict would have been used.
+        state["agent_collaboration"] = root
+    key = str(stage)
+    bucket = root.get(key, {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+    if create:
+        bucket.setdefault("chat", [])
+        bucket.setdefault("directives", [])
+        bucket.setdefault("proposals", [])
+        bucket.setdefault("decisions", [])
+        bucket.setdefault("evidence", [])
+        bucket["updated_at"] = _utc_now()
+        root[key] = bucket
+    return bucket
+
+
+def _extract_stage_evidence(state: dict[str, Any], stage: int) -> list[dict[str, Any]]:
+    output = _stage_output_snapshot(state, stage)
+    _, result = _stage_latest_result(state, stage)
+    evidence: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    context_ref = output.get("context_reference", {}) if isinstance(output.get("context_reference", {}), dict) else {}
+    if context_ref:
+        repo = str(context_ref.get("repo", "")).strip()
+        branch = str(context_ref.get("branch", "")).strip()
+        commit = str(context_ref.get("commit_sha", "")).strip()
+        version_id = str(context_ref.get("version_id", "")).strip()
+        ref_text = " | ".join([x for x in [repo, branch, commit, version_id] if x])
+        if ref_text:
+            key = ("context_ref", ref_text)
+            seen.add(key)
+            evidence.append(
+                {
+                    "id": _next_collab_id("ev"),
+                    "kind": "context_ref",
+                    "label": "Context reference",
+                    "ref": ref_text,
+                    "confidence": 1.0,
+                }
+            )
+
+    logs = result.get("logs", []) if isinstance(result, dict) and isinstance(result.get("logs", []), list) else []
+    for line in logs[-6:]:
+        text = str(line).strip()
+        if not text:
+            continue
+        key = ("stage_log", text)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(
+            {
+                "id": _next_collab_id("ev"),
+                "kind": "stage_log",
+                "label": "Stage log",
+                "ref": text,
+                "confidence": 0.7,
+            }
+        )
+
+    for field in ("evidence", "sources", "provenance"):
+        value = output.get(field)
+        if not isinstance(value, list):
+            continue
+        for item in value[:20]:
+            if isinstance(item, dict):
+                ref = str(item.get("ref") or item.get("file") or item.get("path") or item.get("source") or "").strip()
+                if not ref:
+                    continue
+                key = ("artifact_evidence", ref)
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidence.append(
+                    {
+                        "id": _next_collab_id("ev"),
+                        "kind": "artifact_evidence",
+                        "label": str(item.get("kind") or field).strip() or "evidence",
+                        "ref": ref,
+                        "confidence": float(item.get("confidence", 0.6) or 0.6),
+                    }
+                )
+            elif isinstance(item, str):
+                ref = item.strip()
+                if not ref:
+                    continue
+                key = ("artifact_evidence", ref)
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidence.append(
+                    {
+                        "id": _next_collab_id("ev"),
+                        "kind": "artifact_evidence",
+                        "label": field,
+                        "ref": ref,
+                        "confidence": 0.55,
+                    }
+                )
+    return evidence[:40]
+
+
+def _extract_directive_from_message(stage: int, message: str, actor: str) -> dict[str, Any] | None:
+    text = str(message or "").strip()
+    if not text:
+        return None
+    if len(text) > 2000:
+        text = text[:2000]
+    priority = "medium"
+    lower = text.lower()
+    if "must" in lower or "non-negotiable" in lower:
+        priority = "high"
+    if "should" in lower and priority != "high":
+        priority = "medium"
+    if "nice to have" in lower:
+        priority = "low"
+    return {
+        "id": _next_collab_id("dir"),
+        "stage": stage,
+        "agent_name": _stage_agent_name(stage),
+        "text": text,
+        "priority": priority,
+        "created_at": _utc_now(),
+        "created_by": actor or "user",
+        "status": "active",
+    }
+
+
+def _json_pointer_tokens(path: str) -> list[str]:
+    if path == "":
+        return []
+    if not path.startswith("/"):
+        raise ValueError(f"JSON pointer must start with '/': {path}")
+    if path == "/":
+        return [""]
+    return [segment.replace("~1", "/").replace("~0", "~") for segment in path[1:].split("/")]
+
+
+def _normalize_patch_ops(ops: Any) -> list[dict[str, Any]]:
+    if not isinstance(ops, list):
+        raise ValueError("patch must be an array")
+    normalized: list[dict[str, Any]] = []
+    for raw in ops:
+        if not isinstance(raw, dict):
+            continue
+        op = str(raw.get("op", "")).strip().lower()
+        path = str(raw.get("path", "")).strip()
+        if op not in {"add", "replace", "remove"}:
+            continue
+        if not path:
+            continue
+        row: dict[str, Any] = {"op": op, "path": path}
+        if op in {"add", "replace"}:
+            row["value"] = raw.get("value")
+        normalized.append(row)
+    if not normalized:
+        raise ValueError("patch must include at least one valid operation")
+    return normalized
+
+
+def _apply_json_patch_ops(document: dict[str, Any], operations: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+    doc: Any = copy.deepcopy(document)
+    changed_paths: list[str] = []
+    for op_row in operations:
+        op = str(op_row.get("op", "")).strip().lower()
+        path = str(op_row.get("path", "")).strip()
+        tokens = _json_pointer_tokens(path)
+        if not tokens:
+            if op == "remove":
+                raise ValueError("remove operation cannot target document root")
+            doc = op_row.get("value")
+            changed_paths.append(path or "/")
+            continue
+
+        parent = doc
+        for idx, token in enumerate(tokens[:-1]):
+            next_token = tokens[idx + 1]
+            if isinstance(parent, dict):
+                if token not in parent or parent[token] is None:
+                    if op == "remove":
+                        raise ValueError(f"path does not exist: {path}")
+                    parent[token] = [] if (next_token == "-" or next_token.isdigit()) else {}
+                child = parent[token]
+                if not isinstance(child, (dict, list)):
+                    if op == "remove":
+                        raise ValueError(f"path traverses non-container value: {path}")
+                    child = [] if (next_token == "-" or next_token.isdigit()) else {}
+                    parent[token] = child
+                parent = child
+                continue
+            if isinstance(parent, list):
+                if token == "-":
+                    raise ValueError(f"invalid list pointer token '-' in middle of path: {path}")
+                try:
+                    list_index = int(token)
+                except ValueError as exc:
+                    raise ValueError(f"invalid list index `{token}` for path {path}") from exc
+                if list_index < 0 or list_index >= len(parent):
+                    raise ValueError(f"list index out of range for path {path}")
+                child = parent[list_index]
+                if not isinstance(child, (dict, list)):
+                    if op == "remove":
+                        raise ValueError(f"path traverses non-container value: {path}")
+                    child = [] if (next_token == "-" or next_token.isdigit()) else {}
+                    parent[list_index] = child
+                parent = child
+                continue
+            raise ValueError(f"path traverses non-container value: {path}")
+
+        last = tokens[-1]
+        if isinstance(parent, dict):
+            if op == "remove":
+                if last not in parent:
+                    raise ValueError(f"path does not exist: {path}")
+                parent.pop(last, None)
+            elif op == "add":
+                parent[last] = op_row.get("value")
+            elif op == "replace":
+                if last not in parent:
+                    raise ValueError(f"path does not exist for replace: {path}")
+                parent[last] = op_row.get("value")
+            changed_paths.append(path)
+            continue
+
+        if isinstance(parent, list):
+            if last == "-":
+                if op != "add":
+                    raise ValueError(f"only add supports '-' list pointer: {path}")
+                parent.append(op_row.get("value"))
+                changed_paths.append(path)
+                continue
+            try:
+                list_index = int(last)
+            except ValueError as exc:
+                raise ValueError(f"invalid list index `{last}` for path {path}") from exc
+            if op == "add":
+                if list_index < 0 or list_index > len(parent):
+                    raise ValueError(f"list index out of range for add: {path}")
+                parent.insert(list_index, op_row.get("value"))
+            elif op == "replace":
+                if list_index < 0 or list_index >= len(parent):
+                    raise ValueError(f"list index out of range for replace: {path}")
+                parent[list_index] = op_row.get("value")
+            elif op == "remove":
+                if list_index < 0 or list_index >= len(parent):
+                    raise ValueError(f"list index out of range for remove: {path}")
+                parent.pop(list_index)
+            changed_paths.append(path)
+            continue
+        raise ValueError(f"path traverses non-container value: {path}")
+
+    if not isinstance(doc, dict):
+        raise ValueError("stage output must remain a JSON object after patch application")
+    return doc, changed_paths
+
+
+def _auto_patch_from_message(stage: int, message: str, state: dict[str, Any], actor: str) -> dict[str, Any] | None:
+    text = str(message or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    output = _stage_output_snapshot(state, stage)
+    patch_ops: list[dict[str, Any]] = []
+    title = "Stage output update"
+    summary = "Add human feedback note"
+
+    if stage == 1 and ("open question" in lower or lower.startswith("q:")):
+        title = "Add open question"
+        summary = "Append open question to analyst requirements pack"
+        clean = text.split(":", 1)[1].strip() if ":" in text else text
+        patch_ops.append({"op": "add", "path": "/open_questions/-", "value": clean})
+    elif stage == 1 and ("non-functional" in lower or " nfr" in f" {lower}"):
+        title = "Add non-functional requirement"
+        summary = "Append non-functional requirement from collaboration request"
+        existing = output.get("non_functional_requirements", [])
+        count = len(existing) if isinstance(existing, list) else 0
+        patch_ops.append(
+            {
+                "op": "add",
+                "path": "/non_functional_requirements/-",
+                "value": {
+                    "id": f"NFR-{count + 1:03d}",
+                    "title": text[:96],
+                    "description": text,
+                    "source": "human_collaboration",
+                },
+            }
+        )
+    elif stage == 1 and ("risk" in lower or "compliance" in lower):
+        title = "Add risk note"
+        summary = "Append risk/compliance note to analyst output"
+        patch_ops.append(
+            {
+                "op": "add",
+                "path": "/risks/-",
+                "value": {
+                    "impact": "medium",
+                    "description": text,
+                    "mitigation": "Validate in Architect/Test stages",
+                    "source": "human_collaboration",
+                },
+            }
+        )
+    elif stage == 1 and ("requirement" in lower or "acceptance" in lower):
+        title = "Add functional requirement"
+        summary = "Append functional requirement from collaboration request"
+        existing = output.get("functional_requirements", [])
+        count = len(existing) if isinstance(existing, list) else 0
+        patch_ops.append(
+            {
+                "op": "add",
+                "path": "/functional_requirements/-",
+                "value": {
+                    "id": f"FR-{count + 1:03d}",
+                    "title": text[:96],
+                    "description": text,
+                    "acceptance_criteria": [],
+                    "source": "human_collaboration",
+                },
+            }
+        )
+    elif stage == 2 and ("constraint" in lower or "boundary" in lower or "option" in lower):
+        title = "Update architecture constraints"
+        summary = "Append architecture constraint/decision from collaboration"
+        patch_ops.append({"op": "add", "path": "/design_constraints/-", "value": text})
+    elif stage == 3 and ("implementation" in lower or "code" in lower or "library" in lower or "dependency" in lower):
+        title = "Add implementation directive"
+        summary = "Append implementation note for developer stage"
+        patch_ops.append({"op": "add", "path": "/implementation_notes/-", "value": text})
+    elif stage == 4 and ("migration" in lower or "schema" in lower or "sql" in lower):
+        title = "Add database change request"
+        summary = "Append database task from collaboration request"
+        patch_ops.append({"op": "add", "path": "/database_tasks/-", "value": text})
+    elif stage == 5 and ("security" in lower or "threat" in lower or "auth" in lower):
+        title = "Add security control request"
+        summary = "Append security control request from collaboration"
+        patch_ops.append({"op": "add", "path": "/security_controls/-", "value": text})
+    elif stage == 6 and ("test" in lower or "coverage" in lower or "scenario" in lower):
+        title = "Add testing scenario"
+        summary = "Append additional testing scenario request"
+        patch_ops.append({"op": "add", "path": "/additional_tests/-", "value": text})
+    elif stage == 7 and ("validation" in lower or "functional" in lower):
+        title = "Add validation note"
+        summary = "Append validation note from collaboration request"
+        patch_ops.append({"op": "add", "path": "/validation_notes/-", "value": text})
+    elif stage == 8 and ("deploy" in lower or "rollout" in lower or "rollback" in lower):
+        title = "Add deployment constraint"
+        summary = "Append deployment/rollout constraint"
+        patch_ops.append({"op": "add", "path": "/release_constraints/-", "value": text})
+    else:
+        patch_ops.append(
+            {
+                "op": "add",
+                "path": "/human_feedback/-",
+                "value": {
+                    "message": text,
+                    "stage": stage,
+                    "created_at": _utc_now(),
+                    "created_by": actor or "user",
+                },
+            }
+        )
+
+    return {
+        "id": _next_collab_id("prop"),
+        "stage": stage,
+        "agent_name": _stage_agent_name(stage),
+        "title": title,
+        "summary": summary,
+        "status": "pending",
+        "source": "chat",
+        "created_at": _utc_now(),
+        "created_by": actor or "user",
+        "confidence": 0.6,
+        "patch": patch_ops,
+    }
+
+
+def _stage_collaboration_view(state: dict[str, Any], stage: int) -> dict[str, Any]:
+    bucket = _stage_collaboration_bucket(state, stage, create=True)
+    bucket["evidence"] = _extract_stage_evidence(state, stage)
+    output = _stage_output_snapshot(state, stage)
+    _, result = _stage_latest_result(state, stage)
+    summary = str(result.get("summary", "")) if isinstance(result, dict) else ""
+    return {
+        "stage": stage,
+        "agent_name": _stage_agent_name(stage),
+        "output_summary": summary,
+        "output_keys": sorted([str(k) for k in output.keys()])[:40],
+        "chat": list(bucket.get("chat", []))[-STAGE_COLLAB_CHAT_LIMIT:],
+        "directives": list(bucket.get("directives", []))[-STAGE_COLLAB_DIRECTIVE_LIMIT:],
+        "proposals": list(bucket.get("proposals", []))[-STAGE_COLLAB_PROPOSAL_LIMIT:],
+        "decisions": list(bucket.get("decisions", []))[-STAGE_COLLAB_DECISION_LIMIT:],
+        "evidence": list(bucket.get("evidence", []))[:40],
+        "llm_chat": bucket.get("llm_chat", {}),
+        "updated_at": bucket.get("updated_at", _utc_now()),
+    }
+
+
+def _extract_titles(rows: Any, *, limit: int = 4) -> list[str]:
+    if not isinstance(rows, list):
+        return []
+    out: list[str] = []
+    for row in rows:
+        if isinstance(row, dict):
+            text = str(row.get("title") or row.get("name") or row.get("id") or "").strip()
+            if text:
+                out.append(text)
+        elif isinstance(row, str):
+            text = row.strip()
+            if text:
+                out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _legacy_ui_analysis_from_state(output: dict[str, Any], state: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _normalize(vb6: dict[str, Any], legacy_inventory: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(vb6, dict):
+            return {}
+        normalized = dict(vb6)
+        projects = normalized.get("projects", []) if isinstance(normalized.get("projects", []), list) else []
+        forms = normalized.get("forms", []) if isinstance(normalized.get("forms", []), list) else []
+        form_names: list[str] = [str(x).strip() for x in forms if str(x).strip()]
+        if isinstance(legacy_inventory, dict):
+            inventory_projects = legacy_inventory.get("vb6_projects", [])
+            if not projects and isinstance(inventory_projects, list):
+                projects = [row for row in inventory_projects if isinstance(row, dict)]
+                normalized["projects"] = projects
+            inventory_forms = legacy_inventory.get("forms", [])
+            if isinstance(inventory_forms, list):
+                for row in inventory_forms:
+                    if not isinstance(row, dict):
+                        continue
+                    form_type = str(row.get("form_type", "Form")).strip() or "Form"
+                    form_name = str(row.get("form_name", "")).strip()
+                    if not form_name:
+                        continue
+                    candidate = f"{form_type}:{form_name}"
+                    if candidate not in form_names:
+                        form_names.append(candidate)
+            inventory_rules = legacy_inventory.get("business_rules_catalog", [])
+            existing_rules = normalized.get("business_rules_catalog", [])
+            if (
+                isinstance(inventory_rules, list)
+                and inventory_rules
+                and (not isinstance(existing_rules, list) or not existing_rules)
+            ):
+                normalized["business_rules_catalog"] = inventory_rules
+
+        project_forms: list[str] = []
+        for row in projects:
+            if not isinstance(row, dict):
+                continue
+            for value in row.get("forms", []) if isinstance(row.get("forms", []), list) else []:
+                text = str(value).strip()
+                if text:
+                    project_forms.append(text)
+        for pf in project_forms:
+            if pf not in form_names:
+                form_names.append(pf)
+        normalized["forms"] = form_names[:200]
+        return normalized
+
+    legacy_inventory = output.get("legacy_code_inventory", {}) if isinstance(output.get("legacy_code_inventory", {}), dict) else {}
+    primary = output.get("vb6_analysis", {}) if isinstance(output.get("vb6_analysis", {}), dict) else {}
+    if primary:
+        return _normalize(primary, legacy_inventory)
+    pack = output.get("requirements_pack", {}) if isinstance(output.get("requirements_pack", {}), dict) else {}
+    nested = pack.get("vb6_analysis", {}) if isinstance(pack.get("vb6_analysis", {}), dict) else {}
+    if nested:
+        pack_inventory = (
+            pack.get("legacy_code_inventory", {})
+            if isinstance(pack.get("legacy_code_inventory", {}), dict)
+            else legacy_inventory
+        )
+        return _normalize(nested, pack_inventory)
+    if isinstance(state, dict):
+        integration_context = (
+            state.get("integration_context", {})
+            if isinstance(state.get("integration_context", {}), dict)
+            else {}
+        )
+        discover_cache = (
+            integration_context.get("discover_cache", {})
+            if isinstance(integration_context.get("discover_cache", {}), dict)
+            else {}
+        )
+        analyst_summary = (
+            discover_cache.get("analyst_summary", {})
+            if isinstance(discover_cache.get("analyst_summary", {}), dict)
+            else {}
+        )
+        cached = (
+            analyst_summary.get("vb6_analysis", {})
+            if isinstance(analyst_summary.get("vb6_analysis", {}), dict)
+            else {}
+        )
+        if cached:
+            return _normalize(cached, legacy_inventory)
+    return {}
+
+
+def _analyst_context_reply(message: str, output: dict[str, Any], state: dict[str, Any] | None = None) -> str | None:
+    lower = message.lower()
+    asks_count = bool(re.search(r"\b(how many|count|number of)\b", lower))
+    asks_list_detail = any(token in lower for token in ["list", "which", "show", "detail", "details", "name", "names"])
+    asks_project = any(token in lower for token in ["project", "projects", ".vbp", "vbp", "solution", "workspace"])
+    asks_for_io = any(token in lower for token in ["input", "output", "i/o", "io contract", "interface contract"])
+    asks_for_objective = any(
+        token in lower
+        for token in [
+            "objective",
+            "functionality",
+            "what does",
+            "what is this code",
+            "legacy code",
+            "summarize",
+            "summary",
+            "explain",
+        ]
+    )
+    asks_legacy_ui = any(
+        token in lower
+        for token in [
+            "form",
+            "forms",
+            "activex",
+            "active x",
+            "ocx",
+            "control",
+            "controls",
+            "event handler",
+            "vb6",
+            "usercontrol",
+            "mdi form",
+        ]
+    )
+    if not asks_for_objective and not asks_for_io and not asks_legacy_ui and not asks_project:
+        return None
+
+    vb6_analysis = _legacy_ui_analysis_from_state(output, state)
+    if asks_legacy_ui or asks_project:
+        forms = vb6_analysis.get("forms", []) if isinstance(vb6_analysis.get("forms", []), list) else []
+        controls = vb6_analysis.get("controls", []) if isinstance(vb6_analysis.get("controls", []), list) else []
+        activex = (
+            vb6_analysis.get("activex_dependencies", [])
+            if isinstance(vb6_analysis.get("activex_dependencies", []), list)
+            else []
+        )
+        handlers = vb6_analysis.get("event_handlers", []) if isinstance(vb6_analysis.get("event_handlers", []), list) else []
+        members = vb6_analysis.get("project_members", []) if isinstance(vb6_analysis.get("project_members", []), list) else []
+        projects = vb6_analysis.get("projects", []) if isinstance(vb6_analysis.get("projects", []), list) else []
+        if forms or controls or activex or handlers or projects:
+            if asks_count and not asks_list_detail:
+                metrics: list[str] = []
+                if asks_project:
+                    metrics.append(f"projects={len(projects)}")
+                if "form" in lower:
+                    metrics.append(f"forms={len(forms)}")
+                if "control" in lower:
+                    metrics.append(f"controls={len(controls)}")
+                if any(token in lower for token in ["activex", "active x", "ocx", "com"]):
+                    metrics.append(f"activex/com dependencies={len(activex)}")
+                if "event" in lower or "handler" in lower:
+                    metrics.append(f"event handlers={len(handlers)}")
+                if not metrics:
+                    metrics = [
+                        f"projects={len(projects)}",
+                        f"forms={len(forms)}",
+                        f"controls={len(controls)}",
+                        f"activex/com dependencies={len(activex)}",
+                        f"event handlers={len(handlers)}",
+                    ]
+                return "Legacy VB6 counts: " + ", ".join(metrics) + "."
+            lines = [
+                (
+                    "Legacy VB6 structure detected: "
+                    f"projects={len(projects)}, forms={len(forms)}, controls={len(controls)}, ActiveX/COM dependencies={len(activex)}, "
+                    f"event handlers={len(handlers)}."
+                )
+            ]
+            if projects:
+                lines.append(
+                    "Projects: "
+                    + "; ".join(
+                        [
+                            (
+                                f"{str(row.get('project_name', 'Project'))} "
+                                f"(members={int(row.get('member_count', 0) or 0)}, "
+                                f"forms={int(row.get('forms_count', len(row.get('forms', [])) if isinstance(row.get('forms', []), list) else 0) or 0)})"
+                                + (
+                                    f" objective={str(row.get('business_objective_hypothesis', '')).strip()}"
+                                    if str(row.get("business_objective_hypothesis", "")).strip()
+                                    else ""
+                                )
+                            )
+                            for row in projects[:8]
+                            if isinstance(row, dict)
+                        ]
+                    )
+                )
+            if forms:
+                lines.append("Forms/usercontrols: " + ", ".join([str(x) for x in forms[:12]]))
+            if activex:
+                lines.append("ActiveX/COM: " + ", ".join([str(x) for x in activex[:10]]))
+            if members:
+                lines.append("Project members: " + ", ".join([str(x) for x in members[:10]]))
+            return "\n".join(lines)
+        return (
+            "I do not have extracted VB6 form/control metadata in this stage artifact. "
+            "Run Discover analysis on the legacy repo/code first so I can answer exact form/ActiveX counts."
+        )
+
+    pack = output.get("requirements_pack", {}) if isinstance(output.get("requirements_pack", {}), dict) else {}
+    intake = output.get("intake", {}) if isinstance(output.get("intake", {}), dict) else {}
+    if not intake:
+        intake = pack.get("intake", {}) if isinstance(pack.get("intake", {}), dict) else {}
+    requirements = output.get("requirements", {}) if isinstance(output.get("requirements", {}), dict) else {}
+    if not requirements:
+        requirements = pack.get("requirements", {}) if isinstance(pack.get("requirements", {}), dict) else {}
+    domain_mapping = output.get("domain_mapping", {}) if isinstance(output.get("domain_mapping", {}), dict) else {}
+    if not domain_mapping:
+        domain_mapping = pack.get("domain_mapping", {}) if isinstance(pack.get("domain_mapping", {}), dict) else {}
+
+    objective = (
+        str(intake.get("business_objective_summary", "")).strip()
+        or str(pack.get("business_objective_summary", "")).strip()
+        or str(output.get("business_objective_summary", "")).strip()
+        or str(output.get("executive_summary", "")).strip()
+        or str(pack.get("executive_summary", "")).strip()
+        or str(output.get("summary", "")).strip()
+        or str(output.get("objective", "")).strip()
+    )
+    functional = requirements.get("functional", []) if isinstance(requirements.get("functional", []), list) else []
+    if not functional:
+        functional = output.get("functional_requirements", []) if isinstance(output.get("functional_requirements", []), list) else []
+
+    capabilities = domain_mapping.get("capabilities", []) if isinstance(domain_mapping.get("capabilities", []), list) else []
+    if not capabilities:
+        capabilities = domain_mapping.get("capability_mapping", []) if isinstance(domain_mapping.get("capability_mapping", []), list) else []
+
+    open_questions = output.get("open_questions", []) if isinstance(output.get("open_questions", []), list) else []
+    if not open_questions:
+        open_questions = pack.get("open_questions", []) if isinstance(pack.get("open_questions", []), list) else []
+    function_titles = _extract_titles(functional, limit=4)
+    capability_titles = _extract_titles(capabilities, limit=3)
+    legacy_contract = (
+        output.get("legacy_functional_contract", [])
+        if isinstance(output.get("legacy_functional_contract", []), list)
+        else []
+    )
+    legacy_inventory = output.get("legacy_code_inventory", {}) if isinstance(output.get("legacy_code_inventory", {}), dict) else {}
+    if not legacy_inventory and isinstance(pack.get("legacy_code_inventory", {}), dict):
+        legacy_inventory = pack.get("legacy_code_inventory", {})
+    legacy_skill = output.get("legacy_skill_profile", {}) if isinstance(output.get("legacy_skill_profile", {}), dict) else {}
+    if not legacy_skill and isinstance(pack.get("legacy_skill_profile", {}), dict):
+        legacy_skill = pack.get("legacy_skill_profile", {})
+    inventory_forms = legacy_inventory.get("forms", []) if isinstance(legacy_inventory.get("forms", []), list) else []
+    inventory_projects = legacy_inventory.get("vb6_projects", []) if isinstance(legacy_inventory.get("vb6_projects", []), list) else []
+    inventory_activex = legacy_inventory.get("activex_controls", []) if isinstance(legacy_inventory.get("activex_controls", []), list) else []
+    inventory_dll = legacy_inventory.get("dll_dependencies", []) if isinstance(legacy_inventory.get("dll_dependencies", []), list) else []
+    inventory_ocx = legacy_inventory.get("ocx_dependencies", []) if isinstance(legacy_inventory.get("ocx_dependencies", []), list) else []
+    if not objective and function_titles:
+        objective = (
+            "Legacy system objective appears to be managing: "
+            + ", ".join(function_titles[:3]).lower()
+            + "."
+        )
+
+    if asks_for_io:
+        io_lines: list[str] = []
+        io_lines.append("Legacy input/output contract (from Analyst artifact):")
+        for row in legacy_contract[:5]:
+            if not isinstance(row, dict):
+                continue
+            fname = str(row.get("function_name", "")).strip() or "Unnamed function"
+            ins = row.get("inputs", [])
+            outs = row.get("outputs", [])
+            in_text = ", ".join([str(x).strip() for x in ins if str(x).strip()]) if isinstance(ins, list) else ""
+            out_text = ", ".join([str(x).strip() for x in outs if str(x).strip()]) if isinstance(outs, list) else ""
+            io_lines.append(
+                f"- {fname}: inputs=({in_text or 'none explicit'}), outputs=({out_text or 'none explicit'})"
+            )
+        if len(io_lines) > 1:
+            io_lines.append("Ask 'expand function <name>' if you want a deeper behavior breakdown.")
+            return "\n".join(io_lines)
+
+    if not any([objective, function_titles, capability_titles, open_questions]):
+        return "I do not have a completed Analyst artifact yet for this run. Run or rerun Stage 1 first, then I can summarize the legacy code objective and behavior."
+
+    lines: list[str] = []
+    lines.append("Analyst understanding:")
+    if objective:
+        lines.append(f"- Objective: {objective}")
+    if function_titles:
+        lines.append(f"- Core functional areas: {', '.join(function_titles)}")
+    if legacy_skill:
+        lines.append(
+            "- Legacy skill in use: "
+            f"{str(legacy_skill.get('selected_skill_name', 'Generic Legacy Skill'))} "
+            f"({str(legacy_skill.get('selected_skill_id', 'generic_legacy'))}, "
+            f"confidence={legacy_skill.get('confidence', 'n/a')})"
+        )
+    if inventory_forms or inventory_activex:
+        lines.append(
+            "- Legacy UI/component footprint: "
+            f"projects={len(inventory_projects)}, forms={len(inventory_forms)}, ActiveX/COM={len(inventory_activex)}, "
+            f"DLL={len(inventory_dll)}, OCX={len(inventory_ocx)}"
+        )
+        if inventory_forms:
+            form_names: list[str] = []
+            for row in inventory_forms[:8]:
+                if isinstance(row, dict):
+                    name = str(row.get("form_name", "")).strip()
+                    ftype = str(row.get("form_type", "")).strip()
+                    label = f"{ftype} {name}".strip()
+                    if label:
+                        form_names.append(label)
+            if form_names:
+                lines.append(f"- Forms detected: {', '.join(form_names)}")
+    if capability_titles:
+        lines.append(f"- Domain mapping: {', '.join(capability_titles)}")
+    if isinstance(open_questions, list) and open_questions:
+        lines.append(f"- Open questions to resolve: {len(open_questions)}")
+    if "?" not in message and not asks_count:
+        lines.append("Ask follow-ups like 'explain inputs/outputs' or 'list acceptance criteria' for a deeper breakdown.")
+    return "\n".join(lines)
+
+
+def _objective_question(message: str) -> bool:
+    lower = str(message or "").lower()
+    return any(
+        token in lower
+        for token in [
+            "business objective",
+            "objective",
+            "legacy code",
+            "legacy app",
+            "what does",
+            "what is this code",
+            "functionality",
+            "purpose",
+            "summarize",
+            "summary",
+        ]
+    )
+
+
+def _is_simple_analyst_count_question(message: str) -> bool:
+    lower = str(message or "").strip().lower()
+    if not lower:
+        return False
+    has_count = bool(re.search(r"\b(how many|count|number of)\b", lower))
+    has_vb6_topic = any(
+        token in lower
+        for token in ["project", "projects", "form", "forms", "control", "controls", "activex", "active x", "ocx", "event handler"]
+    )
+    return has_count and has_vb6_topic and len(lower.split()) <= 20
+
+
+def _cross_stage_objective_reply(stage: int, message: str, state: dict[str, Any]) -> str | None:
+    if not _objective_question(message):
+        return None
+    analyst_output = _stage_output_snapshot(state, 1)
+    if not analyst_output:
+        discover_cache = (
+            state.get("integration_context", {}).get("discover_cache", {})
+            if isinstance(state.get("integration_context", {}), dict)
+            and isinstance(state.get("integration_context", {}).get("discover_cache", {}), dict)
+            else {}
+        )
+        summary = (
+            discover_cache.get("analyst_summary", {})
+            if isinstance(discover_cache.get("analyst_summary", {}), dict)
+            else {}
+        )
+        overview = str(summary.get("overview", "")).strip()
+        capabilities = summary.get("likely_capabilities", []) if isinstance(summary.get("likely_capabilities", []), list) else []
+        if overview or capabilities:
+            lines = ["Legacy objective summary (Discover baseline):"]
+            if overview:
+                lines.append(f"- Objective/context: {overview}")
+            if capabilities:
+                lines.append(f"- Functional areas: {', '.join([str(x) for x in capabilities[:4] if str(x).strip()])}")
+            if stage == 2:
+                lines.append("Architecture decisions should preserve these behaviors while modernizing interfaces and deployment.")
+            return "\n".join(lines)
+        return None
+
+    analyst_text = _analyst_context_reply(message, analyst_output, state)
+    if not analyst_text:
+        return None
+    if stage == 2:
+        return analyst_text + "\nArchitecture stage should treat this as the modernization objective baseline."
+    return analyst_text
+
+
+def _generic_stage_reply(stage: int, output: dict[str, Any], summary: str) -> str | None:
+    if not output and not summary:
+        return None
+    keys = sorted([str(k) for k in output.keys()])[:8]
+    parts: list[str] = []
+    if summary:
+        parts.append(f"Latest stage summary: {summary}")
+    if keys:
+        parts.append(f"Available output fields: {', '.join(keys)}")
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
+def _stage_memory_scope(run_id: str, state: dict[str, Any], stage: int) -> dict[str, Any]:
+    integration_context = (
+        state.get("integration_context", {})
+        if isinstance(state.get("integration_context", {}), dict)
+        else {}
+    )
+    brownfield = (
+        integration_context.get("brownfield", {})
+        if isinstance(integration_context.get("brownfield", {}), dict)
+        else {}
+    )
+    greenfield = (
+        integration_context.get("greenfield", {})
+        if isinstance(integration_context.get("greenfield", {}), dict)
+        else {}
+    )
+    seed = str(
+        brownfield.get("repo_url")
+        or greenfield.get("repo_target")
+        or state.get("repo_url")
+        or f"run-{run_id}"
+    ).strip().lower()
+    project_id = re.sub(r"[^a-z0-9]+", "-", seed).strip("-")[:80] or f"run-{run_id}"
+    workspace_id = str(state.get("workspace_id", "default-workspace")).strip() or "default-workspace"
+    client_id = str(state.get("client_id", "default-client")).strip() or "default-client"
+    return {
+        "workspace_id": workspace_id,
+        "client_id": client_id,
+        "project_id": project_id,
+        "stage": stage,
+    }
+
+
+def _stage_thread_id(run_id: str, state: dict[str, Any], bucket: dict[str, Any], stage: int) -> str:
+    bucket_tid = str(bucket.get("thread_id", "")).strip()
+    map_rows = state.get("stage_thread_ids", {})
+    mapped_tid = ""
+    if isinstance(map_rows, dict):
+        mapped_tid = str(map_rows.get(str(stage), "")).strip()
+    if stage == 1:
+        preferred = str(state.get("analyst_aas_thread_id", "")).strip()
+    else:
+        preferred = ""
+    thread_id = bucket_tid or mapped_tid or preferred or f"run-{run_id}-stage{stage}"
+    if not isinstance(map_rows, dict):
+        map_rows = {}
+    map_rows[str(stage)] = thread_id
+    state["stage_thread_ids"] = map_rows
+    bucket["thread_id"] = thread_id
+    return thread_id
+
+
+def _architect_context_reply(message: str, output: dict[str, Any], state: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    asks_diagram = any(tok in lower for tok in ["diagram", "c4", "mermaid", "topology", "architecture"])
+    asks_impact = any(tok in lower for tok in ["impact", "scope", "blast", "dependency", "dependencies"])
+    if not asks_diagram and not asks_impact:
+        return None
+    pattern = str(output.get("pattern", "")).strip()
+    overview = str(output.get("overview", "")).strip()
+    current_diagram = (
+        str(output.get("current_system_diagram_mermaid", "")).strip()
+        or str(output.get("legacy_system_diagram_mermaid", "")).strip()
+    )
+    target_diagram = (
+        str(output.get("target_system_diagram_mermaid", "")).strip()
+        or str(output.get("target_architecture_diagram_mermaid", "")).strip()
+        or str(output.get("architecture_diagram_mermaid", "")).strip()
+    )
+    scm = state.get("system_context_model", {}) if isinstance(state.get("system_context_model", {}), dict) else {}
+    graph = scm.get("graph", {}) if isinstance(scm.get("graph", {}), dict) else {}
+    nodes = graph.get("nodes", []) if isinstance(graph.get("nodes", []), list) else []
+    edges = graph.get("edges", []) if isinstance(graph.get("edges", []), list) else []
+    lines: list[str] = []
+    if pattern:
+        lines.append(f"Architecture pattern: {pattern}.")
+    if overview:
+        lines.append(f"Overview: {overview}")
+    if asks_diagram:
+        lines.append(
+            "Diagram availability: "
+            f"legacy/current={'yes' if current_diagram else 'no'}, target={'yes' if target_diagram else 'no'}."
+        )
+    if asks_impact:
+        lines.append(f"Context topology baseline: nodes={len(nodes)}, edges={len(edges)}.")
+    return " ".join(lines) if lines else None
+
+
+def _developer_context_reply(message: str, output: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    asks_code = any(tok in lower for tok in ["code", "file", "loc", "implementation", "artifact", "where"])
+    if not asks_code:
+        return None
+    implementations = output.get("implementations", []) if isinstance(output.get("implementations", []), list) else []
+    artifact_root = str(output.get("artifact_root", "")).strip()
+    total_loc = int(output.get("total_loc", 0) or 0)
+    total_files = int(output.get("total_files", 0) or 0)
+    total_components = int(output.get("total_components", 0) or 0)
+    top = []
+    for row in implementations[:4]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("component_name", "")).strip() or "component"
+        lang = str(row.get("language", "")).strip() or "unknown"
+        top.append(f"{name} ({lang})")
+    lines = [
+        f"Developer artifact summary: components={total_components}, files={total_files}, total_loc={total_loc}.",
+    ]
+    if artifact_root:
+        lines.append(f"Primary artifact root: {artifact_root}")
+    if top:
+        lines.append(f"Top generated components: {', '.join(top)}.")
+    return " ".join(lines)
+
+
+def _database_context_reply(message: str, output: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    if not any(tok in lower for tok in ["database", "schema", "migration", "script", "sql"]):
+        return None
+    source = str(output.get("source_engine", "")).strip()
+    target = str(output.get("target_engine", "")).strip()
+    scripts = output.get("generated_scripts", []) if isinstance(output.get("generated_scripts", []), list) else []
+    summary = str(output.get("migration_summary", "")).strip()
+    lines = [
+        f"Database conversion summary: source={source or 'n/a'}, target={target or 'n/a'}, scripts={len(scripts)}.",
+    ]
+    if summary:
+        lines.append(summary)
+    return " ".join(lines)
+
+
+def _security_context_reply(message: str, output: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    if not any(tok in lower for tok in ["security", "threat", "control", "risk", "auth", "vuln", "vulnerability"]):
+        return None
+    threats = output.get("threat_model", []) if isinstance(output.get("threat_model", []), list) else []
+    controls = output.get("required_controls", []) if isinstance(output.get("required_controls", []), list) else []
+    release = output.get("release_recommendation", {}) if isinstance(output.get("release_recommendation", {}), dict) else {}
+    status = str(release.get("status", "conditional")).strip().upper() or "CONDITIONAL"
+    summary = str(output.get("security_summary", "")).strip()
+    lines = [f"Security posture: release recommendation={status}, threats={len(threats)}, controls={len(controls)}."]
+    if summary:
+        lines.append(summary)
+    return " ".join(lines)
+
+
+def _tester_context_reply(message: str, output: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    asks_test = any(tok in lower for tok in ["test", "failure", "failed", "pass", "quality gate", "coverage", "qa"])
+    if not asks_test:
+        return None
+    overall = output.get("overall_results", {}) if isinstance(output.get("overall_results", {}), dict) else {}
+    failed = output.get("failed_checks", []) if isinstance(output.get("failed_checks", []), list) else []
+    warnings = int(overall.get("warnings", 0) or 0)
+    passed = int(overall.get("passed", 0) or 0)
+    total = int(overall.get("total_tests", 0) or 0)
+    gate = str(overall.get("quality_gate", "unknown")).strip().upper()
+    lines = [f"QA results: quality_gate={gate}, passed={passed}/{total}, failed={len(failed)}, warnings={warnings}."]
+    top_failures = []
+    for row in failed[:3]:
+        if isinstance(row, dict):
+            name = str(row.get("name", "")).strip() or "check"
+            cause = str(row.get("root_cause", "")).strip()
+            top_failures.append(f"{name}{(': ' + cause) if cause else ''}")
+    if top_failures:
+        lines.append(f"Top failures: {' | '.join(top_failures)}.")
+    return " ".join(lines)
+
+
+def _validation_context_reply(message: str, output: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    if not any(tok in lower for tok in ["validation", "functional", "coverage", "criteria", "acceptance"]):
+        return None
+    verdict = output.get("overall_verdict", {}) if isinstance(output.get("overall_verdict", {}), dict) else {}
+    status = str(verdict.get("status", "unknown")).strip().upper()
+    functional = verdict.get("functional_coverage_percent", 0)
+    nfr = verdict.get("nfr_compliance_percent", 0)
+    summary = str(output.get("validation_summary", "")).strip()
+    lines = [f"Validation verdict={status}, functional_coverage={functional}%, nfr_compliance={nfr}%."]
+    if summary:
+        lines.append(summary)
+    return " ".join(lines)
+
+
+def _deployment_context_reply(message: str, output: dict[str, Any]) -> str | None:
+    lower = message.lower()
+    if not any(tok in lower for tok in ["deploy", "deployment", "release", "rollback", "health", "url", "container"]):
+        return None
+    result = output.get("deployment_result", {}) if isinstance(output.get("deployment_result", {}), dict) else {}
+    target = str(output.get("deployment_target", "")).strip() or "local"
+    status = str(result.get("status", "unknown")).strip().upper()
+    url = str(result.get("url", "")).strip()
+    lines = [f"Deployment status: target={target}, result={status}."]
+    if url:
+        lines.append(f"Endpoint: {url}")
+    return " ".join(lines)
+
+
+def _stage_context_reply(stage: int, message: str, output: dict[str, Any], state: dict[str, Any]) -> str | None:
+    cross_stage = _cross_stage_objective_reply(stage, message, state)
+    if cross_stage:
+        return cross_stage
+    if stage == 1:
+        return _analyst_context_reply(message, output, state)
+    if stage == 2:
+        return _architect_context_reply(message, output, state)
+    if stage == 3:
+        return _developer_context_reply(message, output)
+    if stage == 4:
+        return _database_context_reply(message, output)
+    if stage == 5:
+        return _security_context_reply(message, output)
+    if stage == 6:
+        return _tester_context_reply(message, output)
+    if stage == 7:
+        return _validation_context_reply(message, output)
+    if stage == 8:
+        return _deployment_context_reply(message, output)
+    return None
+
+
+def _stage_agent_role(stage: int) -> str:
+    return {
+        1: "analyst",
+        2: "architect",
+        3: "developer",
+        4: "database_engineer",
+        5: "security_engineer",
+        6: "tester",
+        7: "analyst_validation",
+        8: "deployment",
+    }.get(stage, f"stage_{stage}")
+
+
+def _prompt_payload_format() -> str:
+    return str(os.getenv("SYNTHETIX_PROMPT_PAYLOAD_FORMAT", "TOON")).strip().upper()
+
+
+def _toon_key(key: Any) -> str:
+    raw = str(key or "").strip()
+    if not raw:
+        return "key"
+    cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", raw).strip("_")
+    return cleaned or "key"
+
+
+def _toon_atom(value: Any, max_str: int = 220) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value or "").replace("\n", "\\n")
+    if len(text) > max_str:
+        text = text[:max_str] + "...[t]"
+    if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,64}", text):
+        return text
+    return json.dumps(text, ensure_ascii=True)
+
+
+def _toon_compact(value: Any, max_chars: int = 3200, max_items: int = 8) -> str:
+    lines: list[str] = []
+
+    def emit(obj: Any, depth: int, key: str | None = None):
+        if len("\n".join(lines)) >= max_chars:
+            return
+        indent = "  " * depth
+        kprefix = _toon_key(key) if key else ""
+        if isinstance(obj, dict):
+            if kprefix:
+                lines.append(f"{indent}{kprefix}:")
+                indent = "  " * (depth + 1)
+            rows = list(obj.items())
+            for k, v in rows[:max_items]:
+                emit(v, depth + (1 if kprefix else 0), str(k))
+                if len("\n".join(lines)) >= max_chars:
+                    return
+            if len(rows) > max_items:
+                lines.append(f"{indent}_truncated_keys={len(rows) - max_items}")
+            return
+        if isinstance(obj, list):
+            if kprefix:
+                lines.append(f"{indent}{kprefix}:")
+                indent = "  " * (depth + 1)
+            rows = obj[:max_items]
+            for item in rows:
+                if isinstance(item, dict):
+                    pair_bits: list[str] = []
+                    for ik, iv in list(item.items())[:5]:
+                        if isinstance(iv, (dict, list, tuple)):
+                            pair_bits.append(f"{_toon_key(ik)}=<nested>")
+                        else:
+                            pair_bits.append(f"{_toon_key(ik)}={_toon_atom(iv)}")
+                    lines.append(f"{indent}- " + "; ".join(pair_bits))
+                elif isinstance(item, list):
+                    scalar = [x for x in item[:6] if not isinstance(x, (dict, list, tuple))]
+                    joined = ",".join(_toon_atom(x, max_str=80) for x in scalar)
+                    lines.append(f"{indent}- [{joined}]")
+                else:
+                    lines.append(f"{indent}- {_toon_atom(item)}")
+                if len("\n".join(lines)) >= max_chars:
+                    return
+            if len(obj) > max_items:
+                lines.append(f"{indent}_truncated_items={len(obj) - max_items}")
+            return
+        if kprefix:
+            lines.append(f"{indent}{kprefix}={_toon_atom(obj)}")
+        else:
+            lines.append(f"{indent}{_toon_atom(obj)}")
+
+    emit(value, 0, None)
+    text = "\n".join(lines).strip() or "<empty>"
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + " ...[truncated]"
+
+
+def _json_compact(value: Any, max_chars: int = 3200) -> str:
+    if _prompt_payload_format() == "JSON":
+        try:
+            text = json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
+        except Exception:
+            text = str(value)
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + " ...[truncated]"
+    return _toon_compact(value, max_chars=max_chars)
+
+
+def _resolve_stage_chat_llm_options(llm_options: dict[str, Any] | None) -> dict[str, Any]:
+    options = llm_options if isinstance(llm_options, dict) else {}
+    enabled = options.get("enabled", True)
+    provider = str(options.get("provider", "")).strip().lower()
+    model = str(options.get("model", "")).strip()
+    temperature_raw = options.get("temperature", 0.2)
+    try:
+        temperature = float(temperature_raw)
+    except (TypeError, ValueError):
+        temperature = 0.2
+    if temperature < 0:
+        temperature = 0.0
+    if temperature > 1:
+        temperature = 1.0
+    return {
+        "enabled": bool(enabled),
+        "provider": provider,
+        "model": model,
+        "temperature": temperature,
+    }
+
+
+def _stage_chat_system_prompt(stage: int, state: dict[str, Any]) -> str:
+    persona_row = (
+        state.get("agent_personas", {}).get(str(stage), {})
+        if isinstance(state.get("agent_personas", {}), dict)
+        else {}
+    )
+    persona_name = str(persona_row.get("display_name", "")).strip() or _stage_agent_name(stage)
+    persona_text = str(persona_row.get("persona", "")).strip()
+    stage_goal = {
+        2: "Design architecture options, dependency impact, and boundary-safe decisions.",
+        3: "Explain implementation scope, generated components/files, and remediation plan.",
+        6: "Explain test outcomes, failures, quality gate implications, and concrete fixes.",
+    }.get(stage, "Explain stage output and next concrete actions.")
+    base = [
+        f"You are the {persona_name}.",
+        "Respond with concise, practical engineering guidance tied to the current stage artifact.",
+        "Do not invent missing facts; explicitly say when artifact data is absent.",
+        "Use plain text, no markdown tables, and keep output under 220 words.",
+        stage_goal,
+    ]
+    if persona_text:
+        base.append("Persona directives:")
+        base.append(persona_text[:1200])
+    return "\n".join(base)
+
+
+def _maybe_llm_stage_chat_response(
+    *,
+    run_id: str,
+    stage: int,
+    message: str,
+    state: dict[str, Any],
+    summary: str,
+    contextual: str,
+    constraints: list[dict[str, Any]],
+    prior: list[dict[str, Any]],
+    llm_options: dict[str, Any] | None,
+) -> tuple[str | None, dict[str, Any]]:
+    meta: dict[str, Any] = {
+        "used": False,
+        "provider": "",
+        "model": "",
+        "reason": "",
+    }
+    if stage not in STAGE_CHAT_LLM_STAGES:
+        meta["reason"] = "stage_not_enabled"
+        return None, meta
+
+    opts = _resolve_stage_chat_llm_options(llm_options)
+    if not opts.get("enabled", True):
+        meta["reason"] = "disabled"
+        return None, meta
+
+    provider = str(opts.get("provider", "")).strip().lower()
+    requested_model = str(opts.get("model", "")).strip()
+    if provider not in {"anthropic", "openai"}:
+        provider = str(
+            SETTINGS_STORE.get_settings().get("llm", {}).get("default_provider", "anthropic")
+        ).strip().lower()
+    if provider not in {"anthropic", "openai"}:
+        provider = "anthropic"
+
+    try:
+        creds = SETTINGS_STORE.resolve_llm_credentials(provider, requested_model=requested_model)
+    except Exception as exc:
+        meta["reason"] = f"credential_resolution_failed:{exc}"
+        return None, meta
+
+    api_key = str(creds.get("api_key", "")).strip()
+    if not api_key:
+        meta["reason"] = "no_api_key"
+        return None, meta
+    model = str(creds.get("model", "")).strip() or ("gpt-4o" if provider == "openai" else "claude-sonnet-4-20250514")
+
+    cfg = PipelineConfig(
+        provider=LLMProvider.OPENAI if provider == "openai" else LLMProvider.ANTHROPIC,
+        anthropic_api_key=api_key if provider == "anthropic" else "",
+        openai_api_key=api_key if provider == "openai" else "",
+        anthropic_model=model if provider == "anthropic" else "claude-sonnet-4-20250514",
+        openai_model=model if provider == "openai" else "gpt-4o",
+        temperature=float(opts.get("temperature", 0.2) or 0.2),
+        max_output_tokens=1200,
+    )
+    client = LLMClient(cfg)
+
+    output = _stage_output_snapshot(state, stage)
+    constraints_text = "; ".join(
+        [
+            f"{str(row.get('priority', 'medium')).upper()} {str(row.get('text', '')).strip()[:140]}"
+            for row in constraints[:4]
+            if isinstance(row, dict) and str(row.get("text", "")).strip()
+        ]
+    ) or "none"
+    thread_lines: list[str] = []
+    for row in prior[-8:]:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role", "")).strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        msg = str(row.get("message", "")).strip()
+        if not msg:
+            continue
+        thread_lines.append(f"{role}: {msg[:180]}")
+    thread_text = "\n".join(thread_lines) if thread_lines else "none"
+
+    system_prompt = _stage_chat_system_prompt(stage, state)
+    user_prompt = (
+        f"Run ID: {run_id}\n"
+        f"Stage: {stage} ({_stage_agent_name(stage)})\n"
+        f"Latest stage summary: {summary or 'none'}\n"
+        f"Deterministic context draft: {contextual}\n"
+        f"Stored constraints: {constraints_text}\n"
+        f"Recent thread:\n{thread_text}\n"
+        f"Stage artifact snapshot ({_prompt_payload_format()}): {_json_compact(output, max_chars=3600)}\n"
+        f"User message: {message}\n"
+        "Respond directly to the user request with concrete guidance and next actions."
+    )
+
+    try:
+        response = client.invoke(system_prompt=system_prompt, user_message=user_prompt)
+    except Exception as exc:
+        meta["reason"] = f"llm_invoke_failed:{exc}"
+        return None, meta
+
+    content = str(response.content or "").strip()
+    if not content:
+        meta["reason"] = "empty_response"
+        return None, meta
+    meta["used"] = True
+    meta["provider"] = str(response.provider or provider)
+    meta["model"] = str(response.model or model)
+    meta["reason"] = "ok"
+    return content[:4000], meta
+
+
+def _build_stage_memory_response(
+    *,
+    run_id: str,
+    stage: int,
+    message: str,
+    state: dict[str, Any],
+    bucket: dict[str, Any],
+    directive_created: dict[str, Any] | None,
+    proposal_created: dict[str, Any] | None,
+    llm_options: dict[str, Any] | None = None,
+) -> str:
+    scope = _stage_memory_scope(run_id, state, stage)
+    thread_id = _stage_thread_id(run_id, state, bucket, stage)
+    role = _stage_agent_role(stage)
+    output = _stage_output_snapshot(state, stage)
+    _, result = _stage_latest_result(state, stage)
+    summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
+    prior = TENANT_MEMORY_STORE.get_thread(scope, thread_id=thread_id, limit=12)
+    constraints = TENANT_MEMORY_STORE.search_constraints(scope, message, limit=6)
+
+    TENANT_MEMORY_STORE.append_thread_message(
+        scope,
+        thread_id=thread_id,
+        agent_role=role,
+        role="user",
+        message=message,
+        metadata={"stage": stage, "run_id": run_id, "source": "stage_chat"},
+    )
+
+    contextual = _stage_context_reply(stage, message, output, state)
+    if not contextual:
+        contextual = _generic_stage_reply(stage, output, summary)
+    if not contextual:
+        contextual = "No completed artifact exists yet for this stage. Run or rerun this stage, then ask again for a detailed breakdown."
+
+    if stage == 1 and _is_simple_analyst_count_question(message):
+        concise = f"{_stage_agent_name(stage)} response: {contextual}"
+        if directive_created:
+            concise += " Saved as a persistent directive for downstream stages."
+        if proposal_created:
+            concise += " Created a proposed artifact change for review."
+        TENANT_MEMORY_STORE.append_thread_message(
+            scope,
+            thread_id=thread_id,
+            agent_role=role,
+            role="assistant",
+            message=concise,
+            metadata={"stage": stage, "run_id": run_id, "source": "stage_chat"},
+        )
+        bucket["llm_chat"] = {"used": False, "provider": "", "model": "", "reason": "simple_count_shortcut"}
+        return concise
+
+    lines = [f"{_stage_agent_name(stage)} response:", contextual]
+    if constraints:
+        constraint_lines = [
+            f"{str(c.get('priority', 'medium')).upper()} {str(c.get('text', '')).strip()[:120]}"
+            for c in constraints[:3]
+            if isinstance(c, dict) and str(c.get("text", "")).strip()
+        ]
+        if constraint_lines:
+            lines.append("Relevant stored constraints: " + "; ".join(constraint_lines) + ".")
+    if prior:
+        previous_user = [
+            str(row.get("message", "")).strip()
+            for row in prior
+            if isinstance(row, dict) and str(row.get("role", "")).strip().lower() == "user"
+        ]
+        if previous_user:
+            lines.append(f"Thread memory: I retained {len(prior)} recent messages for this stage thread.")
+            lines.append(f"Previous user topic: {previous_user[-1][:140]}")
+    if directive_created:
+        lines.append("Saved as a persistent directive for downstream stages.")
+    if proposal_created:
+        lines.append("Created a proposed artifact change. Review it in Proposed Changes and approve to apply.")
+
+    hint_map = {
+        2: "Ask for architecture option tradeoffs, boundary impacts, or diagram interpretation.",
+        3: "Ask for file-level implementation scope, component split, or code artifact location.",
+        4: "Ask for migration script details, schema impact, or rollback steps.",
+        5: "Ask for threat rationale, control mapping, or security gate implications.",
+        6: "Ask for failed-test root cause, rerun strategy, or missing test additions.",
+        7: "Ask for requirement-to-validation coverage or unmet acceptance criteria.",
+        8: "Ask for deployment plan, health checks, rollback, or runtime verification.",
+    }
+    lines.append(hint_map.get(stage, "Ask follow-up questions to refine this stage artifact."))
+    deterministic_message = " ".join([line for line in lines if line]).strip()
+    llm_message, llm_meta = _maybe_llm_stage_chat_response(
+        run_id=run_id,
+        stage=stage,
+        message=message,
+        state=state,
+        summary=summary,
+        contextual=contextual,
+        constraints=constraints,
+        prior=prior,
+        llm_options=llm_options,
+    )
+    if llm_message:
+        assistant_message = llm_message
+        if directive_created:
+            assistant_message += " Saved as a persistent directive for downstream stages."
+        if proposal_created:
+            assistant_message += " Created a proposed artifact change for review."
+    else:
+        assistant_message = deterministic_message
+    bucket["llm_chat"] = llm_meta
+
+    TENANT_MEMORY_STORE.append_thread_message(
+        scope,
+        thread_id=thread_id,
+        agent_role=role,
+        role="assistant",
+        message=assistant_message,
+        metadata={"stage": stage, "run_id": run_id, "source": "stage_chat"},
+    )
+    return assistant_message
+
+
+def _assistant_response_for_stage(
+    stage: int,
+    message: str,
+    state: dict[str, Any],
+    directive_saved: bool,
+    proposal_created: bool,
+) -> str:
+    hints = {
+        1: "Analyst updates will feed the requirements pack and downstream traceability.",
+        2: "Architect updates should preserve SCM boundaries unless explicitly approved.",
+        3: "Developer updates should align with convention profile and existing repo patterns.",
+        4: "Database updates should include migration safety and rollback considerations.",
+        5: "Security updates should map to controls and verification gates.",
+        6: "Tester updates should map scenarios to executable checks.",
+        7: "Validation updates should map directly to acceptance criteria.",
+        8: "Deployment updates should include rollout, health checks, and rollback conditions.",
+    }
+    output = _stage_output_snapshot(state, stage)
+    _, result = _stage_latest_result(state, stage)
+    summary = str(result.get("summary", "")) if isinstance(result, dict) else ""
+
+    contextual: str | None = None
+    if stage == 1:
+        contextual = _analyst_context_reply(message, output, state)
+    if not contextual:
+        contextual = _generic_stage_reply(stage, output, summary)
+
+    response = [f"{_stage_agent_name(stage)} received your request."]
+    if contextual:
+        response.append(contextual)
+    if directive_saved:
+        response.append("Saved as a persistent directive for downstream stages.")
+    if proposal_created:
+        response.append("Created a proposed artifact change. Review it in Proposed Changes and approve to apply.")
+    response.append(hints.get(stage, "Review evidence and decisions before proceeding to the next stage."))
+    if not directive_saved and not proposal_created:
+        response.append("No structured change was created from this message.")
+    response.append(f"Latest request: {message[:220]}")
+    return " ".join(response)
+
+
+def _load_mutable_run(run_id: str) -> tuple[RunRecord | None, dict[str, Any] | None, dict[int, str], list[str], str, str]:
+    active = MANAGER._get_record(run_id)
+    if active and isinstance(active.pipeline_state, dict):
+        return (
+            active,
+            active.pipeline_state,
+            active.stage_status,
+            active.progress_logs,
+            active.status,
+            active.error_message or "",
+        )
+
+    persisted = RUN_STORE.load_run(run_id)
+    if not persisted:
+        return None, None, {}, [], "", ""
+    pipeline_state = persisted.get("pipeline_state", {})
+    if not isinstance(pipeline_state, dict):
+        pipeline_state = {}
+    raw_stage_status = persisted.get("stage_status", {})
+    stage_status = {
+        int(k): str(v) for k, v in raw_stage_status.items() if str(k).isdigit()
+    } if isinstance(raw_stage_status, dict) else {}
+    progress_logs = list(persisted.get("progress_logs", [])) if isinstance(persisted.get("progress_logs", []), list) else []
+    status = str(persisted.get("pipeline_status", "completed"))
+    error_message = str(persisted.get("error_message", "") or "")
+    return None, pipeline_state, stage_status, progress_logs, status, error_message
+
+
+def _commit_mutable_run(
+    run_id: str,
+    active: RunRecord | None,
+    pipeline_state: dict[str, Any],
+    stage_status: dict[int, str],
+    progress_logs: list[str],
+    status: str,
+    error_message: str,
+) -> dict[str, Any] | None:
+    if active:
+        active.pipeline_state = pipeline_state
+        active.stage_status = stage_status
+        active.progress_logs = progress_logs
+        active.updated_at = _utc_now()
+        MANAGER._persist(active)
+        return MANAGER._record_payload(active)
+
+    RUN_STORE.finalize_run(
+        run_id=run_id,
+        status=status or "completed",
+        pipeline_state=pipeline_state,
+        stage_status=stage_status,
+        progress_logs=progress_logs,
+        error_message=error_message or None,
+    )
+    return MANAGER.get_run(run_id)
+
+
+async def api_get_stage_collaboration(request):
+    run_id = request.path_params.get("run_id", "")
+    stage = _coerce_stage(request.path_params.get("stage", 0))
+    if stage < 1 or stage > TOTAL_STAGES:
+        return JSONResponse({"ok": False, "error": "stage must be between 1 and 8"}, status_code=400)
+    run = MANAGER.get_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    collaboration = _stage_collaboration_view(pipeline_state, stage)
+    return JSONResponse({"ok": True, "run_id": run_id, "stage": stage, "collaboration": collaboration, "run": run})
+
+
+async def api_stage_chat(request):
+    run_id = request.path_params.get("run_id", "")
+    stage = _coerce_stage(request.path_params.get("stage", 0))
+    if stage < 1 or stage > TOTAL_STAGES:
+        return JSONResponse({"ok": False, "error": "stage must be between 1 and 8"}, status_code=400)
+
+    payload = _get_json(await request.body())
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    save_as_directive = bool(payload.get("save_as_directive", False))
+    propose_change = bool(payload.get("propose_change", False))
+    actor = _request_actor(request)
+    llm_payload = payload.get("llm", {}) if isinstance(payload.get("llm", {}), dict) else {}
+    llm_options = {
+        "enabled": llm_payload.get("enabled", True),
+        "provider": str(llm_payload.get("provider", payload.get("provider", ""))).strip(),
+        "model": str(llm_payload.get("model", payload.get("model", ""))).strip(),
+        "temperature": llm_payload.get("temperature", payload.get("temperature", 0.2)),
+    }
+
+    active, pipeline_state, stage_status, progress_logs, status, error_message = _load_mutable_run(run_id)
+    if pipeline_state is None:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    bucket = _stage_collaboration_bucket(pipeline_state, stage, create=True)
+    chat_rows = list(bucket.get("chat", [])) if isinstance(bucket.get("chat", []), list) else []
+    user_chat = {
+        "id": _next_collab_id("chat"),
+        "role": "user",
+        "stage": stage,
+        "created_at": _utc_now(),
+        "created_by": actor or "user",
+        "message": message[:4000],
+    }
+    chat_rows.append(user_chat)
+
+    directive_created: dict[str, Any] | None = None
+    if save_as_directive or "save as directive" in message.lower() or message.lower().startswith("directive:"):
+        directive_created = _extract_directive_from_message(stage, message, actor)
+        if directive_created:
+            directives = list(bucket.get("directives", [])) if isinstance(bucket.get("directives", []), list) else []
+            directives.append(directive_created)
+            bucket["directives"] = directives[-STAGE_COLLAB_DIRECTIVE_LIMIT:]
+            global_directives = (
+                list(pipeline_state.get("global_directives", []))
+                if isinstance(pipeline_state.get("global_directives", []), list)
+                else []
+            )
+            global_directives.append(directive_created)
+            pipeline_state["global_directives"] = global_directives[-600:]
+
+    proposal_created: dict[str, Any] | None = None
+    if propose_change:
+        proposal_created = _auto_patch_from_message(stage, message, pipeline_state, actor)
+        if proposal_created:
+            proposals = list(bucket.get("proposals", [])) if isinstance(bucket.get("proposals", []), list) else []
+            proposals.append(proposal_created)
+            bucket["proposals"] = proposals[-STAGE_COLLAB_PROPOSAL_LIMIT:]
+
+    assistant_message = ""
+    if stage == 1:
+        msg_lower = message.lower()
+        analyst_update_intent = (
+            save_as_directive
+            or propose_change
+            or any(
+                token in msg_lower
+                for token in [
+                    "add requirement",
+                    "update requirement",
+                    "change requirement",
+                    "modify requirement",
+                    "rewrite requirement",
+                    "regenerate requirements",
+                    "rebuild requirements",
+                    "apply this change",
+                    "save as directive",
+                ]
+            )
+        )
+        if not analyst_update_intent:
+            assistant_message = _build_stage_memory_response(
+                run_id=run_id,
+                stage=stage,
+                message=message,
+                state=pipeline_state,
+                bucket=bucket,
+                directive_created=directive_created,
+                proposal_created=proposal_created,
+                llm_options=llm_options,
+            )
+        else:
+            aas_failed = False
+            aas_error = ""
+            try:
+                integration_context = (
+                    pipeline_state.get("integration_context", {})
+                    if isinstance(pipeline_state.get("integration_context", {}), dict)
+                    else {}
+                )
+                domain_pack_id = str(integration_context.get("domain_pack_id", "")).strip()
+                custom_domain_pack = integration_context.get("custom_domain_pack")
+                jurisdiction = str(integration_context.get("jurisdiction", "")).strip()
+                data_classes = integration_context.get("data_classification", [])
+                stage_persona = (
+                    pipeline_state.get("agent_personas", {}).get("1", {})
+                    if isinstance(pipeline_state.get("agent_personas", {}), dict)
+                    else {}
+                )
+                thread_id = str(bucket.get("thread_id", "")).strip() or str(
+                    pipeline_state.get("analyst_aas_thread_id", "")
+                ).strip() or f"run-{run_id}-stage1"
+                brownfield_ctx = (
+                    integration_context.get("brownfield", {})
+                    if isinstance(integration_context.get("brownfield", {}), dict)
+                    else {}
+                )
+                repo_hint = str(brownfield_ctx.get("repo_url", "")).strip()
+                repo_slug = re.sub(r"[^a-z0-9]+", "-", repo_hint.lower()).strip("-")[:80] if repo_hint else ""
+                project_id = repo_slug or f"run-{run_id}"
+                save_constraints: list[dict[str, Any]] = []
+                if directive_created:
+                    save_constraints.append(
+                        {
+                            "text": str(directive_created.get("text", "")).strip(),
+                            "priority": str(directive_created.get("priority", "medium")),
+                            "applies_to": "all",
+                        }
+                    )
+                aas_payload: dict[str, Any] = {
+                    "requirement": message,
+                    "business_objective": message,
+                    "use_case": str(pipeline_state.get("use_case", "business_objectives")),
+                    "thread_id": thread_id,
+                    "workspace_id": str(pipeline_state.get("workspace_id", "default-workspace")),
+                    "client_id": str(pipeline_state.get("client_id", "default-client")),
+                    "project_id": project_id,
+                    "integration_context": integration_context,
+                    "context_bundle": pipeline_state.get("context_bundle", {}),
+                    "system_context_model": pipeline_state.get("system_context_model", {}),
+                    "convention_profile": pipeline_state.get("convention_profile", {}),
+                    "health_assessment_bundle": pipeline_state.get("health_assessment_bundle", {}),
+                    "save_constraints": save_constraints,
+                }
+                if domain_pack_id:
+                    aas_payload["domain_pack_id"] = domain_pack_id
+                if isinstance(custom_domain_pack, dict) and custom_domain_pack:
+                    aas_payload["domain_pack"] = custom_domain_pack
+                if jurisdiction:
+                    aas_payload["jurisdiction"] = jurisdiction
+                if isinstance(data_classes, list) and data_classes:
+                    aas_payload["data_classification"] = data_classes
+                persona_id = str(stage_persona.get("agent_id", "")).strip()
+                if persona_id:
+                    aas_payload["persona_id"] = persona_id
+
+                aas_result = ANALYST_AAS.analyze(aas_payload, actor=actor)
+                assistant_message = str(aas_result.get("assistant_summary", "")).strip() or "Analyst update completed."
+                aas_thread_id = str(aas_result.get("thread_id", "")).strip() or thread_id
+                bucket["thread_id"] = aas_thread_id
+                bucket["aas_last_result"] = {
+                    "run_id": str(aas_result.get("run_id", "")).strip(),
+                    "generated_at": str(aas_result.get("generated_at", "")).strip(),
+                    "warnings": aas_result.get("warnings", []),
+                    "errors": aas_result.get("errors", []),
+                    "quality_gates": aas_result.get("quality_gates", []),
+                }
+                pipeline_state["analyst_aas_thread_id"] = aas_thread_id
+
+                req_pack = aas_result.get("requirements_pack", {})
+                if isinstance(req_pack, dict) and req_pack:
+                    current_output = _stage_output_snapshot(pipeline_state, stage)
+                    merged_output = dict(current_output) if isinstance(current_output, dict) else {}
+                    merged_output["requirements_pack"] = req_pack
+                    merged_output["domain_pack"] = aas_result.get("domain_pack", {})
+                    merged_output["quality_gates"] = aas_result.get("quality_gates", [])
+                    merged_output["open_questions"] = (
+                        req_pack.get("open_questions", [])
+                        if isinstance(req_pack.get("open_questions", []), list)
+                        else merged_output.get("open_questions", [])
+                    )
+                    merged_output["assistant_summary"] = assistant_message
+                    if isinstance(aas_result.get("trace", []), list):
+                        merged_output["trace"] = aas_result.get("trace", [])
+                    _set_stage_output(
+                        pipeline_state,
+                        stage,
+                        merged_output,
+                        summary="Analyst requirements pack updated via stage collaboration chat",
+                    )
+            except Exception as exc:
+                aas_failed = True
+                aas_error = str(exc)
+
+            if aas_failed:
+                assistant_message = _assistant_response_for_stage(
+                    stage,
+                    message,
+                    pipeline_state,
+                    directive_saved=directive_created is not None,
+                    proposal_created=proposal_created is not None,
+                )
+                if aas_error:
+                    assistant_message += f" Analyst AAS fallback reason: {aas_error[:220]}"
+            else:
+                if directive_created:
+                    assistant_message += " Saved as a persistent directive for downstream stages."
+                if proposal_created:
+                    assistant_message += " Proposed artifact change queued; review it in Proposed Changes."
+    else:
+        assistant_message = _build_stage_memory_response(
+            run_id=run_id,
+            stage=stage,
+            message=message,
+            state=pipeline_state,
+            bucket=bucket,
+            directive_created=directive_created,
+            proposal_created=proposal_created,
+            llm_options=llm_options,
+        )
+    assistant_chat = {
+        "id": _next_collab_id("chat"),
+        "role": "assistant",
+        "stage": stage,
+        "created_at": _utc_now(),
+        "created_by": "agent",
+        "message": assistant_message,
+    }
+    chat_rows.append(assistant_chat)
+    bucket["chat"] = chat_rows[-STAGE_COLLAB_CHAT_LIMIT:]
+    bucket["updated_at"] = _utc_now()
+    bucket["evidence"] = _extract_stage_evidence(pipeline_state, stage)
+
+    _append_collab_log(progress_logs, f"Stage {stage} collaboration message recorded")
+    if stage != 1 and isinstance(bucket.get("llm_chat", {}), dict):
+        llm_meta = bucket.get("llm_chat", {})
+        if llm_meta.get("used"):
+            _append_collab_log(
+                progress_logs,
+                f"Stage {stage} LLM chat response generated ({llm_meta.get('provider', '')}/{llm_meta.get('model', '')})",
+            )
+        else:
+            reason = str(llm_meta.get("reason", "")).strip()
+            if reason and reason != "stage_not_enabled":
+                _append_collab_log(progress_logs, f"Stage {stage} LLM chat fallback: {reason}")
+    if directive_created:
+        _append_collab_log(progress_logs, f"Stage {stage} directive saved: {directive_created.get('id')}")
+    if proposal_created:
+        _append_collab_log(progress_logs, f"Stage {stage} proposal queued: {proposal_created.get('id')}")
+
+    updated_run = _commit_mutable_run(
+        run_id=run_id,
+        active=active,
+        pipeline_state=pipeline_state,
+        stage_status=stage_status,
+        progress_logs=progress_logs,
+        status=status,
+        error_message=error_message,
+    )
+    collaboration = _stage_collaboration_view(pipeline_state, stage)
+    return JSONResponse(
+        {
+            "ok": True,
+            "run_id": run_id,
+            "stage": stage,
+            "assistant_message": assistant_message,
+            "directive": directive_created,
+            "proposal": proposal_created,
+            "collaboration": collaboration,
+            "run": updated_run,
+        }
+    )
+
+
+async def api_stage_create_proposal(request):
+    run_id = request.path_params.get("run_id", "")
+    stage = _coerce_stage(request.path_params.get("stage", 0))
+    if stage < 1 or stage > TOTAL_STAGES:
+        return JSONResponse({"ok": False, "error": "stage must be between 1 and 8"}, status_code=400)
+
+    payload = _get_json(await request.body())
+    actor = _request_actor(request)
+    title = str(payload.get("title", "")).strip() or "Manual proposal"
+    summary = str(payload.get("summary", "")).strip() or "Manual stage output change"
+    raw_patch = payload.get("patch")
+    if not isinstance(raw_patch, list):
+        raw_patch = [
+            {
+                "op": str(payload.get("op", "")).strip().lower(),
+                "path": str(payload.get("path", "")).strip(),
+                "value": payload.get("value"),
+            }
+        ]
+    try:
+        patch = _normalize_patch_ops(raw_patch)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    active, pipeline_state, stage_status, progress_logs, status, error_message = _load_mutable_run(run_id)
+    if pipeline_state is None:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    bucket = _stage_collaboration_bucket(pipeline_state, stage, create=True)
+    proposals = list(bucket.get("proposals", [])) if isinstance(bucket.get("proposals", []), list) else []
+    proposal = {
+        "id": _next_collab_id("prop"),
+        "stage": stage,
+        "agent_name": _stage_agent_name(stage),
+        "title": title[:140],
+        "summary": summary[:300],
+        "status": "pending",
+        "source": "manual",
+        "created_at": _utc_now(),
+        "created_by": actor or "user",
+        "confidence": 1.0,
+        "patch": patch,
+    }
+    proposals.append(proposal)
+    bucket["proposals"] = proposals[-STAGE_COLLAB_PROPOSAL_LIMIT:]
+    bucket["updated_at"] = _utc_now()
+    bucket["evidence"] = _extract_stage_evidence(pipeline_state, stage)
+    _append_collab_log(progress_logs, f"Stage {stage} manual proposal created: {proposal['id']}")
+
+    updated_run = _commit_mutable_run(
+        run_id=run_id,
+        active=active,
+        pipeline_state=pipeline_state,
+        stage_status=stage_status,
+        progress_logs=progress_logs,
+        status=status,
+        error_message=error_message,
+    )
+    collaboration = _stage_collaboration_view(pipeline_state, stage)
+    return JSONResponse({"ok": True, "proposal": proposal, "collaboration": collaboration, "run": updated_run})
+
+
+async def api_stage_proposal_decision(request):
+    run_id = request.path_params.get("run_id", "")
+    stage = _coerce_stage(request.path_params.get("stage", 0))
+    proposal_id = str(request.path_params.get("proposal_id", "")).strip()
+    if stage < 1 or stage > TOTAL_STAGES:
+        return JSONResponse({"ok": False, "error": "stage must be between 1 and 8"}, status_code=400)
+    if not proposal_id:
+        return JSONResponse({"ok": False, "error": "proposal_id is required"}, status_code=400)
+
+    payload = _get_json(await request.body())
+    decision = str(payload.get("decision", "reject")).strip().lower()
+    if decision not in {"approve", "reject"}:
+        return JSONResponse({"ok": False, "error": "decision must be approve or reject"}, status_code=400)
+    rationale = str(payload.get("rationale", "")).strip()
+    actor = _request_actor(request)
+
+    active, pipeline_state, stage_status, progress_logs, status, error_message = _load_mutable_run(run_id)
+    if pipeline_state is None:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    bucket = _stage_collaboration_bucket(pipeline_state, stage, create=True)
+    proposals = list(bucket.get("proposals", [])) if isinstance(bucket.get("proposals", []), list) else []
+    proposal_index = -1
+    proposal: dict[str, Any] | None = None
+    for idx, item in enumerate(proposals):
+        if isinstance(item, dict) and str(item.get("id", "")).strip() == proposal_id:
+            proposal_index = idx
+            proposal = dict(item)
+            break
+    if proposal_index < 0 or proposal is None:
+        return JSONResponse({"ok": False, "error": "proposal not found"}, status_code=404)
+
+    current_status = str(proposal.get("status", "pending")).strip().lower() or "pending"
+    if current_status not in {"pending", "queued"}:
+        return JSONResponse({"ok": False, "error": f"proposal already {current_status}"}, status_code=400)
+
+    decision_record = {
+        "id": _next_collab_id("dec"),
+        "proposal_id": proposal_id,
+        "stage": stage,
+        "agent_name": _stage_agent_name(stage),
+        "decision": decision,
+        "rationale": rationale,
+        "decided_by": actor or "user",
+        "decided_at": _utc_now(),
+        "changed_paths": [],
+    }
+
+    if decision == "approve":
+        stage_status_value = str(stage_status.get(stage, "")).strip().lower()
+        if stage_status_value == "running":
+            return JSONResponse(
+                {"ok": False, "error": "cannot apply proposal while stage is running; pause or wait for stage completion"},
+                status_code=409,
+            )
+        patch = proposal.get("patch", [])
+        try:
+            normalized_patch = _normalize_patch_ops(patch)
+            before = _stage_output_snapshot(pipeline_state, stage)
+            after, changed_paths = _apply_json_patch_ops(before, normalized_patch)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": f"patch application failed: {exc}"}, status_code=400)
+        stage_note = f"Human-approved collaboration proposal applied ({proposal_id})"
+        _set_stage_output(pipeline_state, stage, after, stage_note)
+        decision_record["changed_paths"] = changed_paths
+        proposal["status"] = "applied"
+        proposal["applied_at"] = _utc_now()
+        proposal["applied_by"] = actor or "user"
+        proposal["changed_paths"] = changed_paths
+        _append_collab_log(progress_logs, f"Stage {stage} proposal applied: {proposal_id}")
+    else:
+        proposal["status"] = "rejected"
+        proposal["rejected_at"] = _utc_now()
+        proposal["rejected_by"] = actor or "user"
+        _append_collab_log(progress_logs, f"Stage {stage} proposal rejected: {proposal_id}")
+
+    proposals[proposal_index] = proposal
+    bucket["proposals"] = proposals[-STAGE_COLLAB_PROPOSAL_LIMIT:]
+    decisions = list(bucket.get("decisions", [])) if isinstance(bucket.get("decisions", []), list) else []
+    decisions.append(decision_record)
+    bucket["decisions"] = decisions[-STAGE_COLLAB_DECISION_LIMIT:]
+    bucket["updated_at"] = _utc_now()
+    bucket["evidence"] = _extract_stage_evidence(pipeline_state, stage)
+
+    updated_run = _commit_mutable_run(
+        run_id=run_id,
+        active=active,
+        pipeline_state=pipeline_state,
+        stage_status=stage_status,
+        progress_logs=progress_logs,
+        status=status,
+        error_message=error_message,
+    )
+    collaboration = _stage_collaboration_view(pipeline_state, stage)
+    return JSONResponse(
+        {
+            "ok": True,
+            "decision": decision_record,
+            "proposal": proposal,
+            "collaboration": collaboration,
+            "run": updated_run,
+        }
+    )
 
 
 async def api_context_versions(request):
@@ -4194,6 +7653,13 @@ if DRIFT_INTERVAL_SEC > 0:
 routes = [
     Route("/api/health", api_health, methods=["GET"]),
     Route("/api/samples", api_samples, methods=["GET"]),
+    Route("/api/domain-packs", api_domain_packs, methods=["GET"]),
+    Route("/api/legacy-skills", api_legacy_skills, methods=["GET"]),
+    Route("/api/agents/personas", api_agent_personas, methods=["GET"]),
+    Route("/api/agents/personas", api_agent_persona_upsert, methods=["POST"]),
+    Route("/api/agents/analyst/analyze-requirement", api_analyst_aas_analyze, methods=["POST"]),
+    Route("/api/memory/constraints", api_memory_add_constraint, methods=["POST"]),
+    Route("/api/memory/thread", api_memory_thread, methods=["GET"]),
     Route("/api/settings", api_get_settings, methods=["GET"]),
     Route("/api/settings/integrations/{provider:str}/connect", api_connect_integration, methods=["POST"]),
     Route("/api/settings/integrations/{provider:str}/test", api_test_integration, methods=["POST"]),
@@ -4202,6 +7668,7 @@ routes = [
     Route("/api/settings/llm/{provider:str}/test", api_test_llm_provider, methods=["POST"]),
     Route("/api/settings/llm/{provider:str}/disconnect", api_disconnect_llm_provider, methods=["POST"]),
     Route("/api/discover/github/tree", api_discover_github_tree, methods=["POST"]),
+    Route("/api/discover/access/inspect", api_discover_access_inspect, methods=["POST"]),
     Route("/api/discover/analyst-brief", api_discover_analyst_brief, methods=["POST"]),
     Route("/api/discover/issues", api_discover_issues, methods=["POST"]),
     Route("/api/discover/linear/issues", api_discover_linear_issues, methods=["POST"]),
@@ -4235,7 +7702,19 @@ routes = [
     Route("/api/runs", api_start_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}", api_get_run, methods=["GET"]),
     Route("/api/runs/{run_id:str}/approve", api_approve_run, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/pause", api_pause_run, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/resume", api_resume_run, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/abort", api_abort_run, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/rerun", api_rerun_stage, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/chat", api_stage_chat, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/proposals", api_stage_create_proposal, methods=["POST"]),
+    Route(
+        "/api/runs/{run_id:str}/stages/{stage:int}/collaboration/proposals/{proposal_id:str}/decision",
+        api_stage_proposal_decision,
+        methods=["POST"],
+    ),
     Route("/api/runs/{run_id:str}/artifacts", api_list_artifacts, methods=["GET"]),
     Route("/api/runs/{run_id:str}/artifacts/content", api_artifact_content, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stream", api_run_stream, methods=["GET"]),

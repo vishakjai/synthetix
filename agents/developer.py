@@ -88,28 +88,62 @@ Respond ONLY with the JSON, no other text."""
         self.previous_code_context = previous_code_context or []
 
     def run(self) -> dict[str, Any]:
+        component_spec = BaseAgent._json_for_prompt(
+            self.component,
+            max_chars=2600,
+            max_depth=4,
+            max_items=12,
+            max_str=420,
+        )
+        requirements_summary = BaseAgent._truncate_text(
+            self.requirements.get("executive_summary", ""),
+            max_chars=1200,
+        )
+        legacy_chunks = BaseAgent._chunk_text_for_prompt(
+            self.legacy_code_excerpt,
+            chunk_chars=1600,
+            max_chunks=2,
+        )
+        legacy_context = "\n\n".join(
+            [
+                f"LEGACY EXCERPT {idx + 1}/{len(legacy_chunks)}:\n```text\n{chunk}\n```"
+                for idx, chunk in enumerate(legacy_chunks)
+            ]
+        ) if legacy_chunks else "No legacy excerpt provided."
+        remediation_compact = BaseAgent._json_for_prompt(
+            self.remediation_notes,
+            max_chars=2000,
+            max_depth=3,
+            max_items=10,
+            max_str=320,
+        )
+        previous_context_compact = BaseAgent._json_for_prompt(
+            self.previous_code_context,
+            max_chars=2400,
+            max_depth=4,
+            max_items=8,
+            max_str=300,
+        )
         user_msg = f"""Generate COMPLETE, RUNNABLE code for this component.
 The code will be built into a Docker image and deployed to Kubernetes.
 
 COMPONENT SPECIFICATION:
-{json.dumps(self.component, indent=2)}
+{component_spec}
 
 CONTEXT (requirements summary):
-{json.dumps(self.requirements.get("executive_summary", ""), indent=2)}
+{requirements_summary}
 
 LEGACY CODE EXCERPT:
-```asp
-{self.legacy_code_excerpt}
-```
+{legacy_context}
 
 TARGET MODERNIZATION LANGUAGE:
 {self.modernization_language or self.component.get("language", "Not specified")}
 
 COMPONENT-SPECIFIC QA FAILURES TO FIX:
-{json.dumps(self.remediation_notes, indent=2)}
+{remediation_compact}
 
 PREVIOUS COMPONENT CODE CONTEXT:
-{json.dumps(self.previous_code_context, indent=2)}
+{previous_context_compact}
 
 REMEMBER:
 - Include a requirements.txt (or package.json) with exact dependency versions
@@ -238,19 +272,41 @@ Respond ONLY with the JSON, no other text."""
         db_target = str(state.get("database_target", "")).strip()
         db_schema = str(state.get("database_schema", "")).strip()
 
+        architecture_compact = self._json_for_prompt(
+            architecture,
+            max_chars=7000,
+            max_depth=4,
+            max_items=12,
+            max_str=420,
+        )
+        requirements_summary = self._truncate_text(
+            requirements.get("executive_summary", ""),
+            max_chars=1500,
+        )
+        legacy_chunks = self._chunk_text_for_prompt(
+            legacy_code,
+            chunk_chars=1700,
+            max_chunks=3,
+        )
+        legacy_context = "\n\n".join(
+            [
+                f"LEGACY CHUNK {idx + 1}/{len(legacy_chunks)}:\n```text\n{chunk}\n```"
+                for idx, chunk in enumerate(legacy_chunks)
+            ]
+        ) if legacy_chunks else "No legacy source code attached."
+        schema_excerpt = self._truncate_text(db_schema, max_chars=1600)
+
         base_msg = f"""Decompose this architecture into implementable components
 for parallel development by sub-agents.
 
 ARCHITECTURE:
-{json.dumps(architecture, indent=2)}
+{architecture_compact}
 
 REQUIREMENTS CONTEXT:
-{json.dumps(requirements.get("executive_summary", ""), indent=2)}
+{requirements_summary}
 
 LEGACY SOURCE CODE TO MODERNIZE:
-```asp
-{legacy_code}
-```
+{legacy_context}
 
 TARGET MODERNIZATION LANGUAGE:
 {target_lang or "Not specified"}
@@ -259,7 +315,7 @@ DATABASE CONVERSION CONTEXT:
 - Source engine: {db_source or "Not specified"}
 - Target engine: {db_target or "Not specified"}
 ```sql
-{db_schema}
+{schema_excerpt}
 ```
 
 Ensure decomposition and generated code prioritize migration fidelity from legacy logic."""
@@ -293,22 +349,22 @@ Fix the issues below. Regenerate ONLY the components that need changes.
 Do not redesign unrelated services.
 
 BLOCKING ISSUES:
-{json.dumps(blocking, indent=2)}
+{self._json_for_prompt(blocking, max_chars=1800, max_depth=3, max_items=10, max_str=280)}
 
 FAILED TESTS:
-{json.dumps(failed_tests, indent=2)}
+{self._json_for_prompt(failed_tests, max_chars=2600, max_depth=3, max_items=12, max_str=280)}
 
 FAILED CHECK ANALYSIS:
-{json.dumps(failed_checks, indent=2)}
+{self._json_for_prompt(failed_checks, max_chars=2000, max_depth=3, max_items=10, max_str=260)}
 
 RETRY TARGET COMPONENTS:
-{json.dumps(sorted(retry_targets), indent=2)}
+{self._json_for_prompt(sorted(retry_targets), max_chars=700, max_depth=2, max_items=12, max_str=120)}
 
 PRE-RETRY DIAGNOSIS:
-{json.dumps(retry_diag, indent=2)}
+{self._json_for_prompt(retry_diag, max_chars=1800, max_depth=3, max_items=12, max_str=260)}
 
 PREVIOUS IMPLEMENTATION SNIPPETS FOR RETRY TARGETS:
-{json.dumps(previous_context, indent=2)}
+{self._json_for_prompt(previous_context, max_chars=2600, max_depth=4, max_items=8, max_str=260)}
 
 Previous code output is available in the state — fix the specific problems."""
 
@@ -514,30 +570,52 @@ Previous code output is available in the state — fix the specific problems."""
         developer_output = state.get("developer_output", {})
         architecture = state.get("architect_output", {})
         requirements = state.get("analyst_output", {})
+        tester_output_compact = self._json_for_prompt(
+            tester_output,
+            max_chars=5000,
+            max_depth=4,
+            max_items=12,
+            max_str=320,
+        )
+        dev_summary_compact = self._json_for_prompt(
+            {
+                "total_components": developer_output.get("total_components", 0) if isinstance(developer_output, dict) else 0,
+                "total_files": developer_output.get("total_files", 0) if isinstance(developer_output, dict) else 0,
+                "implementations": [
+                    {
+                        "component_name": i.get("component_name"),
+                        "language": i.get("language"),
+                        "file_paths": [f.get("path") for f in i.get("files", [])][:12],
+                    }
+                    for i in (developer_output.get("implementations", []) if isinstance(developer_output, dict) else [])
+                ][:12],
+            },
+            max_chars=2600,
+            max_depth=4,
+            max_items=12,
+            max_str=260,
+        )
+        architecture_compact = self._json_for_prompt(
+            architecture,
+            max_chars=2800,
+            max_depth=3,
+            max_items=10,
+            max_str=260,
+        )
+        req_summary = self._truncate_text(requirements.get("executive_summary", ""), max_chars=900)
         user_msg = f"""Diagnose the QA failure and produce a deterministic retry plan.
 
 TESTER OUTPUT:
-{json.dumps(tester_output, indent=2)}
+{tester_output_compact}
 
 CURRENT DEVELOPER OUTPUT SUMMARY:
-{json.dumps({
-  "total_components": developer_output.get("total_components", 0) if isinstance(developer_output, dict) else 0,
-  "total_files": developer_output.get("total_files", 0) if isinstance(developer_output, dict) else 0,
-  "implementations": [
-    {
-      "component_name": i.get("component_name"),
-      "language": i.get("language"),
-      "file_paths": [f.get("path") for f in i.get("files", [])][:12]
-    }
-    for i in (developer_output.get("implementations", []) if isinstance(developer_output, dict) else [])
-  ][:12]
-}, indent=2)}
+{dev_summary_compact}
 
 ARCHITECTURE CONTEXT:
-{json.dumps(architecture, indent=2)}
+{architecture_compact}
 
 REQUIREMENTS SUMMARY:
-{json.dumps(requirements.get("executive_summary", ""), indent=2)}
+{req_summary}
 """
         response = self.llm.invoke(self.effective_system_prompt(state, self.RETRY_DIAGNOSIS_PROMPT), user_msg)
         parsed = self.parse_output(response.content)
@@ -597,10 +675,10 @@ REQUIREMENTS SUMMARY:
 Call the spawn_sub_agent tool for each selected component.
 
 Candidate components:
-{json.dumps(components, indent=2)}
+{self._json_for_prompt(components, max_chars=3200, max_depth=4, max_items=14, max_str=240)}
 
 Requirements context:
-{json.dumps(requirements.get("executive_summary", ""), indent=2)}
+{self._truncate_text(requirements.get("executive_summary", ""), max_chars=1100)}
 """
 
         try:

@@ -1,0 +1,35 @@
+{
+  "scope": {
+    "workspace_id": "ws",
+    "client_id": "c1",
+    "project_id": "p1"
+  },
+  "updated_at": "2026-02-19T20:15:32.525768+00:00",
+  "threads": {
+    "chat-smoke": {
+      "messages": [
+        {
+          "id": "memmsg-07aac9c86a22",
+          "timestamp": "2026-02-19T20:15:32.524284+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Explain legacy checkout code behavior",
+          "metadata": {
+            "source": "api"
+          }
+        },
+        {
+          "id": "memmsg-17fec36b28dc",
+          "timestamp": "2026-02-19T20:15:32.525764+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Deterministic requirements pack generated via persona + domain pack + knowledge gateway + memory constraints.",
+          "metadata": {
+            "source": "api"
+          }
+        }
+      ]
+    }
+  },
+  "constraints": []
+}
