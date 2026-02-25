@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.example/schemas/sql_catalog_v1.json",
+  "title": "Synthetix SQL Catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "artifact_version", "metadata", "statements"],
+  "properties": {
+    "artifact_type": { "const": "sql_catalog" },
+    "artifact_version": { "const": "1.0" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated_at", "context_reference", "skill_pack"],
+      "properties": {
+        "generated_at": { "type": "string", "format": "date-time" },
+        "context_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repo", "commit_sha"],
+          "properties": {
+            "repo": { "type": "string" },
+            "commit_sha": { "type": "string" }
+          }
+        },
+        "skill_pack": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version"],
+          "properties": {
+            "id": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        }
+      }
+    },
+    "statements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sql_id", "kind", "raw"],
+        "properties": {
+          "sql_id": { "type": "string" },
+          "kind": { "enum": ["select", "insert", "update", "delete", "ddl", "unknown"] },
+          "raw": { "type": "string" },
+          "normalized": { "type": "string" },
+          "tables": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "columns": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "source"],
+              "properties": {
+                "name": { "type": "string" },
+                "source": { "enum": ["literal", "variable", "user_input", "unknown"] }
+              }
+            },
+            "default": []
+          },
+          "usage_sites": {
+            "type": "array",
+            "items": { "$ref": "common_evidence_v1.schema.json" },
+            "default": []
+          },
+          "risk_flags": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "string_concatenation",
+                "missing_where_clause",
+                "dynamic_sql",
+                "possible_injection",
+                "select_star",
+                "no_transaction_boundary_detected"
+              ]
+            },
+            "default": []
+          }
+        }
+      }
+    }
+  }
+}

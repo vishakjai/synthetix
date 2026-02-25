@@ -4,7 +4,7 @@
     "client_id": "default-client",
     "project_id": "default-project"
   },
-  "updated_at": "2026-02-19T20:01:35.282369+00:00",
+  "updated_at": "2026-02-24T18:23:44.919692+00:00",
   "threads": {
     "default-thread": {
       "messages": [
@@ -31,5 +31,204 @@
       ]
     }
   },
-  "constraints": []
+  "constraints": [],
+  "review_queue": [
+    {
+      "id": "cand-8fa4630d24a3",
+      "status": "approved",
+      "summary": "smoke test review candidate",
+      "source": "smoke_test",
+      "proposed_item": {
+        "type": "constraint",
+        "title": "Smoke constraint",
+        "statement": "Do not use eventual consistency for ledger writes",
+        "tier": "project",
+        "applies_when": {
+          "domains": [
+            "banking"
+          ],
+          "languages": [
+            "vb6",
+            "c#"
+          ]
+        },
+        "enforcement": {
+          "gate_level": "warn",
+          "agent_stages": [
+            "2",
+            "3"
+          ],
+          "checks": [
+            "ledger_consistency"
+          ]
+        }
+      },
+      "patch": [],
+      "evidence_refs": [],
+      "created_by": "local-user",
+      "created_at": "2026-02-24T18:23:44.915626+00:00",
+      "resolved_at": "2026-02-24T18:23:44.918839+00:00",
+      "resolved_by": "local-user",
+      "resolution_note": "approved by smoke test",
+      "metadata": {}
+    },
+    {
+      "id": "cand-04484ab6863d",
+      "status": "approved",
+      "summary": "smoke test review candidate",
+      "source": "smoke_test",
+      "proposed_item": {
+        "type": "constraint",
+        "title": "Smoke constraint",
+        "statement": "Do not use eventual consistency for ledger writes",
+        "tier": "work_item",
+        "applies_when": {
+          "domains": [
+            "banking"
+          ],
+          "languages": [
+            "vb6",
+            "c#"
+          ]
+        },
+        "enforcement": {
+          "gate_level": "warn",
+          "agent_stages": [
+            "2",
+            "3"
+          ],
+          "checks": [
+            "ledger_consistency"
+          ]
+        }
+      },
+      "patch": [],
+      "evidence_refs": [],
+      "created_by": "local-user",
+      "created_at": "2026-02-24T18:22:59.634065+00:00",
+      "resolved_at": "2026-02-24T18:22:59.639366+00:00",
+      "resolved_by": "local-user",
+      "resolution_note": "approved by smoke test",
+      "metadata": {}
+    }
+  ],
+  "audit_log": [
+    {
+      "id": "audit-029f872002f4",
+      "timestamp": "2026-02-24T18:22:59.634255+00:00",
+      "action": "review_candidate_created",
+      "actor": "local-user",
+      "ref_id": "cand-04484ab6863d",
+      "details": {
+        "source": "smoke_test"
+      }
+    },
+    {
+      "id": "audit-a5989c11f7fc",
+      "timestamp": "2026-02-24T18:22:59.640479+00:00",
+      "action": "review_candidate_resolved",
+      "actor": "local-user",
+      "ref_id": "cand-04484ab6863d",
+      "details": {
+        "status": "approved",
+        "promoted_item_id": "mem-a9fa51dae48b"
+      }
+    },
+    {
+      "id": "audit-e38bdbce2674",
+      "timestamp": "2026-02-24T18:23:44.916553+00:00",
+      "action": "review_candidate_created",
+      "actor": "local-user",
+      "ref_id": "cand-8fa4630d24a3",
+      "details": {
+        "source": "smoke_test"
+      }
+    },
+    {
+      "id": "audit-14eeec1710db",
+      "timestamp": "2026-02-24T18:23:44.918858+00:00",
+      "action": "review_candidate_resolved",
+      "actor": "local-user",
+      "ref_id": "cand-8fa4630d24a3",
+      "details": {
+        "status": "approved",
+        "promote_tier": "project"
+      }
+    },
+    {
+      "id": "audit-1c3c5a61d8cc",
+      "timestamp": "2026-02-24T18:23:44.919335+00:00",
+      "action": "memory_item_created",
+      "actor": "local-user",
+      "ref_id": "mem-7206d483acf4",
+      "details": {
+        "status": "approved",
+        "tier": "project",
+        "type": "constraint"
+      }
+    },
+    {
+      "id": "audit-815f410cbeea",
+      "timestamp": "2026-02-24T18:23:44.919689+00:00",
+      "action": "review_candidate_promoted",
+      "actor": "local-user",
+      "ref_id": "cand-8fa4630d24a3",
+      "details": {
+        "memory_item_id": "mem-7206d483acf4",
+        "tier": "project"
+      }
+    }
+  ],
+  "memory_items": [
+    {
+      "id": "mem-7206d483acf4",
+      "type": "constraint",
+      "scope": {
+        "workspace_id": "default-workspace",
+        "client_id": "default-client",
+        "project_id": "default-project",
+        "tier": "project"
+      },
+      "status": "approved",
+      "title": "Smoke constraint",
+      "statement": "Do not use eventual consistency for ledger writes",
+      "applies_when": {
+        "languages": [
+          "vb6",
+          "c#"
+        ],
+        "domains": [
+          "banking"
+        ],
+        "components": [],
+        "file_globs": [],
+        "legacy_signals": [],
+        "agent_stages": [],
+        "target_language": "",
+        "use_case": ""
+      },
+      "enforcement": {
+        "agent_stages": [
+          "2",
+          "3"
+        ],
+        "gate_level": "warn",
+        "checks": [
+          "ledger_consistency"
+        ]
+      },
+      "evidence_refs": [],
+      "source": "smoke_test",
+      "created_by": "local-user",
+      "approved_by": "local-user",
+      "created_at": "2026-02-24T18:23:44.919254+00:00",
+      "updated_at": "2026-02-24T18:23:44.919257+00:00",
+      "expires_at": null,
+      "revision": 1,
+      "metadata": {
+        "candidate_id": "cand-8fa4630d24a3",
+        "resolution_note": "approved by smoke test"
+      }
+    }
+  ]
 }

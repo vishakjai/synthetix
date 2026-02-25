@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.example/schemas/common_evidence_v1.json",
+  "title": "Synthetix Common Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "enum": ["file_span", "scm_node", "scm_edge", "external_ref", "run_log", "tool_output"]
+    },
+    "file_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "start_col": { "type": "integer", "minimum": 1 },
+        "end_col": { "type": "integer", "minimum": 1 },
+        "snippet": { "type": "string" }
+      }
+    },
+    "scm_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": { "type": "string" },
+        "label": { "type": "string" }
+      }
+    },
+    "scm_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "edge_id": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "edge_type": { "type": "string" }
+      }
+    },
+    "external_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "tool_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "type": "string" },
+        "output_ref": { "type": "string" }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}

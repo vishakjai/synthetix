@@ -16,6 +16,9 @@ _VB6_FILE_TYPE_LABELS = {
     ".vbp": "project_file",
     ".vbg": "project_group",
     ".res": "resource_file",
+    ".ocx": "activex_binary",
+    ".dcx": "db_query_definition",
+    ".dca": "db_connection_definition",
 }
 
 
@@ -23,7 +26,7 @@ def vb6_skill_pack_manifest() -> dict[str, Any]:
     return {
         "skill_pack_id": "legacy-vb6",
         "version": "0.1.0",
-        "supported_inputs": [".vbp", ".vbg", ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".res"],
+        "supported_inputs": [".vbp", ".vbg", ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca"],
         "extractors": [
             "vb6_project_inventory",
             "vb6_call_graph_builder",
@@ -350,7 +353,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
     if "." in lower_path:
         suffix = "." + lower_path.rsplit(".", 1)[1]
     lowered = str(text or "").lower()
-    is_vb6_path = suffix in {".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".vbp", ".vbg", ".res"}
+    is_vb6_path = suffix in {".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca"}
     is_vb6_text = (
         "attribute vb_name" in lowered
         or "begin vb.form" in lowered
@@ -362,7 +365,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
 
     file_path = str(path or "").strip()
     vb6_file_type = _VB6_FILE_TYPE_LABELS.get(suffix, "unknown")
-    is_binary_companion = suffix in {".frx", ".ctx", ".res"}
+    is_binary_companion = suffix in {".frx", ".ctx", ".res", ".ocx"}
     if is_binary_companion:
         return {
             "forms": [],
@@ -398,7 +401,11 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             "binary_companion_info": {
                 "path": file_path,
                 "extension": suffix,
-                "note": "Binary companion file detected; analyzed as structural dependency.",
+                "note": (
+                    "ActiveX binary component detected; analyzed as structural dependency."
+                    if suffix == ".ocx"
+                    else "Binary companion file detected; analyzed as structural dependency."
+                ),
             },
         }
     forms: set[str] = set()
@@ -448,7 +455,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
     ):
         dep = str(binary_ref or "").strip()
         dep_upper = dep.upper()
-        if dep_upper.endswith(".OCX") or dep_upper.endswith(".DLL"):
+        if dep_upper.endswith(".OCX") or dep_upper.endswith(".DLL") or dep_upper.endswith(".DCX") or dep_upper.endswith(".DCA"):
             activex_dependencies.add(dep)
         elif dep:
             activex_dependencies.add(f"{dep} ({str(object_ref or '').strip()})")

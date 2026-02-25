@@ -72,6 +72,8 @@ from utils.persona_registry import PersonaRegistry  # noqa: E402
 from utils.knowledge_gateway import KnowledgeGateway  # noqa: E402
 from utils.tenant_memory import TenantMemoryStore  # noqa: E402
 from utils.analyst_aas import AnalystAASService  # noqa: E402
+from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
+from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.legacy_skills import (  # noqa: E402
     extract_vb6_signals as legacy_extract_vb6_signals,
     build_vb6_readiness_assessment,
@@ -1734,6 +1736,9 @@ def _guess_language(path: str) -> str:
         ".vbp": "vb6_project",
         ".vbg": "vb6_group",
         ".res": "vb6_resource",
+        ".ocx": "vb6_activex_binary",
+        ".dcx": "vb6_query_definition",
+        ".dca": "vb6_connection_definition",
         ".sql": "sql",
         ".yaml": "yaml",
         ".yml": "yaml",
@@ -2488,11 +2493,12 @@ def _fetch_github_file_content(
     if encoding == "base64":
         try:
             raw_bytes = base64.b64decode(raw_content.encode("utf-8"), validate=False)
-            if suffix in {".frx", ".ctx", ".res"}:
+            if suffix in {".frx", ".ctx", ".res", ".ocx"}:
                 digest = hashlib.sha1(raw_bytes).hexdigest()[:16]
+                note = "ActiveX binary component detected." if suffix == ".ocx" else "Companion binary/resource file detected."
                 return (
                     f"[BINARY_COMPANION] file={path} ext={suffix or 'unknown'} bytes={len(raw_bytes)} "
-                    f"sha1={digest} note=Companion binary/resource file detected."
+                    f"sha1={digest} note={note}"
                 )[:max_chars]
             text = raw_bytes.decode("utf-8", errors="replace")
         except Exception:
@@ -2506,7 +2512,7 @@ def _allowed_source_extensions() -> set[str]:
     return {
         ".py", ".js", ".ts", ".tsx", ".go", ".java", ".cs", ".rb", ".php",
         ".asp", ".aspx", ".asa", ".vb", ".vbs",
-        ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".vbp", ".vbg", ".res",
+        ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca",
         ".sql", ".md", ".yaml", ".yml", ".json",
     }
 
@@ -2541,7 +2547,7 @@ def _select_source_entries_for_analysis(
 
     vb6_file_hits = sum(
         1 for entry in candidate_entries
-        if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res"))
+        if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca"))
     )
     effective_limit = max(limit, 80) if vb6_file_hits >= 8 else limit
 
@@ -2555,9 +2561,11 @@ def _select_source_entries_for_analysis(
             rank = 0
         elif path.endswith(".bas"):
             rank = 1
+        elif path.endswith(".dcx") or path.endswith(".dca"):
+            rank = 1
         elif path.endswith(".frm") or path.endswith(".ctl") or path.endswith(".cls"):
             rank = 2
-        elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res"):
+        elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res") or path.endswith(".ocx"):
             rank = 3
         elif any(tok in path for tok in ["/main.", "/app.", "/index.", "/server."]):
             rank = 2
@@ -2963,13 +2971,25 @@ async def api_analyst_aas_analyze(request):
     return JSONResponse(result, status_code=status_code)
 
 
+def _memory_scope_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "workspace_id": str(payload.get("workspace_id", "default-workspace")).strip() or "default-workspace",
+        "client_id": str(payload.get("client_id", "default-client")).strip() or "default-client",
+        "project_id": str(payload.get("project_id", "default-project")).strip() or "default-project",
+    }
+
+
+def _memory_scope_from_query(params: Any) -> dict[str, Any]:
+    return {
+        "workspace_id": str(params.get("workspace_id", "default-workspace")).strip() or "default-workspace",
+        "client_id": str(params.get("client_id", "default-client")).strip() or "default-client",
+        "project_id": str(params.get("project_id", "default-project")).strip() or "default-project",
+    }
+
+
 async def api_memory_add_constraint(request):
     payload = _get_json(await request.body())
-    scope = {
-        "workspace_id": str(payload.get("workspace_id", "default-workspace")),
-        "client_id": str(payload.get("client_id", "default-client")),
-        "project_id": str(payload.get("project_id", "default-project")),
-    }
+    scope = _memory_scope_from_payload(payload)
     text = str(payload.get("text", "")).strip()
     if not text:
         return JSONResponse({"ok": False, "error": "text is required"}, status_code=400)
@@ -2981,6 +3001,10 @@ async def api_memory_add_constraint(request):
             created_by=_request_actor(request),
             priority=str(payload.get("priority", "medium")),
             applies_to=str(payload.get("applies_to", "all")),
+            promote_to=str(payload.get("promote_to", "work_item")),
+            applies_when=payload.get("applies_when", {}),
+            enforcement=payload.get("enforcement", {}),
+            evidence_refs=payload.get("evidence_refs", []),
         )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -2989,15 +3013,145 @@ async def api_memory_add_constraint(request):
 
 async def api_memory_thread(request):
     params = request.query_params
-    scope = {
-        "workspace_id": str(params.get("workspace_id", "default-workspace")),
-        "client_id": str(params.get("client_id", "default-client")),
-        "project_id": str(params.get("project_id", "default-project")),
-    }
+    scope = _memory_scope_from_query(params)
     thread_id = str(params.get("thread_id", "default-thread"))
     limit = int(str(params.get("limit", "60")) or 60)
     rows = TENANT_MEMORY_STORE.get_thread(scope, thread_id=thread_id, limit=max(1, min(limit, 200)))
     return JSONResponse({"ok": True, "thread_id": thread_id, "messages": rows})
+
+
+async def api_memory_items(request):
+    if request.method == "GET":
+        params = request.query_params
+        scope = _memory_scope_from_query(params)
+        query = str(params.get("query", "")).strip()
+        status = str(params.get("status", "approved")).strip()
+        tier = str(params.get("tier", "")).strip()
+        limit = max(1, min(int(str(params.get("limit", "80")) or 80), 400))
+        fingerprint = _get_json(str(params.get("fingerprint", "{}")).encode("utf-8"))
+        if query:
+            rows = TENANT_MEMORY_STORE.search_memory_items(
+                scope,
+                query=query,
+                fingerprint=fingerprint if isinstance(fingerprint, dict) else {},
+                limit=limit,
+                statuses=[status] if status else None,
+                tiers=[tier] if tier else None,
+            )
+        else:
+            rows = TENANT_MEMORY_STORE.list_memory_items(
+                scope,
+                status=status,
+                tier=tier,
+                limit=limit,
+            )
+        return JSONResponse({"ok": True, "items": rows})
+
+    payload = _get_json(await request.body())
+    scope = _memory_scope_from_payload(payload)
+    statement = str(payload.get("statement", "")).strip()
+    if not statement:
+        return JSONResponse({"ok": False, "error": "statement is required"}, status_code=400)
+    try:
+        row = TENANT_MEMORY_STORE.add_memory_item(
+            scope,
+            item_type=str(payload.get("type", "constraint")),
+            title=str(payload.get("title", "")).strip() or statement[:96],
+            statement=statement,
+            created_by=_request_actor(request),
+            source=str(payload.get("source", "manual")),
+            tier=str(payload.get("promote_to", payload.get("tier", "work_item"))),
+            status=str(payload.get("status", "")).strip() or None,
+            applies_when=payload.get("applies_when", {}),
+            enforcement=payload.get("enforcement", {}),
+            evidence_refs=payload.get("evidence_refs", []),
+            metadata=payload.get("metadata", {}),
+            approved_by=str(payload.get("approved_by", "")),
+            expires_at=str(payload.get("expires_at", "")) or None,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "item": row})
+
+
+async def api_memory_item_status(request):
+    item_id = str(request.path_params.get("item_id", "")).strip()
+    payload = _get_json(await request.body())
+    scope = _memory_scope_from_payload(payload)
+    status = str(payload.get("status", "")).strip()
+    if not item_id:
+        return JSONResponse({"ok": False, "error": "item_id is required"}, status_code=400)
+    if not status:
+        return JSONResponse({"ok": False, "error": "status is required"}, status_code=400)
+    row = TENANT_MEMORY_STORE.update_memory_item_status(
+        scope,
+        item_id=item_id,
+        status=status,
+        actor=_request_actor(request),
+        approved_by=str(payload.get("approved_by", "")),
+    )
+    if not row:
+        return JSONResponse({"ok": False, "error": "memory item not found"}, status_code=404)
+    return JSONResponse({"ok": True, "item": row})
+
+
+async def api_memory_review_queue(request):
+    if request.method == "GET":
+        params = request.query_params
+        scope = _memory_scope_from_query(params)
+        status = str(params.get("status", "pending")).strip()
+        limit = max(1, min(int(str(params.get("limit", "80")) or 80), 500))
+        rows = TENANT_MEMORY_STORE.list_review_queue(scope, status=status, limit=limit)
+        return JSONResponse({"ok": True, "candidates": rows})
+
+    payload = _get_json(await request.body())
+    scope = _memory_scope_from_payload(payload)
+    summary = str(payload.get("summary", "")).strip()
+    if not summary:
+        return JSONResponse({"ok": False, "error": "summary is required"}, status_code=400)
+    try:
+        row = TENANT_MEMORY_STORE.add_review_candidate(
+            scope,
+            summary=summary,
+            source=str(payload.get("source", "manual")),
+            created_by=_request_actor(request),
+            proposed_item=payload.get("proposed_item", {}),
+            patch=payload.get("patch", []),
+            evidence_refs=payload.get("evidence_refs", []),
+            metadata=payload.get("metadata", {}),
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "candidate": row})
+
+
+async def api_memory_review_resolve(request):
+    candidate_id = str(request.path_params.get("candidate_id", "")).strip()
+    payload = _get_json(await request.body())
+    scope = _memory_scope_from_payload(payload)
+    if not candidate_id:
+        return JSONResponse({"ok": False, "error": "candidate_id is required"}, status_code=400)
+    action = str(payload.get("action", "")).strip().lower()
+    try:
+        result = TENANT_MEMORY_STORE.resolve_review_candidate(
+            scope,
+            candidate_id=candidate_id,
+            action=action,
+            actor=_request_actor(request),
+            promote_to=str(payload.get("promote_to", "")),
+            note=str(payload.get("note", "")),
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, **result})
+
+
+async def api_memory_audit(request):
+    params = request.query_params
+    scope = _memory_scope_from_query(params)
+    limit = max(1, min(int(str(params.get("limit", "120")) or 120), 1000))
+    rows = TENANT_MEMORY_STORE.get_audit_log(scope, limit=limit)
+    return JSONResponse({"ok": True, "audit_log": rows})
 
 
 def _request_actor(request) -> str:
@@ -3290,6 +3444,17 @@ async def api_discover_analyst_brief(request):
         response_payload["assistant_summary"] = str(aas_result.get("assistant_summary", "")).strip()
         if isinstance(aas_result.get("requirements_pack", {}), dict):
             response_payload["requirements_pack"] = aas_result.get("requirements_pack", {})
+            report_seed = {
+                "project_name": "Discover Analysis",
+                "analysis_walkthrough": {
+                    "business_objective_summary": str(response_payload.get("assistant_summary", "")).strip()
+                },
+                "requirements_pack": aas_result.get("requirements_pack", {}),
+                "quality_gates": aas_result.get("quality_gates", []),
+                "open_questions": aas_result.get("requirements_pack", {}).get("open_questions", []),
+            }
+            response_payload["raw_artifacts"] = build_raw_artifact_set_v1(report_seed)
+            response_payload["analyst_report_v2"] = build_analyst_report_v2(report_seed)
         if isinstance(aas_result.get("quality_gates", []), list):
             response_payload["quality_gates"] = aas_result.get("quality_gates", [])
         return response_payload
@@ -4531,6 +4696,24 @@ def _append_analyst_conversation_change(
     return output
 
 
+def _ensure_analyst_report_v2(output: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(output, dict):
+        return {}
+    enriched = dict(output)
+    try:
+        if not isinstance(enriched.get("raw_artifacts", {}), dict):
+            enriched["raw_artifacts"] = build_raw_artifact_set_v1(enriched)
+        elif not enriched.get("raw_artifacts"):
+            enriched["raw_artifacts"] = build_raw_artifact_set_v1(enriched)
+    except Exception:
+        pass
+    try:
+        enriched["analyst_report_v2"] = build_analyst_report_v2(enriched)
+    except Exception:
+        pass
+    return enriched
+
+
 def _merge_analyst_output_into_state(
     state: dict[str, Any],
     analyst_output: dict[str, Any],
@@ -4538,6 +4721,7 @@ def _merge_analyst_output_into_state(
     upload_format: str = "markdown",
 ) -> None:
     run_id = str(state.get("run_id", "")).strip()
+    analyst_output = _ensure_analyst_report_v2(analyst_output)
     if upload_format == "markdown":
         analyst_output = _append_analyst_conversation_change(
             analyst_output,
@@ -4631,6 +4815,17 @@ async def api_update_analyst_doc(request):
         markdown_doc = content
         analyst_output["human_revised_document_markdown"] = content
         analyst_output["human_revision_applied_at"] = _utc_now()
+        try:
+            migrated = migrate_markdown_to_analyst_output(content, base_output=analyst_output)
+            if isinstance(migrated, dict):
+                analyst_output.update(migrated)
+        except Exception as exc:
+            analyst_output["markdown_migration"] = {
+                "ok": False,
+                "migrated_at": _utc_now(),
+                "source_format": "markdown_v1",
+                "error": str(exc),
+            }
 
     active = MANAGER._get_record(run_id)
     if active and isinstance(active.pipeline_state, dict):
@@ -5171,6 +5366,8 @@ def _stage_collaboration_view(state: dict[str, Any], stage: int) -> dict[str, An
         "proposals": list(bucket.get("proposals", []))[-STAGE_COLLAB_PROPOSAL_LIMIT:],
         "decisions": list(bucket.get("decisions", []))[-STAGE_COLLAB_DECISION_LIMIT:],
         "evidence": list(bucket.get("evidence", []))[:40],
+        "memory_applied": list(bucket.get("memory_applied", []))[:20],
+        "memory_fingerprint": bucket.get("memory_fingerprint", {}),
         "llm_chat": bucket.get("llm_chat", {}),
         "updated_at": bucket.get("updated_at", _utc_now()),
     }
@@ -5620,6 +5817,82 @@ def _stage_memory_scope(run_id: str, state: dict[str, Any], stage: int) -> dict[
         "client_id": client_id,
         "project_id": project_id,
         "stage": stage,
+    }
+
+
+def _stage_memory_fingerprint(stage: int, state: dict[str, Any], message: str) -> dict[str, Any]:
+    use_case = str(state.get("use_case", "business_objectives")).strip().lower() or "business_objectives"
+    target_language = str(state.get("modernization_language", "")).strip()
+    integration_context = (
+        state.get("integration_context", {})
+        if isinstance(state.get("integration_context", {}), dict)
+        else {}
+    )
+    domain_pack_id = str(integration_context.get("domain_pack_id", "")).strip().lower()
+
+    languages: list[str] = []
+    if target_language:
+        languages.append(target_language)
+    discovery = state.get("sil_discovery", {}) if isinstance(state.get("sil_discovery", {}), dict) else {}
+    language_counts = discovery.get("language_counts", {}) if isinstance(discovery.get("language_counts", {}), dict) else {}
+    languages.extend([str(k) for k in language_counts.keys()])
+    message_lower = str(message or "").lower()
+    for marker in ("vb6", "asp", "asp.net", "c#", "java", "python", "go", "node", "typescript"):
+        if marker in message_lower:
+            languages.append(marker)
+
+    legacy_signals: list[str] = []
+    for marker in ("activex", "ocx", "com", "recordset", "on error resume next", "win32"):
+        if marker in message_lower:
+            legacy_signals.append(marker)
+    stage_output = _stage_output_snapshot(state, 1) if stage > 1 else _stage_output_snapshot(state, stage)
+    vb6 = (
+        stage_output.get("legacy_ui_analysis", {}).get("vb6")
+        if isinstance(stage_output.get("legacy_ui_analysis", {}), dict)
+        else {}
+    )
+    detectors = vb6.get("detectors", []) if isinstance(vb6, dict) and isinstance(vb6.get("detectors", []), list) else []
+    legacy_signals.extend([str(x.get("id", "")) for x in detectors if isinstance(x, dict)])
+
+    components: list[str] = []
+    scm = state.get("system_context_model", {}) if isinstance(state.get("system_context_model", {}), dict) else {}
+    graph = scm.get("graph", {}) if isinstance(scm.get("graph", {}), dict) else {}
+    nodes = graph.get("nodes", []) if isinstance(graph.get("nodes", []), list) else []
+    for row in nodes[:24]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        if name:
+            components.append(name)
+
+    domains: list[str] = [domain_pack_id] if domain_pack_id else []
+    if "banking" in domain_pack_id:
+        domains.extend(["banking", "payments"])
+    if "database" in use_case:
+        domains.append("database")
+
+    def _dedupe(values: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+        return out
+
+    return {
+        "agent_stages": [str(stage)],
+        "use_case": use_case,
+        "target_language": target_language,
+        "languages": _dedupe(languages),
+        "domains": _dedupe(domains),
+        "components": _dedupe(components),
+        "legacy_signals": _dedupe(legacy_signals),
     }
 
 
@@ -6097,6 +6370,16 @@ def _build_stage_memory_response(
     summary = str(result.get("summary", "")).strip() if isinstance(result, dict) else ""
     prior = TENANT_MEMORY_STORE.get_thread(scope, thread_id=thread_id, limit=12)
     constraints = TENANT_MEMORY_STORE.search_constraints(scope, message, limit=6)
+    fingerprint = _stage_memory_fingerprint(stage, state, message)
+    memory_items = TENANT_MEMORY_STORE.search_memory_items(
+        scope,
+        query=message,
+        fingerprint=fingerprint,
+        limit=6,
+        statuses=["approved"],
+    )
+    bucket["memory_fingerprint"] = fingerprint
+    bucket["memory_applied"] = memory_items[:20]
 
     TENANT_MEMORY_STORE.append_thread_message(
         scope,
@@ -6115,6 +6398,8 @@ def _build_stage_memory_response(
 
     if stage == 1 and _is_simple_analyst_count_question(message):
         concise = f"{_stage_agent_name(stage)} response: {contextual}"
+        if memory_items:
+            concise += f" Applied memory items: {len(memory_items)}."
         if directive_created:
             concise += " Saved as a persistent directive for downstream stages."
         if proposal_created:
@@ -6139,6 +6424,26 @@ def _build_stage_memory_response(
         ]
         if constraint_lines:
             lines.append("Relevant stored constraints: " + "; ".join(constraint_lines) + ".")
+    if memory_items:
+        memory_lines = []
+        for row in memory_items[:3]:
+            if not isinstance(row, dict):
+                continue
+            title = str(row.get("title", "")).strip()
+            statement = str(row.get("statement", "")).strip()
+            match = row.get("match", {}) if isinstance(row.get("match", {}), dict) else {}
+            hints = ", ".join(
+                [str(x).strip() for x in match.get("hints", [])[:2] if str(x).strip()]
+            )
+            detail = title or statement
+            if not detail:
+                continue
+            if hints:
+                memory_lines.append(f"{detail[:90]} ({hints})")
+            else:
+                memory_lines.append(detail[:90])
+        if memory_lines:
+            lines.append("Applied memory items: " + "; ".join(memory_lines) + ".")
     if prior:
         previous_user = [
             str(row.get("message", "")).strip()
@@ -6366,6 +6671,123 @@ async def api_stage_chat(request):
             proposals.append(proposal_created)
             bucket["proposals"] = proposals[-STAGE_COLLAB_PROPOSAL_LIMIT:]
 
+    memory_scope = _stage_memory_scope(run_id, pipeline_state, stage)
+    memory_fingerprint = _stage_memory_fingerprint(stage, pipeline_state, message)
+    memory_tier = str(payload.get("promote_to", payload.get("memory_tier", "work_item"))).strip().lower()
+    if memory_tier not in {"run", "work_item", "project", "client", "firm_pattern"}:
+        memory_tier = "work_item"
+    enforcement_payload = payload.get("memory_enforcement", {})
+    enforcement = {
+        "agent_stages": [str(stage)],
+        "gate_level": "warn",
+        "checks": [],
+    }
+    if isinstance(enforcement_payload, dict):
+        gate_level = str(enforcement_payload.get("gate_level", "warn")).strip().lower()
+        if gate_level in {"warn", "block"}:
+            enforcement["gate_level"] = gate_level
+        checks = enforcement_payload.get("checks", [])
+        if isinstance(checks, list):
+            enforcement["checks"] = [str(x).strip() for x in checks if str(x).strip()]
+        stages = enforcement_payload.get("agent_stages", [])
+        if isinstance(stages, list):
+            stage_rows = [str(x).strip() for x in stages if str(x).strip()]
+            if stage_rows:
+                enforcement["agent_stages"] = stage_rows
+    memory_item_created: dict[str, Any] | None = None
+    review_candidate_created: dict[str, Any] | None = None
+    bucket["memory_fingerprint"] = memory_fingerprint
+    bucket["memory_applied"] = TENANT_MEMORY_STORE.search_memory_items(
+        memory_scope,
+        query=message,
+        fingerprint=memory_fingerprint,
+        limit=6,
+        statuses=["approved"],
+    )
+    if directive_created:
+        statement = str(directive_created.get("text", "")).strip()
+        if statement:
+            try:
+                memory_item_created = TENANT_MEMORY_STORE.add_memory_item(
+                    memory_scope,
+                    item_type="constraint",
+                    title=f"{_stage_agent_name(stage)} directive",
+                    statement=statement,
+                    created_by=actor,
+                    source="stage_chat",
+                    tier=memory_tier,
+                    applies_when=memory_fingerprint,
+                    enforcement=enforcement,
+                    evidence_refs=[
+                        {"type": "run", "ref": run_id},
+                        {"type": "stage", "ref": str(stage)},
+                        {"type": "directive", "ref": str(directive_created.get("id", ""))},
+                    ],
+                    metadata={
+                        "stage": stage,
+                        "run_id": run_id,
+                        "directive_id": str(directive_created.get("id", "")),
+                    },
+                )
+                directive_created["memory_item_id"] = memory_item_created.get("id", "")
+            except Exception as exc:
+                _append_collab_log(progress_logs, f"Stage {stage} memory save failed: {exc}")
+        if memory_item_created and memory_tier in {"client", "firm_pattern"}:
+            try:
+                review_candidate_created = TENANT_MEMORY_STORE.add_review_candidate(
+                    memory_scope,
+                    summary=f"Promote directive to {memory_tier}: {statement[:140]}",
+                    source="stage_chat",
+                    created_by=actor,
+                    proposed_item={
+                        "type": "constraint",
+                        "title": f"{_stage_agent_name(stage)} directive",
+                        "statement": statement,
+                        "tier": memory_tier,
+                        "applies_when": memory_fingerprint,
+                        "enforcement": enforcement,
+                    },
+                    patch=[],
+                    evidence_refs=[
+                        {"type": "run", "ref": run_id},
+                        {"type": "directive", "ref": str(directive_created.get("id", ""))},
+                    ],
+                    metadata={"stage": stage},
+                )
+                directive_created["review_candidate_id"] = review_candidate_created.get("id", "")
+            except Exception as exc:
+                _append_collab_log(progress_logs, f"Stage {stage} review queue add failed: {exc}")
+    if proposal_created:
+        try:
+            proposal_statement = str(proposal_created.get("summary", "")).strip() or str(
+                proposal_created.get("title", "")
+            ).strip()
+            proposal_candidate = TENANT_MEMORY_STORE.add_review_candidate(
+                memory_scope,
+                summary=f"Capture stage {stage} proposal learning: {proposal_statement[:140]}",
+                source="stage_chat",
+                created_by=actor,
+                proposed_item={
+                    "type": "correction",
+                    "title": str(proposal_created.get("title", "")).strip() or f"Stage {stage} correction",
+                    "statement": proposal_statement or "Stage collaboration correction",
+                    "tier": memory_tier,
+                    "applies_when": memory_fingerprint,
+                    "enforcement": enforcement,
+                },
+                patch=proposal_created.get("patch", []) if isinstance(proposal_created.get("patch", []), list) else [],
+                evidence_refs=[
+                    {"type": "run", "ref": run_id},
+                    {"type": "proposal", "ref": str(proposal_created.get("id", ""))},
+                ],
+                metadata={"stage": stage, "proposal_id": str(proposal_created.get("id", ""))},
+            )
+            proposal_created["review_candidate_id"] = proposal_candidate.get("id", "")
+            if not review_candidate_created:
+                review_candidate_created = proposal_candidate
+        except Exception as exc:
+            _append_collab_log(progress_logs, f"Stage {stage} proposal review queue failed: {exc}")
+
     assistant_message = ""
     if stage == 1:
         msg_lower = message.lower()
@@ -6491,6 +6913,7 @@ async def api_stage_chat(request):
                     merged_output["assistant_summary"] = assistant_message
                     if isinstance(aas_result.get("trace", []), list):
                         merged_output["trace"] = aas_result.get("trace", [])
+                    merged_output = _ensure_analyst_report_v2(merged_output)
                     _set_stage_output(
                         pipeline_state,
                         stage,
@@ -6554,8 +6977,21 @@ async def api_stage_chat(request):
                 _append_collab_log(progress_logs, f"Stage {stage} LLM chat fallback: {reason}")
     if directive_created:
         _append_collab_log(progress_logs, f"Stage {stage} directive saved: {directive_created.get('id')}")
+        if memory_item_created:
+            _append_collab_log(progress_logs, f"Stage {stage} memory item saved: {memory_item_created.get('id')}")
     if proposal_created:
         _append_collab_log(progress_logs, f"Stage {stage} proposal queued: {proposal_created.get('id')}")
+    if review_candidate_created:
+        _append_collab_log(
+            progress_logs,
+            f"Stage {stage} memory review candidate queued: {review_candidate_created.get('id')}",
+        )
+    if memory_item_created:
+        assistant_message += f" Memory item saved ({memory_item_created.get('id', '')})."
+    if review_candidate_created:
+        assistant_message += (
+            f" Learning review candidate queued ({review_candidate_created.get('id', '')}) for approval."
+        )
 
     updated_run = _commit_mutable_run(
         run_id=run_id,
@@ -6575,6 +7011,8 @@ async def api_stage_chat(request):
             "assistant_message": assistant_message,
             "directive": directive_created,
             "proposal": proposal_created,
+            "memory_item": memory_item_created,
+            "review_candidate": review_candidate_created,
             "collaboration": collaboration,
             "run": updated_run,
         }
@@ -7660,6 +8098,11 @@ routes = [
     Route("/api/agents/analyst/analyze-requirement", api_analyst_aas_analyze, methods=["POST"]),
     Route("/api/memory/constraints", api_memory_add_constraint, methods=["POST"]),
     Route("/api/memory/thread", api_memory_thread, methods=["GET"]),
+    Route("/api/memory/items", api_memory_items, methods=["GET", "POST"]),
+    Route("/api/memory/items/{item_id:str}/status", api_memory_item_status, methods=["POST"]),
+    Route("/api/memory/review-queue", api_memory_review_queue, methods=["GET", "POST"]),
+    Route("/api/memory/review-queue/{candidate_id:str}/resolve", api_memory_review_resolve, methods=["POST"]),
+    Route("/api/memory/audit", api_memory_audit, methods=["GET"]),
     Route("/api/settings", api_get_settings, methods=["GET"]),
     Route("/api/settings/integrations/{provider:str}/connect", api_connect_integration, methods=["POST"]),
     Route("/api/settings/integrations/{provider:str}/test", api_test_integration, methods=["POST"]),

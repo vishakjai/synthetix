@@ -57,6 +57,8 @@ class AnalystServiceState(TypedDict, total=False):
     data_classification: list[str]
     memory_constraints: list[dict[str, Any]]
     memory_thread: list[dict[str, Any]]
+    memory_items: list[dict[str, Any]]
+    memory_fingerprint: dict[str, Any]
     capability_mapping: dict[str, Any]
     graph_edges: list[dict[str, Any]]
     vector_context: list[dict[str, Any]]
@@ -81,6 +83,70 @@ def _extract_capability_ids(capability_map: dict[str, Any]) -> list[str]:
         if cid:
             ids.append(cid)
     return ids
+
+
+def _build_memory_fingerprint(
+    *,
+    requirement: str,
+    payload: dict[str, Any],
+    normalized_requirement: dict[str, Any],
+    domain_pack: dict[str, Any],
+) -> dict[str, Any]:
+    req_lower = str(requirement or "").lower()
+    languages: list[str] = []
+    for key in ("source_language", "source_languages", "modernization_language", "target_language"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            languages.extend([str(row).strip() for row in value if str(row).strip()])
+        else:
+            text = str(value or "").strip()
+            if text:
+                languages.append(text)
+    for marker in ("vb6", "asp", "asp.net", "c#", "java", "python", "go", "node", "typescript"):
+        if marker in req_lower:
+            languages.append(marker)
+
+    legacy_signals = list(payload.get("legacy_signals", [])) if isinstance(payload.get("legacy_signals", []), list) else []
+    for marker in ("activex", "ocx", "com", "recordset", "on error resume next", "win32"):
+        if marker in req_lower:
+            legacy_signals.append(marker)
+
+    components: list[str] = []
+    if isinstance(normalized_requirement.get("actors", []), list):
+        components.extend([str(x).strip() for x in normalized_requirement.get("actors", []) if str(x).strip()])
+    if isinstance(normalized_requirement.get("objects", []), list):
+        components.extend([str(x).strip() for x in normalized_requirement.get("objects", []) if str(x).strip()])
+
+    domain_id = str(domain_pack.get("id", "")).strip().lower()
+    domains: list[str] = [domain_id] if domain_id else []
+    if "banking" in domain_id:
+        domains.extend(["banking", "payments"])
+
+    use_case = str(payload.get("use_case", "business_objectives")).strip().lower() or "business_objectives"
+    target_language = str(payload.get("target_language") or payload.get("modernization_language") or "").strip()
+
+    def _dedupe(values: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            clean = str(value).strip()
+            if not clean:
+                continue
+            key = clean.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(clean)
+        return out
+
+    return {
+        "use_case": use_case,
+        "target_language": target_language,
+        "languages": _dedupe(languages),
+        "domains": _dedupe(domains),
+        "components": _dedupe(components),
+        "legacy_signals": _dedupe([str(x).strip() for x in legacy_signals if str(x).strip()]),
+    }
 
 
 def _select_standards(domain_pack: dict[str, Any], capability_ids: list[str]) -> list[dict[str, Any]]:
@@ -240,7 +306,10 @@ def _deterministic_pack(state: AnalystServiceState) -> dict[str, Any]:
             "actors": list(normalized.get("actors", [])) if isinstance(normalized.get("actors", []), list) else [],
             "channels": [],
             "data_elements": [],
-            "constraints_from_user": [str(row.get("text", "")) for row in state.get("memory_constraints", []) if isinstance(row, dict)],
+            "constraints_from_user": [
+                *[str(row.get("text", "")) for row in state.get("memory_constraints", []) if isinstance(row, dict)],
+                *[str(row.get("statement", "")) for row in state.get("memory_items", []) if isinstance(row, dict)],
+            ],
         },
         "domain_mapping": {
             "capabilities": copy.deepcopy(capability_map.get("primary_capabilities", [])),
@@ -376,6 +445,19 @@ class AnalystAASService:
             }
 
         thread_id = str(payload.get("thread_id", "")).strip() or "default-thread"
+        memory_fingerprint = _build_memory_fingerprint(
+            requirement=requirement,
+            payload=payload if isinstance(payload, dict) else {},
+            normalized_requirement=normalized if isinstance(normalized, dict) else {},
+            domain_pack=domain_pack if isinstance(domain_pack, dict) else {},
+        )
+        memory_items = self.memory_store.search_memory_items(
+            scope,
+            requirement,
+            fingerprint=memory_fingerprint,
+            limit=12,
+            statuses=["approved", "proposed"],
+        )
         memory_constraints = self.memory_store.search_constraints(scope, requirement, limit=10)
         memory_thread = self.memory_store.get_thread(scope, thread_id=thread_id, limit=24)
 
@@ -386,6 +468,8 @@ class AnalystAASService:
         state["normalized_requirement"] = normalized
         state["jurisdiction"] = jurisdiction or "GLOBAL"
         state["data_classification"] = data_classification or ["INTERNAL"]
+        state["memory_fingerprint"] = memory_fingerprint
+        state["memory_items"] = memory_items
         state["memory_constraints"] = memory_constraints
         state["memory_thread"] = memory_thread
         self._trace(
@@ -393,7 +477,7 @@ class AnalystAASService:
             "ingest",
             (
                 f"domain_pack={domain_pack.get('id', '')}, persona={persona.get('id', '')}, "
-                f"memory_constraints={len(memory_constraints)}"
+                f"memory_constraints={len(memory_constraints)}, memory_items={len(memory_items)}"
             ),
         )
         return state
@@ -422,6 +506,7 @@ class AnalystAASService:
             [
                 str(state.get("requirement", "")),
                 " ".join([str(row.get("text", "")) for row in state.get("memory_constraints", []) if isinstance(row, dict)]),
+                " ".join([str(row.get("statement", "")) for row in state.get("memory_items", []) if isinstance(row, dict)]),
             ]
         ).strip()
         vector_hits = self.knowledge_gateway.query_vector_context(
@@ -660,6 +745,10 @@ class AnalystAASService:
                     created_by=str(actor or "local-user"),
                     priority=priority,
                     applies_to=str(row.get("applies_to", "all")) if isinstance(row, dict) else "all",
+                    promote_to=str(row.get("promote_to", "work_item")) if isinstance(row, dict) else "work_item",
+                    applies_when=row.get("applies_when", {}) if isinstance(row, dict) else {},
+                    enforcement=row.get("enforcement", {}) if isinstance(row, dict) else {},
+                    evidence_refs=row.get("evidence_refs", []) if isinstance(row, dict) else [],
                 )
 
         return {
@@ -678,6 +767,8 @@ class AnalystAASService:
             },
             "normalized_requirement": final.get("normalized_requirement", {}),
             "memory_constraints": final.get("memory_constraints", []),
+            "memory_items": final.get("memory_items", []),
+            "memory_fingerprint": final.get("memory_fingerprint", {}),
             "graph_edges": final.get("graph_edges", []),
             "vector_context": final.get("vector_context", []),
             "compliance_constraints": final.get("compliance_constraints", []),

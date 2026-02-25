@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.example/schemas/event_map_v1.json",
+  "title": "Synthetix Event Map v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "artifact_version", "metadata", "entries"],
+  "properties": {
+    "artifact_type": { "const": "event_map" },
+    "artifact_version": { "const": "1.0" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated_at", "context_reference", "skill_pack"],
+      "properties": {
+        "generated_at": { "type": "string", "format": "date-time" },
+        "context_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repo", "commit_sha"],
+          "properties": {
+            "repo": { "type": "string" },
+            "commit_sha": { "type": "string" }
+          }
+        },
+        "skill_pack": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version"],
+          "properties": {
+            "id": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["entry_id", "entry_kind", "name", "handler"],
+        "properties": {
+          "entry_id": { "type": "string" },
+          "entry_kind": {
+            "enum": ["ui_event", "api_route", "batch_step", "program_entry", "transaction", "timer", "other"]
+          },
+          "name": { "type": "string" },
+          "container": { "type": "string" },
+          "trigger": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "control": { "type": "string" },
+              "event": { "type": "string" }
+            }
+          },
+          "handler": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["symbol"],
+            "properties": {
+              "symbol": { "type": "string" },
+              "evidence": {
+                "type": "array",
+                "items": { "$ref": "common_evidence_v1.schema.json" },
+                "default": []
+              }
+            }
+          },
+          "calls": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          },
+          "side_effects": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sql_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "tables_or_files": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "writes": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "reads": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "messages": { "type": "array", "items": { "type": "string" }, "default": [] }
+            }
+          },
+          "risk_flags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          }
+        }
+      }
+    }
+  }
+}

@@ -487,6 +487,9 @@ const state = {
     selectedRunId: "",
     loadingRunId: "",
   },
+  analyst: {
+    selectedTab: "spec",
+  },
 };
 
 let mermaidInitialized = false;
@@ -958,45 +961,141 @@ function resolveLegacySkillProfile(output) {
   return Object.keys(direct).length ? direct : fromPack;
 }
 
-function buildAnalystTechReqMarkdown(output) {
-  if (!output || typeof output !== "object") {
-    return "# Technical Requirements Document\n\nNo analyst output available.";
+function normalizeOpenQuestionEntry(entry, index = 0) {
+  if (typeof entry === "string") {
+    const text = String(entry || "").trim();
+    return {
+      id: `Q-${String(index + 1).padStart(3, "0")}`,
+      question: text || "Clarification required",
+      owner: "Unassigned",
+      severity: "medium",
+      context: "",
+    };
   }
-  const revised = String(output.human_revised_document_markdown || "").trim();
-  if (revised) return revised;
+  if (!entry || typeof entry !== "object") {
+    return {
+      id: `Q-${String(index + 1).padStart(3, "0")}`,
+      question: "Clarification required",
+      owner: "Unassigned",
+      severity: "medium",
+      context: "",
+    };
+  }
+  const id = String(entry.id || `Q-${String(index + 1).padStart(3, "0")}`).trim();
+  const question = String(entry.question || entry.text || entry.summary || "").trim() || "Clarification required";
+  const owner = String(entry.owner || entry.assignee || "Unassigned").trim() || "Unassigned";
+  const severityRaw = String(entry.severity || entry.priority || "medium").trim().toLowerCase();
+  const severity = ["blocker", "high", "medium", "low"].includes(severityRaw) ? severityRaw : "medium";
+  const context = String(entry.context || entry.impact || "").trim();
+  return { id, question, owner, severity, context };
+}
 
-  const walkthrough = output.analysis_walkthrough || {};
-  const functional = Array.isArray(output.functional_requirements) ? output.functional_requirements : [];
-  const nonFunctional = Array.isArray(output.non_functional_requirements) ? output.non_functional_requirements : [];
-  const contracts = Array.isArray(output.legacy_functional_contract) ? output.legacy_functional_contract : [];
-  const legacyInventory = resolveLegacyInventory(output);
-  const reqPack = (output.requirements_pack && typeof output.requirements_pack === "object") ? output.requirements_pack : {};
-  const legacySkill = resolveLegacySkillProfile(output);
+function extractTablesFromSqlCatalog(sqlCatalog) {
+  const rows = Array.isArray(sqlCatalog) ? sqlCatalog : [];
+  const found = [];
+  const seen = new Set();
+  rows.forEach((sql) => {
+    const text = String(sql || "");
+    const matches = text.match(/\b(?:from|join|into|update)\s+([a-zA-Z_][\w.]*)/ig) || [];
+    matches.forEach((m) => {
+      const name = String(m || "").replace(/\b(?:from|join|into|update)\s+/i, "").trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      found.push(name);
+    });
+  });
+  return found.slice(0, 24);
+}
+
+function deriveGoldenFlows(uiEventMap, legacyForms, bddFeatures) {
+  const rows = Array.isArray(uiEventMap) ? uiEventMap : [];
+  const flows = [];
+  const seen = new Set();
+  rows.slice(0, 12).forEach((row, idx) => {
+    if (!row || typeof row !== "object") return;
+    const handler = String(row.event_handler || "").trim();
+    const form = String(row.form || "").trim();
+    const control = String(row.control || "").trim();
+    const event = String(row.event || "").trim();
+    const key = `${form}|${control}|${event}|${handler}`.toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    const touched = Array.isArray(row.sql_touches)
+      ? row.sql_touches.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 6)
+      : [];
+    const linked = [];
+    (Array.isArray(bddFeatures) ? bddFeatures : []).forEach((feature) => {
+      const fid = String(feature?.id || "").trim();
+      if (!fid) return;
+      const gherkin = String(feature?.gherkin || "").toLowerCase();
+      if (!gherkin) return;
+      if ((form && gherkin.includes(form.toLowerCase())) || (handler && gherkin.includes(handler.toLowerCase()))) {
+        linked.push(fid);
+      }
+    });
+    flows.push({
+      id: `GF-${String(idx + 1).padStart(3, "0")}`,
+      name: handler || `${form || "Form"} ${event || "flow"}`.trim(),
+      entrypoint: [form, handler || event].filter(Boolean).join("::") || "legacy-flow",
+      tables_touched: touched,
+      expected_outcome: "Behavior matches legacy flow with equivalent side effects.",
+      bdd_scenario_ids: linked.slice(0, 4),
+    });
+  });
+  if (!flows.length) {
+    (Array.isArray(legacyForms) ? legacyForms : []).slice(0, 5).forEach((form, idx) => {
+      const formName = String(form?.form_name || `Form-${idx + 1}`).trim();
+      flows.push({
+        id: `GF-${String(idx + 1).padStart(3, "0")}`,
+        name: `${formName} critical flow`,
+        entrypoint: `${formName}::primary_event`,
+        tables_touched: [],
+        expected_outcome: "Behavior matches legacy flow with equivalent side effects.",
+        bdd_scenario_ids: [],
+      });
+    });
+  }
+  return flows.slice(0, 10);
+}
+
+function isGenericBddFeature(feature) {
+  const gherkin = String(feature?.gherkin || "").trim().toLowerCase();
+  if (!gherkin) return true;
+  return (
+    gherkin.includes("given requirement")
+    || gherkin.includes("when requirement")
+    || gherkin.includes("then requirement")
+  );
+}
+
+function buildAnalystReportV2(output) {
+  const prebuilt = (output?.analyst_report_v2 && typeof output.analyst_report_v2 === "object")
+    ? output.analyst_report_v2
+    : null;
+  if (
+    prebuilt
+    && String(prebuilt.artifact_type || "").trim() === "analyst_report"
+    && String(prebuilt.artifact_version || "").trim() === "2.0"
+  ) {
+    return prebuilt;
+  }
+
+  const safeOutput = (output && typeof output === "object") ? output : {};
+  const reqPack = (safeOutput.requirements_pack && typeof safeOutput.requirements_pack === "object")
+    ? safeOutput.requirements_pack
+    : {};
+  const walkthrough = (safeOutput.analysis_walkthrough && typeof safeOutput.analysis_walkthrough === "object")
+    ? safeOutput.analysis_walkthrough
+    : {};
+  const legacyInventory = resolveLegacyInventory(safeOutput);
   const legacyForms = resolveLegacyForms(legacyInventory);
   const vb6Projects = Array.isArray(legacyInventory.vb6_projects) ? legacyInventory.vb6_projects : [];
-  const legacyRules = resolveBusinessRulesCatalog(output, legacyInventory);
-  const groupedLegacyRules = groupBusinessRulesByType(legacyRules);
+  const legacyRules = resolveBusinessRulesCatalog(safeOutput, legacyInventory);
   const vb6Analysis = (legacyInventory.vb6_analysis && typeof legacyInventory.vb6_analysis === "object")
     ? legacyInventory.vb6_analysis
     : {};
-  const uiEventMap = Array.isArray(legacyInventory.ui_event_map)
-    ? legacyInventory.ui_event_map
-    : (Array.isArray(vb6Analysis.ui_event_map) ? vb6Analysis.ui_event_map : []);
-  const sqlCatalog = Array.isArray(legacyInventory.sql_query_catalog)
-    ? legacyInventory.sql_query_catalog
-    : (Array.isArray(vb6Analysis.sql_query_catalog) ? vb6Analysis.sql_query_catalog : []);
-  const comSurface = (legacyInventory.com_surface_map && typeof legacyInventory.com_surface_map === "object")
-    ? legacyInventory.com_surface_map
-    : ((vb6Analysis.com_surface_map && typeof vb6Analysis.com_surface_map === "object") ? vb6Analysis.com_surface_map : {});
-  const win32Declares = Array.isArray(legacyInventory.win32_declares)
-    ? legacyInventory.win32_declares
-    : (Array.isArray(vb6Analysis.win32_declares) ? vb6Analysis.win32_declares : []);
-  const errorProfile = (legacyInventory.error_handling_profile && typeof legacyInventory.error_handling_profile === "object")
-    ? legacyInventory.error_handling_profile
-    : ((vb6Analysis.error_handling_profile && typeof vb6Analysis.error_handling_profile === "object") ? vb6Analysis.error_handling_profile : {});
-  const pitfallDetectors = Array.isArray(legacyInventory.pitfall_detectors)
-    ? legacyInventory.pitfall_detectors
-    : (Array.isArray(vb6Analysis.pitfall_detectors) ? vb6Analysis.pitfall_detectors : []);
   const readiness = (legacyInventory.modernization_readiness && typeof legacyInventory.modernization_readiness === "object")
     ? legacyInventory.modernization_readiness
     : ((vb6Analysis.modernization_readiness && typeof vb6Analysis.modernization_readiness === "object") ? vb6Analysis.modernization_readiness : {});
@@ -1004,378 +1103,666 @@ function buildAnalystTechReqMarkdown(output) {
     ? legacyInventory.source_target_modernization_profile
     : ((vb6Analysis.source_target_modernization_profile && typeof vb6Analysis.source_target_modernization_profile === "object")
       ? vb6Analysis.source_target_modernization_profile
-      : ((output.source_target_modernization_profile && typeof output.source_target_modernization_profile === "object")
-        ? output.source_target_modernization_profile
+      : ((safeOutput.source_target_modernization_profile && typeof safeOutput.source_target_modernization_profile === "object")
+        ? safeOutput.source_target_modernization_profile
         : ((reqPack.source_target_modernization_profile && typeof reqPack.source_target_modernization_profile === "object")
           ? reqPack.source_target_modernization_profile
           : {})));
-  const projectBusinessSummaries = Array.isArray(legacyInventory.project_business_summaries)
-    ? legacyInventory.project_business_summaries
-    : (Array.isArray(vb6Analysis.project_business_summaries)
-      ? vb6Analysis.project_business_summaries
-      : (Array.isArray(output.project_business_summaries)
-        ? output.project_business_summaries
-        : (Array.isArray(reqPack.project_business_summaries) ? reqPack.project_business_summaries : [])));
-  const fileTypeCoverage = (legacyInventory.vb6_file_type_coverage && typeof legacyInventory.vb6_file_type_coverage === "object")
-    ? legacyInventory.vb6_file_type_coverage
-    : ((vb6Analysis.vb6_file_type_coverage && typeof vb6Analysis.vb6_file_type_coverage === "object") ? vb6Analysis.vb6_file_type_coverage : {});
-  const basModuleSummary = (legacyInventory.bas_module_summary && typeof legacyInventory.bas_module_summary === "object")
-    ? legacyInventory.bas_module_summary
-    : ((vb6Analysis.bas_module_summary && typeof vb6Analysis.bas_module_summary === "object") ? vb6Analysis.bas_module_summary : {});
-  const binaryCompanionFiles = Array.isArray(legacyInventory.binary_companion_files)
-    ? legacyInventory.binary_companion_files
-    : (Array.isArray(vb6Analysis.binary_companion_files) ? vb6Analysis.binary_companion_files : []);
+  const sourceProfile = (sourceTargetProfile.source && typeof sourceTargetProfile.source === "object")
+    ? sourceTargetProfile.source
+    : {};
+  const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object")
+    ? sourceTargetProfile.target
+    : {};
+  const contextRef = (safeOutput.context_reference && typeof safeOutput.context_reference === "object")
+    ? safeOutput.context_reference
+    : ((reqPack.context_reference && typeof reqPack.context_reference === "object") ? reqPack.context_reference : {});
+  const skill = resolveLegacySkillProfile(safeOutput);
+  const fr = Array.isArray(safeOutput.functional_requirements) ? safeOutput.functional_requirements : [];
+  const nfr = Array.isArray(safeOutput.non_functional_requirements) ? safeOutput.non_functional_requirements : [];
+  const openQuestionsRaw = Array.isArray(safeOutput.open_questions)
+    ? safeOutput.open_questions
+    : (Array.isArray(reqPack.open_questions) ? reqPack.open_questions : []);
+  const openQuestions = openQuestionsRaw.map((q, idx) => normalizeOpenQuestionEntry(q, idx));
+  const risks = Array.isArray(safeOutput.risks) ? safeOutput.risks : [];
+  const bddContract = (safeOutput.bdd_contract && typeof safeOutput.bdd_contract === "object")
+    ? safeOutput.bdd_contract
+    : ((reqPack.bdd_contract && typeof reqPack.bdd_contract === "object") ? reqPack.bdd_contract : {});
+  const bddFeatures = Array.isArray(bddContract.features) ? bddContract.features : [];
+  const qualityGatesRaw = Array.isArray(safeOutput.quality_gates)
+    ? safeOutput.quality_gates
+    : (Array.isArray(reqPack.quality_gates) ? reqPack.quality_gates : []);
+  const acceptanceMap = Array.isArray(safeOutput.acceptance_test_mapping)
+    ? safeOutput.acceptance_test_mapping
+    : (Array.isArray(reqPack.acceptance_test_mapping) ? reqPack.acceptance_test_mapping : []);
+  const uiEventMap = Array.isArray(legacyInventory.ui_event_map)
+    ? legacyInventory.ui_event_map
+    : (Array.isArray(vb6Analysis.ui_event_map) ? vb6Analysis.ui_event_map : []);
+  const sqlCatalog = Array.isArray(legacyInventory.sql_query_catalog)
+    ? legacyInventory.sql_query_catalog
+    : (Array.isArray(vb6Analysis.sql_query_catalog) ? vb6Analysis.sql_query_catalog : []);
+  const pitfallDetectors = Array.isArray(legacyInventory.pitfall_detectors)
+    ? legacyInventory.pitfall_detectors
+    : (Array.isArray(vb6Analysis.pitfall_detectors) ? vb6Analysis.pitfall_detectors : []);
+  const activeX = Array.isArray(legacyInventory.activex_controls) ? legacyInventory.activex_controls : [];
+  const eventHandlers = Array.isArray(legacyInventory.event_handlers) ? legacyInventory.event_handlers : [];
+  const controlsCount = vb6Projects.reduce((acc, project) => {
+    const controls = Array.isArray(project?.controls) ? project.controls.length : 0;
+    return acc + controls;
+  }, 0);
   const projectFormCount = vb6Projects.reduce((acc, project) => {
     const explicit = Number(project?.forms_count || 0);
     if (Number.isFinite(explicit) && explicit > 0) return acc + explicit;
     return acc + (Array.isArray(project?.forms) ? project.forms.length : 0);
   }, 0);
-  const formsDisplayCount = Math.max(legacyForms.length, projectFormCount);
-  const activexControls = Array.isArray(legacyInventory.activex_controls) ? legacyInventory.activex_controls : [];
-  const dllDeps = Array.isArray(legacyInventory.dll_dependencies) ? legacyInventory.dll_dependencies : [];
-  const ocxDeps = Array.isArray(legacyInventory.ocx_dependencies) ? legacyInventory.ocx_dependencies : [];
-  const legacyEvents = Array.isArray(legacyInventory.event_handlers) ? legacyInventory.event_handlers : [];
-  const legacyMembers = Array.isArray(legacyInventory.project_members) ? legacyInventory.project_members : [];
-  const legacyTables = Array.isArray(legacyInventory.database_tables) ? legacyInventory.database_tables : [];
-  const legacyProcedures = Array.isArray(legacyInventory.procedures) ? legacyInventory.procedures : [];
-  const legacyInputs = Array.isArray(legacyInventory.input_signals) ? legacyInventory.input_signals : [];
-  const legacySideEffects = Array.isArray(legacyInventory.side_effect_patterns) ? legacyInventory.side_effect_patterns : [];
-  const risks = Array.isArray(output.risks) ? output.risks : [];
-  const domainPack = (output.domain_pack && typeof output.domain_pack === "object")
-    ? output.domain_pack
-    : ((reqPack.domain_pack_ref && typeof reqPack.domain_pack_ref === "object") ? reqPack.domain_pack_ref : {});
-  const capabilityMapping = (output.capability_mapping && typeof output.capability_mapping === "object")
-    ? output.capability_mapping
-    : ((reqPack.capability_mapping && typeof reqPack.capability_mapping === "object") ? reqPack.capability_mapping : {});
-  const regulatoryConstraints = Array.isArray(output.regulatory_constraints)
-    ? output.regulatory_constraints
-    : (Array.isArray(reqPack.regulatory_constraints_applied) ? reqPack.regulatory_constraints_applied : []);
-  const bddContract = (output.bdd_contract && typeof output.bdd_contract === "object")
-    ? output.bdd_contract
-    : ((reqPack.bdd_contract && typeof reqPack.bdd_contract === "object") ? reqPack.bdd_contract : {});
-  const bddFeatures = Array.isArray(bddContract.features) ? bddContract.features : [];
-  const qualityGates = Array.isArray(output.quality_gates) ? output.quality_gates : (Array.isArray(reqPack.quality_gates) ? reqPack.quality_gates : []);
-  const acceptanceMap = Array.isArray(output.acceptance_test_mapping)
-    ? output.acceptance_test_mapping
-    : (Array.isArray(reqPack.acceptance_test_mapping) ? reqPack.acceptance_test_mapping : []);
-  const openQuestions = Array.isArray(output.open_questions) ? output.open_questions : (Array.isArray(reqPack.open_questions) ? reqPack.open_questions : []);
-  const lines = [
-    "# Technical Requirements Document",
-    "",
-    `## Project`,
-    String(output.project_name || "Untitled"),
-    "",
-    "## Executive Summary",
-    String(output.executive_summary || "Not provided"),
-    "",
-    "## Business Objective Summary",
-    String(walkthrough.business_objective_summary || "Not provided"),
-    "",
-    "## Selected Legacy Skill",
-    `- Skill: ${String(legacySkill.selected_skill_name || "Generic Legacy Skill")} (${String(legacySkill.selected_skill_id || "generic_legacy")})`,
-    `- Confidence: ${String(legacySkill.confidence || "n/a")}`,
-    `- Rationale: ${Array.isArray(legacySkill.reasons) ? legacySkill.reasons.map((x) => String(x || "")).filter(Boolean).join("; ") || "n/a" : "n/a"}`,
-    "",
-    "## Requirements Understanding",
-  ];
-  (Array.isArray(walkthrough.requirements_understanding) ? walkthrough.requirements_understanding : []).forEach((item) => {
-    lines.push(`- ${String(item || "")}`);
-  });
-  if (!Array.isArray(walkthrough.requirements_understanding) || !walkthrough.requirements_understanding.length) lines.push("- Not provided");
-  lines.push("", "## Conversion to Technical Requirements");
-  (Array.isArray(walkthrough.conversion_to_technical_requirements) ? walkthrough.conversion_to_technical_requirements : []).forEach((item) => {
-    lines.push(`- ${String(item || "")}`);
-  });
-  if (!Array.isArray(walkthrough.conversion_to_technical_requirements) || !walkthrough.conversion_to_technical_requirements.length) lines.push("- Not provided");
-
-  lines.push("", "## Functional Requirements");
-  functional.forEach((item, idx) => {
-    lines.push(
-      "",
-      `### ${String(item.id || `FR-${idx + 1}`)} ${String(item.title || "").trim()}`.trim(),
-      String(item.description || "No description"),
-      "",
-      "Acceptance criteria:"
-    );
-    const ac = Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria : [];
-    if (!ac.length) lines.push("- None provided");
-    ac.forEach((criteria) => lines.push(`- ${String(criteria || "")}`));
-  });
-  if (!functional.length) lines.push("- None provided");
-
-  lines.push("", "## Non-Functional Requirements");
-  nonFunctional.forEach((item, idx) => {
-    lines.push(
-      "",
-      `### ${String(item.id || `NFR-${idx + 1}`)} ${String(item.title || "").trim()}`.trim(),
-      String(item.description || "No description"),
-      `Metric: ${String(item.metric || "Not specified")}`,
-      "",
-      "Acceptance criteria:"
-    );
-    const ac = Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria : [];
-    if (!ac.length) lines.push("- None provided");
-    ac.forEach((criteria) => lines.push(`- ${String(criteria || "")}`));
-  });
-  if (!nonFunctional.length) lines.push("- None provided");
-
-  lines.push("", "## Legacy Functional Contract");
-  contracts.forEach((item) => {
-    const name = String(item.function_name || "function");
-    const inputs = Array.isArray(item.inputs) ? item.inputs.join(", ") : "";
-    const outputs = Array.isArray(item.outputs) ? item.outputs.join(", ") : "";
-    lines.push(`- ${name} | Inputs: ${inputs || "n/a"} | Outputs: ${outputs || "n/a"}`);
-  });
-  if (!contracts.length) lines.push("- Not provided");
-
-  lines.push("", "## Legacy Code Inventory");
-  lines.push(String(legacyInventory.summary || "No granular legacy inventory available."));
-  lines.push("", `### VB6 projects (${vb6Projects.length})`);
-  vb6Projects.forEach((project, idx) => {
-    const projectName = String(project.project_name || `VB6-Project-${idx + 1}`);
-    const projectFile = String(project.project_file || "n/a");
-    const projectType = String(project.project_type || "unknown");
-    const startup = String(project.startup_object || "n/a");
-    const memberCount = Number(project.member_count || 0);
-    const members = Array.isArray(project.member_files) ? project.member_files : [];
-    const forms = Array.isArray(project.forms) ? project.forms : [];
-    const controls = Array.isArray(project.controls) ? project.controls : [];
-    const activex = Array.isArray(project.activex_dependencies) ? project.activex_dependencies : [];
-    const objective = String(project.business_objective_hypothesis || "").trim();
-    const capabilities = Array.isArray(project.key_business_capabilities) ? project.key_business_capabilities : [];
-    const workflows = Array.isArray(project.primary_workflows) ? project.primary_workflows : [];
-    const technical = (project.technical_components && typeof project.technical_components === "object") ? project.technical_components : {};
-    const touchpoints = (project.data_touchpoints && typeof project.data_touchpoints === "object") ? project.data_touchpoints : {};
-    const integrationHints = Array.isArray(technical.integration_hints) ? technical.integration_hints : [];
-    const tables = Array.isArray(touchpoints.tables) ? touchpoints.tables : [];
-    const procedures = Array.isArray(touchpoints.procedures) ? touchpoints.procedures : [];
-    const inputSignals = Array.isArray(touchpoints.input_signals) ? touchpoints.input_signals : [];
-    const outputSignals = Array.isArray(touchpoints.output_signals) ? touchpoints.output_signals : [];
-    const modernization = Array.isArray(project.modernization_considerations) ? project.modernization_considerations : [];
-    lines.push(`- ${projectName} | file: ${projectFile} | type: ${projectType} | startup: ${startup}`);
-    if (objective) lines.push(`  - Business objective hypothesis: ${objective}`);
-    if (capabilities.length) lines.push(`  - Key business capabilities: ${capabilities.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
-    lines.push(`  - Members (${memberCount || members.length}): ${members.slice(0, 25).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-    lines.push(`  - Forms (${forms.length}): ${forms.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-    lines.push(`  - Controls (${controls.length}): ${controls.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-    lines.push(`  - ActiveX/COM (${activex.length}): ${activex.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-    lines.push(`  - Data touchpoints | tables: ${tables.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"} | procedures: ${procedures.slice(0, 20).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"}`);
-    lines.push(`  - I/O signals | inputs: ${inputSignals.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"} | outputs: ${outputSignals.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"}`);
-    if (integrationHints.length) lines.push(`  - Integration hints: ${integrationHints.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
-    if (workflows.length) lines.push(`  - Primary workflows: ${workflows.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(" | ")}`);
-    if (modernization.length) lines.push(`  - Modernization considerations: ${modernization.slice(0, 10).map((x) => String(x || "")).filter(Boolean).join(" | ")}`);
-  });
-  if (!vb6Projects.length) lines.push("- No VB6 project-level metadata extracted.");
-  lines.push("", "### VB6 file-type coverage");
-  const fileTypeRows = Object.entries(fileTypeCoverage || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  lines.push(`- Coverage: ${fileTypeRows.map(([k, v]) => `${String(k)}=${String(v)}`).join(", ") || "none"}`);
-  lines.push(`- .bas module summary: modules=${String(basModuleSummary.module_count ?? 0)}, procedures=${String(basModuleSummary.procedure_count ?? 0)}`);
-  if (Array.isArray(basModuleSummary.modules) && basModuleSummary.modules.length) {
-    lines.push(`- .bas modules: ${basModuleSummary.modules.slice(0, 40).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
-  }
-  if (binaryCompanionFiles.length) {
-    lines.push(`- Binary companions (${binaryCompanionFiles.length}): ${binaryCompanionFiles.slice(0, 40).map((row) => String(row.path || "")).filter(Boolean).join(", ")}`);
-  }
-  lines.push("", `### Project-by-project business summary (${projectBusinessSummaries.length})`);
-  projectBusinessSummaries.forEach((row, idx) => {
-    const projectName = String(row.project_name || `Project-${idx + 1}`);
-    const objective = String(row.business_objective || "").trim();
-    const capabilities = Array.isArray(row.business_capabilities) ? row.business_capabilities : [];
-    const workflows = Array.isArray(row.primary_workflows) ? row.primary_workflows : [];
-    const technical = (row.technical_components && typeof row.technical_components === "object") ? row.technical_components : {};
-    const dependencies = Array.isArray(technical.dependencies) ? technical.dependencies : [];
-    const risk = (row.risk && typeof row.risk === "object") ? row.risk : {};
-    const variants = (row.summary_variants && typeof row.summary_variants === "object") ? row.summary_variants : {};
-    lines.push(`- ${projectName} | risk=${String(risk.tier || "n/a")} (${String(risk.score ?? "n/a")})`);
-    if (objective) lines.push(`  - Objective: ${objective}`);
-    if (capabilities.length) lines.push(`  - Capabilities: ${capabilities.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
-    if (workflows.length) lines.push(`  - Workflows: ${workflows.slice(0, 12).map((x) => String(x || "")).filter(Boolean).join(" | ")}`);
-    lines.push(`  - Components: forms=${Array.isArray(technical.forms) ? technical.forms.length : 0}, controls=${Array.isArray(technical.controls) ? technical.controls.length : 0}, dependencies=${dependencies.length}`);
-    if (String(variants.quick || "").trim()) lines.push(`  - Quick summary: ${String(variants.quick || "").trim()}`);
-    if (String(variants.technical || "").trim()) lines.push(`  - Technical summary: ${String(variants.technical || "").trim()}`);
-    if (String(variants.risk || "").trim()) lines.push(`  - Risk summary: ${String(variants.risk || "").trim()}`);
-  });
-  if (!projectBusinessSummaries.length) lines.push("- No per-project business summary generated.");
-
-  lines.push("", `### Forms and business use (${formsDisplayCount})`);
-  if (formsDisplayCount !== legacyForms.length) {
-    lines.push(`- Showing ${legacyForms.length} extracted form entries; project inventory indicates ${formsDisplayCount} total forms/usercontrols.`);
-  }
-  legacyForms.forEach((form, idx) => {
-    const formType = String(form.form_type || "Form");
-    const formName = String(form.form_name || `Form-${idx + 1}`);
-    const businessUse = String(form.business_use || "Business workflow executed through event-driven UI controls.");
-    const controls = Array.isArray(form.controls) ? form.controls : [];
-    const handlers = Array.isArray(form.event_handlers) ? form.event_handlers : [];
-    lines.push(`- ${formType} ${formName} | Business use: ${businessUse}`);
-    lines.push(`  - Controls (${controls.length}): ${controls.slice(0, 25).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-    lines.push(`  - Event handlers (${handlers.length}): ${handlers.slice(0, 25).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  });
-  if (!legacyForms.length) lines.push("- No VB6 form/usercontrol metadata extracted.");
-
-  lines.push("", `### Business Rules catalog (${legacyRules.length})`);
-  if (groupedLegacyRules.length) {
-    lines.push(`- Rule groups: ${groupedLegacyRules.map((g) => `${g.label} (${g.count})`).join(", ")}`);
-  }
-  groupedLegacyRules.forEach((group) => {
-    lines.push(`- ${group.label} (${group.count})`);
-    group.rules.forEach((rule, idx) => {
-      const rid = String(rule.id || `BR-${String(idx + 1).padStart(3, "0")}`);
-      const statement = String(rule.statement || "");
-      const scope = String(rule.scope || "legacy-code");
-      const evidence = String(rule.evidence || "");
-      lines.push(`  - ${rid}: ${statement}`);
-      lines.push(`    - Scope: ${scope}`);
-      if (evidence) lines.push(`    - Evidence: ${evidence}`);
+  const formsCount = Math.max(legacyForms.length, projectFormCount);
+  const inferredTables = Array.isArray(legacyInventory.database_tables) ? legacyInventory.database_tables : [];
+  const tablesTouched = [...new Set([
+    ...inferredTables.map((x) => String(x || "").trim()).filter(Boolean),
+    ...extractTablesFromSqlCatalog(sqlCatalog),
+  ])].slice(0, 12);
+  const readinessScoreRaw = Number(readiness.score);
+  const readinessScore = Number.isFinite(readinessScoreRaw)
+    ? Math.max(0, Math.min(100, Math.round(readinessScoreRaw)))
+    : 60;
+  const riskTier = String(readiness.risk_tier || "").trim().toLowerCase();
+  const normalizedRiskTier = ["low", "medium", "high"].includes(riskTier) ? riskTier : (readinessScore < 45 ? "high" : (readinessScore < 75 ? "medium" : "low"));
+  const topRiskDrivers = [];
+  pitfallDetectors
+    .slice()
+    .sort((a, b) => Number(b?.count || 0) - Number(a?.count || 0))
+    .slice(0, 3)
+    .forEach((det, idx) => {
+      topRiskDrivers.push({
+        id: String(det?.id || `DET-${idx + 1}`),
+        severity: String(det?.severity || "medium").toLowerCase(),
+        description: `${String(det?.id || "Detector")} count=${Number(det?.count || 0)}${String(det?.evidence || "").trim() ? ` | ${String(det.evidence).trim()}` : ""}`,
+        mitigation: "Add targeted migration playbooks and parity tests for this detector pattern.",
+        evidence_refs: [String(det?.id || `DET-${idx + 1}`)],
+      });
+    });
+  risks.slice(0, 3).forEach((risk, idx) => {
+    topRiskDrivers.push({
+      id: String(risk?.id || `RISK-${idx + 1}`),
+      severity: String(risk?.impact || "medium").toLowerCase(),
+      description: String(risk?.description || "Legacy modernization risk identified."),
+      mitigation: String(risk?.mitigation || "Add explicit mitigation plan and gate checks."),
+      evidence_refs: [],
     });
   });
-  if (!legacyRules.length) lines.push("- No deterministic business rules extracted from legacy code.");
+  const blockingDecisions = [
+    {
+      id: "DEC-UI-001",
+      question: "Target UI framework selection for migrated forms",
+      options: ["WinForms", "WPF", "Web UI"],
+      default_recommendation: "WinForms for lowest event-model delta from VB6 unless UX redesign is in-scope.",
+      impact_if_wrong: "High rework risk in form/event parity and control migration.",
+    },
+    {
+      id: "DEC-OCX-001",
+      question: "ActiveX/OCX replacement strategy by dependency",
+      options: ["Replace", "Wrap temporarily", "Isolate and defer"],
+      default_recommendation: "Replace common controls; isolate high-risk dependencies behind adapters.",
+      impact_if_wrong: "Runtime regressions and release delays from unresolved OCX behavior.",
+    },
+    {
+      id: "DEC-DB-001",
+      question: "Database contract strategy during migration",
+      options: ["Preserve schema/queries", "Introduce migration layer", "Redesign schema"],
+      default_recommendation: "Preserve contracts initially; migrate behind compatibility layer.",
+      impact_if_wrong: "Business rule drift and data-side regressions.",
+    },
+  ];
+  openQuestions
+    .filter((q) => q.severity === "blocker" || q.severity === "high")
+    .slice(0, 3)
+    .forEach((q) => {
+      blockingDecisions.push({
+        id: String(q.id || "DEC-Q"),
+        question: String(q.question || "Open clarification"),
+        options: [],
+        default_recommendation: "Resolve with product/business owner before implementation commit.",
+        impact_if_wrong: "Execution ambiguity and acceptance test churn.",
+      });
+    });
+  const nonBlockingDecisions = [
+    {
+      id: "DEC-OBS-001",
+      question: "Logging/observability stack for migrated runtime",
+      options: ["OpenTelemetry + structured logs", "Basic logs only"],
+      default_recommendation: "OpenTelemetry + structured logs for parity troubleshooting.",
+      impact_if_wrong: "Lower diagnosability during phased cutover.",
+    },
+  ];
 
-  lines.push("", "### VB6 modernization readiness");
-  lines.push(`- Score: ${String(readiness.score ?? "n/a")}/100`);
-  lines.push(`- Risk tier: ${String(readiness.risk_tier || "n/a")}`);
-  lines.push(`- Recommended strategy: ${String(readiness.recommended_strategy?.name || readiness.recommended_strategy?.id || "n/a")}`);
-  if (String(readiness.recommended_strategy?.rationale || "").trim()) {
-    lines.push(`- Rationale: ${String(readiness.recommended_strategy.rationale)}`);
-  }
-  const requiredActions = Array.isArray(readiness.required_actions) ? readiness.required_actions : [];
-  if (requiredActions.length) {
-    lines.push(`- Required actions: ${requiredActions.slice(0, 16).map((x) => String(x || "")).filter(Boolean).join(", ")}`);
-  }
-  const sourceProfile = (sourceTargetProfile.source && typeof sourceTargetProfile.source === "object") ? sourceTargetProfile.source : {};
-  const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object") ? sourceTargetProfile.target : {};
-  const summaryVariants = (sourceTargetProfile.summary_variants && typeof sourceTargetProfile.summary_variants === "object")
-    ? sourceTargetProfile.summary_variants
-    : {};
-  const modernizationRisks = Array.isArray(sourceTargetProfile.modernization_risks) ? sourceTargetProfile.modernization_risks : [];
-  lines.push("", "### Source and target modernization profile");
-  lines.push(`- Source: ${String(sourceProfile.language || "Unknown")} | ecosystem=${String(sourceProfile.ecosystem || "n/a")} | repo=${String(sourceProfile.repo || "n/a")} | projects=${String(sourceProfile.project_count ?? "n/a")}`);
-  lines.push(`- Target: ${String(targetProfile.language || "Not specified")} | platform=${String(targetProfile.platform || "n/a")} | deployment=${String(targetProfile.deployment_target || "n/a")} | repo=${String(targetProfile.repo || "n/a")}`);
-  if (String(summaryVariants.brief || "").trim()) lines.push(`- Brief summary: ${String(summaryVariants.brief).trim()}`);
-  if (String(summaryVariants.technical || "").trim()) lines.push(`- Technical summary: ${String(summaryVariants.technical).trim()}`);
-  if (String(summaryVariants.risk || "").trim()) lines.push(`- Risk summary: ${String(summaryVariants.risk).trim()}`);
-  if (modernizationRisks.length) {
-    lines.push("- Modernization risks:");
-    modernizationRisks.slice(0, 12).forEach((risk) => lines.push(`  - ${String(risk || "").trim()}`));
-  }
-
-  lines.push("", `### Pitfall detectors (${pitfallDetectors.length})`);
-  pitfallDetectors.forEach((row) => {
-    lines.push(`- ${String(row.id || "VB6-DET")} [${String(row.severity || "medium")}] count=${String(row.count || 0)} | ${String(row.evidence || "")}`);
+  const backlogItems = [];
+  fr.forEach((item, idx) => {
+    const reqId = String(item?.id || `FR-${String(idx + 1).padStart(3, "0")}`);
+    backlogItems.push({
+      id: reqId,
+      type: "functional",
+      priority: String(item?.priority || "P1").toUpperCase(),
+      title: String(item?.title || reqId),
+      outcome: String(item?.description || "Deliver functional parity for this requirement."),
+      acceptance_criteria: Array.isArray(item?.acceptance_criteria) ? item.acceptance_criteria.map((x) => String(x || "")).filter(Boolean) : [],
+      depends_on: [],
+      evidence_expected: ["traceability_matrix", "functional_test_report"],
+    });
   });
-  if (!pitfallDetectors.length) lines.push("- No detector hits");
-
-  lines.push("", `### UI Event Map (${uiEventMap.length})`);
-  uiEventMap.slice(0, 40).forEach((row) => {
-    const handler = String(row.event_handler || "handler");
-    const form = String(row.form || "n/a");
-    const control = String(row.control || "n/a");
-    const evt = String(row.event || "n/a");
-    const calls = Array.isArray(row.procedure_calls) ? row.procedure_calls.slice(0, 6).join(", ") : "";
-    const sql = Array.isArray(row.sql_touches) ? row.sql_touches.slice(0, 2).join(" | ") : "";
-    lines.push(`- ${handler} | form=${form} | control=${control} | event=${evt}`);
-    if (calls) lines.push(`  - Calls: ${calls}`);
-    if (sql) lines.push(`  - SQL touches: ${sql}`);
+  nfr.forEach((item, idx) => {
+    const reqId = String(item?.id || `NFR-${String(idx + 1).padStart(3, "0")}`);
+    backlogItems.push({
+      id: reqId,
+      type: "non_functional",
+      priority: "P1",
+      title: String(item?.title || reqId),
+      outcome: String(item?.description || "Deliver non-functional controls."),
+      acceptance_criteria: Array.isArray(item?.acceptance_criteria) ? item.acceptance_criteria.map((x) => String(x || "")).filter(Boolean) : [],
+      depends_on: [],
+      evidence_expected: ["nfr_validation_report", "quality_gate_report"],
+    });
   });
-  if (!uiEventMap.length) lines.push("- No UI event map extracted");
 
-  lines.push("", `### SQL Query Catalog (${sqlCatalog.length})`);
-  sqlCatalog.slice(0, 40).forEach((q) => lines.push(`- ${String(q || "")}`));
-  if (!sqlCatalog.length) lines.push("- No SQL query literals extracted");
-
-  lines.push("", `### ActiveX/COM dependencies (${activexControls.length})`);
-  lines.push(`- ${activexControls.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push("", "### COM Surface Map");
-  lines.push(`- Late-bound ProgIDs: ${(Array.isArray(comSurface.late_bound_progids) ? comSurface.late_bound_progids : []).slice(0, 40).map((x) => String(x || "")).filter(Boolean).join(", ") || "none"}`);
-  lines.push(`- CallByName sites: ${String(comSurface.call_by_name_sites || 0)}`);
-  lines.push(`- CreateObject/GetObject sites: ${String(comSurface.createobject_getobject_sites || 0)}`);
-  lines.push("", `### DLL dependencies (${dllDeps.length})`);
-  lines.push(`- ${dllDeps.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push("", `### OCX dependencies (${ocxDeps.length})`);
-  lines.push(`- ${ocxDeps.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push("", `### Win32 Declares (${win32Declares.length})`);
-  lines.push(`- ${win32Declares.slice(0, 80).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push("", `### Event handlers (${legacyEvents.length})`);
-  lines.push(`- ${legacyEvents.slice(0, 120).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push("", `### Project members (${legacyMembers.length})`);
-  lines.push(`- ${legacyMembers.slice(0, 120).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push("", "### Error Handling Profile");
-  lines.push(`- On Error Resume Next: ${String(errorProfile.on_error_resume_next || 0)}`);
-  lines.push(`- On Error GoTo: ${String(errorProfile.on_error_goto || 0)}`);
-  lines.push(`- On Error GoTo 0: ${String(errorProfile.on_error_goto0 || 0)}`);
-  lines.push(`- Control array markers: ${String(errorProfile.control_array_index_markers || 0)}`);
-  lines.push(`- Late-bound COM calls: ${String(errorProfile.late_bound_com_calls || 0)}`);
-  lines.push(`- Variant declarations: ${String(errorProfile.variant_declarations || 0)}`);
-  lines.push(`- Default instance refs: ${String(errorProfile.default_instance_references || 0)}`);
-  lines.push(`- DoEvents calls: ${String(errorProfile.doevents_calls || 0)}`);
-  lines.push(`- Registry operations: ${String(errorProfile.registry_operations || 0)}`);
-  lines.push("", "### Other modernization-critical elements");
-  lines.push(`- Database tables/entities: ${legacyTables.slice(0, 60).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push(`- Procedures/subroutines: ${legacyProcedures.slice(0, 120).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push(`- Input signals: ${legacyInputs.slice(0, 60).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-  lines.push(`- Side effects: ${legacySideEffects.slice(0, 60).map((x) => String(x || "")).filter(Boolean).join(", ") || "none extracted"}`);
-
-  lines.push("", "## Risks");
-  risks.forEach((risk) => {
-    lines.push(
-      `- ${String(risk.impact || "unknown").toUpperCase()}: ${String(risk.description || "")} | Mitigation: ${String(risk.mitigation || "")}`
-    );
+  const goldenFlows = deriveGoldenFlows(uiEventMap, legacyForms, bddFeatures);
+  const genericBddCount = bddFeatures.filter((feature) => isGenericBddFeature(feature)).length;
+  const bddGate = {
+    id: "bdd_flow_grounding",
+    result: genericBddCount > 0 ? "warn" : "pass",
+    description: genericBddCount > 0
+      ? `${genericBddCount} BDD feature(s) appear generic; ground scenarios in real form/event entrypoints.`
+      : "BDD scenarios are grounded in extracted legacy flows.",
+    remediation: genericBddCount > 0 ? "Regenerate BDD from UI Event Map golden flows." : "",
+  };
+  const qualityGates = qualityGatesRaw.map((gate, idx) => {
+    const status = String(gate?.status || "").trim().toLowerCase();
+    return {
+      id: String(gate?.id || gate?.name || `gate_${idx + 1}`),
+      result: status === "pass" ? "pass" : (status === "fail" ? "fail" : "warn"),
+      description: String(gate?.message || gate?.name || "Quality gate result"),
+      remediation: status === "fail" ? "Address gate failure before progression." : "",
+    };
   });
-  if (!risks.length) lines.push("- None");
+  qualityGates.push(bddGate);
 
-  lines.push("", "## Domain Pack");
-  lines.push(`- ID: ${String(domainPack.id || "software-general-v1")}`);
-  lines.push(`- Name: ${String(domainPack.name || "General Software Domain Pack")}`);
-  lines.push(`- Version: ${String(domainPack.version || "1.0.0")}`);
+  const traceabilityLinks = (Array.isArray(reqPack?.traceability?.links) ? reqPack.traceability.links : [])
+    .map((row) => {
+      const from = String(row?.from || "").trim();
+      const to = String(row?.to || "").trim();
+      const type = String(row?.type || "").trim();
+      if (!from || !to || !type) return null;
+      return { from, to, type };
+    })
+    .filter(Boolean);
 
-  lines.push("", "## Capability Mapping");
-  lines.push(`Framework: ${String(capabilityMapping.framework || "Not specified")}`);
-  const primaryCaps = Array.isArray(capabilityMapping.primary_capabilities) ? capabilityMapping.primary_capabilities : [];
-  primaryCaps.forEach((cap) => {
-    lines.push(
-      `- ${String(cap.id || "capability")} | ${String(cap.service_domain || "")} | ${String(cap.business_capability || "")} | confidence=${String(cap.confidence || "")}`
-    );
+  const testMatrix = acceptanceMap.map((entry) => ({
+    requirement_id: String(entry?.requirement_id || "").trim(),
+    test_types: Array.isArray(entry?.test_types) ? entry.test_types.map((x) => String(x || "").toLowerCase()).filter(Boolean) : [],
+    scenario_ids: Array.isArray(entry?.bdd_scenarios) ? entry.bdd_scenarios.map((x) => String(x || "")).filter(Boolean) : [],
+  })).filter((row) => row.requirement_id);
+
+  const report = {
+    artifact_type: "analyst_report",
+    artifact_version: "2.0",
+    metadata: {
+      project: {
+        name: String(safeOutput.project_name || "Untitled"),
+        objective: String(walkthrough.business_objective_summary || safeOutput.executive_summary || "Objective not captured."),
+        domain: String(reqPack?.project?.domain || "software"),
+        audience_modes: ["client", "engineering"],
+      },
+      generated_at: new Date().toISOString(),
+      skill_pack: {
+        id: String(skill.selected_skill_id || "generic_legacy"),
+        name: String(skill.selected_skill_name || "Generic Legacy Skill"),
+        version: String(skill.version || "1.0.0"),
+        confidence: Number(skill.confidence || 0),
+        rationale: Array.isArray(skill.reasons) ? skill.reasons.map((x) => String(x || "")).filter(Boolean).join(" | ") : "",
+      },
+      context_reference: {
+        repo: String(contextRef.repo || contextRef.repo_url || sourceProfile.repo || ""),
+        branch: String(contextRef.branch || "main"),
+        commit_sha: String(contextRef.commit_sha || ""),
+        version_id: String(contextRef.version_id || ""),
+        scm_version: String(contextRef.scm_version || "1.0"),
+        cp_version: String(contextRef.cp_version || "1.0"),
+        ha_version: String(contextRef.ha_version || "1.0"),
+      },
+    },
+    decision_brief: {
+      at_a_glance: {
+        readiness_score: readinessScore,
+        risk_tier: normalizedRiskTier,
+        inventory_summary: {
+          projects: vb6Projects.length,
+          forms: formsCount,
+          controls: controlsCount,
+          dependencies: activeX.length,
+          event_handlers: eventHandlers.length,
+          tables_touched: tablesTouched,
+        },
+        headline: String(readiness.recommended_strategy?.name || "Phased modernization") + " recommended.",
+      },
+      recommended_strategy: {
+        name: String(readiness.recommended_strategy?.name || "Phased modernization"),
+        rationale: String(readiness.recommended_strategy?.rationale || "Preserve behavior first, then modernize in controlled phases."),
+        phases: [
+          {
+            id: "PH0",
+            title: "Baseline and equivalence harness",
+            outcome: "Capture golden flows and baseline outputs.",
+            exit_criteria: ["Golden flows agreed", "Baseline outputs captured", "Parity checks defined"],
+          },
+          {
+            id: "PH1",
+            title: "Incremental migration and dependency replacement",
+            outcome: "Migrate forms/modules with OCX/COM risk controls.",
+            exit_criteria: ["P0 flows migrated", "Critical dependencies addressed", "Regression suite passing"],
+          },
+          {
+            id: "PH2",
+            title: "Hardening and release evidence",
+            outcome: "Finalize quality gates and publish evidence pack.",
+            exit_criteria: ["Quality gates pass", "Traceability complete", "Release readiness approved"],
+          },
+        ],
+      },
+      decisions_required: {
+        blocking: blockingDecisions.slice(0, 8),
+        non_blocking: nonBlockingDecisions,
+      },
+      top_risks: topRiskDrivers.slice(0, 8),
+      next_steps: [
+        {
+          id: "NS-001",
+          title: "Confirm blocking decisions and freeze modernization scope",
+          owner_role: "Tech Lead",
+          done_when: ["Blocking decisions approved", "Backlog dependencies resolved"],
+        },
+        {
+          id: "NS-002",
+          title: "Implement golden flow harness for parity validation",
+          owner_role: "QA Lead",
+          done_when: ["Golden flow tests created", "Baseline artifacts stored"],
+        },
+      ],
+    },
+    delivery_spec: {
+      scope: {
+        in_scope: [
+          "Preserve legacy business behavior and workflows",
+          "Migrate UI and code to target stack",
+          "Control dependency and data-side risks during migration",
+        ],
+        out_of_scope: Array.isArray(reqPack.out_of_scope) ? reqPack.out_of_scope.map((x) => String(x || "")).filter(Boolean) : [],
+      },
+      constraints: {
+        musts: [
+          "No critical workflow regression for P0 flows",
+          "Traceability from requirements to tests and evidence artifacts",
+        ],
+        shoulds: [
+          "Phased rollout with rollback points",
+          "Preserve DB contracts unless explicitly approved to change",
+        ],
+      },
+      backlog: {
+        items: backlogItems.slice(0, 80),
+      },
+      testing_and_evidence: {
+        golden_flows: goldenFlows,
+        test_matrix: testMatrix,
+        evidence_outputs: [
+          { type: "traceability_matrix", path_hint: "artifacts/evidence/traceability-matrix.json", description: "Requirement-to-test traceability" },
+          { type: "quality_gate_report", path_hint: "artifacts/evidence/quality-gates.json", description: "Gate outcomes and remediation" },
+          { type: "golden_flow_diff", path_hint: "artifacts/evidence/golden-flow-diff.json", description: "Legacy vs modernized output parity" },
+        ],
+        quality_gates: qualityGates.slice(0, 20),
+      },
+      traceability: {
+        links: traceabilityLinks,
+      },
+      open_questions: openQuestions,
+    },
+    appendix: {
+      artifact_refs: {
+        legacy_inventory_ref: "artifact://analyst/raw/legacy_inventory/v1",
+        event_map_ref: "artifact://analyst/raw/event_map/v1",
+        sql_catalog_ref: "artifact://analyst/raw/sql_catalog/v1",
+        sql_map_ref: "artifact://analyst/raw/sql_map/v1",
+        procedure_summary_ref: "artifact://analyst/raw/procedure_summary/v1",
+        dependency_list_ref: "artifact://analyst/raw/dependency_inventory/v1",
+        dependency_inventory_ref: "artifact://analyst/raw/dependency_inventory/v1",
+        business_rules_ref: "artifact://analyst/raw/business_rule_catalog/v1",
+        detector_findings_ref: "artifact://analyst/raw/detector_findings/v1",
+        delivery_constitution_ref: "artifact://analyst/raw/delivery_constitution/v1",
+        artifact_index_ref: "artifact://analyst/raw/artifact_index/v1",
+      },
+      high_volume_sections: {
+        legacy_inventory: legacyInventory,
+        event_map: uiEventMap,
+        sql_catalog: sqlCatalog,
+        dependencies: activeX,
+        business_rules: legacyRules,
+      },
+    },
+    spec_kit_decomposition: {
+      artifact_type: "spec_kit_projection",
+      artifact_version: "1.0",
+      discovery_spec: {
+        title: "Legacy discovery spec",
+        objective: String(analysisWalk.business_objective_summary || output.executive_summary || "Objective not captured."),
+        inventory_counts: {
+          projects: vb6Projects.length,
+          forms: formsCount,
+          dependencies: activeX.length,
+          procedures: uiEventMap.length,
+          sql_map_entries: sqlCatalog.length,
+        },
+        key_user_stories: [
+          `As a modernization engineer, I need a deterministic map of ${formsCount} UI flows to avoid behavioral drift.`,
+          "As a delivery lead, I need explicit clarification markers to avoid speculative implementation.",
+          "As QA, I need event-to-query evidence to build equivalence tests.",
+        ],
+        needs_clarification: openQuestions.map((q, idx) => normalizeOpenQuestionEntry(q, idx)),
+      },
+      modernization_plan: {
+        title: "Modernization implementation plan",
+        strategy: String(readiness.recommended_strategy?.name || "Phased modernization"),
+        rationale: String(readiness.recommended_strategy?.rationale || "Preserve behavior first, then modernize in controlled phases."),
+        phases: [
+          { id: "PH0", title: "Baseline and equivalence harness" },
+          { id: "PH1", title: "Incremental migration and dependency replacement" },
+          { id: "PH2", title: "Hardening and release evidence" },
+        ],
+        backlog_items: backlogItems.length,
+        blocking_decisions: blockingDecisions.length,
+      },
+      executable_contracts: {
+        title: "Executable contracts",
+        golden_flow_count: goldenFlows.length,
+        test_matrix_rows: testMatrix.length,
+        quality_gate_count: qualityGates.length,
+        grounding_status: qualityGates.some((g) => String(g.id || "") === "bdd_flow_grounding" && String(g.result || "") === "warn")
+          ? "needs_improvement"
+          : "grounded",
+        traceability_links: traceabilityLinks.length,
+      },
+      constitution: {
+        principles: [
+          "Preserve critical legacy behavior first; modernization must prove functional equivalence.",
+          "Every modernization decision must map to explicit evidence (code, query, event, or rule).",
+          "No breaking change to data contracts without approved migration path and rollback evidence.",
+        ],
+      },
+    },
+  };
+  return report;
+}
+
+function buildAnalystTechReqMarkdown(output, options = {}) {
+  if (!output || typeof output !== "object") return "# Modernization Brief\n\nNo analyst output available.";
+  const revised = String(output.human_revised_document_markdown || "").trim();
+  if (revised) return revised;
+  const mode = String(options.mode || "full").trim().toLowerCase();
+  const includeDetailedAppendix = mode !== "summary";
+
+  const report = buildAnalystReportV2(output);
+  const metadata = report.metadata || {};
+  const project = metadata.project || {};
+  const brief = report.decision_brief || {};
+  const glance = brief.at_a_glance || {};
+  const inventory = glance.inventory_summary || {};
+  const strategy = brief.recommended_strategy || {};
+  const decisions = brief.decisions_required || {};
+  const backlog = report.delivery_spec?.backlog?.items || [];
+  const testing = report.delivery_spec?.testing_and_evidence || {};
+  const appendix = report.appendix || {};
+  const openQuestions = Array.isArray(report.delivery_spec?.open_questions) ? report.delivery_spec.open_questions : [];
+
+  const lines = [
+    `# Modernization Brief - ${String(project.name || "Untitled Project")}`,
+    "",
+    "## Header",
+    `- Objective: ${String(project.objective || "Not provided")}`,
+    `- Domain: ${String(project.domain || "software")}`,
+    `- Repo: ${String(metadata.context_reference?.repo || "n/a")} @ ${String(metadata.context_reference?.branch || "main")} (${String(metadata.context_reference?.commit_sha || "n/a")})`,
+    `- SIL Versions: SCM ${String(metadata.context_reference?.scm_version || "1.0")} / CP ${String(metadata.context_reference?.cp_version || "1.0")} / HA ${String(metadata.context_reference?.ha_version || "1.0")}`,
+    `- Generated At: ${String(metadata.generated_at || "")}`,
+    "",
+    "## Decision Brief",
+    "",
+    "| Category | Summary |",
+    "|---|---|",
+    `| Modernization readiness | ${String(glance.readiness_score ?? "n/a")}/100 |`,
+    `| Risk tier | ${String(glance.risk_tier || "n/a")} |`,
+    `| Inventory | ${String(inventory.projects ?? 0)} project(s), ${String(inventory.forms ?? 0)} forms/usercontrols, ${String(inventory.dependencies ?? 0)} dependencies |`,
+    `| Data touchpoints | ${Array.isArray(inventory.tables_touched) ? inventory.tables_touched.join(", ") : ""} |`,
+    `| Headline | ${String(glance.headline || "")} |`,
+    "",
+    "### Recommended strategy",
+    `- ${String(strategy.name || "Phased modernization")}: ${String(strategy.rationale || "")}`,
+  ];
+
+  const phases = Array.isArray(strategy.phases) ? strategy.phases : [];
+  phases.forEach((phase) => lines.push(`- ${String(phase.id || "")} ${String(phase.title || "")}: ${String(phase.outcome || "")}`));
+
+  lines.push("", "### Decisions Required (Blocking)");
+  (Array.isArray(decisions.blocking) ? decisions.blocking : []).forEach((row) => {
+    lines.push(`- ${String(row.id || "DEC")}: ${String(row.question || "")}`);
+    lines.push(`  - Recommendation: ${String(row.default_recommendation || "")}`);
   });
-  if (!primaryCaps.length) lines.push("- Not provided");
+  if (!Array.isArray(decisions.blocking) || !decisions.blocking.length) lines.push("- None");
 
-  lines.push("", "## Regulatory Constraints Applied");
-  regulatoryConstraints.forEach((constraint) => {
-    lines.push(`- ${String(constraint.id || "constraint")} (${String(constraint.name || "")})`);
-    const actions = Array.isArray(constraint.software_actions) ? constraint.software_actions : [];
-    if (actions.length) {
-      actions.forEach((action) => lines.push(`  - action: ${String(action || "")}`));
-    }
+  lines.push("", "### Decisions Required (Non-blocking)");
+  (Array.isArray(decisions.non_blocking) ? decisions.non_blocking : []).forEach((row) => {
+    lines.push(`- ${String(row.id || "DEC")}: ${String(row.question || "")}`);
   });
-  if (!regulatoryConstraints.length) lines.push("- None");
+  if (!Array.isArray(decisions.non_blocking) || !decisions.non_blocking.length) lines.push("- None");
 
-  lines.push("", "## BDD Contract");
-  bddFeatures.forEach((feature, idx) => {
-    const featureId = String(feature.id || `BDD-${idx + 1}`);
-    lines.push("", `### ${featureId} ${String(feature.title || "").trim()}`.trim());
-    lines.push("```gherkin");
-    lines.push(String(feature.gherkin || ""));
-    lines.push("```");
+  lines.push("", "## Delivery Spec", "", "### Backlog");
+  lines.push("| ID | Pri | Type | Outcome | Acceptance |");
+  lines.push("|---|---|---|---|---|");
+  backlog.slice(0, 80).forEach((item) => {
+    const ac = Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria.slice(0, 2).join(" / ") : "";
+    lines.push(`| ${String(item.id || "")} | ${String(item.priority || "")} | ${String(item.type || "")} | ${String(item.title || item.outcome || "")} | ${String(ac || "n/a")} |`);
   });
-  if (!bddFeatures.length) lines.push("- No BDD features generated");
+  if (!backlog.length) lines.push("| - | - | - | No backlog items generated | - |");
 
-  lines.push("", "## Quality Gates");
-  qualityGates.forEach((gate) => {
-    lines.push(`- ${String(gate.name || "gate")}: ${String(gate.status || "UNKNOWN")} | ${String(gate.message || "")}`);
+  lines.push("", "### Testing and Evidence");
+  lines.push("- Golden flows:");
+  (Array.isArray(testing.golden_flows) ? testing.golden_flows : []).forEach((flow) => {
+    lines.push(`  - ${String(flow.id || "GF")}: ${String(flow.name || "")} | entry=${String(flow.entrypoint || "")}`);
   });
-  if (!qualityGates.length) lines.push("- No quality gates captured");
-
-  lines.push("", "## Acceptance Criteria to Test Mapping");
-  acceptanceMap.forEach((entry) => {
-    const tests = Array.isArray(entry.test_types) ? entry.test_types.join(", ") : "";
-    const scenarios = Array.isArray(entry.bdd_scenarios) ? entry.bdd_scenarios.join(", ") : "";
-    lines.push(`- ${String(entry.requirement_id || "requirement")} | tests: ${tests || "n/a"} | scenarios: ${scenarios || "n/a"}`);
+  if (!Array.isArray(testing.golden_flows) || !testing.golden_flows.length) lines.push("  - None");
+  lines.push("- Quality gates:");
+  (Array.isArray(testing.quality_gates) ? testing.quality_gates : []).forEach((gate) => {
+    lines.push(`  - ${String(gate.id || "gate")}: ${String(gate.result || "warn").toUpperCase()} | ${String(gate.description || "")}`);
   });
-  if (!acceptanceMap.length) lines.push("- Not mapped");
+  if (!Array.isArray(testing.quality_gates) || !testing.quality_gates.length) lines.push("  - None");
 
-  lines.push("", "## Open Questions");
-  openQuestions.forEach((q) => lines.push(`- ${String(q || "")}`));
+  lines.push("", "### Open Questions");
+  openQuestions.forEach((q, idx) => {
+    const row = normalizeOpenQuestionEntry(q, idx);
+    lines.push(`- [${String(row.severity || "medium").toUpperCase()}] ${row.id}: ${row.question} (owner: ${row.owner})`);
+    if (row.context) lines.push(`  - Context: ${row.context}`);
+  });
   if (!openQuestions.length) lines.push("- None");
 
+  lines.push("", "## Evidence Appendix");
+  const refs = appendix.artifact_refs || {};
+  Object.entries(refs).forEach(([k, v]) => {
+    if (String(v || "").trim()) lines.push(`- ${k}: ${String(v)}`);
+  });
+  lines.push("- High-volume sections included in structured artifact (inventory, dependencies, event map, SQL catalog, business rules).");
+  lines.push("", "## Appendix Snapshot");
+  const hv = appendix.high_volume_sections || {};
+  const raw = (output.raw_artifacts && typeof output.raw_artifacts === "object") ? output.raw_artifacts : {};
+  const rawEventMap = Array.isArray(raw.event_map?.entries) ? raw.event_map.entries : [];
+  const rawSql = Array.isArray(raw.sql_catalog?.statements) ? raw.sql_catalog.statements : [];
+  const rawSqlMap = Array.isArray(raw.sql_map?.entries) ? raw.sql_map.entries : [];
+  const rawProcedures = Array.isArray(raw.procedure_summary?.procedures) ? raw.procedure_summary.procedures : [];
+  const rawDeps = Array.isArray(raw.dependency_inventory?.dependencies) ? raw.dependency_inventory.dependencies : [];
+  const rawRules = Array.isArray(raw.business_rule_catalog?.rules) ? raw.business_rule_catalog.rules : [];
+  const rawConstitution = Array.isArray(raw.delivery_constitution?.principles) ? raw.delivery_constitution.principles : [];
+  lines.push(`- Legacy inventory: ${raw.legacy_inventory ? "present" : (hv.legacy_inventory ? "present" : "missing")}`);
+  lines.push(`- Event map rows: ${rawEventMap.length || (Array.isArray(hv.event_map) ? hv.event_map.length : 0)}`);
+  lines.push(`- SQL catalog rows: ${rawSql.length || (Array.isArray(hv.sql_catalog) ? hv.sql_catalog.length : 0)}`);
+  lines.push(`- SQL map rows: ${rawSqlMap.length}`);
+  lines.push(`- Procedure summaries: ${rawProcedures.length}`);
+  lines.push(`- Dependency rows: ${rawDeps.length || (Array.isArray(hv.dependencies) ? hv.dependencies.length : 0)}`);
+  lines.push(`- Business rules: ${rawRules.length || (Array.isArray(hv.business_rules) ? hv.business_rules.length : 0)}`);
+  lines.push(`- Constitution principles: ${rawConstitution.length}`);
+
+  const rawLegacy = (raw.legacy_inventory && typeof raw.legacy_inventory === "object")
+    ? raw.legacy_inventory
+    : (hv.legacy_inventory && typeof hv.legacy_inventory === "object" ? hv.legacy_inventory : {});
+  const projects = Array.isArray(rawLegacy.projects) ? rawLegacy.projects : [];
+  const eventRows = rawEventMap.length ? rawEventMap : (Array.isArray(hv.event_map) ? hv.event_map : []);
+  const sqlRows = rawSql.length ? rawSql : (Array.isArray(hv.sql_catalog) ? hv.sql_catalog : []);
+  const depRows = rawDeps.length ? rawDeps : (Array.isArray(hv.dependencies) ? hv.dependencies : []);
+  const ruleRows = rawRules.length ? rawRules : (Array.isArray(hv.business_rules) ? hv.business_rules : []);
+  const sqlMapRows = rawSqlMap;
+  const procedureRows = rawProcedures;
+  const constitutionRows = rawConstitution;
+  const detectorRows = Array.isArray(raw.detector_findings?.findings) ? raw.detector_findings.findings : [];
+  const artifactIndexRows = Array.isArray(raw.artifact_index?.artifacts) ? raw.artifact_index.artifacts : [];
+
+  if (includeDetailedAppendix) {
+    lines.push("", "## Detailed Appendix", "");
+    lines.push("### A. Legacy Inventory");
+    lines.push(`- Projects: ${projects.length}`);
+    lines.push(`- Data touchpoints: ${(Array.isArray(rawLegacy.summary?.data_touchpoints) ? rawLegacy.summary.data_touchpoints.join(", ") : "") || "None detected"}`);
+    if (projects.length) {
+      lines.push("| Project | Type | Startup | Members | Forms | Dependencies |");
+      lines.push("|---|---|---|---:|---:|---:|");
+      projects.slice(0, 250).forEach((project) => {
+        const members = Array.isArray(project?.members) ? project.members.length : 0;
+        const ui = Array.isArray(project?.ui_assets) ? project.ui_assets.length : 0;
+        const deps = Array.isArray(project?.dependencies) ? project.dependencies.length : 0;
+        lines.push(`| ${String(project?.name || project?.project_id || "")} | ${String(project?.type || "")} | ${String(project?.startup || "")} | ${members} | ${ui} | ${deps} |`);
+      });
+    } else {
+      lines.push("- No project rows available.");
+    }
+
+    lines.push("", "### B. Dependency Inventory");
+    if (depRows.length) {
+      lines.push("| Name | Kind | Risk | Recommended action |");
+      lines.push("|---|---|---|---|");
+      depRows.slice(0, 500).forEach((dep) => {
+        const risk = String(dep?.risk?.tier || dep?.tier || "unknown");
+        const action = String(dep?.risk?.recommended_action || dep?.recommended_action || "");
+        lines.push(`| ${String(dep?.name || dep || "")} | ${String(dep?.kind || "")} | ${risk} | ${action || "n/a"} |`);
+      });
+    } else {
+      lines.push("- No dependency rows available.");
+    }
+
+    lines.push("", "### C. Event Map");
+    if (eventRows.length) {
+      lines.push("| Entry | Container | Trigger | Calls | Side effects |");
+      lines.push("|---|---|---|---|---|");
+      eventRows.slice(0, 600).forEach((entry) => {
+        const name = String(entry?.name || entry?.entry_id || entry?.event_handler || "");
+        const container = String(entry?.container || entry?.form || "");
+        const trigger = String(entry?.trigger?.event || entry?.event || "");
+        const calls = (Array.isArray(entry?.calls) ? entry.calls : Array.isArray(entry?.procedure_calls) ? entry.procedure_calls : []).slice(0, 4).join(", ");
+        const effects = (Array.isArray(entry?.side_effects?.tables_or_files) ? entry.side_effects.tables_or_files : Array.isArray(entry?.sql_touches) ? entry.sql_touches : []).slice(0, 4).join(", ");
+        lines.push(`| ${name} | ${container} | ${trigger} | ${calls || "n/a"} | ${effects || "n/a"} |`);
+      });
+    } else {
+      lines.push("- No event map rows available.");
+    }
+
+    lines.push("", "### D. SQL Catalog");
+    if (sqlRows.length) {
+      lines.push("| SQL ID | Kind | Tables | Query |");
+      lines.push("|---|---|---|---|");
+      sqlRows.slice(0, 700).forEach((row) => {
+        const sqlId = String(row?.sql_id || "");
+        const kind = String(row?.kind || "");
+        const tables = (Array.isArray(row?.tables) ? row.tables : []).slice(0, 6).join(", ");
+        const query = String(row?.raw || row || "").replace(/\|/g, "\\|");
+        lines.push(`| ${sqlId || "n/a"} | ${kind || "unknown"} | ${tables || "n/a"} | ${query} |`);
+      });
+    } else {
+      lines.push("- No SQL rows available.");
+    }
+
+    lines.push("", "### E. Business Rules");
+    if (ruleRows.length) {
+      lines.push("| Rule ID | Category | Statement | Evidence |");
+      lines.push("|---|---|---|---|");
+      ruleRows.slice(0, 700).forEach((row) => {
+        const ruleId = String(row?.rule_id || row?.id || "");
+        const category = String(row?.category || row?.rule_type || "other");
+        const statement = String(row?.statement || "").replace(/\|/g, "\\|");
+        const ev = Array.isArray(row?.evidence)
+          ? row.evidence.map((e) => String(e?.external_ref?.ref || e?.file_span?.path || e?.ref || "")).filter(Boolean).slice(0, 3).join(", ")
+          : String(row?.evidence || "");
+        lines.push(`| ${ruleId || "n/a"} | ${category} | ${statement || "n/a"} | ${ev || "n/a"} |`);
+      });
+    } else {
+      lines.push("- No business rules available.");
+    }
+
+    lines.push("", "### F. Detector Findings");
+    if (detectorRows.length) {
+      lines.push("| Detector | Severity | Count | Summary | Required actions |");
+      lines.push("|---|---|---:|---|---|");
+      detectorRows.slice(0, 500).forEach((row) => {
+        const actions = Array.isArray(row?.required_actions) ? row.required_actions.slice(0, 4).join(", ") : "";
+        lines.push(`| ${String(row?.detector_id || "n/a")} | ${String(row?.severity || "medium")} | ${Number(row?.count || 0)} | ${String(row?.summary || "").replace(/\|/g, "\\|")} | ${actions || "n/a"} |`);
+      });
+    } else {
+      lines.push("- No detector findings available.");
+    }
+
+    lines.push("", "### G. Artifact Index");
+    if (artifactIndexRows.length) {
+      lines.push("| Type | Ref |");
+      lines.push("|---|---|");
+      artifactIndexRows.slice(0, 200).forEach((row) => {
+        lines.push(`| ${String(row?.type || "")} | ${String(row?.ref || "")} |`);
+      });
+    } else {
+      lines.push("- No artifact index entries.");
+    }
+
+    lines.push("", "### H. SQL Map");
+    if (sqlMapRows.length) {
+      lines.push("| Form | Procedure | Operation | Tables | Risks |");
+      lines.push("|---|---|---|---|---|");
+      sqlMapRows.slice(0, 700).forEach((row) => {
+        const tables = Array.isArray(row?.tables) ? row.tables.slice(0, 6).join(", ") : "";
+        const risks = Array.isArray(row?.risk_flags) ? row.risk_flags.slice(0, 6).join(", ") : "";
+        lines.push(`| ${String(row?.form || "n/a")} | ${String(row?.procedure || "n/a")} | ${String(row?.operation || "unknown")} | ${tables || "n/a"} | ${risks || "none"} |`);
+      });
+    } else {
+      lines.push("- No SQL map rows available.");
+    }
+
+    lines.push("", "### I. Procedure Summaries");
+    if (procedureRows.length) {
+      lines.push("| Procedure | Form | SQL IDs | Steps | Risks |");
+      lines.push("|---|---|---|---|---|");
+      procedureRows.slice(0, 700).forEach((row) => {
+        const sqlIds = Array.isArray(row?.sql_ids) ? row.sql_ids.slice(0, 6).join(", ") : "";
+        const steps = Array.isArray(row?.steps) ? row.steps.slice(0, 2).join(" / ").replace(/\|/g, "\\|") : "";
+        const risks = Array.isArray(row?.risks) ? row.risks.slice(0, 5).join(", ") : "";
+        lines.push(`| ${String(row?.procedure_name || row?.procedure_id || "n/a")} | ${String(row?.form || "n/a")} | ${sqlIds || "n/a"} | ${steps || "n/a"} | ${risks || "none"} |`);
+      });
+    } else {
+      lines.push("- No procedure summaries available.");
+    }
+
+    lines.push("", "### J. Delivery Constitution");
+    if (constitutionRows.length) {
+      constitutionRows.slice(0, 100).forEach((line) => lines.push(`- ${String(line || "")}`));
+    } else {
+      lines.push("- No delivery constitution principles available.");
+    }
+  }
   return lines.join("\n");
 }
 
@@ -1392,7 +1779,8 @@ async function uploadAnalystTechReq(runId, file) {
 
 function wireAnalystDocActions(rootNode, run) {
   if (!rootNode || !run?.run_id) return;
-  const exportBtn = rootNode.querySelector("[data-analyst-export]");
+  const exportSummaryBtn = rootNode.querySelector("[data-analyst-export-summary]");
+  const exportFullBtn = rootNode.querySelector("[data-analyst-export-full]");
   const uploadTrigger = rootNode.querySelector("[data-analyst-upload-trigger]");
   const uploadInput = rootNode.querySelector("[data-analyst-upload-file]");
   const statusNode = rootNode.querySelector("[data-analyst-doc-status]");
@@ -1402,13 +1790,23 @@ function wireAnalystDocActions(rootNode, run) {
     statusNode.className = `mt-1 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
   };
 
-  if (exportBtn) {
-    exportBtn.addEventListener("click", () => {
+  if (exportSummaryBtn) {
+    exportSummaryBtn.addEventListener("click", () => {
       const output = getAnalystOutput(run);
-      const markdown = buildAnalystTechReqMarkdown(output);
+      const markdown = buildAnalystTechReqMarkdown(output, { mode: "summary" });
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      downloadText(`analyst-tech-req-${run.run_id}-${stamp}.md`, markdown, "text/markdown;charset=utf-8");
-      setStatus("Technical requirements document exported.");
+      downloadText(`analyst-tech-req-summary-${run.run_id}-${stamp}.md`, markdown, "text/markdown;charset=utf-8");
+      setStatus("Summary technical requirements document exported.");
+    });
+  }
+
+  if (exportFullBtn) {
+    exportFullBtn.addEventListener("click", () => {
+      const output = getAnalystOutput(run);
+      const markdown = buildAnalystTechReqMarkdown(output, { mode: "full" });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      downloadText(`analyst-tech-req-full-${run.run_id}-${stamp}.md`, markdown, "text/markdown;charset=utf-8");
+      setStatus("Full evidence technical requirements document exported.");
     });
   }
 
@@ -1437,6 +1835,91 @@ function wireAnalystDocActions(rootNode, run) {
       }
     });
   }
+}
+
+function resolveAnalystOutputForRun(run) {
+  const result = latestResultByStage(run, 1);
+  const output = (result?.output && typeof result.output === "object") ? result.output : {};
+  return output;
+}
+
+function setAnalystTabView(rootNode, tab) {
+  if (!rootNode) return;
+  const selected = String(tab || "brief");
+  rootNode.querySelectorAll("[data-analyst-view-tab]").forEach((btn) => {
+    const id = String(btn.getAttribute("data-analyst-view-tab") || "");
+    const active = id === selected;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
+  rootNode.querySelectorAll("[data-analyst-view-panel]").forEach((panel) => {
+    const id = String(panel.getAttribute("data-analyst-view-panel") || "");
+    panel.classList.toggle("hidden", id !== selected);
+  });
+}
+
+function wireAnalystViewTabs(rootNode, run) {
+  if (!rootNode) return;
+  const tabRoot = rootNode.querySelector("[data-analyst-tab-root]");
+  if (!tabRoot) return;
+  const available = Array.from(tabRoot.querySelectorAll("[data-analyst-view-tab]"))
+    .map((btn) => String(btn.getAttribute("data-analyst-view-tab") || "").trim())
+    .filter(Boolean);
+  if (!available.length) return;
+
+  const stateTab = String(state.analyst?.selectedTab || "").trim();
+  const initial = available.includes(stateTab) ? stateTab : (String(tabRoot.getAttribute("data-analyst-default") || "").trim() || available[0]);
+  state.analyst.selectedTab = initial;
+  setAnalystTabView(tabRoot, initial);
+
+  tabRoot.querySelectorAll("[data-analyst-view-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = String(btn.getAttribute("data-analyst-view-tab") || "").trim();
+      if (!available.includes(tab)) return;
+      state.analyst.selectedTab = tab;
+      setAnalystTabView(tabRoot, tab);
+    });
+  });
+
+  const output = resolveAnalystOutputForRun(run);
+  const raw = (output.raw_artifacts && typeof output.raw_artifacts === "object") ? output.raw_artifacts : {};
+  const statusNode = tabRoot.querySelector("[data-analyst-view-status]");
+  const setStatus = (message, isError = false) => {
+    if (!statusNode) return;
+    statusNode.textContent = String(message || "").trim();
+    statusNode.className = `mt-1 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
+  };
+
+  tabRoot.querySelectorAll("[data-artifact-copy-ref]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const ref = String(btn.getAttribute("data-artifact-copy-ref") || "").trim();
+      if (!ref) return;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(ref);
+          setStatus(`Copied artifact ref: ${ref}`);
+        } else {
+          setStatus("Clipboard API is unavailable in this browser context.", true);
+        }
+      } catch (err) {
+        setStatus(`Copy failed: ${err?.message || err}`, true);
+      }
+    });
+  });
+
+  tabRoot.querySelectorAll("[data-artifact-download-key]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = String(btn.getAttribute("data-artifact-download-key") || "").trim();
+      const artifact = raw[key];
+      if (!key || !artifact || typeof artifact !== "object") {
+        setStatus(`No artifact payload found for ${key || "selection"}.`, true);
+        return;
+      }
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      downloadText(`analyst-${key}-${stamp}.json`, JSON.stringify(artifact, null, 2), "application/json;charset=utf-8");
+      setStatus(`Downloaded ${key}.json`);
+    });
+  });
 }
 
 function setGlobalSearchStatus(text, isError = false) {
@@ -5819,325 +6302,379 @@ function renderRetryPlan() {
 }
 
 function renderAnalystReadable(output) {
-  const fr = output.functional_requirements || [];
-  const nfr = output.non_functional_requirements || [];
-  const walkthrough = output.analysis_walkthrough || {};
-  const legacyContract = output.legacy_functional_contract || [];
-  const legacyInventory = resolveLegacyInventory(output);
-  const legacySkill = resolveLegacySkillProfile(output);
-  const legacyForms = resolveLegacyForms(legacyInventory);
-  const vb6Projects = Array.isArray(legacyInventory.vb6_projects) ? legacyInventory.vb6_projects : [];
-  const legacyRules = resolveBusinessRulesCatalog(output, legacyInventory);
-  const groupedLegacyRules = groupBusinessRulesByType(legacyRules);
-  const vb6Analysis = (legacyInventory.vb6_analysis && typeof legacyInventory.vb6_analysis === "object")
-    ? legacyInventory.vb6_analysis
+  const report = buildAnalystReportV2(output);
+  const perspective = currentPerspective();
+  const clientMode = perspective === "executive";
+  const showDeepEvidence = perspective === "engineering" || perspective === "security";
+  const metadata = report.metadata || {};
+  const project = metadata.project || {};
+  const brief = report.decision_brief || {};
+  const glance = brief.at_a_glance || {};
+  const inventory = glance.inventory_summary || {};
+  const strategy = brief.recommended_strategy || {};
+  const delivery = report.delivery_spec || {};
+  const backlog = Array.isArray(delivery.backlog?.items) ? delivery.backlog.items : [];
+  const testing = delivery.testing_and_evidence || {};
+  const openQuestions = Array.isArray(delivery.open_questions) ? delivery.open_questions : [];
+  const appendix = report.appendix || {};
+  const appendixRefs = (appendix.artifact_refs && typeof appendix.artifact_refs === "object")
+    ? appendix.artifact_refs
     : {};
-  const uiEventMap = Array.isArray(legacyInventory.ui_event_map)
-    ? legacyInventory.ui_event_map
-    : (Array.isArray(vb6Analysis.ui_event_map) ? vb6Analysis.ui_event_map : []);
-  const sqlCatalog = Array.isArray(legacyInventory.sql_query_catalog)
-    ? legacyInventory.sql_query_catalog
-    : (Array.isArray(vb6Analysis.sql_query_catalog) ? vb6Analysis.sql_query_catalog : []);
-  const comSurface = (legacyInventory.com_surface_map && typeof legacyInventory.com_surface_map === "object")
-    ? legacyInventory.com_surface_map
-    : ((vb6Analysis.com_surface_map && typeof vb6Analysis.com_surface_map === "object") ? vb6Analysis.com_surface_map : {});
-  const win32Declares = Array.isArray(legacyInventory.win32_declares)
-    ? legacyInventory.win32_declares
-    : (Array.isArray(vb6Analysis.win32_declares) ? vb6Analysis.win32_declares : []);
-  const errorProfile = (legacyInventory.error_handling_profile && typeof legacyInventory.error_handling_profile === "object")
-    ? legacyInventory.error_handling_profile
-    : ((vb6Analysis.error_handling_profile && typeof vb6Analysis.error_handling_profile === "object") ? vb6Analysis.error_handling_profile : {});
-  const pitfallDetectors = Array.isArray(legacyInventory.pitfall_detectors)
-    ? legacyInventory.pitfall_detectors
-    : (Array.isArray(vb6Analysis.pitfall_detectors) ? vb6Analysis.pitfall_detectors : []);
-  const readiness = (legacyInventory.modernization_readiness && typeof legacyInventory.modernization_readiness === "object")
-    ? legacyInventory.modernization_readiness
-    : ((vb6Analysis.modernization_readiness && typeof vb6Analysis.modernization_readiness === "object") ? vb6Analysis.modernization_readiness : {});
-  const projectFormCount = vb6Projects.reduce((acc, project) => {
-    const explicit = Number(project?.forms_count || 0);
-    if (Number.isFinite(explicit) && explicit > 0) return acc + explicit;
-    return acc + (Array.isArray(project?.forms) ? project.forms.length : 0);
-  }, 0);
-  const formsDisplayCount = Math.max(legacyForms.length, projectFormCount);
-  const activexControls = Array.isArray(legacyInventory.activex_controls) ? legacyInventory.activex_controls : [];
-  const dllDeps = Array.isArray(legacyInventory.dll_dependencies) ? legacyInventory.dll_dependencies : [];
-  const ocxDeps = Array.isArray(legacyInventory.ocx_dependencies) ? legacyInventory.ocx_dependencies : [];
-  const legacyEvents = Array.isArray(legacyInventory.event_handlers) ? legacyInventory.event_handlers : [];
-  const legacyMembers = Array.isArray(legacyInventory.project_members) ? legacyInventory.project_members : [];
-  const risks = output.risks || [];
-  const requirementsPack = (output.requirements_pack && typeof output.requirements_pack === "object") ? output.requirements_pack : {};
-  const sourceTargetProfile = (legacyInventory.source_target_modernization_profile && typeof legacyInventory.source_target_modernization_profile === "object")
-    ? legacyInventory.source_target_modernization_profile
-    : ((vb6Analysis.source_target_modernization_profile && typeof vb6Analysis.source_target_modernization_profile === "object")
-      ? vb6Analysis.source_target_modernization_profile
-      : ((output.source_target_modernization_profile && typeof output.source_target_modernization_profile === "object")
-        ? output.source_target_modernization_profile
-        : ((requirementsPack.source_target_modernization_profile && typeof requirementsPack.source_target_modernization_profile === "object")
-          ? requirementsPack.source_target_modernization_profile
-          : {})));
-  const sourceProfile = (sourceTargetProfile.source && typeof sourceTargetProfile.source === "object") ? sourceTargetProfile.source : {};
-  const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object") ? sourceTargetProfile.target : {};
-  const sourceTargetSummaries = (sourceTargetProfile.summary_variants && typeof sourceTargetProfile.summary_variants === "object")
-    ? sourceTargetProfile.summary_variants
+  const highVolume = appendix.high_volume_sections || {};
+  const rawArtifacts = (output.raw_artifacts && typeof output.raw_artifacts === "object")
+    ? output.raw_artifacts
     : {};
-  const sourceTargetRisks = Array.isArray(sourceTargetProfile.modernization_risks) ? sourceTargetProfile.modernization_risks : [];
-  const projectBusinessSummaries = Array.isArray(legacyInventory.project_business_summaries)
-    ? legacyInventory.project_business_summaries
-    : (Array.isArray(vb6Analysis.project_business_summaries)
-      ? vb6Analysis.project_business_summaries
-      : (Array.isArray(output.project_business_summaries)
-        ? output.project_business_summaries
-        : (Array.isArray(requirementsPack.project_business_summaries) ? requirementsPack.project_business_summaries : [])));
-  const fileTypeCoverage = (legacyInventory.vb6_file_type_coverage && typeof legacyInventory.vb6_file_type_coverage === "object")
-    ? legacyInventory.vb6_file_type_coverage
-    : ((vb6Analysis.vb6_file_type_coverage && typeof vb6Analysis.vb6_file_type_coverage === "object") ? vb6Analysis.vb6_file_type_coverage : {});
-  const basModuleSummary = (legacyInventory.bas_module_summary && typeof legacyInventory.bas_module_summary === "object")
-    ? legacyInventory.bas_module_summary
-    : ((vb6Analysis.bas_module_summary && typeof vb6Analysis.bas_module_summary === "object") ? vb6Analysis.bas_module_summary : {});
-  const binaryCompanionFiles = Array.isArray(legacyInventory.binary_companion_files)
-    ? legacyInventory.binary_companion_files
-    : (Array.isArray(vb6Analysis.binary_companion_files) ? vb6Analysis.binary_companion_files : []);
-  const domainPack = (output.domain_pack && typeof output.domain_pack === "object")
-    ? output.domain_pack
-    : ((requirementsPack.domain_pack_ref && typeof requirementsPack.domain_pack_ref === "object") ? requirementsPack.domain_pack_ref : {});
-  const capabilityMapping = (output.capability_mapping && typeof output.capability_mapping === "object")
-    ? output.capability_mapping
-    : ((requirementsPack.capability_mapping && typeof requirementsPack.capability_mapping === "object") ? requirementsPack.capability_mapping : {});
-  const primaryCapabilities = Array.isArray(capabilityMapping.primary_capabilities) ? capabilityMapping.primary_capabilities : [];
-  const alternativeCapabilities = Array.isArray(capabilityMapping.alternative_capabilities) ? capabilityMapping.alternative_capabilities : [];
-  const regulatory = Array.isArray(output.regulatory_constraints)
-    ? output.regulatory_constraints
-    : (Array.isArray(requirementsPack.regulatory_constraints_applied) ? requirementsPack.regulatory_constraints_applied : []);
-  const standards = Array.isArray(output.standards_guidance)
-    ? output.standards_guidance
-    : (Array.isArray(requirementsPack.standards_guidance) ? requirementsPack.standards_guidance : []);
-  const bddContract = (output.bdd_contract && typeof output.bdd_contract === "object")
-    ? output.bdd_contract
-    : ((requirementsPack.bdd_contract && typeof requirementsPack.bdd_contract === "object") ? requirementsPack.bdd_contract : {});
-  const bddFeatures = Array.isArray(bddContract.features) ? bddContract.features : [];
-  const bddLint = (bddContract.lint && typeof bddContract.lint === "object") ? bddContract.lint : {};
-  const qualityGates = Array.isArray(output.quality_gates) ? output.quality_gates : (Array.isArray(requirementsPack.quality_gates) ? requirementsPack.quality_gates : []);
-  const openQuestions = Array.isArray(output.open_questions) ? output.open_questions : (Array.isArray(requirementsPack.open_questions) ? requirementsPack.open_questions : []);
-  const acceptanceMap = Array.isArray(output.acceptance_test_mapping)
-    ? output.acceptance_test_mapping
-    : (Array.isArray(requirementsPack.acceptance_test_mapping) ? requirementsPack.acceptance_test_mapping : []);
-  const domainModel = (output.domain_model_excerpt && typeof output.domain_model_excerpt === "object")
-    ? output.domain_model_excerpt
-    : ((requirementsPack.domain_model_excerpt && typeof requirementsPack.domain_model_excerpt === "object") ? requirementsPack.domain_model_excerpt : {});
-  const domainEntities = Array.isArray(domainModel.entities) ? domainModel.entities : [];
-  const lifecycleStates = Array.isArray(domainModel.lifecycle_states) ? domainModel.lifecycle_states : [];
-  const relationships = Array.isArray(domainModel.relationships) ? domainModel.relationships : [];
-  const gateBadge = (status) => {
-    const s = String(status || "").toUpperCase();
-    if (s === "PASS") return "inline-flex rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900";
-    if (s === "FAIL") return "inline-flex rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-900";
+  const rawLegacyInventory = (rawArtifacts.legacy_inventory && typeof rawArtifacts.legacy_inventory === "object")
+    ? rawArtifacts.legacy_inventory
+    : null;
+  const rawDependencyInventory = (rawArtifacts.dependency_inventory && typeof rawArtifacts.dependency_inventory === "object")
+    ? rawArtifacts.dependency_inventory
+    : null;
+  const rawEventMap = (rawArtifacts.event_map && typeof rawArtifacts.event_map === "object")
+    ? rawArtifacts.event_map
+    : null;
+  const rawSqlCatalog = (rawArtifacts.sql_catalog && typeof rawArtifacts.sql_catalog === "object")
+    ? rawArtifacts.sql_catalog
+    : null;
+  const rawSqlMap = (rawArtifacts.sql_map && typeof rawArtifacts.sql_map === "object")
+    ? rawArtifacts.sql_map
+    : null;
+  const rawProcedureSummary = (rawArtifacts.procedure_summary && typeof rawArtifacts.procedure_summary === "object")
+    ? rawArtifacts.procedure_summary
+    : null;
+  const rawBusinessRules = (rawArtifacts.business_rule_catalog && typeof rawArtifacts.business_rule_catalog === "object")
+    ? rawArtifacts.business_rule_catalog
+    : null;
+  const rawDetectorFindings = (rawArtifacts.detector_findings && typeof rawArtifacts.detector_findings === "object")
+    ? rawArtifacts.detector_findings
+    : null;
+  const rawDeliveryConstitution = (rawArtifacts.delivery_constitution && typeof rawArtifacts.delivery_constitution === "object")
+    ? rawArtifacts.delivery_constitution
+    : null;
+  const artifactIndex = (rawArtifacts.artifact_index && typeof rawArtifacts.artifact_index === "object")
+    ? rawArtifacts.artifact_index
+    : null;
+  const gateBadge = (result) => {
+    const r = String(result || "").toLowerCase();
+    if (r === "pass") return "inline-flex rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-900";
+    if (r === "fail") return "inline-flex rounded border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-900";
     return "inline-flex rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900";
   };
   const revised = String(output.human_revised_document_markdown || "").trim();
+  const blocking = Array.isArray(brief.decisions_required?.blocking) ? brief.decisions_required.blocking : [];
+  const nonBlocking = Array.isArray(brief.decisions_required?.non_blocking) ? brief.decisions_required.non_blocking : [];
+  const riskRows = Array.isArray(brief.top_risks) ? brief.top_risks : [];
+  const strategyPhases = Array.isArray(strategy.phases) ? strategy.phases : [];
+  const qualityGates = Array.isArray(testing.quality_gates) ? testing.quality_gates : [];
+  const testMatrix = Array.isArray(testing.test_matrix) ? testing.test_matrix : [];
+  const goldenFlows = Array.isArray(testing.golden_flows) ? testing.golden_flows : [];
+  const evidenceOutputs = Array.isArray(testing.evidence_outputs) ? testing.evidence_outputs : [];
+  const eventMap = Array.isArray(rawEventMap?.entries)
+    ? rawEventMap.entries
+    : (Array.isArray(highVolume.event_map) ? highVolume.event_map : []);
+  const sqlCatalog = Array.isArray(rawSqlCatalog?.statements)
+    ? rawSqlCatalog.statements
+    : (Array.isArray(highVolume.sql_catalog) ? highVolume.sql_catalog : []);
+  const sqlMapEntries = Array.isArray(rawSqlMap?.entries) ? rawSqlMap.entries : [];
+  const procedureSummaries = Array.isArray(rawProcedureSummary?.procedures) ? rawProcedureSummary.procedures : [];
+  const dependencies = Array.isArray(rawDependencyInventory?.dependencies)
+    ? rawDependencyInventory.dependencies
+    : (Array.isArray(highVolume.dependencies) ? highVolume.dependencies : []);
+  const businessRules = Array.isArray(rawBusinessRules?.rules)
+    ? rawBusinessRules.rules
+    : (Array.isArray(highVolume.business_rules) ? highVolume.business_rules : []);
+  const detectorFindings = Array.isArray(rawDetectorFindings?.findings)
+    ? rawDetectorFindings.findings
+    : [];
+  const constitutionPrinciples = Array.isArray(rawDeliveryConstitution?.principles) ? rawDeliveryConstitution.principles : [];
+  const specKitDecomposition = (report.spec_kit_decomposition && typeof report.spec_kit_decomposition === "object")
+    ? report.spec_kit_decomposition
+    : {};
+  const discoverySpec = (specKitDecomposition.discovery_spec && typeof specKitDecomposition.discovery_spec === "object")
+    ? specKitDecomposition.discovery_spec
+    : {};
+  const modernizationPlan = (specKitDecomposition.modernization_plan && typeof specKitDecomposition.modernization_plan === "object")
+    ? specKitDecomposition.modernization_plan
+    : {};
+  const executableContracts = (specKitDecomposition.executable_contracts && typeof specKitDecomposition.executable_contracts === "object")
+    ? specKitDecomposition.executable_contracts
+    : {};
+  const clarificationRows = Array.isArray(discoverySpec.needs_clarification) ? discoverySpec.needs_clarification : [];
+  const refToRaw = {
+    legacy_inventory_ref: "legacy_inventory",
+    dependency_inventory_ref: "dependency_inventory",
+    dependency_list_ref: "dependency_inventory",
+    event_map_ref: "event_map",
+    sql_catalog_ref: "sql_catalog",
+    sql_map_ref: "sql_map",
+    procedure_summary_ref: "procedure_summary",
+    business_rules_ref: "business_rule_catalog",
+    detector_findings_ref: "detector_findings",
+    delivery_constitution_ref: "delivery_constitution",
+    artifact_index_ref: "artifact_index",
+  };
+  const artifactRefRows = Object.entries(appendixRefs);
+  const allowedTabs = clientMode
+    ? ["spec", "evidence", "history"]
+    : ["spec", "plan", "tasks", "evidence", "maps", "history"];
+  if (!allowedTabs.includes(String(state.analyst?.selectedTab || ""))) {
+    state.analyst.selectedTab = allowedTabs[0];
+  }
+  const currentTab = String(state.analyst?.selectedTab || allowedTabs[0]);
+
+  const mapNodes = new Set();
+  const mapEdges = [];
+  eventMap.slice(0, 300).forEach((entry, idx) => {
+    const container = String(entry?.container || entry?.form || "").trim();
+    const symbol = String(entry?.handler?.symbol || entry?.event_handler || entry?.entry_id || `event:${idx + 1}`).trim();
+    if (container) mapNodes.add(container);
+    if (symbol) mapNodes.add(symbol);
+    if (container && symbol) mapEdges.push({ from: container, to: symbol, type: "handles_event" });
+    const sideEffects = (entry?.side_effects && typeof entry.side_effects === "object") ? entry.side_effects : {};
+    const tables = Array.isArray(sideEffects.tables_or_files) ? sideEffects.tables_or_files : [];
+    tables.slice(0, 8).forEach((table) => {
+      const t = String(table || "").trim();
+      if (!t) return;
+      mapNodes.add(t);
+      if (symbol) mapEdges.push({ from: symbol, to: t, type: "data_touch" });
+    });
+  });
+  dependencies.slice(0, 160).forEach((dep) => {
+    const name = String(dep?.name || dep || "").trim();
+    if (!name) return;
+    mapNodes.add(name);
+    mapEdges.push({ from: "legacy-system", to: name, type: "uses_dependency" });
+  });
+
+  const conversationAudit = (output.conversation_audit && typeof output.conversation_audit === "object")
+    ? output.conversation_audit
+    : {};
+  const auditChanges = Array.isArray(conversationAudit.changes) ? conversationAudit.changes : [];
+  const migrationState = (output.markdown_migration && typeof output.markdown_migration === "object")
+    ? output.markdown_migration
+    : {};
+
+  const tabButton = (id, label) => (
+    `<button data-analyst-view-tab="${id}" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">${label}</button>`
+  );
+
   return `
-    <h5 class="text-sm font-semibold text-ink-950">Technical Requirements Document</h5>
-    ${revised ? `<div class="mt-2 rounded border border-slate-300 bg-white p-2"><strong>Human revised document:</strong><pre class="mono mt-1 whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(revised.slice(0, 2000))}${revised.length > 2000 ? "\n...[truncated]" : ""}</pre></div>` : ""}
-    <div class="mt-2 rounded border border-slate-300 bg-white p-2">
-      <strong>Domain Pack:</strong>
-      <span class="ml-1">${escapeHtml(domainPack.name || "General Software Domain Pack")}</span>
-      <span class="ml-2 text-[11px] text-slate-700">(${escapeHtml(domainPack.id || "software-general-v1")} / v${escapeHtml(domainPack.version || "1.0.0")})</span>
-    </div>
-    <div><strong>Project:</strong> ${escapeHtml(output.project_name || "Untitled")}</div>
-    <div><strong>Summary:</strong> ${escapeHtml(output.executive_summary || "")}</div>
-    <div class="mt-1 text-[11px] text-slate-800"><strong>Selected legacy skill:</strong> ${escapeHtml(String(legacySkill.selected_skill_name || "Generic Legacy Skill"))} (${escapeHtml(String(legacySkill.selected_skill_id || "generic_legacy"))}) | confidence=${escapeHtml(String(legacySkill.confidence || "n/a"))}</div>
-    ${Array.isArray(legacySkill.reasons) && legacySkill.reasons.length ? `<div class="text-[11px] text-slate-800"><strong>Skill rationale:</strong> ${escapeHtml(legacySkill.reasons.slice(0, 4).join(" | "))}</div>` : ""}
-    <div class="mt-2"><strong>Business Objective Summary:</strong> ${escapeHtml(walkthrough.business_objective_summary || "")}</div>
-    <div class="mt-2"><strong>Requirements Understanding</strong></div>
-    <ul class="list-disc pl-5">${(walkthrough.requirements_understanding || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>None captured</li>"}</ul>
-    <div class="mt-2"><strong>Tech Conversion Plan</strong></div>
-    <ul class="list-disc pl-5">${(walkthrough.conversion_to_technical_requirements || []).map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>None captured</li>"}</ul>
-    <div class="mt-2"><strong>Capability Mapping</strong></div>
-    <div class="text-[11px] text-slate-800">Framework: ${escapeHtml(capabilityMapping.framework || "Not specified")}</div>
-    <ul class="list-disc pl-5">${primaryCapabilities.map((cap) => `
-      <li>
-        <strong>${escapeHtml(cap.id || "capability")}</strong>
-        ${escapeHtml(cap.service_domain || "")} (${escapeHtml(cap.business_capability || "")})
-        <span class="text-[11px] text-slate-700">confidence ${escapeHtml(cap.confidence || "")}</span>
-      </li>
-    `).join("") || "<li>No primary capabilities mapped</li>"}</ul>
-    ${alternativeCapabilities.length ? `<div class="mt-1 text-[11px] text-slate-800"><strong>Alternatives:</strong> ${alternativeCapabilities.map((cap) => escapeHtml(cap.id || cap.service_domain || "capability")).join(", ")}</div>` : ""}
-    <div class="mt-2"><strong>Domain Model Excerpt</strong></div>
-    <div class="text-[11px] text-slate-800"><strong>Entities:</strong> ${escapeHtml(domainEntities.join(", ") || "None")}</div>
-    <div class="text-[11px] text-slate-800"><strong>Lifecycle states:</strong> ${escapeHtml(lifecycleStates.join(", ") || "None")}</div>
-    <ul class="list-disc pl-5">${relationships.map((x) => `<li>${escapeHtml(x)}</li>`).join("") || "<li>No relationships captured</li>"}</ul>
-    <div class="mt-2"><strong>Compliance Constraints Applied (${regulatory.length})</strong></div>
-    <ul class="list-disc pl-5">${regulatory.map((c) => `
-      <li>
-        <strong>${escapeHtml(c.id || "constraint")}</strong> ${escapeHtml(c.name || "")}
-        <div>${escapeHtml(c.control_objective || "")}</div>
-        <ul class="list-disc pl-5">${(c.software_actions || []).map((a) => `<li>${escapeHtml(a)}</li>`).join("") || "<li>No software actions provided</li>"}</ul>
-      </li>
-    `).join("") || "<li>No regulatory constraints selected for this objective</li>"}</ul>
-    <div class="mt-2"><strong>Standards Guidance (${standards.length})</strong></div>
-    <ul class="list-disc pl-5">${standards.map((s) => `
-      <li>
-        <strong>${escapeHtml(s.id || "standard")}</strong> ${escapeHtml(s.name || "")}
-        <ul class="list-disc pl-5">${(s.engineering_actions || []).map((a) => `<li>${escapeHtml(a)}</li>`).join("") || "<li>No actions listed</li>"}</ul>
-      </li>
-    `).join("") || "<li>No standards guidance applied</li>"}</ul>
-    <div class="mt-2"><strong>Functional Requirements (${fr.length})</strong></div>
-    <ul class="list-disc pl-5">${fr.map((r) => `
-      <li>
-        <strong>${escapeHtml(r.id || "FR")}</strong> ${escapeHtml(r.title || "")}
-        <div>${escapeHtml(r.description || "")}</div>
-        <ul class="list-disc pl-5">${(r.acceptance_criteria || []).map((c) => `<li>${escapeHtml(c)}</li>`).join("") || "<li>No criteria provided</li>"}</ul>
-      </li>
-    `).join("") || "<li>No functional requirements found</li>"}</ul>
-    <div class="mt-2"><strong>Non-Functional Requirements (${nfr.length})</strong></div>
-    <ul class="list-disc pl-5">${nfr.map((r) => `
-      <li>
-        <strong>${escapeHtml(r.id || "NFR")}</strong> ${escapeHtml(r.title || "")}
-        <div>${escapeHtml(r.description || "")}</div>
-        <div><strong>Metric:</strong> ${escapeHtml(r.metric || "")}</div>
-        <ul class="list-disc pl-5">${(r.acceptance_criteria || []).map((c) => `<li>${escapeHtml(c)}</li>`).join("") || "<li>No criteria provided</li>"}</ul>
-      </li>
-    `).join("") || "<li>No non-functional requirements found</li>"}</ul>
-    <div class="mt-2"><strong>Legacy Functional Contract (${legacyContract.length})</strong></div>
-    <ul class="list-disc pl-5">${legacyContract.map((c) => `<li><strong>${escapeHtml(c.function_name || "function")}</strong> | inputs: ${escapeHtml((c.inputs || []).join(", "))} | outputs: ${escapeHtml((c.outputs || []).join(", "))}</li>`).join("") || "<li>Not provided</li>"}</ul>
-    <div class="mt-2"><strong>Legacy Code Inventory</strong></div>
-    <div class="text-[11px] text-slate-800">${escapeHtml(String(legacyInventory.summary || "No granular legacy inventory available."))}</div>
-    <div class="mt-1"><strong>VB6 projects (${vb6Projects.length})</strong></div>
-    <ul class="list-disc pl-5">${vb6Projects.slice(0, 12).map((project, idx) => `
-      <li>
-        <strong>${escapeHtml(String(project.project_name || `VB6-Project-${idx + 1}`))}</strong>
-        <div class="text-[11px] text-slate-800">
-          file=${escapeHtml(String(project.project_file || "n/a"))}
-          | type=${escapeHtml(String(project.project_type || "unknown"))}
-          | startup=${escapeHtml(String(project.startup_object || "n/a"))}
-          | members=${escapeHtml(String(project.member_count || (Array.isArray(project.member_files) ? project.member_files.length : 0)))}
-          | forms=${escapeHtml(String(project.forms_count || (Array.isArray(project.forms) ? project.forms.length : 0)))}
+    <div data-analyst-tab-root data-analyst-default="${escapeHtml(currentTab)}">
+      <h5 class="text-sm font-semibold text-ink-950">Analyst report</h5>
+      ${revised ? `<div class="mt-2 rounded border border-slate-300 bg-white p-2"><strong>Human revised document:</strong><pre class="mono mt-1 whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(revised.slice(0, 2000))}${revised.length > 2000 ? "\n...[truncated]" : ""}</pre></div>` : ""}
+      <div class="mt-2 flex flex-wrap items-center gap-2">
+        ${tabButton("spec", "Spec")}
+        ${!clientMode ? tabButton("plan", "Plan") : ""}
+        ${!clientMode ? tabButton("tasks", "Tasks") : ""}
+        ${tabButton("evidence", "Evidence")}
+        ${!clientMode ? tabButton("maps", "Maps") : ""}
+        ${tabButton("history", "History")}
+      </div>
+      <p data-analyst-view-status class="mt-1 text-[11px] text-slate-700"></p>
+
+      <section data-analyst-view-panel="spec" class="mt-2 rounded border border-slate-300 bg-white p-2">
+        <div class="rounded border border-slate-300 bg-white p-2 text-[11px] text-slate-900">
+      <div><strong>Project:</strong> ${escapeHtml(String(project.name || "Untitled"))}</div>
+      <div><strong>Objective:</strong> ${escapeHtml(String(project.objective || ""))}</div>
+      <div><strong>Source -> Target:</strong> ${escapeHtml(String(metadata.context_reference?.repo || "n/a"))} @ ${escapeHtml(String(metadata.context_reference?.branch || "main"))}</div>
+      <div><strong>SIL:</strong> SCM ${escapeHtml(String(metadata.context_reference?.scm_version || "1.0"))} / CP ${escapeHtml(String(metadata.context_reference?.cp_version || "1.0"))} / HA ${escapeHtml(String(metadata.context_reference?.ha_version || "1.0"))}</div>
+      <div><strong>Generated:</strong> ${escapeHtml(String(metadata.generated_at || ""))}</div>
         </div>
-        ${String(project.business_objective_hypothesis || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Objective:</strong> ${escapeHtml(String(project.business_objective_hypothesis || ""))}</div>` : ""}
-        ${Array.isArray(project.key_business_capabilities) && project.key_business_capabilities.length ? `<div class="text-[11px] text-slate-800"><strong>Capabilities:</strong> ${escapeHtml(project.key_business_capabilities.slice(0, 10).join(", "))}</div>` : ""}
-        <div class="text-[11px] text-slate-800">Top members: ${escapeHtml((Array.isArray(project.member_files) ? project.member_files.slice(0, 10) : []).join(", ") || "none extracted")}</div>
-        <div class="text-[11px] text-slate-800">Tables: ${escapeHtml((Array.isArray(project.data_touchpoints?.tables) ? project.data_touchpoints.tables.slice(0, 10) : []).join(", ") || "none")}</div>
-        <div class="text-[11px] text-slate-800">Procedures: ${escapeHtml((Array.isArray(project.data_touchpoints?.procedures) ? project.data_touchpoints.procedures.slice(0, 10) : []).join(", ") || "none")}</div>
-        <div class="text-[11px] text-slate-800">Workflows: ${escapeHtml((Array.isArray(project.primary_workflows) ? project.primary_workflows.slice(0, 6) : []).join(" | ") || "none")}</div>
-        <div class="text-[11px] text-slate-800">Modernization notes: ${escapeHtml((Array.isArray(project.modernization_considerations) ? project.modernization_considerations.slice(0, 4) : []).join(" | ") || "none")}</div>
-      </li>
-    `).join("") || "<li>No VB6 project-level metadata extracted</li>"}</ul>
-    <div class="mt-1"><strong>VB6 file-type coverage</strong></div>
-    <div class="text-[11px] text-slate-800">${escapeHtml(Object.entries(fileTypeCoverage || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([k, v]) => `${String(k)}=${String(v)}`).join(", ") || "none")}</div>
-    <div class="text-[11px] text-slate-800"><strong>.bas module summary:</strong> modules=${escapeHtml(String(basModuleSummary.module_count ?? 0))}, procedures=${escapeHtml(String(basModuleSummary.procedure_count ?? 0))}</div>
-    ${Array.isArray(basModuleSummary.modules) && basModuleSummary.modules.length ? `<div class="text-[11px] text-slate-800"><strong>.bas modules:</strong> ${escapeHtml(basModuleSummary.modules.slice(0, 20).join(", "))}</div>` : ""}
-    ${binaryCompanionFiles.length ? `<div class="text-[11px] text-slate-800"><strong>Binary companions (${binaryCompanionFiles.length}):</strong> ${escapeHtml(binaryCompanionFiles.slice(0, 20).map((row) => String(row.path || "")).join(", "))}</div>` : ""}
-    <div class="mt-1"><strong>Project-by-project business summary (${projectBusinessSummaries.length})</strong></div>
-    <ul class="list-disc pl-5">${projectBusinessSummaries.slice(0, 16).map((row, idx) => `
-      <li>
-        <strong>${escapeHtml(String(row.project_name || `Project-${idx + 1}`))}</strong>
-        <div class="text-[11px] text-slate-800">Risk=${escapeHtml(String(row.risk?.tier || "n/a"))} (${escapeHtml(String(row.risk?.score ?? "n/a"))})</div>
-        ${String(row.business_objective || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Objective:</strong> ${escapeHtml(String(row.business_objective || ""))}</div>` : ""}
-        ${Array.isArray(row.business_capabilities) && row.business_capabilities.length ? `<div class="text-[11px] text-slate-800"><strong>Capabilities:</strong> ${escapeHtml(row.business_capabilities.slice(0, 12).join(", "))}</div>` : ""}
-        ${Array.isArray(row.primary_workflows) && row.primary_workflows.length ? `<div class="text-[11px] text-slate-800"><strong>Workflows:</strong> ${escapeHtml(row.primary_workflows.slice(0, 10).join(" | "))}</div>` : ""}
-        <div class="text-[11px] text-slate-800">Components: forms=${escapeHtml(String(Array.isArray(row.technical_components?.forms) ? row.technical_components.forms.length : 0))}, controls=${escapeHtml(String(Array.isArray(row.technical_components?.controls) ? row.technical_components.controls.length : 0))}, dependencies=${escapeHtml(String(Array.isArray(row.technical_components?.dependencies) ? row.technical_components.dependencies.length : 0))}</div>
-        ${String(row.summary_variants?.quick || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Quick:</strong> ${escapeHtml(String(row.summary_variants.quick || ""))}</div>` : ""}
-        ${String(row.summary_variants?.technical || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Technical:</strong> ${escapeHtml(String(row.summary_variants.technical || ""))}</div>` : ""}
-        ${String(row.summary_variants?.risk || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Risk:</strong> ${escapeHtml(String(row.summary_variants.risk || ""))}</div>` : ""}
-      </li>
-    `).join("") || "<li>No per-project business summary generated</li>"}</ul>
-    <div class="mt-1"><strong>Forms and business use (${formsDisplayCount})</strong></div>
-    ${formsDisplayCount !== legacyForms.length ? `<div class="text-[11px] text-slate-700">Showing ${escapeHtml(String(legacyForms.length))} extracted entries; project inventory indicates ${escapeHtml(String(formsDisplayCount))} total forms/usercontrols.</div>` : ""}
-    <ul class="list-disc pl-5">${legacyForms.slice(0, 16).map((form, idx) => `
-      <li>
-        <strong>${escapeHtml(`${String(form.form_type || "Form")} ${String(form.form_name || `Form-${idx + 1}`)}`)}</strong>
-        <div>${escapeHtml(String(form.business_use || "Business workflow executed through event-driven UI controls."))}</div>
-        <div class="text-[11px] text-slate-800">Controls: ${escapeHtml((Array.isArray(form.controls) ? form.controls.slice(0, 12) : []).join(", ") || "none extracted")}</div>
-        <div class="text-[11px] text-slate-800">Handlers: ${escapeHtml((Array.isArray(form.event_handlers) ? form.event_handlers.slice(0, 12) : []).join(", ") || "none extracted")}</div>
-      </li>
-    `).join("") || "<li>No VB6 form/usercontrol metadata extracted</li>"}</ul>
-    <div class="mt-1 text-[11px] text-slate-800"><strong>ActiveX/COM:</strong> ${escapeHtml(activexControls.slice(0, 24).join(", ") || "none extracted")}</div>
-    <div class="text-[11px] text-slate-800"><strong>DLL:</strong> ${escapeHtml(dllDeps.slice(0, 24).join(", ") || "none extracted")}</div>
-    <div class="text-[11px] text-slate-800"><strong>OCX:</strong> ${escapeHtml(ocxDeps.slice(0, 24).join(", ") || "none extracted")}</div>
-    <div class="text-[11px] text-slate-800"><strong>Event handlers (${legacyEvents.length}):</strong> ${escapeHtml(legacyEvents.slice(0, 24).join(", ") || "none extracted")}</div>
-    <div class="text-[11px] text-slate-800"><strong>Project members (${legacyMembers.length}):</strong> ${escapeHtml(legacyMembers.slice(0, 24).join(", ") || "none extracted")}</div>
-    <div class="text-[11px] text-slate-800"><strong>Win32 declares (${win32Declares.length}):</strong> ${escapeHtml(win32Declares.slice(0, 12).join(", ") || "none extracted")}</div>
-    <div class="text-[11px] text-slate-800"><strong>COM surface:</strong> ProgIDs=${escapeHtml((Array.isArray(comSurface.late_bound_progids) ? comSurface.late_bound_progids.slice(0, 12) : []).join(", ") || "none")} | CallByName=${escapeHtml(String(comSurface.call_by_name_sites || 0))} | Create/GetObject=${escapeHtml(String(comSurface.createobject_getobject_sites || 0))}</div>
-    <div class="text-[11px] text-slate-800"><strong>Error profile:</strong> ResumeNext=${escapeHtml(String(errorProfile.on_error_resume_next || 0))}, GoTo=${escapeHtml(String(errorProfile.on_error_goto || 0))}, GoTo0=${escapeHtml(String(errorProfile.on_error_goto0 || 0))}, ControlArray=${escapeHtml(String(errorProfile.control_array_index_markers || 0))}, LateBound=${escapeHtml(String(errorProfile.late_bound_com_calls || 0))}</div>
-    <div class="mt-2"><strong>Business Rules catalog (${legacyRules.length})</strong></div>
-    ${groupedLegacyRules.length ? `<div class="text-[11px] text-slate-700">Rule groups: ${escapeHtml(groupedLegacyRules.map((g) => `${g.label} (${g.count})`).join(", "))}</div>` : ""}
-    <ul class="list-disc pl-5">${groupedLegacyRules.slice(0, 8).map((group) => `
-      <li>
-        <strong>${escapeHtml(String(group.label || "Rule Group"))} (${Number(group.count || 0)})</strong>
-        <ul class="list-disc pl-5">${(Array.isArray(group.rules) ? group.rules : []).slice(0, 12).map((rule, idx) => `
-          <li>
-            <strong>${escapeHtml(String(rule.id || `BR-${String(idx + 1).padStart(3, "0")}`))}</strong>
-            ${escapeHtml(String(rule.statement || ""))}
-            <div class="text-[11px] text-slate-800">Scope: ${escapeHtml(String(rule.scope || "legacy-code"))}</div>
-            ${String(rule.evidence || "").trim() ? `<div class="text-[11px] text-slate-800">Evidence: ${escapeHtml(String(rule.evidence || ""))}</div>` : ""}
-          </li>
-        `).join("") || "<li>No rules in this group</li>"}</ul>
-      </li>
-    `).join("") || "<li>No deterministic business rules extracted</li>"}</ul>
-    <div class="mt-2"><strong>VB6 Modernization readiness</strong></div>
-    <div class="text-[11px] text-slate-800">
-      score=${escapeHtml(String(readiness.score ?? "n/a"))}/100
-      | risk=${escapeHtml(String(readiness.risk_tier || "n/a"))}
-      | strategy=${escapeHtml(String(readiness.recommended_strategy?.name || readiness.recommended_strategy?.id || "n/a"))}
-    </div>
-    ${String(readiness.recommended_strategy?.rationale || "").trim() ? `<div class="text-[11px] text-slate-800">${escapeHtml(String(readiness.recommended_strategy.rationale || ""))}</div>` : ""}
-    ${Array.isArray(readiness.required_actions) && readiness.required_actions.length ? `<div class="text-[11px] text-slate-800"><strong>Required actions:</strong> ${escapeHtml(readiness.required_actions.slice(0, 10).join(", "))}</div>` : ""}
-    <div class="mt-2"><strong>Source and target modernization profile</strong></div>
-    <div class="text-[11px] text-slate-800">Source=${escapeHtml(String(sourceProfile.language || "Unknown"))} | ecosystem=${escapeHtml(String(sourceProfile.ecosystem || "n/a"))} | repo=${escapeHtml(String(sourceProfile.repo || "n/a"))} | projects=${escapeHtml(String(sourceProfile.project_count ?? "n/a"))}</div>
-    <div class="text-[11px] text-slate-800">Target=${escapeHtml(String(targetProfile.language || "Not specified"))} | platform=${escapeHtml(String(targetProfile.platform || "n/a"))} | deployment=${escapeHtml(String(targetProfile.deployment_target || "n/a"))} | repo=${escapeHtml(String(targetProfile.repo || "n/a"))}</div>
-    ${String(sourceTargetSummaries.brief || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Brief:</strong> ${escapeHtml(String(sourceTargetSummaries.brief || ""))}</div>` : ""}
-    ${String(sourceTargetSummaries.technical || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Technical:</strong> ${escapeHtml(String(sourceTargetSummaries.technical || ""))}</div>` : ""}
-    ${String(sourceTargetSummaries.risk || "").trim() ? `<div class="text-[11px] text-slate-800"><strong>Risk:</strong> ${escapeHtml(String(sourceTargetSummaries.risk || ""))}</div>` : ""}
-    ${sourceTargetRisks.length ? `<ul class="list-disc pl-5">${sourceTargetRisks.slice(0, 8).map((r) => `<li>${escapeHtml(String(r || ""))}</li>`).join("")}</ul>` : ""}
-    <div class="mt-1"><strong>Pitfall detectors (${pitfallDetectors.length})</strong></div>
-    <ul class="list-disc pl-5">${pitfallDetectors.slice(0, 16).map((row) => `
-      <li>
-        <strong>${escapeHtml(String(row.id || "VB6-DET"))}</strong>
-        [${escapeHtml(String(row.severity || "medium"))}]
-        count=${escapeHtml(String(row.count || 0))}
-        <div class="text-[11px] text-slate-800">${escapeHtml(String(row.evidence || ""))}</div>
-      </li>
-    `).join("") || "<li>No detector hits</li>"}</ul>
-    <div class="mt-1"><strong>UI Event Map (${uiEventMap.length})</strong></div>
-    <ul class="list-disc pl-5">${uiEventMap.slice(0, 16).map((row) => `
-      <li>
-        <strong>${escapeHtml(String(row.event_handler || "handler"))}</strong>
-        <div class="text-[11px] text-slate-800">
-          form=${escapeHtml(String(row.form || "n/a"))}
-          | control=${escapeHtml(String(row.control || "n/a"))}
-          | event=${escapeHtml(String(row.event || "n/a"))}
+        <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+          <div class="text-xs font-semibold text-slate-900">Decision brief</div>
+      <table class="mt-2 w-full border-collapse text-[11px] text-slate-900">
+        <tbody>
+          <tr><td class="w-52 border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Readiness</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(glance.readiness_score ?? "n/a"))}/100</td></tr>
+          <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Risk tier</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(glance.risk_tier || "n/a"))}</td></tr>
+          <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Inventory</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(`${String(inventory.projects ?? 0)} projects, ${String(inventory.forms ?? 0)} forms, ${String(inventory.dependencies ?? 0)} dependencies`)}</td></tr>
+          <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Top tables</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(inventory.tables_touched) ? inventory.tables_touched : []).join(", ") || "none")}</td></tr>
+          <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Headline</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(glance.headline || ""))}</td></tr>
+        </tbody>
+      </table>
+      <div class="mt-2 text-[11px]"><strong>Recommended strategy:</strong> ${escapeHtml(String(strategy.name || "Phased modernization"))}</div>
+      <div class="text-[11px] text-slate-800">${escapeHtml(String(strategy.rationale || ""))}</div>
+      <ul class="mt-1 list-disc pl-5 text-[11px]">${strategyPhases.map((phase) => `<li><strong>${escapeHtml(String(phase.id || ""))}</strong> ${escapeHtml(String(phase.title || ""))}: ${escapeHtml(String(phase.outcome || ""))}</li>`).join("") || "<li>No phase plan available</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Blocking decisions</div>
+      <ul class="list-disc pl-5 text-[11px]">${blocking.map((row) => `<li><strong>${escapeHtml(String(row.id || "DEC"))}</strong> ${escapeHtml(String(row.question || ""))}<div class="text-slate-800">Recommendation: ${escapeHtml(String(row.default_recommendation || ""))}</div></li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Non-blocking decisions</div>
+      <ul class="list-disc pl-5 text-[11px]">${nonBlocking.map((row) => `<li><strong>${escapeHtml(String(row.id || "DEC"))}</strong> ${escapeHtml(String(row.question || ""))}</li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Top risks</div>
+      <ul class="list-disc pl-5 text-[11px]">${riskRows.map((row) => `<li><strong>${escapeHtml(String(row.id || "RISK"))}</strong> [${escapeHtml(String(row.severity || "medium").toUpperCase())}] ${escapeHtml(String(row.description || ""))}<div class="text-slate-800">Mitigation: ${escapeHtml(String(row.mitigation || ""))}</div></li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Spec decomposition (Spec Kit style)</div>
+      <div class="overflow-x-auto">
+        <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+          <tbody>
+            <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Discovery spec</td><td class="border border-slate-300 px-2 py-1">projects=${escapeHtml(String(discoverySpec.inventory_counts?.projects ?? inventory.projects ?? 0))}, forms=${escapeHtml(String(discoverySpec.inventory_counts?.forms ?? inventory.forms ?? 0))}, SQL map=${escapeHtml(String(discoverySpec.inventory_counts?.sql_map_entries ?? sqlMapEntries.length))}</td></tr>
+            <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Modernization plan</td><td class="border border-slate-300 px-2 py-1">strategy=${escapeHtml(String(modernizationPlan.strategy || strategy.name || "Phased modernization"))}, backlog=${escapeHtml(String(modernizationPlan.backlog_items ?? backlog.length))}, blocking decisions=${escapeHtml(String(modernizationPlan.blocking_decisions ?? blocking.length))}</td></tr>
+            <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Executable contracts</td><td class="border border-slate-300 px-2 py-1">golden flows=${escapeHtml(String(executableContracts.golden_flow_count ?? goldenFlows.length))}, traceability links=${escapeHtml(String(executableContracts.traceability_links ?? 0))}, grounding=${escapeHtml(String(executableContracts.grounding_status || (qualityGates.some((g) => String(g.id) === "bdd_flow_grounding" && String(g.result) === "warn") ? "needs_improvement" : "grounded")))}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-2 text-[11px] font-semibold">Needs clarification (${clarificationRows.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${clarificationRows.map((row) => `<li><strong>${escapeHtml(String(row.id || "Q"))}</strong> [${escapeHtml(String(row.severity || "medium").toUpperCase())}] ${escapeHtml(String(row.question || ""))} <span class="text-slate-700">(owner: ${escapeHtml(String(row.owner || "Unassigned"))})</span></li>`).join("") || "<li>No open clarification markers.</li>"}</ul>
         </div>
-        <div class="text-[11px] text-slate-800">calls: ${escapeHtml((Array.isArray(row.procedure_calls) ? row.procedure_calls.slice(0, 6) : []).join(", ") || "none")}</div>
-      </li>
-    `).join("") || "<li>No UI event map extracted</li>"}</ul>
-    <div class="text-[11px] text-slate-800"><strong>SQL query catalog (${sqlCatalog.length}):</strong> ${escapeHtml(sqlCatalog.slice(0, 8).join(" | ") || "none extracted")}</div>
-    <div class="mt-2"><strong>Risks (${risks.length})</strong></div>
-    <ul class="list-disc pl-5">${risks.map((r) => `<li><strong>${escapeHtml((r.impact || "").toUpperCase())}</strong> ${escapeHtml(r.description || "")} | Mitigation: ${escapeHtml(r.mitigation || "")}</li>`).join("") || "<li>None</li>"}</ul>
-    <div class="mt-2"><strong>BDD Contract (${bddFeatures.length} features)</strong></div>
-    <div class="text-[11px] text-slate-800">Lint: ${bddLint.pass === true ? "PASS" : (bddLint.pass === false ? "FAIL" : "Unknown")} | scenarios=${Number(bddLint.scenario_count || 0)}</div>
-    <ul class="list-disc pl-5">${bddFeatures.slice(0, 8).map((f) => `
-      <li>
-        <strong>${escapeHtml(f.id || "BDD")}</strong> ${escapeHtml(f.title || "")}
-        <pre class="mono mt-1 whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(String(f.gherkin || "").slice(0, 1200))}${String(f.gherkin || "").length > 1200 ? "\n...[truncated]" : ""}</pre>
-      </li>
-    `).join("") || "<li>No BDD features generated</li>"}</ul>
-    <div class="mt-2"><strong>Quality Gates (${qualityGates.length})</strong></div>
-    <ul class="list-disc pl-5">${qualityGates.map((g) => `
-      <li>
-        <span class="${gateBadge(g.status)}">${escapeHtml(g.status || "UNKNOWN")}</span>
-        <strong class="ml-1">${escapeHtml(g.name || "gate")}</strong>
-        <div class="text-[11px] text-slate-800">${escapeHtml(g.message || "")}</div>
-      </li>
-    `).join("") || "<li>No gates recorded</li>"}</ul>
-    <div class="mt-2"><strong>Acceptance-to-Test Mapping (${acceptanceMap.length})</strong></div>
-    <ul class="list-disc pl-5">${acceptanceMap.slice(0, 12).map((m) => `
-      <li>
-        <strong>${escapeHtml(m.requirement_id || "requirement")}</strong>
-        | tests: ${escapeHtml((m.test_types || []).join(", "))}
-        | scenarios: ${escapeHtml((m.bdd_scenarios || []).join(", "))}
-      </li>
-    `).join("") || "<li>No mapping generated</li>"}</ul>
-    <div class="mt-2"><strong>Open Questions (${openQuestions.length})</strong></div>
-    <ul class="list-disc pl-5">${openQuestions.map((q) => `<li>${escapeHtml(q)}</li>`).join("") || "<li>None</li>"}</ul>
+      </section>
+
+      <section data-analyst-view-panel="plan" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
+        <div class="text-xs font-semibold text-slate-900">Delivery spec</div>
+      <div class="mt-2 text-[11px] font-semibold">Backlog (${backlog.length})</div>
+      <div class="overflow-x-auto">
+        <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+          <thead>
+            <tr>
+              <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">ID</th>
+              <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Pri</th>
+              <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Type</th>
+              <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Outcome</th>
+              <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Acceptance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${backlog.slice(0, 60).map((item) => `<tr>
+              <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(item.id || ""))}</td>
+              <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(item.priority || ""))}</td>
+              <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(item.type || ""))}</td>
+              <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(item.title || item.outcome || ""))}</td>
+              <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria.slice(0, 2).join(" / ") : "") || "n/a")}</td>
+            </tr>`).join("") || `<tr><td class="border border-slate-300 px-2 py-1" colspan="5">No backlog items generated</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-2 text-[11px] font-semibold">Golden flows (${goldenFlows.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${goldenFlows.map((flow) => `<li><strong>${escapeHtml(String(flow.id || "GF"))}</strong> ${escapeHtml(String(flow.name || ""))} | entry=${escapeHtml(String(flow.entrypoint || ""))}</li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Quality gates (${qualityGates.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${qualityGates.map((gate) => `<li><span class="${gateBadge(gate.result)}">${escapeHtml(String(gate.result || "warn").toUpperCase())}</span> <strong class="ml-1">${escapeHtml(String(gate.id || "gate"))}</strong> ${escapeHtml(String(gate.description || ""))}</li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Test matrix (${testMatrix.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${testMatrix.slice(0, 20).map((row) => `<li>${escapeHtml(String(row.requirement_id || ""))} | tests: ${escapeHtml((Array.isArray(row.test_types) ? row.test_types.join(", ") : "") || "n/a")} | scenarios: ${escapeHtml((Array.isArray(row.scenario_ids) ? row.scenario_ids.join(", ") : "") || "n/a")}</li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Evidence outputs (${evidenceOutputs.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${evidenceOutputs.map((row) => `<li><strong>${escapeHtml(String(row.type || ""))}</strong> - ${escapeHtml(String(row.path_hint || ""))}</li>`).join("") || "<li>None</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Open questions (${openQuestions.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${openQuestions.map((entry, idx) => {
+        const q = normalizeOpenQuestionEntry(entry, idx);
+        return `<li><strong>${escapeHtml(String(q.id || "Q"))}</strong> [${escapeHtml(String(q.severity || "medium").toUpperCase())}] ${escapeHtml(String(q.question || ""))} <span class="text-slate-700">(owner: ${escapeHtml(String(q.owner || "Unassigned"))})</span>${q.context ? `<div class="text-slate-800">${escapeHtml(String(q.context))}</div>` : ""}</li>`;
+      }).join("") || "<li>None</li>"}</ul>
+      </section>
+
+      <section data-analyst-view-panel="tasks" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
+        <div class="text-xs font-semibold text-slate-900">Tasks</div>
+        <p class="mt-1 text-[11px] text-slate-700">Execution checklist derived from plan backlog and grounded contracts.</p>
+        <div class="mt-2 text-[11px] font-semibold">Execution checklist</div>
+        <ul class="list-disc pl-5 text-[11px]">
+          ${backlog.slice(0, 40).map((item) => `<li><strong>${escapeHtml(String(item.id || ""))}</strong> [${escapeHtml(String(item.priority || "P1"))}] ${escapeHtml(String(item.title || item.outcome || ""))}</li>`).join("") || "<li>No backlog tasks generated.</li>"}
+        </ul>
+        <div class="mt-2 grid gap-2 sm:grid-cols-4 text-[11px]">
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Procedure summaries:</strong> ${procedureSummaries.length}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>SQL map entries:</strong> ${sqlMapEntries.length}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Golden flows:</strong> ${goldenFlows.length}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Traceability links:</strong> ${Array.isArray(delivery.traceability?.links) ? delivery.traceability.links.length : 0}</div>
+        </div>
+        <div class="mt-2 text-[11px] font-semibold">Contract tasks by SQL map</div>
+        <div class="overflow-x-auto">
+          <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+            <thead>
+              <tr>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Task</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Form</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Procedure</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Operation</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Tables</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Risks</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sqlMapEntries.slice(0, 80).map((row, idx) => `<tr>
+                <td class="border border-slate-300 px-2 py-1">TASK-${String(idx + 1).padStart(3, "0")}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.form || "n/a"))}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.procedure || "n/a"))}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.operation || "unknown").toUpperCase())}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.tables) ? row.tables.join(", ") : "") || "n/a")}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.risk_flags) ? row.risk_flags.join(", ") : "") || "none")}</td>
+              </tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='6'>No SQL map entries generated.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        <details class="mt-2"><summary class="cursor-pointer text-[11px] font-semibold text-slate-900">Procedure summaries (${procedureSummaries.length})</summary><pre class="mono mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(JSON.stringify(procedureSummaries.slice(0, 120), null, 2))}</pre></details>
+        <div class="mt-2 text-[11px] font-semibold">Delivery constitution (${constitutionPrinciples.length})</div>
+        <ul class="list-disc pl-5 text-[11px]">${constitutionPrinciples.map((line) => `<li>${escapeHtml(String(line || ""))}</li>`).join("") || "<li>No constitution principles available.</li>"}</ul>
+      </section>
+
+      <section data-analyst-view-panel="evidence" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
+        <div class="text-xs font-semibold text-slate-900">Evidence explorer</div>
+        <p class="mt-1 text-[11px] text-slate-700">Evidence is source-of-truth. Brief and Plan content is derived from these artifacts.</p>
+        <div class="mt-2 grid gap-2 md:grid-cols-2">
+          ${artifactRefRows.map(([refKey, refValue]) => {
+            const rawKey = refToRaw[refKey] || "";
+            return `
+              <div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px]">
+                <div class="font-semibold text-slate-900">${escapeHtml(refKey)}</div>
+                <div class="mono mt-1 break-all text-slate-700">${escapeHtml(String(refValue || ""))}</div>
+                <div class="mt-2 flex flex-wrap gap-1">
+                  <button data-artifact-copy-ref="${escapeHtml(String(refValue || ""))}" class="btn-light rounded-md px-2 py-1 text-[10px] font-semibold">Copy ref</button>
+                  ${rawKey ? `<button data-artifact-download-key="${escapeHtml(rawKey)}" class="btn-dark rounded-md px-2 py-1 text-[10px] font-semibold">Download JSON</button>` : ""}
+                </div>
+              </div>
+            `;
+          }).join("") || "<div class='rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700'>No artifact refs available.</div>"}
+        </div>
+
+        ${showDeepEvidence ? `
+        <div class="mt-2 overflow-x-auto">
+          <table class="w-full border-collapse text-[11px] text-slate-900">
+            <thead>
+              <tr>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Artifact</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Rows</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Primary use</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td class="border border-slate-300 px-2 py-1">Legacy inventory</td><td class="border border-slate-300 px-2 py-1">${Number(rawLegacyInventory?.projects?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Project/file/system inventory</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Dependency inventory</td><td class="border border-slate-300 px-2 py-1">${dependencies.length}</td><td class="border border-slate-300 px-2 py-1">ActiveX/COM/DLL risk and replacement planning</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Event map</td><td class="border border-slate-300 px-2 py-1">${eventMap.length}</td><td class="border border-slate-300 px-2 py-1">Entrypoints, calls, side effects</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">SQL catalog</td><td class="border border-slate-300 px-2 py-1">${sqlCatalog.length}</td><td class="border border-slate-300 px-2 py-1">Query contract and data touchpoints</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">SQL map</td><td class="border border-slate-300 px-2 py-1">${sqlMapEntries.length}</td><td class="border border-slate-300 px-2 py-1">Form/Procedure to query/table risk mapping</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Procedure summaries</td><td class="border border-slate-300 px-2 py-1">${procedureSummaries.length}</td><td class="border border-slate-300 px-2 py-1">Step-wise behavior decomposition</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Business rules</td><td class="border border-slate-300 px-2 py-1">${businessRules.length}</td><td class="border border-slate-300 px-2 py-1">Rule extraction + BDD grounding</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Detector findings</td><td class="border border-slate-300 px-2 py-1">${detectorFindings.length}</td><td class="border border-slate-300 px-2 py-1">Modernization risk hotspots</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Delivery constitution</td><td class="border border-slate-300 px-2 py-1">${constitutionPrinciples.length}</td><td class="border border-slate-300 px-2 py-1">Project non-negotiables propagated across phases</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <details class="mt-2"><summary class="cursor-pointer text-[11px] font-semibold text-slate-900">Event map rows (${eventMap.length})</summary><pre class="mono mt-1 max-h-52 overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(JSON.stringify(eventMap.slice(0, 200), null, 2))}</pre></details>
+        <details class="mt-2"><summary class="cursor-pointer text-[11px] font-semibold text-slate-900">SQL catalog rows (${sqlCatalog.length})</summary><pre class="mono mt-1 max-h-52 overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(JSON.stringify(sqlCatalog.slice(0, 240), null, 2))}</pre></details>
+        <details class="mt-2"><summary class="cursor-pointer text-[11px] font-semibold text-slate-900">Detector findings (${detectorFindings.length})</summary><pre class="mono mt-1 max-h-52 overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(JSON.stringify(detectorFindings.slice(0, 240), null, 2))}</pre></details>
+        ` : `<div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">Detailed raw evidence is available in Engineering/Security perspectives.</div>`}
+      </section>
+
+      <section data-analyst-view-panel="maps" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
+        <div class="text-xs font-semibold text-slate-900">Maps</div>
+        <p class="mt-1 text-[11px] text-slate-700">Topology is derived from event flows, data touchpoints, and dependency inventory.</p>
+        <div class="mt-2 grid gap-2 sm:grid-cols-3 text-[11px]">
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Nodes:</strong> ${mapNodes.size}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Edges:</strong> ${mapEdges.length}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Artifact index:</strong> ${Number(artifactIndex?.artifacts?.length || 0)}</div>
+        </div>
+        <div class="mt-2 overflow-x-auto">
+          <table class="w-full border-collapse text-[11px] text-slate-900">
+            <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">From</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">To</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Type</th></tr></thead>
+            <tbody>
+              ${mapEdges.slice(0, 120).map((edge) => `<tr><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(edge.from || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(edge.to || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(edge.type || ""))}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='3'>No map edges detected.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section data-analyst-view-panel="history" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
+        <div class="text-xs font-semibold text-slate-900">History</div>
+        <div class="mt-1 text-[11px] text-slate-700"><strong>Conversation thread:</strong> ${escapeHtml(String(conversationAudit.thread_id || "n/a"))}</div>
+        <div class="mt-1 text-[11px] text-slate-700"><strong>Markdown migration:</strong> ${escapeHtml(String(migrationState.ok === false ? "failed" : (migrationState.ok === true ? "applied" : "not applied")))}</div>
+        ${Array.isArray(migrationState.warnings) && migrationState.warnings.length ? `<ul class="mt-1 list-disc pl-5 text-[11px] text-amber-800">${migrationState.warnings.map((w) => `<li>${escapeHtml(String(w || ""))}</li>`).join("")}</ul>` : ""}
+        <div class="mt-2 text-[11px] font-semibold text-slate-900">Decision and redline history (${auditChanges.length})</div>
+        <ul class="mt-1 list-disc pl-5 text-[11px] text-slate-900">
+          ${auditChanges.slice(-80).reverse().map((change) => `<li><strong>${escapeHtml(String(change.change_id || "change"))}</strong> ${escapeHtml(String(change.summary || ""))} <span class="text-slate-700">(${escapeHtml(String(change.timestamp || ""))})</span></li>`).join("") || "<li>No historical changes captured.</li>"}
+        </ul>
+      </section>
+    </div>
   `;
 }
 
@@ -6359,11 +6896,12 @@ function renderAgentTabPanel() {
     ${stage === 1 && run?.run_id ? `
       <div class="mt-2 rounded-lg border border-slate-300 bg-white p-2">
         <div class="flex flex-wrap items-center gap-2">
-          <button data-analyst-export class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Req</button>
+          <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
+          <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export the analyst document or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export a summary or full evidence document, or upload an updated version.</p>
       </div>
     ` : ""}
     <div class="mt-2 rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs text-slate-800">${renderReadableOutput(stage, result?.output || {}, runUseCase)}</div>
@@ -6371,7 +6909,10 @@ function renderAgentTabPanel() {
   `;
   const openBtn = el.agentTabPanel.querySelector("[data-open-stage]");
   if (openBtn) openBtn.addEventListener("click", () => openStageModal(Number(openBtn.getAttribute("data-open-stage"))));
-  if (stage === 1 && run?.run_id) wireAnalystDocActions(el.agentTabPanel, run);
+  if (stage === 1 && run?.run_id) {
+    wireAnalystDocActions(el.agentTabPanel, run);
+    wireAnalystViewTabs(el.agentTabPanel, run);
+  }
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
 }
 
@@ -6825,11 +7366,12 @@ function openStageModal(stage) {
     el.modalReadable.innerHTML = `
       <div class="rounded-lg border border-slate-300 bg-white p-2">
         <div class="flex flex-wrap items-center gap-2">
-          <button data-analyst-export class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Req</button>
+          <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
+          <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export the analyst document or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export a summary or full evidence document, or upload an updated version.</p>
       </div>
       <div class="mt-2">${renderReadableOutput(stage, result.output || {}, runUseCase)}</div>
     `;
@@ -6842,7 +7384,10 @@ function openStageModal(stage) {
   } else {
     el.modalOutput.textContent = JSON.stringify(result.output || {}, null, 2);
   }
-  if (stage === 1 && state.currentRun?.run_id) wireAnalystDocActions(el.modalReadable, state.currentRun);
+  if (stage === 1 && state.currentRun?.run_id) {
+    wireAnalystDocActions(el.modalReadable, state.currentRun);
+    wireAnalystViewTabs(el.modalReadable, state.currentRun);
+  }
   el.outputModal.showModal();
   setTimeout(() => renderMermaidBlocks(el.outputModal), 0);
 }
@@ -7256,10 +7801,19 @@ async function startRun() {
     alert("Legacy schema/SQL is required for database conversion use case.");
     return;
   }
-  if (!discoverStepCompletion().resultsComplete) {
-    alert("Complete Discover wizard steps (Connect, Scope, Scan) before starting a run.");
+  const discoverCompletion = discoverStepCompletion();
+  const requiresConnectStep = useCase === "code_modernization" && isModernizationRepoScanMode();
+  if (!discoverCompletion.scopeComplete || !discoverCompletion.scanComplete || (requiresConnectStep && !discoverCompletion.connectComplete)) {
+    const blockers = [];
+    if (requiresConnectStep && !discoverCompletion.connectComplete) blockers.push("Connect");
+    if (!discoverCompletion.scopeComplete) blockers.push("Define scope");
+    if (!discoverCompletion.scanComplete) blockers.push("Scan");
+    alert(`Complete Discover step(s): ${blockers.join(", ")} before starting a run.`);
     setMode(MODES.DISCOVER);
     setWizardStep(1);
+    if (requiresConnectStep && !discoverCompletion.connectComplete) setDiscoverStep(1);
+    else if (!discoverCompletion.scopeComplete) setDiscoverStep(2);
+    else if (!discoverCompletion.scanComplete) setDiscoverStep(3);
     return;
   }
   if (String(el.deploymentTarget.value || "local").toLowerCase() === "cloud" && !el.enableCloudPromotion?.checked) {

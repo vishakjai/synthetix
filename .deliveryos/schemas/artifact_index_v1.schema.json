@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.example/schemas/artifact_index_v1.json",
+  "title": "Synthetix Artifact Index v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "artifact_version", "metadata", "artifacts"],
+  "properties": {
+    "artifact_type": { "const": "artifact_index" },
+    "artifact_version": { "const": "1.0" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated_at", "context_reference"],
+      "properties": {
+        "generated_at": { "type": "string", "format": "date-time" },
+        "context_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repo", "commit_sha"],
+          "properties": {
+            "repo": { "type": "string" },
+            "commit_sha": { "type": "string" }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "ref"],
+        "properties": {
+          "type": {
+            "enum": [
+              "legacy_inventory",
+              "dependency_inventory",
+              "event_map",
+              "sql_catalog",
+              "business_rule_catalog",
+              "detector_findings",
+              "system_context_model",
+              "convention_profile",
+              "health_assessment"
+            ]
+          },
+          "ref": { "type": "string" }
+        }
+      }
+    }
+  }
+}

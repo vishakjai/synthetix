@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.example/schemas/detector_findings_v1.json",
+  "title": "Synthetix Detector Findings v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_type", "artifact_version", "metadata", "findings", "profiles"],
+  "properties": {
+    "artifact_type": { "const": "detector_findings" },
+    "artifact_version": { "const": "1.0" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated_at", "context_reference", "skill_pack"],
+      "properties": {
+        "generated_at": { "type": "string", "format": "date-time" },
+        "context_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repo", "commit_sha"],
+          "properties": {
+            "repo": { "type": "string" },
+            "commit_sha": { "type": "string" }
+          }
+        },
+        "skill_pack": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version"],
+          "properties": {
+            "id": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["detector_id", "severity", "count", "summary"],
+        "properties": {
+          "detector_id": { "type": "string" },
+          "severity": { "enum": ["low", "medium", "high"] },
+          "count": { "type": "integer", "minimum": 0 },
+          "summary": { "type": "string" },
+          "required_actions": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "evidence": { "type": "array", "items": { "$ref": "common_evidence_v1.schema.json" }, "default": [] }
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error_handling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_error_resume_next": { "type": "integer", "minimum": 0 },
+            "on_error_goto": { "type": "integer", "minimum": 0 },
+            "late_bound_com_calls": { "type": "integer", "minimum": 0 },
+            "default_instance_refs": { "type": "integer", "minimum": 0 },
+            "control_array_markers": { "type": "integer", "minimum": 0 },
+            "win32_declares": { "type": "integer", "minimum": 0 }
+          }
+        }
+      },
+      "default": {}
+    }
+  }
+}

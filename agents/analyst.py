@@ -35,6 +35,7 @@ from utils.legacy_skills import (
     build_project_business_summaries,
     vb6_skill_pack_manifest,
 )
+from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1
 
 
 class AnalystAgent(BaseAgent):
@@ -3407,6 +3408,14 @@ BUSINESS OBJECTIVES:
                 out["business_rules_catalog"] = rules[:200]
         elif isinstance(requirements_pack.get("business_rules_catalog", []), list):
             out["business_rules_catalog"] = requirements_pack.get("business_rules_catalog", [])[:200]
+        try:
+            out["raw_artifacts"] = build_raw_artifact_set_v1(out)
+        except Exception as exc:
+            self.log(f"[{self.name}] WARN: failed to build raw_artifacts: {exc}")
+        try:
+            out["analyst_report_v2"] = build_analyst_report_v2(out)
+        except Exception as exc:
+            self.log(f"[{self.name}] WARN: failed to build analyst_report_v2: {exc}")
         return out
 
     def run(self, state: dict[str, Any]) -> AgentResult:

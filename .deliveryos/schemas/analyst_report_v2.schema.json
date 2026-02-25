@@ -1,0 +1,779 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.example/schemas/analyst_report_v2.schema.json",
+  "title": "Synthetix Analyst Report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "metadata",
+    "decision_brief",
+    "delivery_spec",
+    "appendix"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "analyst_report"
+    },
+    "artifact_version": {
+      "const": "2.0"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "context_reference",
+        "generated_at",
+        "skill_pack"
+      ],
+      "properties": {
+        "project": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "objective"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "objective": {
+              "type": "string"
+            },
+            "domain": {
+              "type": "string"
+            },
+            "audience_modes": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "client",
+                  "engineering"
+                ]
+              },
+              "default": [
+                "engineering"
+              ]
+            }
+          }
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "skill_pack": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "version",
+            "confidence"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "rationale": {
+              "type": "string"
+            }
+          }
+        },
+        "context_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repo",
+            "branch",
+            "commit_sha",
+            "scm_version",
+            "cp_version",
+            "ha_version"
+          ],
+          "properties": {
+            "repo": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "commit_sha": {
+              "type": "string"
+            },
+            "version_id": {
+              "type": "string"
+            },
+            "scm_version": {
+              "type": "string"
+            },
+            "cp_version": {
+              "type": "string"
+            },
+            "ha_version": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "decision_brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at_a_glance",
+        "recommended_strategy",
+        "decisions_required",
+        "top_risks",
+        "next_steps"
+      ],
+      "properties": {
+        "at_a_glance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readiness_score",
+            "risk_tier",
+            "inventory_summary"
+          ],
+          "properties": {
+            "readiness_score": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "risk_tier": {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "inventory_summary": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "projects": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "forms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "controls": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "dependencies": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "event_handlers": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "tables_touched": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "headline": {
+              "type": "string"
+            }
+          }
+        },
+        "recommended_strategy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "rationale",
+            "phases"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "rationale": {
+              "type": "string"
+            },
+            "phases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "title",
+                  "outcome"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "outcome": {
+                    "type": "string"
+                  },
+                  "exit_criteria": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "decisions_required": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "blocking",
+            "non_blocking"
+          ],
+          "properties": {
+            "blocking": {
+              "$ref": "#/$defs/decision_list"
+            },
+            "non_blocking": {
+              "$ref": "#/$defs/decision_list"
+            }
+          }
+        },
+        "top_risks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/risk_item"
+          }
+        },
+        "next_steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/next_step"
+          }
+        }
+      }
+    },
+    "delivery_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "constraints",
+        "backlog",
+        "testing_and_evidence",
+        "traceability"
+      ],
+      "properties": {
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "in_scope",
+            "out_of_scope"
+          ],
+          "properties": {
+            "in_scope": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "out_of_scope": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "musts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "shoulds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "backlog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "items"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/backlog_item"
+              }
+            }
+          }
+        },
+        "testing_and_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "golden_flows",
+            "test_matrix",
+            "evidence_outputs",
+            "quality_gates"
+          ],
+          "properties": {
+            "golden_flows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "name",
+                  "entrypoint",
+                  "expected_outcome"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "entrypoint": {
+                    "type": "string"
+                  },
+                  "tables_touched": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "expected_outcome": {
+                    "type": "string"
+                  },
+                  "bdd_scenario_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "test_matrix": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "requirement_id",
+                  "test_types",
+                  "scenario_ids"
+                ],
+                "properties": {
+                  "requirement_id": {
+                    "type": "string"
+                  },
+                  "test_types": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "unit",
+                        "integration",
+                        "e2e",
+                        "performance",
+                        "security",
+                        "golden_master",
+                        "contract"
+                      ]
+                    }
+                  },
+                  "scenario_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "evidence_outputs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "path_hint"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "path_hint": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "quality_gates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "result",
+                  "description"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "result": {
+                    "enum": [
+                      "pass",
+                      "warn",
+                      "fail"
+                    ]
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "remediation": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "traceability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "links"
+          ],
+          "properties": {
+            "links": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "from",
+                  "to",
+                  "type"
+                ],
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "enum": [
+                      "verified_by",
+                      "constrains",
+                      "depends_on",
+                      "evidenced_by"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/open_question"
+          },
+          "default": []
+        }
+      }
+    },
+    "appendix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_refs",
+        "high_volume_sections"
+      ],
+      "properties": {
+        "artifact_refs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "legacy_inventory_ref": {
+              "type": "string"
+            },
+            "event_map_ref": {
+              "type": "string"
+            },
+            "sql_catalog_ref": {
+              "type": "string"
+            },
+            "dependency_list_ref": {
+              "type": "string"
+            },
+            "dependency_inventory_ref": {
+              "type": "string"
+            },
+            "business_rules_ref": {
+              "type": "string"
+            },
+            "detector_findings_ref": {
+              "type": "string"
+            },
+            "artifact_index_ref": {
+              "type": "string"
+            }
+          }
+        },
+        "high_volume_sections": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "legacy_inventory": {
+              "type": "object"
+            },
+            "event_map": {
+              "type": "array"
+            },
+            "sql_catalog": {
+              "type": "array"
+            },
+            "dependencies": {
+              "type": "array"
+            },
+            "business_rules": {
+              "type": "array"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "decision_list": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "question",
+          "default_recommendation"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default_recommendation": {
+            "type": "string"
+          },
+          "impact_if_wrong": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "risk_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "severity",
+        "description",
+        "mitigation"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "mitigation": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "next_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "owner_role"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "owner_role": {
+          "type": "string"
+        },
+        "done_when": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "backlog_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "priority",
+        "title",
+        "outcome",
+        "acceptance_criteria"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "functional",
+            "non_functional",
+            "risk_remediation",
+            "decision",
+            "spike"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "evidence_expected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "open_question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "question",
+        "owner",
+        "severity"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "blocker",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "context": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

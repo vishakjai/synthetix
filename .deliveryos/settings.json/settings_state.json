@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-24T18:59:04.056508+00:00",
+  "integrations": {
+    "github": {
+      "base_url": "https://api.github.com",
+      "owner": "",
+      "repository": "",
+      "auth_type": "pat",
+      "token": "",
+      "read_only": true,
+      "run_export_enabled": false,
+      "export_base_url": "",
+      "export_owner": "",
+      "export_repository": "",
+      "export_branch": "",
+      "export_prefix": "synthetix",
+      "connected": false,
+      "status": "disconnected",
+      "last_tested_at": "",
+      "last_error": ""
+    },
+    "jira": {
+      "base_url": "https://your-domain.atlassian.net",
+      "project_key": "",
+      "email": "",
+      "api_token": "",
+      "connected": false,
+      "status": "disconnected",
+      "last_tested_at": "",
+      "last_error": ""
+    },
+    "linear": {
+      "base_url": "https://api.linear.app",
+      "team_key": "",
+      "api_token": "",
+      "connected": false,
+      "status": "disconnected",
+      "last_tested_at": "",
+      "last_error": ""
+    }
+  },
+  "llm": {
+    "default_provider": "anthropic",
+    "providers": {
+      "anthropic": {
+        "model": "claude-sonnet-4-20250514",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "",
+        "connected": false,
+        "status": "disconnected",
+        "last_tested_at": "",
+        "last_error": ""
+      },
+      "openai": {
+        "model": "gpt-4o",
+        "base_url": "https://api.openai.com",
+        "api_key": "",
+        "connected": false,
+        "status": "disconnected",
+        "last_tested_at": "",
+        "last_error": ""
+      }
+    }
+  },
+  "policies": {
+    "policy_pack": "standard",
+    "quality_gate_min_pass_rate": 0.85,
+    "require_human_approval": false,
+    "block_on_critical_failures": true,
+    "require_security_gate": true,
+    "branch_protection_required": false,
+    "exception_sla_hours": 72
+  },
+  "exceptions": [],
+  "rbac": {
+    "roles": {
+      "executive": [
+        "view_executive_dashboard"
+      ],
+      "delivery": [
+        "view_executive_dashboard",
+        "run_pipeline",
+        "approve_gates"
+      ],
+      "engineering": [
+        "run_pipeline",
+        "view_engineering_logs"
+      ],
+      "security": [
+        "view_executive_dashboard",
+        "approve_gates",
+        "view_engineering_logs"
+      ]
+    },
+    "assignments": [],
+    "sso": {
+      "enabled": false,
+      "provider": ""
+    }
+  },
+  "audit_log": []
+}

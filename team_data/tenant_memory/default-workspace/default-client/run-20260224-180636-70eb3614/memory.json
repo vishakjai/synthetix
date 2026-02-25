@@ -1,0 +1,42 @@
+{
+  "scope": {
+    "workspace_id": "default-workspace",
+    "client_id": "default-client",
+    "project_id": "run-20260224-180636-70eb3614"
+  },
+  "updated_at": "2026-02-24T23:10:23.272775+00:00",
+  "threads": {
+    "run-20260224_180636_70eb3614-stage1": {
+      "messages": [
+        {
+          "id": "memmsg-0318bd41d5f4",
+          "timestamp": "2026-02-24T23:10:23.270867+00:00",
+          "agent_role": "analyst",
+          "role": "user",
+          "message": "Please regenerate analyst requirements from the objective and legacy context",
+          "metadata": {
+            "stage": 1,
+            "run_id": "20260224_180636_70eb3614",
+            "source": "stage_chat"
+          }
+        },
+        {
+          "id": "memmsg-52670380901a",
+          "timestamp": "2026-02-24T23:10:23.272764+00:00",
+          "agent_role": "analyst",
+          "role": "assistant",
+          "message": "Analyst Agent response: I do not have a completed Analyst artifact yet for this run. Run or rerun Stage 1 first, then I can summarize the legacy code objective and behavior. Ask follow-up questions to refine this stage artifact.",
+          "metadata": {
+            "stage": 1,
+            "run_id": "20260224_180636_70eb3614",
+            "source": "stage_chat"
+          }
+        }
+      ]
+    }
+  },
+  "constraints": [],
+  "memory_items": [],
+  "review_queue": [],
+  "audit_log": []
+}

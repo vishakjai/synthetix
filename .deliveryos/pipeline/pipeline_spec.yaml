@@ -2,6 +2,22 @@ version: "1.0"
 name: "Brownfield Context-First Delivery Pipeline"
 
 artifacts:
+  - type: analyst_report_v2
+    schema: ".deliveryos/schemas/analyst_report_v2.schema.json"
+  - type: legacy_inventory
+    schema: ".deliveryos/schemas/legacy_inventory_v1.schema.json"
+  - type: dependency_inventory
+    schema: ".deliveryos/schemas/dependency_inventory_v1.schema.json"
+  - type: event_map
+    schema: ".deliveryos/schemas/event_map_v1.schema.json"
+  - type: sql_catalog
+    schema: ".deliveryos/schemas/sql_catalog_v1.schema.json"
+  - type: business_rule_catalog
+    schema: ".deliveryos/schemas/business_rule_catalog_v1.schema.json"
+  - type: detector_findings
+    schema: ".deliveryos/schemas/detector_findings_v1.schema.json"
+  - type: artifact_index
+    schema: ".deliveryos/schemas/artifact_index_v1.schema.json"
   - type: system_context_model
     schema: ".deliveryos/schemas/system_context_model.schema.json"
   - type: convention_profile
@@ -23,6 +39,14 @@ stages:
     inputs:
       - repo_checkout
     outputs:
+      - analyst_report_v2
+      - legacy_inventory
+      - dependency_inventory
+      - event_map
+      - sql_catalog
+      - business_rule_catalog
+      - detector_findings
+      - artifact_index
       - system_context_model
     gates:
       - "SCM JSON validates against schema"

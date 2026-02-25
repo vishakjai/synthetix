@@ -19,8 +19,8 @@ LEGACY_SKILLS: tuple[LegacySkillSpec, ...] = (
     LegacySkillSpec(
         id="vb6_legacy",
         name="VB6 Legacy Skill",
-        description="Deep analysis for VB6 projects (.vbp/.frm/.bas/.cls/.ctl), forms, controls, ActiveX/COM dependencies, and event-driven workflows.",
-        extensions=(".vbp", ".vbg", ".frm", ".frx", ".ctl", ".ctx", ".bas", ".cls", ".res", ".vb"),
+        description="Deep analysis for VB6 projects (.vbp/.vbg/.frm/.frx/.bas/.cls/.ctl/.ctx/.res), ActiveX/COM dependencies (.ocx), and data definition files (.dcx/.dca).",
+        extensions=(".vbp", ".vbg", ".frm", ".frx", ".ctl", ".ctx", ".bas", ".cls", ".res", ".ocx", ".dcx", ".dca", ".vb"),
         content_tokens=(
             "attribute vb_name",
             "begin vb.form",
@@ -30,6 +30,8 @@ LEGACY_SKILLS: tuple[LegacySkillSpec, ...] = (
             "public sub",
             "mscomctl",
             ".ocx",
+            ".dcx",
+            ".dca",
             ".dll",
         ),
         analysis_focus=(
