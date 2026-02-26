@@ -4,6 +4,7 @@ import asyncio
 import base64
 import copy
 import hashlib
+import io
 import json
 import os
 import queue
@@ -72,6 +73,7 @@ from utils.persona_registry import PersonaRegistry  # noqa: E402
 from utils.knowledge_gateway import KnowledgeGateway  # noqa: E402
 from utils.tenant_memory import TenantMemoryStore  # noqa: E402
 from utils.analyst_aas import AnalystAASService  # noqa: E402
+from utils.analyst_docx import build_business_docx_bytes  # noqa: E402
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.legacy_skills import (  # noqa: E402
@@ -130,7 +132,8 @@ STAGE_COLLAB_CHAT_LIMIT = 400
 STAGE_COLLAB_DIRECTIVE_LIMIT = 240
 STAGE_COLLAB_PROPOSAL_LIMIT = 320
 STAGE_COLLAB_DECISION_LIMIT = 320
-STAGE_CHAT_LLM_STAGES = {2, 3, 6}
+STAGE_CHAT_LLM_STAGES = {1, 2, 3, 6}
+DISCOVER_REVIEW_MIN_COVERAGE = 0.85
 
 
 def _utc_now() -> str:
@@ -139,6 +142,244 @@ def _utc_now() -> str:
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _workflow_state_for_stage(stage_num: int) -> str:
+    if stage_num <= 0:
+        return "DISCOVERING"
+    if stage_num == 1:
+        return "DISCOVERED"
+    if stage_num == 2:
+        return "PLANNED"
+    if stage_num <= 5:
+        return "IN_BUILD"
+    if stage_num <= 7:
+        return "VERIFIED_BUILD"
+    return "DEPLOYED"
+
+
+def _analyst_output_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    direct = state.get("analyst_output", {})
+    if isinstance(direct, dict):
+        return direct
+    results = state.get("agent_results", [])
+    if isinstance(results, list):
+        for row in reversed(results):
+            if not isinstance(row, dict):
+                continue
+            if int(row.get("stage", 0) or 0) != 1:
+                continue
+            output = row.get("output", {})
+            if isinstance(output, dict):
+                return output
+    return {}
+
+
+def _review_check_row(
+    *,
+    check_id: str,
+    status: str,
+    title: str,
+    detail: str,
+    severity: str = "medium",
+    source: str = "derived",
+) -> dict[str, Any]:
+    normalized_status = str(status or "warn").strip().lower()
+    if normalized_status not in {"pass", "warn", "fail"}:
+        normalized_status = "warn"
+    normalized_severity = str(severity or "medium").strip().lower()
+    if normalized_severity not in {"blocker", "high", "medium", "low"}:
+        normalized_severity = "medium"
+    return {
+        "id": str(check_id or f"review_{uuid.uuid4().hex[:8]}").strip(),
+        "status": normalized_status,
+        "severity": normalized_severity,
+        "title": str(title or "Discover review check").strip(),
+        "detail": str(detail or "").strip(),
+        "source": str(source or "derived").strip(),
+    }
+
+
+def _discover_review_state(state: dict[str, Any]) -> dict[str, Any]:
+    analyst_output = _analyst_output_from_state(state)
+    raw_artifacts = analyst_output.get("raw_artifacts", {}) if isinstance(analyst_output.get("raw_artifacts", {}), dict) else {}
+    report = analyst_output.get("analyst_report_v2", {}) if isinstance(analyst_output.get("analyst_report_v2", {}), dict) else {}
+    report_review = report.get("discover_review", {}) if isinstance(report.get("discover_review", {}), dict) else {}
+    raw_checklist = raw_artifacts.get("discover_review_checklist", {}) if isinstance(raw_artifacts.get("discover_review_checklist", {}), dict) else {}
+    prior_review = state.get("discover_review", {}) if isinstance(state.get("discover_review", {}), dict) else {}
+
+    resolved_ids = {
+        str(x).strip()
+        for x in prior_review.get("resolved_ids", [])
+        if str(x).strip()
+    } if isinstance(prior_review.get("resolved_ids", []), list) else set()
+    waived_ids = {
+        str(x).strip()
+        for x in prior_review.get("waived_ids", [])
+        if str(x).strip()
+    } if isinstance(prior_review.get("waived_ids", []), list) else set()
+
+    rows_by_id: dict[str, dict[str, Any]] = {}
+
+    def add_row(row: dict[str, Any]) -> None:
+        rid = str(row.get("id", "")).strip()
+        if not rid:
+            return
+        rows_by_id[rid] = row
+
+    source_rows: list[Any] = []
+    if isinstance(report_review.get("checks", []), list):
+        source_rows.extend(report_review.get("checks", []))
+    if isinstance(raw_checklist.get("checks", []), list):
+        source_rows.extend(raw_checklist.get("checks", []))
+    if isinstance(raw_checklist.get("items", []), list):
+        source_rows.extend(raw_checklist.get("items", []))
+
+    for idx, row in enumerate(source_rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        check_id = str(row.get("id", "")).strip() or f"check_{idx}"
+        title = str(
+            row.get("title")
+            or row.get("check")
+            or row.get("why")
+            or row.get("action")
+            or row.get("detail")
+            or "Discover review check"
+        ).strip()
+        detail = str(row.get("detail") or row.get("notes") or row.get("why") or row.get("action") or "").strip()
+        add_row(
+            _review_check_row(
+                check_id=check_id,
+                status=str(row.get("status") or row.get("result") or "warn"),
+                severity=str(row.get("severity") or "medium"),
+                title=title,
+                detail=detail,
+                source="artifact",
+            )
+        )
+
+    repo_landscape = raw_artifacts.get("repo_landscape", {}) if isinstance(raw_artifacts.get("repo_landscape", {}), dict) else {}
+    variant_inventory = raw_artifacts.get("variant_inventory", {}) if isinstance(raw_artifacts.get("variant_inventory", {}), dict) else {}
+    variant_diff = raw_artifacts.get("variant_diff_report", {}) if isinstance(raw_artifacts.get("variant_diff_report", {}), dict) else {}
+    scope_lock = raw_artifacts.get("scope_lock", {}) if isinstance(raw_artifacts.get("scope_lock", {}), dict) else {}
+    data_access_map = raw_artifacts.get("data_access_map", {}) if isinstance(raw_artifacts.get("data_access_map", {}), dict) else {}
+    reporting_model = raw_artifacts.get("reporting_model", {}) if isinstance(raw_artifacts.get("reporting_model", {}), dict) else {}
+    legacy_inventory = raw_artifacts.get("legacy_inventory", {}) if isinstance(raw_artifacts.get("legacy_inventory", {}), dict) else {}
+
+    project_count = max(
+        int(variant_diff.get("project_count", 0) or 0),
+        len(repo_landscape.get("projects", [])) if isinstance(repo_landscape.get("projects", []), list) else 0,
+        len(variant_inventory.get("variants", [])) if isinstance(variant_inventory.get("variants", []), list) else 0,
+    )
+    scope_decision = str(scope_lock.get("decision") or "").strip()
+    scope_status = str(scope_lock.get("status") or "").strip().lower()
+    scope_resolved = bool(scope_decision) or scope_status in {"locked", "approved", "resolved"}
+    if project_count > 1:
+        add_row(
+            _review_check_row(
+                check_id="variant_scope_lock",
+                status="pass" if scope_resolved else "fail",
+                severity="blocker",
+                title="Variant scope decision",
+                detail=(
+                    f"Detected {project_count} project variants. "
+                    + (f"Scope lock set: {scope_decision or scope_status}" if scope_resolved else "No scope lock decision captured.")
+                ),
+            )
+        )
+
+    map_complete = bool(data_access_map.get("complete", False))
+    map_rows = data_access_map.get("rows", [])
+    map_row_count = len(map_rows) if isinstance(map_rows, list) else 0
+    map_coverage = float(data_access_map.get("coverage_score", 0) or 0)
+    if map_row_count > 0 or isinstance(data_access_map, dict):
+        add_row(
+            _review_check_row(
+                check_id="data_access_map_complete",
+                status="pass" if (map_complete and map_coverage >= 1.0) else ("warn" if map_coverage >= 0.8 else "fail"),
+                severity="high",
+                title="Canonical data access map completeness",
+                detail=f"complete={map_complete}, rows={map_row_count}, coverage={map_coverage:.2f}",
+            )
+        )
+
+    unknown_bindings = reporting_model.get("unknown_bindings", [])
+    unknown_count = len(unknown_bindings) if isinstance(unknown_bindings, list) else 0
+    add_row(
+        _review_check_row(
+            check_id="reporting_reconciliation",
+            status="fail" if unknown_count > 0 else "pass",
+            severity="high",
+            title="Reporting model reconciliation",
+            detail=(
+                f"Unknown reporting bindings={unknown_count}."
+                if unknown_count > 0
+                else "All detected report bindings reconciled."
+            ),
+        )
+    )
+
+    form_coverage = legacy_inventory.get("form_coverage", [])
+    low_coverage = []
+    if isinstance(form_coverage, list):
+        for row in form_coverage:
+            if not isinstance(row, dict):
+                continue
+            score = float(row.get("coverage_score", 0) or 0)
+            if score < DISCOVER_REVIEW_MIN_COVERAGE:
+                form_name = str(row.get("form_name") or row.get("form") or "unknown").strip()
+                low_coverage.append(f"{form_name}={score:.2f}")
+    add_row(
+        _review_check_row(
+            check_id="handler_inventory_coverage",
+            status="fail" if low_coverage else "pass",
+            severity="high",
+            title="Handler inventory completeness",
+            detail=(
+                "Forms below threshold (<0.85): " + ", ".join(low_coverage[:12])
+                if low_coverage
+                else "All forms meet coverage threshold (>=0.85)."
+            ),
+        )
+    )
+
+    if not rows_by_id:
+        add_row(
+            _review_check_row(
+                check_id="discover_review_checklist_missing",
+                status="fail",
+                severity="blocker",
+                title="Discover review checklist missing",
+                detail="No discover review checks were generated from Analyst artifacts.",
+            )
+        )
+
+    checks = list(rows_by_id.values())
+    blocking = [row for row in checks if str(row.get("status", "")).lower() == "fail"]
+    unresolved_blocking = [
+        row for row in blocking
+        if str(row.get("id", "")).strip() not in resolved_ids
+        and str(row.get("id", "")).strip() not in waived_ids
+    ]
+    unresolved_non_pass = [
+        row for row in checks
+        if str(row.get("status", "")).lower() != "pass"
+        and str(row.get("id", "")).strip() not in resolved_ids
+        and str(row.get("id", "")).strip() not in waived_ids
+    ]
+    overall_status = "FAIL" if unresolved_blocking else ("WARN" if unresolved_non_pass else "PASS")
+    return {
+        "overall_status": overall_status,
+        "checks": checks,
+        "blocking": blocking,
+        "unresolved_blocking": unresolved_blocking,
+        "resolved_ids": sorted(resolved_ids),
+        "waived_ids": sorted(waived_ids),
+        "updated_at": _utc_now(),
+    }
 
 
 @dataclass
@@ -294,6 +535,16 @@ class PipelineRunManager:
         record.pipeline_state["remediation_backlog"] = []
         record.pipeline_state["context_vault_ref"] = {}
         record.pipeline_state["sil_discovery"] = discover_repo_snapshot(ROOT)
+        record.pipeline_state["workflow_state"] = "DISCOVERING"
+        record.pipeline_state["discover_review"] = {
+            "overall_status": "PENDING",
+            "checks": [],
+            "blocking": [],
+            "unresolved_blocking": [],
+            "resolved_ids": [],
+            "waived_ids": [],
+            "updated_at": _utc_now(),
+        }
         self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
         self._append_log(record, f"👥 Team selected: {record.team_name or 'Ad-hoc Team'}")
         self._append_log(record, "🧠 System Intelligence Layer scheduled (SCM / CP / HA-RB)")
@@ -534,6 +785,7 @@ class PipelineRunManager:
                 record.updated_at = _utc_now()
                 if record.pipeline_state is not None:
                     record.pipeline_state["pipeline_status"] = "completed"
+                    record.pipeline_state["workflow_state"] = "DEPLOYED"
                 self._append_log(record, "🏁 Pipeline completed successfully")
                 self._attempt_github_export(record, final=True)
                 self._persist(record)
@@ -549,6 +801,35 @@ class PipelineRunManager:
                     f"Context gate failed before Stage {stage_num}: " + "; ".join(gate_issues),
                 )
                 return
+
+            # Discover review gate: Stage 2+ cannot proceed with unresolved blocking checks.
+            if stage_idx >= 1 and isinstance(record.pipeline_state, dict):
+                discover_review = _discover_review_state(record.pipeline_state)
+                record.pipeline_state["discover_review"] = discover_review
+                if discover_review.get("unresolved_blocking"):
+                    record.pending_approval = {
+                        "type": "discover_review",
+                        "stage": 1,
+                        "next_stage": 2,
+                        "message": (
+                            "Discover review has unresolved blocking items. "
+                            "Resolve or waive blockers before moving beyond Discover."
+                        ),
+                        "overall_status": discover_review.get("overall_status", "FAIL"),
+                        "unresolved_blocking": discover_review.get("unresolved_blocking", [])[:20],
+                        "checklist": discover_review.get("checks", [])[:60],
+                    }
+                    record.status = "waiting_approval"
+                    record.pipeline_state["workflow_state"] = "IN_REVIEW"
+                    self._append_log(
+                        record,
+                        "🧭 Discover review blocked progression: "
+                        f"{len(discover_review.get('unresolved_blocking', []))} unresolved blocking item(s).",
+                    )
+                    self._persist(record)
+                    return
+                if record.pipeline_state.get("workflow_state") in {"DISCOVERED", "IN_REVIEW", "DISCOVERING"}:
+                    record.pipeline_state["workflow_state"] = "VERIFIED"
 
             # Developer planning checkpoint (always before code generation)
             if stage_idx == DEVELOPER_STAGE_INDEX and not record.pipeline_state.get("developer_plan_approved"):
@@ -636,6 +917,8 @@ class PipelineRunManager:
                 record.pipeline_state = updated_state
                 record.current_stage = stage_num
                 record.stage_status[stage_num] = latest_result.get("status", "error")
+                if isinstance(record.pipeline_state, dict):
+                    record.pipeline_state["workflow_state"] = _workflow_state_for_stage(stage_num)
                 if stage_num == 3:
                     written_count = _materialize_generated_code_artifacts(record.run_id, record.pipeline_state)
                     if written_count > 0:
@@ -880,6 +1163,7 @@ class PipelineRunManager:
         self._append_log(record, f"❌ {error_message}")
         if record.pipeline_state is not None:
             record.pipeline_state["pipeline_status"] = "failed"
+            record.pipeline_state["workflow_state"] = "FAILED"
         self._attempt_github_export(record, final=True)
         self._persist(record)
 
@@ -1060,6 +1344,66 @@ class PipelineRunManager:
             next_stage = int(pending.get("next_stage", record.next_stage_idx + 1))
             record.next_stage_idx = max(0, next_stage - 1)
             self._append_log(record, f"✅ Human approved transition to Stage {next_stage}")
+        elif pending_type == "discover_review":
+            review = _discover_review_state(record.pipeline_state if isinstance(record.pipeline_state, dict) else {})
+            resolved_ids = {
+                str(x).strip()
+                for x in payload.get("resolved_ids", [])
+                if str(x).strip()
+            } if isinstance(payload.get("resolved_ids", []), list) else set()
+            waived_ids = {
+                str(x).strip()
+                for x in payload.get("waived_ids", [])
+                if str(x).strip()
+            } if isinstance(payload.get("waived_ids", []), list) else set()
+            # Backward-compatible behavior for existing approve UI:
+            # approving discover_review with no explicit ids waives current blockers.
+            if not resolved_ids and not waived_ids:
+                waived_ids = {
+                    str(row.get("id", "")).strip()
+                    for row in review.get("unresolved_blocking", [])
+                    if isinstance(row, dict) and str(row.get("id", "")).strip()
+                }
+            prior_resolved = {
+                str(x).strip()
+                for x in review.get("resolved_ids", [])
+                if str(x).strip()
+            }
+            prior_waived = {
+                str(x).strip()
+                for x in review.get("waived_ids", [])
+                if str(x).strip()
+            }
+            merged_resolved = sorted(prior_resolved | resolved_ids)
+            merged_waived = sorted(prior_waived | waived_ids)
+            if isinstance(record.pipeline_state, dict):
+                record.pipeline_state["discover_review"] = {
+                    **review,
+                    "resolved_ids": merged_resolved,
+                    "waived_ids": merged_waived,
+                    "approved_at": _utc_now(),
+                    "approval_note": str(payload.get("note", "")).strip(),
+                }
+                review = _discover_review_state(record.pipeline_state)
+                record.pipeline_state["discover_review"] = review
+                if review.get("unresolved_blocking"):
+                    unresolved = ", ".join(
+                        [str(row.get("id", "")).strip() for row in review.get("unresolved_blocking", [])][:6]
+                    )
+                    return {
+                        "ok": False,
+                        "error": (
+                            "Discover review still has unresolved blockers: "
+                            + (unresolved or "see checklist")
+                        ),
+                    }
+                record.pipeline_state["workflow_state"] = "VERIFIED"
+            record.next_stage_idx = max(int(record.next_stage_idx or 0), 1)
+            self._append_log(
+                record,
+                "✅ Discover review approved. "
+                f"resolved={len(merged_resolved)}, waived={len(merged_waived)}.",
+            )
         else:
             return {"ok": False, "error": f"unsupported approval type: {pending_type}"}
 
@@ -1308,8 +1652,19 @@ class PipelineRunManager:
             trimmed_stage_status[idx] = "pending"
 
         base_state["pipeline_status"] = "running"
+        base_state["workflow_state"] = _workflow_state_for_stage(max(0, stage - 1))
         base_state["pending_approval"] = None
         base_state["next_stage_idx"] = stage - 1
+        if stage <= 1:
+            base_state["discover_review"] = {
+                "overall_status": "PENDING",
+                "checks": [],
+                "blocking": [],
+                "unresolved_blocking": [],
+                "resolved_ids": [],
+                "waived_ids": [],
+                "updated_at": _utc_now(),
+            }
         if "retry_plan" in base_state:
             del base_state["retry_plan"]
         if "retry_history" in base_state and not isinstance(base_state.get("retry_history"), list):
@@ -1850,6 +2205,7 @@ def _analyze_source_bundle(
     vb6_controls: set[str] = set()
     vb6_activex: set[str] = set()
     vb6_events: set[str] = set()
+    vb6_event_keys: set[str] = set()
     vb6_project_members: set[str] = set()
     vb6_by_path: dict[str, dict[str, Any]] = {}
     vb6_project_defs: list[dict[str, Any]] = []
@@ -1944,6 +2300,11 @@ def _analyze_source_bundle(
             vb6_controls.update(vb6.get("controls", []) if isinstance(vb6.get("controls", []), list) else [])
             vb6_activex.update(vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [])
             vb6_events.update(vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [])
+            vb6_event_keys.update(
+                vb6.get("event_handler_keys", [])
+                if isinstance(vb6.get("event_handler_keys", []), list)
+                else []
+            )
             vb6_project_members.update(
                 vb6.get("project_members", []) if isinstance(vb6.get("project_members", []), list) else []
             )
@@ -2304,6 +2665,7 @@ def _analyze_source_bundle(
         source_target_profile=source_target_profile,
         global_readiness=vb6_readiness,
     )
+    vb6_event_handler_count_exact = max(len(vb6_event_keys), len(vb6_ui_event_map), len(vb6_events))
 
     sample_paths = [p for p in ordered_paths if p][:160]
     capabilities = _domain_capabilities(sample_paths, routes)
@@ -2334,7 +2696,7 @@ def _analyze_source_bundle(
         overview += (
             f" VB6 signals detected: {len(vb6_forms)} forms/usercontrols, "
             f"{len(vb6_controls)} controls, {len(vb6_activex)} ActiveX/COM dependencies, "
-            f"{len(vb6_projects)} project(s)."
+            f"{len(vb6_projects)} project(s), {vb6_event_handler_count_exact} event handlers."
         )
         overview += (
             f" .bas modules={len(vb6_bas_modules)} (procedures={vb6_bas_procedure_count}), "
@@ -2424,12 +2786,14 @@ def _analyze_source_bundle(
         "vb6_analysis": {
             "project_count": len(vb6_projects),
             "projects": vb6_projects,
-            "forms": sorted(vb6_forms)[:24],
-            "controls": sorted(vb6_controls)[:40],
-            "activex_dependencies": sorted(vb6_activex)[:20],
-            "event_handlers": sorted(vb6_events)[:40],
-            "project_members": sorted(vb6_project_members)[:40],
-            "ui_event_map": list(vb6_ui_event_map.values())[:200],
+            "forms": sorted(vb6_forms)[:400],
+            "controls": sorted(vb6_controls)[:800],
+            "activex_dependencies": sorted(vb6_activex)[:400],
+            "event_handlers": sorted(vb6_events)[:1200],
+            "event_handler_keys": sorted(vb6_event_keys)[:2400],
+            "event_handler_count_exact": vb6_event_handler_count_exact,
+            "project_members": sorted(vb6_project_members)[:1200],
+            "ui_event_map": list(vb6_ui_event_map.values())[:1200],
             "sql_query_catalog": sorted(vb6_sql_queries)[:160],
             "com_surface_map": {
                 "late_bound_progids": sorted(vb6_com_progids)[:120],
@@ -2463,6 +2827,7 @@ def _analyze_source_bundle(
             "vb6_controls": len(vb6_controls),
             "vb6_activex_dependencies": len(vb6_activex),
             "vb6_projects": len(vb6_projects),
+            "vb6_event_handlers": vb6_event_handler_count_exact,
             "vb6_bas_modules": len(vb6_bas_modules),
             "vb6_bas_procedures": vb6_bas_procedure_count,
             "vb6_binary_companion_files": len(vb6_binary_companions),
@@ -2549,7 +2914,7 @@ def _select_source_entries_for_analysis(
         1 for entry in candidate_entries
         if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca"))
     )
-    effective_limit = max(limit, 80) if vb6_file_hits >= 8 else limit
+    effective_limit = max(limit, 220) if vb6_file_hits >= 8 else limit
 
     priority_rank = []
     for entry in candidate_entries:
@@ -2566,7 +2931,8 @@ def _select_source_entries_for_analysis(
         elif path.endswith(".frm") or path.endswith(".ctl") or path.endswith(".cls"):
             rank = 2
         elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res") or path.endswith(".ocx"):
-            rank = 3
+            # Keep binary companions in scope, but prioritize code-bearing files first for accurate decomposition.
+            rank = 8
         elif any(tok in path for tok in ["/main.", "/app.", "/index.", "/server."]):
             rank = 2
         elif "/api/" in path or "/controller" in path or "/routes" in path:
@@ -2580,7 +2946,7 @@ def _select_source_entries_for_analysis(
     return [row[2] for row in priority_rank[: max(1, effective_limit)]]
 
 
-def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: int = 160000) -> str:
+def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: int = 420000) -> str:
     chunks: list[str] = []
     total = 0
     for path in sorted(file_contents.keys()):
@@ -4868,6 +5234,237 @@ async def api_update_analyst_doc(request):
     return JSONResponse({"ok": True, "run": updated})
 
 
+def _extract_json_from_llm_text(raw: str) -> dict[str, Any]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", text, flags=re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start : end + 1]
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _maybe_build_docx_llm_plan(
+    *,
+    run_id: str,
+    report: dict[str, Any],
+    provider_hint: str = "",
+    model_hint: str = "",
+    temperature: float = 0.2,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    meta: dict[str, Any] = {"used": False, "provider": "", "model": "", "reason": ""}
+    provider = str(provider_hint or "").strip().lower()
+    if provider not in {"anthropic", "openai"}:
+        provider = str(
+            SETTINGS_STORE.get_settings().get("llm", {}).get("default_provider", "anthropic")
+        ).strip().lower()
+    if provider not in {"anthropic", "openai"}:
+        provider = "anthropic"
+
+    try:
+        creds = SETTINGS_STORE.resolve_llm_credentials(provider, requested_model=str(model_hint or "").strip())
+    except Exception as exc:
+        meta["reason"] = f"credential_resolution_failed:{exc}"
+        return None, meta
+
+    api_key = str(creds.get("api_key", "")).strip()
+    if not api_key:
+        meta["reason"] = "no_api_key"
+        return None, meta
+    model = str(creds.get("model", "")).strip() or ("gpt-4o" if provider == "openai" else "claude-sonnet-4-20250514")
+
+    cfg = PipelineConfig(
+        provider=LLMProvider.OPENAI if provider == "openai" else LLMProvider.ANTHROPIC,
+        anthropic_api_key=api_key if provider == "anthropic" else "",
+        openai_api_key=api_key if provider == "openai" else "",
+        anthropic_model=model if provider == "anthropic" else "claude-sonnet-4-20250514",
+        openai_model=model if provider == "openai" else "gpt-4o",
+        temperature=max(0.0, min(1.0, float(temperature))),
+        max_output_tokens=1800,
+    )
+
+    client = LLMClient(cfg)
+    metadata = report.get("metadata", {}) if isinstance(report.get("metadata", {}), dict) else {}
+    project = metadata.get("project", {}) if isinstance(metadata.get("project", {}), dict) else {}
+    context = metadata.get("context_reference", {}) if isinstance(metadata.get("context_reference", {}), dict) else {}
+    brief = report.get("decision_brief", {}) if isinstance(report.get("decision_brief", {}), dict) else {}
+    glance = brief.get("at_a_glance", {}) if isinstance(brief.get("at_a_glance", {}), dict) else {}
+    inventory = glance.get("inventory_summary", {}) if isinstance(glance.get("inventory_summary", {}), dict) else {}
+    strategy = brief.get("recommended_strategy", {}) if isinstance(brief.get("recommended_strategy", {}), dict) else {}
+    top_risks = brief.get("top_risks", []) if isinstance(brief.get("top_risks", []), list) else []
+    delivery = report.get("delivery_spec", {}) if isinstance(report.get("delivery_spec", {}), dict) else {}
+    backlog_items = (
+        delivery.get("backlog", {}).get("items", [])
+        if isinstance(delivery.get("backlog", {}), dict)
+        else []
+    )
+    open_questions = delivery.get("open_questions", []) if isinstance(delivery.get("open_questions", []), list) else []
+
+    context_payload = {
+        "run_id": run_id,
+        "project_name": str(project.get("name", "")),
+        "objective": str(project.get("objective", "")),
+        "repo": str(context.get("repo", "")),
+        "readiness_score": glance.get("readiness_score"),
+        "risk_tier": str(glance.get("risk_tier", "")),
+        "inventory": {
+            "projects": inventory.get("projects"),
+            "forms": inventory.get("forms"),
+            "dependencies": inventory.get("dependencies"),
+            "event_handlers": inventory.get("event_handlers"),
+            "tables_touched": (inventory.get("tables_touched") or [])[:20],
+        },
+        "strategy": {
+            "name": str(strategy.get("name", "")),
+            "rationale": str(strategy.get("rationale", "")),
+            "phases": (strategy.get("phases") or [])[:5],
+        },
+        "top_risks": top_risks[:8],
+        "backlog_items": (backlog_items or [])[:8],
+        "open_questions": open_questions[:8],
+    }
+
+    system_prompt = (
+        "You are an enterprise business analyst and document designer. "
+        "Generate a concise DOCX blueprint JSON for a business-facing modernization workbook. "
+        "Keep claims grounded in the provided context only. "
+        "Do not invent technologies or requirements not present."
+    )
+    user_prompt = (
+        "Return JSON only (no prose, no markdown) with this schema:\n"
+        "{\n"
+        '  "title": "string <= 120 chars",\n'
+        '  "subtitle": "string <= 180 chars",\n'
+        '  "narrative": "single paragraph <= 1200 chars",\n'
+        '  "executive_bullets": ["3-6 bullets, each <= 200 chars"],\n'
+        '  "callouts": [{"label":"short","message":"<=180 chars","severity":"low|medium|high"}],\n'
+        '  "section_intros": {\n'
+        '    "executive_snapshot":"<=220 chars",\n'
+        '    "dependency_map":"<=220 chars",\n'
+        '    "form_dossiers":"<=220 chars",\n'
+        '    "flow_traces":"<=220 chars",\n'
+        '    "traceability":"<=220 chars",\n'
+        '    "sprints":"<=220 chars",\n'
+        '    "risks":"<=220 chars"\n'
+        "  }\n"
+        "}\n"
+        f"Context ({_prompt_payload_format()}): {_json_compact(context_payload, max_chars=4200)}"
+    )
+
+    try:
+        response = client.invoke(system_prompt=system_prompt, user_message=user_prompt)
+    except Exception as exc:
+        meta["reason"] = f"llm_invoke_failed:{exc}"
+        return None, meta
+
+    parsed = _extract_json_from_llm_text(str(response.content or ""))
+    if not parsed:
+        meta["reason"] = "invalid_json_response"
+        return None, meta
+
+    meta["used"] = True
+    meta["provider"] = str(response.provider or provider)
+    meta["model"] = str(response.model or model)
+    meta["reason"] = "ok"
+    return parsed, meta
+
+
+async def api_download_analyst_docx(request):
+    run_id = request.path_params.get("run_id", "")
+    run = MANAGER.get_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _analyst_output_from_state(pipeline_state)
+    if not isinstance(analyst_output, dict) or not analyst_output:
+        return JSONResponse(
+            {"ok": False, "error": "analyst output not found for this run"},
+            status_code=404,
+        )
+    enriched = _ensure_analyst_report_v2(analyst_output)
+    report = (
+        enriched.get("analyst_report_v2", {})
+        if isinstance(enriched.get("analyst_report_v2", {}), dict)
+        else {}
+    )
+    if not report:
+        return JSONResponse(
+            {"ok": False, "error": "analyst report is unavailable for DOCX export"},
+            status_code=404,
+        )
+
+    query = request.query_params
+    requested_mode = str(query.get("mode", "llm_rich")).strip().lower()
+    if requested_mode not in {"deterministic", "llm_rich"}:
+        requested_mode = "llm_rich"
+
+    llm_provider = str(query.get("provider", "")).strip().lower()
+    llm_model = str(query.get("model", "")).strip()
+    style_mode = str(query.get("style", "strict_template")).strip().lower()
+    strict_template = style_mode in {"strict_template", "template", "locked"}
+    template_path = str(query.get("template_path", "")).strip()
+    llm_temp_raw = query.get("temperature", "0.2")
+    try:
+        llm_temp = float(llm_temp_raw)
+    except (TypeError, ValueError):
+        llm_temp = 0.2
+    llm_temp = max(0.0, min(1.0, llm_temp))
+
+    llm_doc_plan: dict[str, Any] | None = None
+    llm_meta: dict[str, Any] = {"used": False, "provider": "", "model": "", "reason": "not_requested"}
+    if requested_mode == "llm_rich":
+        llm_doc_plan, llm_meta = _maybe_build_docx_llm_plan(
+            run_id=run_id,
+            report=report,
+            provider_hint=llm_provider,
+            model_hint=llm_model,
+            temperature=llm_temp,
+        )
+
+    actual_mode = "llm_rich" if requested_mode == "llm_rich" and isinstance(llm_doc_plan, dict) and bool(llm_doc_plan) else "deterministic"
+
+    try:
+        # Pass enriched payload so DOCX renderer can use both report and raw artifacts.
+        docx_bytes = build_business_docx_bytes(
+            enriched,
+            run_id=run_id,
+            render_mode=actual_mode,
+            llm_doc_plan=llm_doc_plan,
+            template_path=template_path or None,
+            strict_template=strict_template,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"docx generation failed: {exc}"}, status_code=500)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_run_id = safe_name(str(run_id or "run"))
+    filename = f"analyst-business-brief-{safe_run_id}-{stamp}.docx"
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Docx-Requested-Mode": requested_mode,
+            "X-Docx-Render-Mode": actual_mode,
+            "X-Docx-Style-Mode": style_mode,
+            "X-Docx-LLM-Reason": str(llm_meta.get("reason", ""))[:220],
+            "X-Docx-LLM-Provider": str(llm_meta.get("provider", ""))[:80],
+            "X-Docx-LLM-Model": str(llm_meta.get("model", ""))[:120],
+        },
+    )
+
+
 def _coerce_stage(stage_raw: Any) -> int:
     try:
         stage = int(stage_raw)
@@ -5513,7 +6110,30 @@ def _analyst_context_reply(message: str, output: dict[str, Any], state: dict[str
             "mdi form",
         ]
     )
-    if not asks_for_objective and not asks_for_io and not asks_legacy_ui and not asks_project:
+    asks_risks = any(token in lower for token in ["risk", "risks", "hazard", "security issue", "vulnerability"])
+    asks_sql = any(token in lower for token in ["sql", "query", "queries", "table", "tables", "database statement"])
+    asks_backlog = any(token in lower for token in ["backlog", "requirements", "fr-", "nfr-", "delivery spec", "work item"])
+    asks_decisions = any(token in lower for token in ["decision", "blocking decision", "dec-", "approve", "approval"])
+    asks_gates = any(token in lower for token in ["gate", "quality gate", "pass/fail", "validation gate"])
+    asks_rules = any(token in lower for token in ["business rule", "rule catalog", "rule", "calculation logic"])
+    asks_orphans = any(token in lower for token in ["orphan", "unmapped form", "membership", "reconcile"])
+    asks_appendix = any(token in lower for token in ["appendix", "evidence", "artifact", "detailed output"])
+    if not any(
+        [
+            asks_for_objective,
+            asks_for_io,
+            asks_legacy_ui,
+            asks_project,
+            asks_risks,
+            asks_sql,
+            asks_backlog,
+            asks_decisions,
+            asks_gates,
+            asks_rules,
+            asks_orphans,
+            asks_appendix,
+        ]
+    ):
         return None
 
     vb6_analysis = _legacy_ui_analysis_from_state(output, state)
@@ -5588,6 +6208,198 @@ def _analyst_context_reply(message: str, output: dict[str, Any], state: dict[str
             "I do not have extracted VB6 form/control metadata in this stage artifact. "
             "Run Discover analysis on the legacy repo/code first so I can answer exact form/ActiveX counts."
         )
+
+    report = (
+        output.get("analyst_report_v2", {})
+        if isinstance(output.get("analyst_report_v2", {}), dict)
+        else {}
+    )
+    if not report:
+        try:
+            report = build_analyst_report_v2(output)
+        except Exception:
+            report = {}
+    raw_artifacts = (
+        output.get("raw_artifacts", {})
+        if isinstance(output.get("raw_artifacts", {}), dict)
+        else {}
+    )
+    delivery_spec = report.get("delivery_spec", {}) if isinstance(report.get("delivery_spec", {}), dict) else {}
+    testing = delivery_spec.get("testing_and_evidence", {}) if isinstance(delivery_spec.get("testing_and_evidence", {}), dict) else {}
+    brief = report.get("decision_brief", {}) if isinstance(report.get("decision_brief", {}), dict) else {}
+
+    if any([asks_risks, asks_sql, asks_backlog, asks_decisions, asks_gates, asks_rules, asks_orphans, asks_appendix]):
+        detail_lines: list[str] = []
+        if asks_risks:
+            risk_rows = (
+                raw_artifacts.get("risk_register", {}).get("risks", [])
+                if isinstance(raw_artifacts.get("risk_register", {}), dict)
+                else []
+            )
+            if not isinstance(risk_rows, list):
+                risk_rows = []
+            if not risk_rows and isinstance(brief.get("top_risks", []), list):
+                risk_rows = brief.get("top_risks", [])
+            detail_lines.append(f"Risk register rows: {len(risk_rows)}.")
+            top_risks: list[str] = []
+            for row in risk_rows[:4]:
+                if not isinstance(row, dict):
+                    continue
+                rid = str(row.get("risk_id") or row.get("id") or "").strip()
+                sev = str(row.get("severity") or "medium").strip().upper()
+                desc = str(row.get("description") or "").strip()
+                if desc:
+                    prefix = f"[{sev}] {rid}: " if rid else f"[{sev}] "
+                    top_risks.append((prefix + desc)[:180])
+            if top_risks:
+                detail_lines.append("Top risks: " + " | ".join(top_risks))
+
+        if asks_sql:
+            sql_rows = (
+                raw_artifacts.get("sql_catalog", {}).get("statements", [])
+                if isinstance(raw_artifacts.get("sql_catalog", {}), dict)
+                else []
+            )
+            if not isinstance(sql_rows, list):
+                sql_rows = []
+            tables: set[str] = set()
+            flagged = 0
+            for row in sql_rows:
+                if not isinstance(row, dict):
+                    continue
+                for t in row.get("tables", []) if isinstance(row.get("tables", []), list) else []:
+                    txt = str(t).strip()
+                    if txt:
+                        tables.add(txt)
+                flags = row.get("risk_flags", [])
+                if isinstance(flags, list) and flags:
+                    flagged += 1
+            table_preview = ", ".join(sorted(list(tables))[:10]) if tables else "n/a"
+            detail_lines.append(
+                f"SQL catalog: {len(sql_rows)} statements, {len(tables)} tables, {flagged} flagged statement(s)."
+            )
+            detail_lines.append(f"Tables touched: {table_preview}")
+
+        if asks_rules:
+            rule_rows = (
+                raw_artifacts.get("business_rule_catalog", {}).get("rules", [])
+                if isinstance(raw_artifacts.get("business_rule_catalog", {}), dict)
+                else []
+            )
+            if not isinstance(rule_rows, list):
+                rule_rows = []
+            category_counts: dict[str, int] = {}
+            for row in rule_rows:
+                if not isinstance(row, dict):
+                    continue
+                cat = str(row.get("category") or "other").strip() or "other"
+                category_counts[cat] = int(category_counts.get(cat, 0) or 0) + 1
+            top_cats = ", ".join(
+                [
+                    f"{k}={v}"
+                    for k, v in sorted(category_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+                ]
+            )
+            detail_lines.append(f"Business rules: {len(rule_rows)} row(s)." + (f" Categories: {top_cats}." if top_cats else ""))
+
+        if asks_orphans:
+            orphan_rows = (
+                raw_artifacts.get("orphan_analysis", {}).get("orphans", [])
+                if isinstance(raw_artifacts.get("orphan_analysis", {}), dict)
+                else []
+            )
+            if not isinstance(orphan_rows, list):
+                orphan_rows = []
+            detail_lines.append(f"Orphan analysis rows: {len(orphan_rows)}.")
+            preview: list[str] = []
+            for row in orphan_rows[:4]:
+                if not isinstance(row, dict):
+                    continue
+                path = str(row.get("path") or row.get("project_name") or "").strip() or "n/a"
+                rec = str(row.get("recommendation") or "verify").strip()
+                preview.append(f"{path} -> {rec}")
+            if preview:
+                detail_lines.append("Orphan preview: " + " | ".join(preview))
+
+        if asks_backlog:
+            backlog = delivery_spec.get("backlog", {}) if isinstance(delivery_spec.get("backlog", {}), dict) else {}
+            items = backlog.get("items", []) if isinstance(backlog.get("items", []), list) else []
+            detail_lines.append(f"Delivery backlog items: {len(items)}.")
+            top_items: list[str] = []
+            for row in items[:5]:
+                if not isinstance(row, dict):
+                    continue
+                rid = str(row.get("id") or "").strip()
+                pri = str(row.get("priority") or "").strip()
+                title = str(row.get("title") or row.get("outcome") or "").strip()
+                if title:
+                    top_items.append(f"{rid} ({pri}) {title}".strip())
+            if top_items:
+                detail_lines.append("Backlog preview: " + " | ".join(top_items))
+
+        if asks_decisions:
+            decisions = brief.get("decisions_required", {}) if isinstance(brief.get("decisions_required", {}), dict) else {}
+            blocking = decisions.get("blocking", []) if isinstance(decisions.get("blocking", []), list) else []
+            non_blocking = decisions.get("non_blocking", []) if isinstance(decisions.get("non_blocking", []), list) else []
+            detail_lines.append(
+                f"Decisions required: blocking={len(blocking)}, non-blocking={len(non_blocking)}."
+            )
+            previews: list[str] = []
+            for row in blocking[:4]:
+                if not isinstance(row, dict):
+                    continue
+                did = str(row.get("id") or "DEC").strip()
+                question = str(row.get("question") or "").strip()
+                if question:
+                    previews.append(f"{did}: {question[:130]}")
+            if previews:
+                detail_lines.append("Blocking decisions: " + " | ".join(previews))
+
+        if asks_gates:
+            gates = testing.get("quality_gates", []) if isinstance(testing.get("quality_gates", []), list) else []
+            detail_lines.append(f"Quality gates: {len(gates)}.")
+            gate_preview: list[str] = []
+            for row in gates[:6]:
+                if not isinstance(row, dict):
+                    continue
+                gid = str(row.get("id") or "gate").strip()
+                result = str(row.get("result") or "warn").strip().upper()
+                gate_preview.append(f"{gid}={result}")
+            if gate_preview:
+                detail_lines.append("Gate status: " + ", ".join(gate_preview))
+
+        if asks_appendix and not detail_lines:
+            sql_rows = (
+                raw_artifacts.get("sql_catalog", {}).get("statements", [])
+                if isinstance(raw_artifacts.get("sql_catalog", {}), dict)
+                else []
+            )
+            event_rows = (
+                raw_artifacts.get("event_map", {}).get("entries", [])
+                if isinstance(raw_artifacts.get("event_map", {}), dict)
+                else []
+            )
+            rules = (
+                raw_artifacts.get("business_rule_catalog", {}).get("rules", [])
+                if isinstance(raw_artifacts.get("business_rule_catalog", {}), dict)
+                else []
+            )
+            risks = (
+                raw_artifacts.get("risk_register", {}).get("risks", [])
+                if isinstance(raw_artifacts.get("risk_register", {}), dict)
+                else []
+            )
+            detail_lines.append(
+                "Detailed appendix snapshot: "
+                f"event_map={len(event_rows) if isinstance(event_rows, list) else 0}, "
+                f"sql_catalog={len(sql_rows) if isinstance(sql_rows, list) else 0}, "
+                f"business_rules={len(rules) if isinstance(rules, list) else 0}, "
+                f"risks={len(risks) if isinstance(risks, list) else 0}."
+            )
+
+        if detail_lines:
+            detail_lines.append("Ask a narrower follow-up like 'show top 5 high risks' or 'list SQL touching LOGIN/logi'.")
+            return "\n".join(detail_lines)
 
     pack = output.get("requirements_pack", {}) if isinstance(output.get("requirements_pack", {}), dict) else {}
     intake = output.get("intake", {}) if isinstance(output.get("intake", {}), dict) else {}
@@ -6224,6 +7036,7 @@ def _stage_chat_system_prompt(stage: int, state: dict[str, Any]) -> str:
     persona_name = str(persona_row.get("display_name", "")).strip() or _stage_agent_name(stage)
     persona_text = str(persona_row.get("persona", "")).strip()
     stage_goal = {
+        1: "Answer questions using the detailed analyst report and raw evidence artifacts; keep responses grounded in extracted facts.",
         2: "Design architecture options, dependency impact, and boundary-safe decisions.",
         3: "Explain implementation scope, generated components/files, and remediation plan.",
         6: "Explain test outcomes, failures, quality gate implications, and concrete fixes.",
@@ -8150,6 +8963,7 @@ routes = [
     Route("/api/runs/{run_id:str}/abort", api_abort_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/rerun", api_rerun_stage, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/chat", api_stage_chat, methods=["POST"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/proposals", api_stage_create_proposal, methods=["POST"]),

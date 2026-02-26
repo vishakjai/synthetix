@@ -47,6 +47,32 @@ In the UI:
 - Set **Target Modernization Language**
 - Run pipeline to produce artifacts + Docker deployment endpoint
 
+## CLI Analyst Export (No UI)
+
+Generate the Analyst technical requirements markdown directly from terminal:
+
+```bash
+# Direct mode (no API server needed): clones repo, runs Analyst stage, writes markdown + JSON.
+python scripts/run_vb6_analyst_markdown.py \
+  --execution-mode direct \
+  --repo-url auto \
+  --provider openai \
+  --model gpt-4o \
+  --mode full
+
+# API mode (uses running local server):
+python scripts/run_vb6_analyst_markdown.py \
+  --execution-mode api \
+  --base-url http://127.0.0.1:8788 \
+  --repo-url auto \
+  --mode full
+
+`--repo-url auto` resolves the same source repository as the latest web/API run (falling back to Settings > GitHub owner/repository if no recent run exists).
+Use `--execution-mode api` when you need CLI output to follow the same server pipeline path as the web UI.
+```
+
+Outputs are written under `run_artifacts/manual_exports/` by default.
+
 ## Architecture
 
 ```

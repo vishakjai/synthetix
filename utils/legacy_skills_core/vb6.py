@@ -22,6 +22,9 @@ _VB6_FILE_TYPE_LABELS = {
 }
 
 
+_SQL_KEYWORD_RE = re.compile(r"(?i)\b(select|insert|update|delete)\b")
+
+
 def vb6_skill_pack_manifest() -> dict[str, Any]:
     return {
         "skill_pack_id": "legacy-vb6",
@@ -52,6 +55,110 @@ def vb6_skill_pack_manifest() -> dict[str, Any]:
             "Is migration phased (strangler/interoperability) or one-time cutover?",
         ],
     }
+
+
+def _strip_vb_comment(line: str) -> str:
+    text = str(line or "")
+    in_quotes = False
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            in_quotes = not in_quotes
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "'" and not in_quotes:
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out).strip()
+
+
+def _normalize_vb6_sql_expr(expr: str) -> str:
+    text = str(expr or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    parts = [p.strip() for p in re.split(r"\s*&\s*", text) if p.strip()]
+    if not parts:
+        return ""
+    out_parts: list[str] = []
+    for part in parts:
+        lower = part.lower()
+        if lower in {"vbcrlf", "vbnewline", "vbtab", "space$(1)"}:
+            out_parts.append(" ")
+            continue
+        if part.startswith('"') and part.endswith('"') and len(part) >= 2:
+            literal = part[1:-1].replace('""', '"')
+            if literal:
+                out_parts.append(literal)
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", part):
+            out_parts.append(":expr")
+            continue
+        if re.search(r"(?i)\b(cstr|trim|val|format|left|right|mid|replace|date\$|time\$|now)\b", part):
+            out_parts.append(":expr")
+            continue
+        out_parts.append(part)
+    query = "".join(out_parts)
+    query = re.sub(r"\s+", " ", query).strip()
+    if _SQL_KEYWORD_RE.search(query):
+        return query[:360]
+    return ""
+
+
+def _extract_sql_candidates_from_lines(lines: list[str]) -> list[str]:
+    logical_lines: list[str] = []
+    buffer = ""
+    for raw in lines:
+        cleaned = _strip_vb_comment(raw)
+        if not cleaned:
+            continue
+        if buffer:
+            buffer = f"{buffer} {cleaned}".strip()
+        else:
+            buffer = cleaned
+        if buffer.endswith("_"):
+            buffer = buffer[:-1].strip()
+            continue
+        logical_lines.append(buffer)
+        buffer = ""
+    if buffer:
+        logical_lines.append(buffer)
+
+    queries: list[str] = []
+    seen: set[str] = set()
+    for line in logical_lines:
+        expr_candidates: list[str] = []
+        if "=" in line:
+            left, right = line.split("=", 1)
+            left_l = left.lower()
+            if (
+                "sql" in left_l
+                or "query" in left_l
+                or "recordsource" in left_l
+                or "commandtext" in left_l
+                or _SQL_KEYWORD_RE.search(right)
+            ):
+                expr_candidates.append(right.strip())
+        open_match = re.search(r"(?i)\b(?:open|execute)\s+(.+)$", line)
+        if open_match and _SQL_KEYWORD_RE.search(line):
+            expr_candidates.append(open_match.group(1).strip())
+        if not expr_candidates and _SQL_KEYWORD_RE.search(line):
+            expr_candidates.append(line.strip())
+        for expr in expr_candidates:
+            normalized = _normalize_vb6_sql_expr(expr)
+            if normalized and normalized.lower() not in seen:
+                seen.add(normalized.lower())
+                queries.append(normalized)
+        for frag in re.findall(r'(?is)"([^"\n]*(?:select|insert|update|delete)[^"\n]*)"', line):
+            query = " ".join(str(frag or "").split())
+            if query and query.lower() not in seen:
+                seen.add(query.lower())
+                queries.append(query[:360])
+    return queries[:200]
 
 
 def _extract_procedure_blocks(text: str) -> dict[str, Any]:
@@ -87,7 +194,6 @@ def _extract_procedure_blocks(text: str) -> dict[str, Any]:
     procedure_sql: dict[str, list[str]] = {}
     procedure_effects: dict[str, list[str]] = {}
     call_rx = re.compile(r"(?im)^\s*(?:Call\s+)?([A-Za-z_][A-Za-z0-9_]*)\b")
-    sql_rx = re.compile(r'(?is)"([^"\n]*(?:select|insert|update|delete)[^"\n]*)"')
     for proc, body_lines in procedure_bodies.items():
         body = "\n".join(body_lines)
         calls: list[str] = []
@@ -103,13 +209,7 @@ def _extract_procedure_blocks(text: str) -> dict[str, Any]:
                 calls.append(token)
             if len(calls) >= 40:
                 break
-        sqls: list[str] = []
-        for match in sql_rx.findall(body):
-            query = " ".join(str(match or "").split())
-            if query and query not in sqls:
-                sqls.append(query[:360])
-            if len(sqls) >= 20:
-                break
+        sqls = _extract_sql_candidates_from_lines(body_lines)[:40]
         effects: list[str] = []
         lower = body.lower()
         markers = [
@@ -372,6 +472,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             "controls": [],
             "activex_dependencies": [],
             "event_handlers": [],
+            "event_handler_keys": [],
             "procedures": [],
             "sql_queries": [],
             "ui_event_map": [],
@@ -412,6 +513,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
     controls: set[str] = set()
     activex_dependencies: set[str] = set()
     event_handlers: set[str] = set()
+    event_handler_keys: set[str] = set()
     project_members: set[str] = set()
     procedures: set[str] = set()
     sql_queries: list[str] = []
@@ -460,12 +562,28 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
         elif dep:
             activex_dependencies.add(f"{dep} ({str(object_ref or '').strip()})")
 
+    form_contexts = [str(x).split(":", 1)[-1] for x in sorted(forms) if ":" in str(x)]
+    file_context = Path(file_path).stem if file_path else ""
     for event_name in re.findall(
         r"(?im)^\s*(?:Public|Private|Friend)?\s*Sub\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
         text,
     ):
-        if len(event_handlers) < 120:
-            event_handlers.add(str(event_name).strip())
+        event = str(event_name).strip()
+        if not event:
+            continue
+        if len(event_handlers) < 480:
+            event_handlers.add(event)
+        if form_contexts:
+            for form_name in form_contexts[:6]:
+                if len(event_handler_keys) >= 1200:
+                    break
+                event_handler_keys.add(f"{form_name}::{event}")
+        elif file_context:
+            if len(event_handler_keys) < 1200:
+                event_handler_keys.add(f"{file_context}::{event}")
+        else:
+            if len(event_handler_keys) < 1200:
+                event_handler_keys.add(event)
     for proc_name in re.findall(
         r"(?im)^\s*(?:Public|Private|Friend|Protected)?\s*(?:Function|Sub|Property Get|Property Let|Property Set)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
         text,
@@ -535,9 +653,35 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             "references": references[:80],
             "resource_file": resource_file,
         }
+    elif suffix == ".vbg":
+        project_name = Path(file_path).stem or "VB6ProjectGroup"
+        members: list[dict[str, str]] = []
+        for project_alias, member_raw in re.findall(r"(?im)^\s*([^=]+)\s*=\s*(.+\.vbp)\s*$", text):
+            raw_value = str(member_raw or "").strip().strip('"')
+            alias = str(project_alias or "").strip() or "Project"
+            if not raw_value:
+                continue
+            members.append(
+                {
+                    "member_type": "Project",
+                    "member_path": raw_value,
+                    "raw": f"{alias}={raw_value}",
+                }
+            )
+            project_members.add(f"Project:{raw_value}")
+        project_definition = {
+            "project_name": project_name,
+            "project_type": "ProjectGroup",
+            "startup_object": "",
+            "project_file": file_path,
+            "members": members,
+            "references": [],
+            "resource_file": "",
+        }
 
     form_names = [str(x).split(":", 1)[-1] for x in forms if ":" in str(x)]
-    for raw in str(text or "").splitlines():
+    source_lines = str(text or "").splitlines()
+    for raw in source_lines:
         line = str(raw or "")
         lower = line.lower()
         if "on error resume next" in lower:
@@ -577,12 +721,11 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             sig = f"{str(declare_match.group(1) or '').strip()}@{str(declare_match.group(2) or '').strip()}"
             if sig and sig not in win32_declares:
                 win32_declares.append(sig)
-        for sql in re.findall(r'(?is)"([^"\n]*(?:select|insert|update|delete)[^"\n]*)"', line):
-            query = " ".join(str(sql or "").split())
-            if query and query not in sql_queries:
-                sql_queries.append(query[:360])
-            if len(sql_queries) >= 120:
-                break
+    for query in _extract_sql_candidates_from_lines(source_lines):
+        if query and query not in sql_queries:
+            sql_queries.append(query[:360])
+        if len(sql_queries) >= 200:
+            break
 
     ui_event_map: list[dict[str, Any]] = []
     control_to_form: dict[str, str] = {}
@@ -634,6 +777,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
         "controls": sorted(controls),
         "activex_dependencies": sorted(activex_dependencies),
         "event_handlers": sorted(event_handlers),
+        "event_handler_keys": sorted(event_handler_keys)[:1200],
         "procedures": sorted(procedures)[:160],
         "sql_queries": sql_queries[:120],
         "ui_event_map": ui_event_map[:200],
@@ -663,7 +807,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
         "module_profile": {
             "module_type": vb6_file_type,
             "procedure_count": len(procedures),
-            "event_handler_count": len(event_handlers),
+            "event_handler_count": max(len(event_handler_keys), len(event_handlers)),
             "sql_query_count": len(sql_queries),
         },
     }

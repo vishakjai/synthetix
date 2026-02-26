@@ -1089,9 +1089,24 @@ function buildAnalystReportV2(output) {
   const walkthrough = (safeOutput.analysis_walkthrough && typeof safeOutput.analysis_walkthrough === "object")
     ? safeOutput.analysis_walkthrough
     : {};
+  const rawArtifacts = (safeOutput.raw_artifacts && typeof safeOutput.raw_artifacts === "object")
+    ? safeOutput.raw_artifacts
+    : {};
+  const rawArtifactRefs = (rawArtifacts.artifact_refs && typeof rawArtifacts.artifact_refs === "object")
+    ? rawArtifacts.artifact_refs
+    : {};
   const legacyInventory = resolveLegacyInventory(safeOutput);
   const legacyForms = resolveLegacyForms(legacyInventory);
   const vb6Projects = Array.isArray(legacyInventory.vb6_projects) ? legacyInventory.vb6_projects : [];
+  const rawRepoLandscapeProjects = Array.isArray(rawArtifacts.repo_landscape?.projects)
+    ? rawArtifacts.repo_landscape.projects
+    : [];
+  const rawVariantInventoryRows = Array.isArray(rawArtifacts.variant_inventory?.variants)
+    ? rawArtifacts.variant_inventory.variants
+    : [];
+  const rawLegacyInventory = (rawArtifacts.legacy_inventory && typeof rawArtifacts.legacy_inventory === "object")
+    ? rawArtifacts.legacy_inventory
+    : {};
   const legacyRules = resolveBusinessRulesCatalog(safeOutput, legacyInventory);
   const vb6Analysis = (legacyInventory.vb6_analysis && typeof legacyInventory.vb6_analysis === "object")
     ? legacyInventory.vb6_analysis
@@ -1145,7 +1160,25 @@ function buildAnalystReportV2(output) {
     ? legacyInventory.pitfall_detectors
     : (Array.isArray(vb6Analysis.pitfall_detectors) ? vb6Analysis.pitfall_detectors : []);
   const activeX = Array.isArray(legacyInventory.activex_controls) ? legacyInventory.activex_controls : [];
+  const dllDeps = Array.isArray(legacyInventory.dll_dependencies) ? legacyInventory.dll_dependencies : [];
+  const ocxDeps = Array.isArray(legacyInventory.ocx_dependencies) ? legacyInventory.ocx_dependencies : [];
+  const dcxDeps = Array.isArray(legacyInventory.dcx_dependencies) ? legacyInventory.dcx_dependencies : [];
+  const dcaDeps = Array.isArray(legacyInventory.dca_dependencies) ? legacyInventory.dca_dependencies : [];
+  const genericDeps = Array.isArray(legacyInventory.dependencies) ? legacyInventory.dependencies : [];
+  const dependencySet = [...new Set([
+    ...activeX,
+    ...dllDeps,
+    ...ocxDeps,
+    ...dcxDeps,
+    ...dcaDeps,
+    ...genericDeps,
+  ].map((x) => String(x || "").trim()).filter(Boolean))];
   const eventHandlers = Array.isArray(legacyInventory.event_handlers) ? legacyInventory.event_handlers : [];
+  const eventHandlersExact = Number(
+    legacyInventory.event_handler_count_exact
+    || vb6Analysis.event_handler_count_exact
+    || eventHandlers.length
+  );
   const controlsCount = vb6Projects.reduce((acc, project) => {
     const controls = Array.isArray(project?.controls) ? project.controls.length : 0;
     return acc + controls;
@@ -1155,7 +1188,70 @@ function buildAnalystReportV2(output) {
     if (Number.isFinite(explicit) && explicit > 0) return acc + explicit;
     return acc + (Array.isArray(project?.forms) ? project.forms.length : 0);
   }, 0);
-  const formsCount = Math.max(legacyForms.length, projectFormCount);
+  const formsDiscovered = Number(legacyInventory.form_count_discovered_files || rawLegacyInventory?.summary?.counts?.forms_or_screens || 0);
+  const formsReferenced = Number(legacyInventory.form_count_referenced || projectFormCount || 0);
+  const formsCount = Math.max(legacyForms.length, projectFormCount, formsDiscovered);
+  const formsUnmapped = Number(
+    legacyInventory.form_count_unmapped_files
+    || Math.max(0, formsCount - formsReferenced)
+  );
+  const projectCount = Math.max(vb6Projects.length, rawRepoLandscapeProjects.length, rawVariantInventoryRows.length);
+  const scopeLock = (rawArtifacts.scope_lock && typeof rawArtifacts.scope_lock === "object")
+    ? rawArtifacts.scope_lock
+    : {};
+  const discoverChecklistRaw = (rawArtifacts.discover_review_checklist && typeof rawArtifacts.discover_review_checklist === "object")
+    ? rawArtifacts.discover_review_checklist
+    : {};
+  const discoverChecklistRows = Array.isArray(discoverChecklistRaw.checks)
+    ? discoverChecklistRaw.checks
+    : (Array.isArray(discoverChecklistRaw.items) ? discoverChecklistRaw.items : []);
+  const computedReviewChecks = [];
+  if (projectCount > 1) {
+    const scopeResolved = String(scopeLock.status || scopeLock.decision || "").trim();
+    computedReviewChecks.push({
+      id: "variant_scope_lock",
+      status: scopeResolved ? "pass" : "fail",
+      title: "Variant scope decision",
+      detail: scopeResolved
+        ? `Scope locked: ${scopeResolved}`
+        : `Detected ${projectCount} project variants without explicit scope lock.`,
+    });
+  }
+  if (uiEventMap.length > 0) {
+    const handlerCoverage = eventHandlersExact > 0 ? (eventHandlersExact / uiEventMap.length) : 0;
+    computedReviewChecks.push({
+      id: "handler_inventory_coverage",
+      status: handlerCoverage >= 0.85 ? "pass" : "warn",
+      title: "Event handler extraction coverage",
+      detail: `handlers=${eventHandlersExact}, mapped_events=${uiEventMap.length}, coverage=${(handlerCoverage * 100).toFixed(1)}%`,
+    });
+  }
+  const mapRows = Array.isArray(rawArtifacts.data_access_map?.rows) ? rawArtifacts.data_access_map.rows : [];
+  if (mapRows.length || sqlCatalog.length) {
+    const mapCoverage = Number(rawArtifacts.data_access_map?.coverage_score || 0);
+    const mapComplete = Boolean(rawArtifacts.data_access_map?.complete);
+    computedReviewChecks.push({
+      id: "data_access_map_coverage",
+      status: mapComplete && mapCoverage >= 1 ? "pass" : (mapCoverage >= 0.8 ? "warn" : "fail"),
+      title: "Canonical data access map",
+      detail: `complete=${mapComplete ? "true" : "false"}, rows=${mapRows.length}, coverage=${(mapCoverage * 100).toFixed(1)}%`,
+    });
+  }
+  const discoverReviewChecks = discoverChecklistRows.length
+    ? discoverChecklistRows.map((row, idx) => {
+      const status = String(row?.status || row?.result || "warn").trim().toLowerCase();
+      return {
+        id: String(row?.id || `review_${idx + 1}`),
+        status: (status === "pass" || status === "fail" || status === "warn") ? status : "warn",
+        title: String(row?.title || row?.check || row?.why || row?.action || "Review check"),
+        detail: String(row?.detail || row?.notes || row?.why || row?.action || ""),
+      };
+    })
+    : computedReviewChecks;
+  const discoverReviewStatus = discoverReviewChecks.some((row) => row.status === "fail")
+    ? "FAIL"
+    : (discoverReviewChecks.some((row) => row.status === "warn") ? "WARN" : "PASS");
+  const refFor = (key, fallback) => String(rawArtifactRefs[key] || fallback);
   const inferredTables = Array.isArray(legacyInventory.database_tables) ? legacyInventory.database_tables : [];
   const tablesTouched = [...new Set([
     ...inferredTables.map((x) => String(x || "").trim()).filter(Boolean),
@@ -1333,11 +1429,13 @@ function buildAnalystReportV2(output) {
         readiness_score: readinessScore,
         risk_tier: normalizedRiskTier,
         inventory_summary: {
-          projects: vb6Projects.length,
+          projects: projectCount,
           forms: formsCount,
+          forms_referenced: formsReferenced,
+          forms_unmapped: formsUnmapped,
           controls: controlsCount,
-          dependencies: activeX.length,
-          event_handlers: eventHandlers.length,
+          dependencies: dependencySet.length,
+          event_handlers: eventHandlersExact,
           tables_touched: tablesTouched,
         },
         headline: String(readiness.recommended_strategy?.name || "Phased modernization") + " recommended.",
@@ -1386,7 +1484,7 @@ function buildAnalystReportV2(output) {
         },
       ],
     },
-    delivery_spec: {
+      delivery_spec: {
       scope: {
         in_scope: [
           "Preserve legacy business behavior and workflows",
@@ -1422,20 +1520,36 @@ function buildAnalystReportV2(output) {
         links: traceabilityLinks,
       },
       open_questions: openQuestions,
-    },
+      },
+      discover_review: {
+        overall_status: discoverReviewStatus,
+        checks: discoverReviewChecks,
+      },
     appendix: {
       artifact_refs: {
-        legacy_inventory_ref: "artifact://analyst/raw/legacy_inventory/v1",
-        event_map_ref: "artifact://analyst/raw/event_map/v1",
-        sql_catalog_ref: "artifact://analyst/raw/sql_catalog/v1",
-        sql_map_ref: "artifact://analyst/raw/sql_map/v1",
-        procedure_summary_ref: "artifact://analyst/raw/procedure_summary/v1",
-        dependency_list_ref: "artifact://analyst/raw/dependency_inventory/v1",
-        dependency_inventory_ref: "artifact://analyst/raw/dependency_inventory/v1",
-        business_rules_ref: "artifact://analyst/raw/business_rule_catalog/v1",
-        detector_findings_ref: "artifact://analyst/raw/detector_findings/v1",
-        delivery_constitution_ref: "artifact://analyst/raw/delivery_constitution/v1",
-        artifact_index_ref: "artifact://analyst/raw/artifact_index/v1",
+        legacy_inventory_ref: refFor("legacy_inventory", "artifact://analyst/raw/legacy_inventory/v1"),
+        repo_landscape_ref: refFor("repo_landscape", "artifact://analyst/raw/repo_landscape/v1"),
+        scope_lock_ref: refFor("scope_lock", "artifact://analyst/raw/scope_lock/v1"),
+        variant_inventory_ref: refFor("variant_inventory", "artifact://analyst/raw/variant_inventory/v1"),
+        event_map_ref: refFor("event_map", "artifact://analyst/raw/event_map/v1"),
+        sql_catalog_ref: refFor("sql_catalog", "artifact://analyst/raw/sql_catalog/v1"),
+        sql_map_ref: refFor("sql_map", "artifact://analyst/raw/sql_map/v1"),
+        data_access_map_ref: refFor("data_access_map", "artifact://analyst/raw/data_access_map/v1"),
+        recordset_ops_ref: refFor("recordset_ops", "artifact://analyst/raw/recordset_ops/v1"),
+        procedure_summary_ref: refFor("procedure_summary", "artifact://analyst/raw/procedure_summary/v1"),
+        form_dossier_ref: refFor("form_dossier", "artifact://analyst/raw/form_dossier/v1"),
+        dependency_list_ref: refFor("dependency_inventory", "artifact://analyst/raw/dependency_inventory/v1"),
+        dependency_inventory_ref: refFor("dependency_inventory", "artifact://analyst/raw/dependency_inventory/v1"),
+        business_rules_ref: refFor("business_rule_catalog", "artifact://analyst/raw/business_rule_catalog/v1"),
+        detector_findings_ref: refFor("detector_findings", "artifact://analyst/raw/detector_findings/v1"),
+        risk_register_ref: refFor("risk_register", "artifact://analyst/raw/risk_register/v1"),
+        orphan_analysis_ref: refFor("orphan_analysis", "artifact://analyst/raw/orphan_analysis/v1"),
+        delivery_constitution_ref: refFor("delivery_constitution", "artifact://analyst/raw/delivery_constitution/v1"),
+        variant_diff_report_ref: refFor("variant_diff_report", "artifact://analyst/raw/variant_diff_report/v1"),
+        reporting_model_ref: refFor("reporting_model", "artifact://analyst/raw/reporting_model/v1"),
+        identity_access_model_ref: refFor("identity_access_model", "artifact://analyst/raw/identity_access_model/v1"),
+        discover_review_checklist_ref: refFor("discover_review_checklist", "artifact://analyst/raw/discover_review_checklist/v1"),
+        artifact_index_ref: refFor("artifact_index", "artifact://analyst/raw/artifact_index/v1"),
       },
       high_volume_sections: {
         legacy_inventory: legacyInventory,
@@ -1450,11 +1564,11 @@ function buildAnalystReportV2(output) {
       artifact_version: "1.0",
       discovery_spec: {
         title: "Legacy discovery spec",
-        objective: String(analysisWalk.business_objective_summary || output.executive_summary || "Objective not captured."),
+        objective: String(walkthrough.business_objective_summary || safeOutput.executive_summary || "Objective not captured."),
         inventory_counts: {
-          projects: vb6Projects.length,
+          projects: projectCount,
           forms: formsCount,
-          dependencies: activeX.length,
+          dependencies: dependencySet.length,
           procedures: uiEventMap.length,
           sql_map_entries: sqlCatalog.length,
         },
@@ -1601,16 +1715,287 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const rawSql = Array.isArray(raw.sql_catalog?.statements) ? raw.sql_catalog.statements : [];
   const rawSqlMap = Array.isArray(raw.sql_map?.entries) ? raw.sql_map.entries : [];
   const rawProcedures = Array.isArray(raw.procedure_summary?.procedures) ? raw.procedure_summary.procedures : [];
+  const rawFormDossiers = Array.isArray(raw.form_dossier?.dossiers) ? raw.form_dossier.dossiers : [];
   const rawDeps = Array.isArray(raw.dependency_inventory?.dependencies) ? raw.dependency_inventory.dependencies : [];
   const rawRules = Array.isArray(raw.business_rule_catalog?.rules) ? raw.business_rule_catalog.rules : [];
+  const rawRisks = Array.isArray(raw.risk_register?.risks) ? raw.risk_register.risks : [];
+  const rawOrphans = Array.isArray(raw.orphan_analysis?.orphans) ? raw.orphan_analysis.orphans : [];
+  const rawLandscape = Array.isArray(raw.repo_landscape?.projects) ? raw.repo_landscape.projects : [];
+  const rawVariantInventory = Array.isArray(raw.variant_inventory?.variants) ? raw.variant_inventory.variants : [];
   const rawConstitution = Array.isArray(raw.delivery_constitution?.principles) ? raw.delivery_constitution.principles : [];
+  const rawVariantDiff = (raw.variant_diff_report && typeof raw.variant_diff_report === "object") ? raw.variant_diff_report : {};
+  const baseFormName = (value) => {
+    let text = String(value || "").trim();
+    if (!text) return "";
+    if (text.includes("::")) text = text.split("::").pop();
+    if (text.includes(":")) text = text.split(":")[0];
+    if (text.includes("/")) text = text.split("/").pop();
+    if (text.toLowerCase().endsWith(".frm")) text = text.slice(0, -4);
+    return text.toLowerCase();
+  };
+  const projectFromScoped = (value) => {
+    const text = String(value || "").trim();
+    if (!text.includes("::")) return "";
+    return text.split("::")[0].trim();
+  };
+  const formKey = (projectName, formName) => {
+    const form = baseFormName(formName);
+    const project = String(projectName || "").trim().toLowerCase();
+    return (project && form) ? `${project}::${form}` : form;
+  };
+  const baseOnlyKey = (formName) => {
+    const base = baseFormName(formName);
+    return base ? `__base__::${base}` : "";
+  };
+  const formKeys = (projectName, formName) => {
+    const keys = [];
+    const scoped = formKey(projectName, formName);
+    if (scoped) keys.push(scoped);
+    const baseKey = baseOnlyKey(formName);
+    if (baseKey && !keys.includes(baseKey)) keys.push(baseKey);
+    return keys;
+  };
+  const lookupRows = (mapping, projectName, formName) => {
+    const scoped = formKey(projectName, formName);
+    const baseKey = baseOnlyKey(formName);
+    if (scoped && Array.isArray(mapping[scoped]) && mapping[scoped].length) return mapping[scoped];
+    if (baseKey && Array.isArray(mapping[baseKey]) && mapping[baseKey].length) return mapping[baseKey];
+    return [];
+  };
+  const lookupSet = (mapping, projectName, formName) => {
+    const scoped = formKey(projectName, formName);
+    const baseKey = baseOnlyKey(formName);
+    if (scoped && mapping[scoped] instanceof Set && mapping[scoped].size) return mapping[scoped];
+    if (baseKey && mapping[baseKey] instanceof Set && mapping[baseKey].size) return mapping[baseKey];
+    return new Set();
+  };
+  const lookupControlMap = (mapping, projectName, formName) => {
+    const scoped = formKey(projectName, formName);
+    const baseKey = baseOnlyKey(formName);
+    if (scoped && mapping[scoped] && typeof mapping[scoped] === "object") return mapping[scoped];
+    if (baseKey && mapping[baseKey] && typeof mapping[baseKey] === "object") return mapping[baseKey];
+    return {};
+  };
+  const qualifiedFormName = (projectName, formName) => {
+    const project = String(projectName || "").trim();
+    const form = String(formName || "").trim();
+    if (project && form) return `${project}::${form}`;
+    return form || "n/a";
+  };
+  const extractFormsFromText = (value) => {
+    const text = String(value || "");
+    if (!text) return [];
+    const out = [];
+    const matches = text.match(/[A-Za-z0-9_./-]+/g) || [];
+    matches.forEach((item) => {
+      const low = item.toLowerCase();
+      if (low.endsWith(".bas") || low.endsWith(".cls") || low.endsWith(".ctl") || low.endsWith(".vbp") || low.endsWith(".vbg") || low.endsWith(".res") || low.endsWith(".mdl") || low.endsWith(".mod")) return;
+      if (!low.includes("frm") && !low.startsWith("form")) return;
+      const leaf = item.includes("/") ? item.split("/").pop() : item;
+      const normalizedRaw = leaf.toLowerCase().endsWith(".frm") ? leaf.slice(0, -4) : leaf;
+      const normalized = normalizedRaw.replace(/[.,;:()\[\]{}]+$/g, "");
+      const lowNorm = normalized.toLowerCase();
+      if (/_((click|change|load|keypress|gotfocus|lostfocus|activate|deactivate))$/i.test(lowNorm)) return;
+      if (!out.includes(normalized)) out.push(normalized);
+    });
+    return out;
+  };
+  const inferFormType = ({ formName, purpose, procedures, controls, tables }) => {
+    const formLow = String(formName || "").toLowerCase();
+    const purposeLow = String(purpose || "").toLowerCase();
+    const controlText = (Array.isArray(controls) ? controls : []).map((c) => String(c || "").toLowerCase()).join(" ");
+    const procNames = new Set((Array.isArray(procedures) ? procedures : []).map((p) => String(p?.procedure_name || "").toLowerCase()));
+    const tableSet = new Set((tables || []).map((t) => String(t || "").toLowerCase()));
+    if (formLow.includes("splash") || purposeLow.includes("splash")) return "Splash";
+    if (formLow === "main" || formLow.startsWith("mdi") || controlText.includes("toolbar") || Array.from(procNames).some((p) => p.includes("toolbar"))) return "MDI_Host";
+    if (formLow.includes("login") || purposeLow.includes("auth") || (formLow.includes("form9") && (tableSet.has("logi") || tableSet.has("login")))) return "Login";
+    if (formLow.startsWith("rpt") || formLow.startsWith("datareport")) return "Report";
+    return "Child";
+  };
+  const projectPathByName = {};
+  const projectDepsByName = {};
+  const projectTablesByName = {};
+  rawLandscape.forEach((row) => {
+    const rawId = String(row?.id || "").trim();
+    const path = String(row?.path || "").trim();
+    const left = rawId.includes("|") ? rawId.split("|")[0] : rawId;
+    [left, String(row?.name || "").trim(), rawId].forEach((name) => {
+      const key = String(name || "").trim();
+      if (!key) return;
+      if (!projectPathByName[key] && path) projectPathByName[key] = path;
+      if (!projectDepsByName[key]) projectDepsByName[key] = new Set();
+      if (!projectTablesByName[key]) projectTablesByName[key] = new Set();
+      (Array.isArray(row?.dependencies) ? row.dependencies : []).forEach((dep) => {
+        const depName = String(dep || "").trim();
+        if (depName) projectDepsByName[key].add(depName);
+      });
+      (Array.isArray(row?.db_touchpoints) ? row.db_touchpoints : []).forEach((t) => {
+        const tableName = String(t || "").trim();
+        if (tableName) projectTablesByName[key].add(tableName);
+      });
+    });
+  });
+  const projectLabel = (name) => {
+    const key = String(name || "").trim();
+    if (!key) return "n/a";
+    const path = String(projectPathByName[key] || "").trim();
+    return path ? `${key} [${path}]` : key;
+  };
+  const formSqlRows = {};
+  const formDbTables = {};
+  const sqlMapRowKey = new WeakMap();
+  rawSqlMap.forEach((row) => {
+    const tables = new Set((Array.isArray(row?.tables) ? row.tables : []).map((t) => String(t || "").trim()).filter(Boolean));
+    const projectName = String(row?.variant || "").trim() || projectFromScoped(row?.form);
+    const formName = String(row?.form_base || "").trim() || String(row?.form || "").trim();
+    const keys = formKeys(projectName, formName);
+    if (!keys.length) return;
+    sqlMapRowKey.set(row, keys[0]);
+    keys.forEach((key) => {
+      if (!formSqlRows[key]) formSqlRows[key] = [];
+      if (!formDbTables[key]) formDbTables[key] = new Set();
+      formSqlRows[key].push(row);
+      tables.forEach((t) => formDbTables[key].add(t));
+    });
+    if (projectName) {
+      if (!projectTablesByName[projectName]) projectTablesByName[projectName] = new Set();
+      tables.forEach((t) => projectTablesByName[projectName].add(t));
+    }
+  });
+  const formEventRows = {};
+  const formEventHandlerByProc = {};
+  rawEventMap.forEach((row) => {
+    const container = String(row?.container || row?.name || "").trim();
+    const projectName = projectFromScoped(container) || projectFromScoped(row?.handler?.symbol);
+    const formName = baseFormName(container) || baseFormName(row?.handler?.symbol);
+    const keys = formKeys(projectName, formName);
+    if (!keys.length) return;
+    keys.forEach((key) => {
+      if (!formEventRows[key]) formEventRows[key] = [];
+      formEventRows[key].push(row);
+    });
+    (Array.isArray(row?.calls) ? row.calls : []).forEach((call) => {
+      const proc = String(call || "").trim();
+      if (!proc) return;
+      keys.forEach((key) => {
+        const mapKey = `${key}::${proc}`;
+        if (!formEventHandlerByProc[mapKey]) formEventHandlerByProc[mapKey] = new Set();
+        const handler = String(row?.handler?.symbol || row?.entry_id || "").trim();
+        if (handler) formEventHandlerByProc[mapKey].add(handler);
+      });
+    });
+  });
+  const formProcRows = {};
+  rawProcedures.forEach((row) => {
+    const keys = formKeys(projectFromScoped(row?.form), baseFormName(row?.form));
+    if (!keys.length) return;
+    keys.forEach((key) => {
+      if (!formProcRows[key]) formProcRows[key] = [];
+      formProcRows[key].push(row);
+    });
+  });
+  const formRiskRows = {};
+  rawRisks.forEach((row) => {
+    const texts = [
+      String(row?.description || ""),
+      String(row?.recommended_action || ""),
+      ...(Array.isArray(row?.evidence) ? row.evidence.map((ev) => String(ev?.external_ref?.ref || ev?.file_span?.path || "")) : []),
+    ];
+    const forms = new Set();
+    texts.forEach((text) => extractFormsFromText(text).forEach((f) => forms.add(baseFormName(f))));
+    rawFormDossiers.forEach((dossier) => {
+      if (!forms.has(baseFormName(dossier?.form_name))) return;
+      formKeys(dossier?.project_name, dossier?.form_name).forEach((key) => {
+        if (!formRiskRows[key]) formRiskRows[key] = [];
+        formRiskRows[key].push(row);
+      });
+    });
+  });
+  const formRuleRows = {};
+  rawRules.forEach((row) => {
+    const texts = [
+      String(row?.scope?.component_id || ""),
+      String(row?.statement || ""),
+      ...(Array.isArray(row?.evidence) ? row.evidence.map((ev) => String(ev?.external_ref?.ref || ev?.file_span?.path || "")) : []),
+    ];
+    const forms = new Set();
+    texts.forEach((text) => extractFormsFromText(text).forEach((f) => forms.add(baseFormName(f))));
+    rawFormDossiers.forEach((dossier) => {
+      if (!forms.has(baseFormName(dossier?.form_name))) return;
+      formKeys(dossier?.project_name, dossier?.form_name).forEach((key) => {
+        if (!formRuleRows[key]) formRuleRows[key] = [];
+        formRuleRows[key].push(row);
+      });
+    });
+  });
+  const formControlTypeByKey = {};
+  rawFormDossiers.forEach((row) => {
+    const keys = formKeys(row?.project_name, row?.form_name);
+    if (!keys.length) return;
+    keys.forEach((key) => {
+      if (!formControlTypeByKey[key]) formControlTypeByKey[key] = {};
+      (Array.isArray(row?.controls) ? row.controls : []).forEach((ctl) => {
+        const text = String(ctl || "").trim();
+        if (!text) return;
+        const parts = text.split(":", 2);
+        const ctlType = String(parts[0] || "").trim();
+        const ctlName = String(parts[1] || parts[0] || "").trim().toLowerCase();
+        if (ctlName) formControlTypeByKey[key][ctlName] = ctlType;
+      });
+    });
+  });
+  const sharedModuleProcedures = new Set(
+    rawProcedures
+      .filter((proc) => baseFormName(proc?.form) === "shared_module")
+      .map((proc) => String(proc?.procedure_name || "").trim())
+      .filter(Boolean),
+  );
+  const formSharedComponents = {};
+  Object.entries(formEventRows).forEach(([key, rows]) => {
+    (Array.isArray(rows) ? rows : []).forEach((evt) => {
+      (Array.isArray(evt?.calls) ? evt.calls : []).forEach((call) => {
+        const proc = String(call || "").trim();
+        if (!proc || !sharedModuleProcedures.has(proc)) return;
+        if (!formSharedComponents[key]) formSharedComponents[key] = new Set();
+        formSharedComponents[key].add(proc);
+      });
+    });
+  });
+  const tableToProjects = {};
+  Object.entries(projectTablesByName).forEach(([projectName, tablesSet]) => {
+    Array.from(tablesSet instanceof Set ? tablesSet : []).forEach((tableName) => {
+      if (!tableToProjects[tableName]) tableToProjects[tableName] = new Set();
+      tableToProjects[tableName].add(projectName);
+    });
+  });
+  const dependencyToForms = {};
+  rawFormDossiers.forEach((row) => {
+    const projectName = String(row?.project_name || "").trim();
+    const qForm = qualifiedFormName(projectName, row?.form_name);
+    const deps = new Set(projectDepsByName[projectName] instanceof Set ? Array.from(projectDepsByName[projectName]) : []);
+    (Array.isArray(row?.controls) ? row.controls : []).forEach((ctl) => {
+      const ctlType = String(String(ctl || "").split(":", 1)[0] || "").trim();
+      if (ctlType && !ctlType.toUpperCase().startsWith("VB")) deps.add(ctlType);
+    });
+    Array.from(deps).forEach((dep) => {
+      const name = String(dep || "").trim().toLowerCase();
+      if (!name) return;
+      if (!dependencyToForms[name]) dependencyToForms[name] = new Set();
+      dependencyToForms[name].add(qForm);
+    });
+  });
   lines.push(`- Legacy inventory: ${raw.legacy_inventory ? "present" : (hv.legacy_inventory ? "present" : "missing")}`);
   lines.push(`- Event map rows: ${rawEventMap.length || (Array.isArray(hv.event_map) ? hv.event_map.length : 0)}`);
   lines.push(`- SQL catalog rows: ${rawSql.length || (Array.isArray(hv.sql_catalog) ? hv.sql_catalog.length : 0)}`);
   lines.push(`- SQL map rows: ${rawSqlMap.length}`);
   lines.push(`- Procedure summaries: ${rawProcedures.length}`);
+  lines.push(`- Form dossiers: ${rawFormDossiers.length}`);
   lines.push(`- Dependency rows: ${rawDeps.length || (Array.isArray(hv.dependencies) ? hv.dependencies.length : 0)}`);
   lines.push(`- Business rules: ${rawRules.length || (Array.isArray(hv.business_rules) ? hv.business_rules.length : 0)}`);
+  lines.push(`- Risk register rows: ${rawRisks.length}`);
+  lines.push(`- Orphan analysis rows: ${rawOrphans.length}`);
+  lines.push(`- Repo landscape variants: ${rawLandscape.length}`);
+  lines.push(`- Variant inventory rows: ${rawVariantInventory.length}`);
   lines.push(`- Constitution principles: ${rawConstitution.length}`);
 
   const rawLegacy = (raw.legacy_inventory && typeof raw.legacy_inventory === "object")
@@ -1623,8 +2008,13 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const ruleRows = rawRules.length ? rawRules : (Array.isArray(hv.business_rules) ? hv.business_rules : []);
   const sqlMapRows = rawSqlMap;
   const procedureRows = rawProcedures;
+  const formDossierRows = rawFormDossiers;
   const constitutionRows = rawConstitution;
   const detectorRows = Array.isArray(raw.detector_findings?.findings) ? raw.detector_findings.findings : [];
+  const riskRowsRaw = rawRisks;
+  const orphanRows = rawOrphans;
+  const landscapeRows = rawLandscape;
+  const variantRows = rawVariantInventory;
   const artifactIndexRows = Array.isArray(raw.artifact_index?.artifacts) ? raw.artifact_index.artifacts : [];
 
   if (includeDetailedAppendix) {
@@ -1633,13 +2023,22 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     lines.push(`- Projects: ${projects.length}`);
     lines.push(`- Data touchpoints: ${(Array.isArray(rawLegacy.summary?.data_touchpoints) ? rawLegacy.summary.data_touchpoints.join(", ") : "") || "None detected"}`);
     if (projects.length) {
-      lines.push("| Project | Type | Startup | Members | Forms | Dependencies |");
-      lines.push("|---|---|---|---:|---:|---:|");
+      lines.push("| Project | Type | Startup | Members | Forms | Reports | Dependencies | Shared tables |");
+      lines.push("|---|---|---|---:|---:|---:|---:|---|");
       projects.slice(0, 250).forEach((project) => {
         const members = Array.isArray(project?.members) ? project.members.length : 0;
         const ui = Array.isArray(project?.ui_assets) ? project.ui_assets.length : 0;
         const deps = Array.isArray(project?.dependencies) ? project.dependencies.length : 0;
-        lines.push(`| ${String(project?.name || project?.project_id || "")} | ${String(project?.type || "")} | ${String(project?.startup || "")} | ${members} | ${ui} | ${deps} |`);
+        const projectName = String(project?.name || project?.project_id || "").trim();
+        const reports = (Array.isArray(project?.members) ? project.members : []).filter((member) => {
+          const kind = String(member?.kind || "").toLowerCase();
+          const path = String(member?.path || "").toLowerCase();
+          return kind === "report" || kind === "designer" || path.includes("report") || path.endsWith(".dsr");
+        }).length;
+        const sharedTables = Array.from(projectTablesByName[projectName] instanceof Set ? projectTablesByName[projectName] : [])
+          .filter((t) => (tableToProjects[t] instanceof Set) && tableToProjects[t].size > 1)
+          .sort();
+        lines.push(`| ${projectName} | ${String(project?.type || "")} | ${String(project?.startup || "")} | ${members} | ${ui} | ${reports} | ${deps} | ${sharedTables.slice(0, 8).join(", ") || "none"} |`);
       });
     } else {
       lines.push("- No project rows available.");
@@ -1647,12 +2046,14 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
 
     lines.push("", "### B. Dependency Inventory");
     if (depRows.length) {
-      lines.push("| Name | Kind | Risk | Recommended action |");
-      lines.push("|---|---|---|---|");
+      lines.push("| Name | Kind | Risk | Recommended action | Forms mapped |");
+      lines.push("|---|---|---|---|---|");
       depRows.slice(0, 500).forEach((dep) => {
         const risk = String(dep?.risk?.tier || dep?.tier || "unknown");
         const action = String(dep?.risk?.recommended_action || dep?.recommended_action || "");
-        lines.push(`| ${String(dep?.name || dep || "")} | ${String(dep?.kind || "")} | ${risk} | ${action || "n/a"} |`);
+        const depName = String(dep?.name || dep || "").trim();
+        const mapped = Array.from(dependencyToForms[depName.toLowerCase()] instanceof Set ? dependencyToForms[depName.toLowerCase()] : []).sort();
+        lines.push(`| ${depName} | ${String(dep?.kind || "")} | ${risk} | ${action || "n/a"} | ${mapped.slice(0, 6).join(", ") || "n/a"} |`);
       });
     } else {
       lines.push("- No dependency rows available.");
@@ -1691,8 +2092,8 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
 
     lines.push("", "### E. Business Rules");
     if (ruleRows.length) {
-      lines.push("| Rule ID | Category | Statement | Evidence |");
-      lines.push("|---|---|---|---|");
+      lines.push("| Rule ID | Form | Layer | Category | Statement | Evidence |");
+      lines.push("|---|---|---|---|---|---|");
       ruleRows.slice(0, 700).forEach((row) => {
         const ruleId = String(row?.rule_id || row?.id || "");
         const category = String(row?.category || row?.rule_type || "other");
@@ -1700,7 +2101,18 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         const ev = Array.isArray(row?.evidence)
           ? row.evidence.map((e) => String(e?.external_ref?.ref || e?.file_span?.path || e?.ref || "")).filter(Boolean).slice(0, 3).join(", ")
           : String(row?.evidence || "");
-        lines.push(`| ${ruleId || "n/a"} | ${category} | ${statement || "n/a"} | ${ev || "n/a"} |`);
+        const forms = [];
+        [String(row?.statement || ""), ev].forEach((src) => {
+          extractFormsFromText(src).forEach((f) => {
+            if (!forms.includes(f)) forms.push(f);
+          });
+        });
+        const formValue = forms.length ? forms.slice(0, 4).join(", ") : "n/a";
+        const evidenceLow = `${String(row?.statement || "")} ${ev}`.toLowerCase();
+        let layer = "Presentation";
+        if (["data_persistence", "calculation_logic", "threshold_rule"].includes(category.toLowerCase()) || ["select ", "insert ", "update ", "delete ", "table"].some((x) => evidenceLow.includes(x))) layer = "Data";
+        if ([".bas", "module", "shared"].some((x) => evidenceLow.includes(x))) layer = "Shared";
+        lines.push(`| ${ruleId || "n/a"} | ${String(formValue || "n/a")} | ${layer} | ${category} | ${statement || "n/a"} | ${ev || "n/a"} |`);
       });
     } else {
       lines.push("- No business rules available.");
@@ -1731,12 +2143,30 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
 
     lines.push("", "### H. SQL Map");
     if (sqlMapRows.length) {
-      lines.push("| Form | Procedure | Operation | Tables | Risks |");
-      lines.push("|---|---|---|---|---|");
+      lines.push("| Form | Procedure | Operation | Tables | Risks | activex_trigger | trace_complete |");
+      lines.push("|---|---|---|---|---|---|---|");
       sqlMapRows.slice(0, 700).forEach((row) => {
+        const projectName = String(row?.variant || "").trim() || projectFromScoped(row?.form);
+        const formName = String(row?.form_base || "").trim() || String(row?.form || "").trim();
+        const procName = String(row?.procedure || "").trim();
+        const relatedEvents = lookupRows(formEventRows, projectName, formName).filter((evt) => {
+          const handler = String(evt?.handler?.symbol || "").trim();
+          return procName && handler.includes(procName);
+        });
+        const controlMap = lookupControlMap(formControlTypeByKey, projectName, formName);
+        const activexHits = [];
+        relatedEvents.forEach((evt) => {
+          const triggerControl = String(evt?.trigger?.control || "").trim();
+          if (!triggerControl) return;
+          const ctlType = String(controlMap[triggerControl.toLowerCase()] || "").trim();
+          if (ctlType && !ctlType.toUpperCase().startsWith("VB")) activexHits.push(`${triggerControl}:${ctlType}`);
+        });
         const tables = Array.isArray(row?.tables) ? row.tables.slice(0, 6).join(", ") : "";
         const risks = Array.isArray(row?.risk_flags) ? row.risk_flags.slice(0, 6).join(", ") : "";
-        lines.push(`| ${String(row?.form || "n/a")} | ${String(row?.procedure || "n/a")} | ${String(row?.operation || "unknown")} | ${tables || "n/a"} | ${risks || "none"} |`);
+        const hasSql = Boolean(String(row?.sql_id || "").trim());
+        const hasTables = Array.isArray(row?.tables) && row.tables.length > 0;
+        const traceComplete = hasSql && hasTables;
+        lines.push(`| ${qualifiedFormName(projectName, formName)} | ${String(row?.procedure || "n/a")} | ${String(row?.operation || "unknown")} | ${tables || "n/a"} | ${risks || "none"} | ${Array.from(new Set(activexHits)).slice(0, 4).join(", ") || "n/a"} | ${traceComplete ? "yes" : "no"} |`);
       });
     } else {
       lines.push("- No SQL map rows available.");
@@ -1762,6 +2192,261 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     } else {
       lines.push("- No delivery constitution principles available.");
     }
+
+    lines.push("", "### K. Form Dossiers");
+    if (formDossierRows.length) {
+      lines.push("| Form | Project | form_type | Purpose | Inputs | Outputs | ActiveX used | DB tables | Actions | Coverage | Confidence |");
+      lines.push("|---|---|---|---|---|---|---|---|---:|---:|---:|");
+      formDossierRows.slice(0, 700).forEach((row) => {
+        const projectName = String(row?.project_name || "").trim();
+        const formName = String(row?.form_name || "").trim();
+        const actions = Array.isArray(row?.actions) ? row.actions.length : 0;
+        const coverage = Number(row?.coverage?.coverage_score || 0);
+        const confidence = Number(row?.coverage?.confidence_score || 0);
+        const procRows = lookupRows(formProcRows, projectName, formName);
+        const inputs = new Set();
+        const outputs = new Set();
+        procRows.forEach((proc) => {
+          (Array.isArray(proc?.tables_touched) ? proc.tables_touched : []).forEach((v) => { const x = String(v || "").trim(); if (x) outputs.add(x); });
+          (Array.isArray(proc?.data_mutations) ? proc.data_mutations : []).forEach((v) => { const x = String(v || "").trim(); if (x) outputs.add(x); });
+          (Array.isArray(proc?.navigation_side_effects) ? proc.navigation_side_effects : []).forEach((v) => { const x = String(v || "").trim(); if (x) outputs.add(x); });
+        });
+        const activex = new Set();
+        (Array.isArray(row?.controls) ? row.controls : []).forEach((ctl) => {
+          const name = String(ctl || "").trim();
+          if (!name) return;
+          const controlId = String(name.split(":").slice(-1)[0] || "").trim().toLowerCase();
+          if (["txt", "cbo", "cmb", "dtp", "msk", "chk", "opt", "lst"].some((p) => controlId.startsWith(p))) inputs.add(controlId);
+          const prefix = name.split(":")[0];
+          if (prefix && !prefix.toUpperCase().startsWith("VB")) activex.add(prefix);
+        });
+        const projectDeps = projectDepsByName[projectName];
+        if (projectDeps instanceof Set) {
+          Array.from(projectDeps).forEach((dep) => {
+            const d = String(dep || "").trim();
+            if (!d) return;
+            const up = d.toUpperCase();
+            if (d.toLowerCase().endsWith(".ocx") || d.toLowerCase().endsWith(".dll") || up.includes("MSCOM") || up.includes("MSFLEX")) activex.add(d);
+          });
+        }
+        const dbTables = Array.from(lookupSet(formDbTables, projectName, formName)).sort();
+        const formType = inferFormType({
+          formName,
+          purpose: String(row?.purpose || ""),
+          procedures: procRows,
+          controls: Array.isArray(row?.controls) ? row.controls : [],
+          tables: dbTables,
+        });
+        lines.push(`| ${formName || "n/a"} | ${projectLabel(projectName)} | ${formType} | ${String(row?.purpose || "").replace(/\\|/g, "\\\\|")} | ${Array.from(inputs).sort().slice(0, 6).join(", ") || "n/a"} | ${Array.from(outputs).sort().slice(0, 6).join(", ") || "n/a"} | ${Array.from(activex).sort().slice(0, 6).join(", ") || "n/a"} | ${dbTables.slice(0, 8).join(", ") || "n/a"} | ${actions} | ${coverage.toFixed(2)} | ${confidence.toFixed(2)} |`);
+      });
+    } else {
+      lines.push("- No form dossier rows available.");
+    }
+
+    lines.push("", "### L. Risk Register");
+    if (riskRowsRaw.length) {
+      lines.push("| Risk ID | Severity | Description | Recommended action |");
+      lines.push("|---|---|---|---|");
+      riskRowsRaw.slice(0, 700).forEach((row) => {
+        lines.push(`| ${String(row?.risk_id || "n/a")} | ${String(row?.severity || "medium")} | ${String(row?.description || "").replace(/\\|/g, "\\\\|")} | ${String(row?.recommended_action || "").replace(/\\|/g, "\\\\|")} |`);
+      });
+    } else {
+      lines.push("- No risk register rows available.");
+    }
+
+    lines.push("", "### M. Orphan Analysis");
+    if (orphanRows.length) {
+      lines.push("| Path | SQL IDs | Tables touched | Recommendation |");
+      lines.push("|---|---|---|---|");
+      orphanRows.slice(0, 500).forEach((row) => {
+        const sqlIds = Array.isArray(row?.sql_ids) ? row.sql_ids.slice(0, 6).join(", ") : "";
+        const tables = Array.isArray(row?.tables_touched) ? row.tables_touched.slice(0, 6).join(", ") : "";
+        lines.push(`| ${String(row?.path || "n/a")} | ${sqlIds || "n/a"} | ${tables || "n/a"} | ${String(row?.recommendation || "verify")} |`);
+      });
+    } else {
+      lines.push("- No orphan analysis rows available.");
+    }
+
+    lines.push("", "### N. Repository Landscape and Variant Inventory");
+    if (landscapeRows.length) {
+      lines.push("| Variant | Path | Startup | Forms | Members | Dependencies |");
+      lines.push("|---|---|---|---:|---:|---:|");
+      landscapeRows.slice(0, 200).forEach((row) => {
+        const rawId = String(row?.id || "");
+        const variant = rawId.includes("|") ? rawId.split("|")[0] : (rawId || "variant");
+        lines.push(`| ${variant} | ${String(row?.path || "")} | ${String(row?.startup || "")} | ${Number(row?.counts?.forms || 0)} | ${Number(row?.counts?.members || 0)} | ${Number(row?.counts?.dependencies || 0)} |`);
+      });
+    } else {
+      lines.push("- No repository landscape rows available.");
+    }
+    if (variantRows.length) {
+      lines.push("", "| Variant | Forms | Modules | Tables touched | Dependency summary |");
+      lines.push("|---|---:|---:|---:|---|");
+      variantRows.slice(0, 200).forEach((row) => {
+        const depSummary = row?.dependencies_summary || {};
+        lines.push(`| ${String(row?.name || row?.id || "variant")} | ${Array.isArray(row?.forms) ? row.forms.length : 0} | ${Array.isArray(row?.modules) ? row.modules.length : 0} | ${Array.isArray(row?.tables_touched) ? row.tables_touched.length : 0} | total=${Number(depSummary.total || 0)}, ocx=${Number(depSummary.ocx || 0)}, dll=${Number(depSummary.dll || 0)} |`);
+      });
+    }
+
+    lines.push("", "### O. Project Dependency Map");
+    const depRows = [];
+    const depSeen = new Set();
+    eventRows.forEach((entry) => {
+      const source = String(entry?.container || entry?.form || entry?.name || "n/a").trim() || "n/a";
+      const triggerControl = String(entry?.trigger?.control || "").trim().toLowerCase();
+      const calls = Array.isArray(entry?.calls) ? entry.calls : [];
+      calls.forEach((callValue) => {
+        const call = String(callValue || "").trim();
+        if (!call) return;
+        let type = "";
+        if (sharedModuleProcedures.has(call)) type = "shared_module_call";
+        else if ((source.toLowerCase().includes("main") || source.toLowerCase().includes("toolbar") || triggerControl.includes("toolbar")) && /^(frm|form|rpt|datareport)/i.test(call)) type = "mdi_navigation";
+        if (!type) return;
+        const evidence = String(entry?.handler?.symbol || `${source}->${call}`).trim();
+        const key = `${source}|${call}|${type}|${evidence}`;
+        if (depSeen.has(key)) return;
+        depSeen.add(key);
+        depRows.push({ from: source, to: call, type, evidence, blocksSprint: "Sprint 1" });
+      });
+    });
+    const schema = (rawVariantDiff.schema_divergence && typeof rawVariantDiff.schema_divergence === "object") ? rawVariantDiff.schema_divergence : {};
+    const schemaPairs = Array.isArray(schema.blocking_pairs) && schema.blocking_pairs.length ? schema.blocking_pairs : (Array.isArray(schema.pairs) ? schema.pairs : []);
+    schemaPairs.forEach((pair) => {
+      const left = String(pair?.left_project || "").trim();
+      const right = String(pair?.right_project || "").trim();
+      if (!left || !right) return;
+      const aliasCount = Array.isArray(pair?.alias_mismatches) ? pair.alias_mismatches.length : 0;
+      const nearCount = Array.isArray(pair?.near_miss_names) ? pair.near_miss_names.length : 0;
+      const txnConflict = pair?.transaction_schema_conflict ? "yes" : "no";
+      const evidence = `alias_mismatches=${aliasCount}, near_miss=${nearCount}, transaction_conflict=${txnConflict}`;
+      const key = `${left}|${right}|cross_variant_schema_conflict|${evidence}`;
+      if (depSeen.has(key)) return;
+      depSeen.add(key);
+      depRows.push({ from: left, to: right, type: "cross_variant_schema_conflict", evidence, blocksSprint: "Sprint 0" });
+    });
+    if (depRows.length) {
+      lines.push("| From | To | Type | Evidence | Blocks Sprint |");
+      lines.push("|---|---|---|---|---|");
+      depRows.slice(0, 800).forEach((row) => lines.push(`| ${String(row.from || "")} | ${String(row.to || "")} | ${String(row.type || "")} | ${String(row.evidence || "")} | ${String(row.blocksSprint || "Sprint 1")} |`));
+    } else {
+      lines.push("- No project dependency rows available.");
+    }
+
+    lines.push("", "### P. Form Flow Traces");
+    if (formDossierRows.length) {
+      formDossierRows.slice(0, 250).forEach((row) => {
+        const formName = String(row?.form_name || "n/a").trim() || "n/a";
+        const projectName = String(row?.project_name || "").trim();
+        const controlMap = lookupControlMap(formControlTypeByKey, projectName, formName);
+        const formEvents = lookupRows(formEventRows, projectName, formName);
+        const formProcedures = lookupRows(formProcRows, projectName, formName);
+        const formSql = lookupRows(formSqlRows, projectName, formName);
+        const procedureNames = new Set();
+        formProcedures.forEach((proc) => { const n = String(proc?.procedure_name || "").trim(); if (n) procedureNames.add(n); });
+        formSql.forEach((item) => { const n = String(item?.procedure || "").trim(); if (n) procedureNames.add(n); });
+
+        lines.push(`#### ${formName} (${projectLabel(projectName)})`);
+        lines.push("| Procedure | Event | ActiveX | SQL IDs | Tables | Trace status |");
+        lines.push("|---|---|---|---|---|---|");
+        if (!procedureNames.size) {
+          const dbTables = Array.from(lookupSet(formDbTables, projectName, formName)).sort();
+          lines.push(`| n/a | n/a | n/a | n/a | ${dbTables.slice(0, 8).join(", ") || "n/a"} | TRACE_GAP |`);
+        } else {
+          Array.from(procedureNames).sort().slice(0, 120).forEach((procName) => {
+            const relatedEvents = formEvents.filter((evt) => String(evt?.handler?.symbol || "").includes(procName));
+            const relatedSql = formSql.filter((item) => String(item?.procedure || "").trim() === procName);
+            const activexHits = [];
+            relatedEvents.forEach((evt) => {
+              const triggerControl = String(evt?.trigger?.control || "").trim();
+              if (!triggerControl) return;
+              const ctlType = String(controlMap[triggerControl.toLowerCase()] || "").trim();
+              if (ctlType && !ctlType.toUpperCase().startsWith("VB")) activexHits.push(`${triggerControl}:${ctlType}`);
+            });
+            const sqlIds = Array.from(new Set(relatedSql.map((item) => String(item?.sql_id || "").trim()).filter(Boolean)));
+            const tables = Array.from(new Set(relatedSql.flatMap((item) => Array.isArray(item?.tables) ? item.tables : []).map((t) => String(t || "").trim()).filter(Boolean))).sort();
+            const traceOk = sqlIds.length > 0 && tables.length > 0;
+            lines.push(`| ${procName} | ${relatedEvents.slice(0, 3).map((evt) => String(evt?.handler?.symbol || "").trim()).filter(Boolean).join(", ") || "n/a"} | ${Array.from(new Set(activexHits)).slice(0, 5).join(", ") || "n/a"} | ${sqlIds.slice(0, 6).join(", ") || "n/a"} | ${tables.slice(0, 8).join(", ") || "n/a"} | ${traceOk ? "OK" : "TRACE_GAP"} |`);
+          });
+        }
+      });
+    } else {
+      lines.push("- No form dossiers available for flow traces.");
+    }
+
+    lines.push("", "### Q. Form Traceability Matrix");
+    const traceabilityRows = [];
+    if (formDossierRows.length) {
+      lines.push("| Form | Project | has_event_map | has_sql_map | has_business_rules | has_risk_entry | completeness_score | missing_links |");
+      lines.push("|---|---|---|---|---|---|---:|---|");
+      const seenKeys = new Set();
+      formDossierRows.slice(0, 400).forEach((row) => {
+        const formName = String(row?.form_name || "n/a").trim() || "n/a";
+        const projectName = String(row?.project_name || "").trim();
+        const key = formKey(projectName, formName);
+        if (!key || seenKeys.has(key)) return;
+        seenKeys.add(key);
+        const hasEvent = lookupRows(formEventRows, projectName, formName).length > 0;
+        const hasSql = lookupRows(formSqlRows, projectName, formName).length > 0;
+        const hasRules = lookupRows(formRuleRows, projectName, formName).length > 0;
+        const hasRisk = lookupRows(formRiskRows, projectName, formName).length > 0;
+        const hasProc = lookupRows(formProcRows, projectName, formName).length > 0;
+        const missing = [];
+        if (!hasEvent) missing.push("event_map");
+        if (!hasSql) missing.push("sql_map");
+        if (!hasRules) missing.push("business_rules");
+        if (!hasRisk) missing.push("risk_register");
+        if (!hasProc) missing.push("procedure_summary");
+        const completenessScore = (Number(hasEvent) + Number(hasSql) + Number(hasRules) + Number(hasRisk) + Number(hasProc)) * 20;
+        lines.push(`| ${qualifiedFormName(projectName, formName)} | ${projectLabel(projectName)} | ${hasEvent ? "yes" : "no"} | ${hasSql ? "yes" : "no"} | ${hasRules ? "yes" : "no"} | ${hasRisk ? "yes" : "no"} | ${completenessScore} | ${missing.join(", ") || "none"} |`);
+        traceabilityRows.push({
+          formName,
+          projectName,
+          formKey: key,
+          qualifiedForm: qualifiedFormName(projectName, formName),
+          completenessScore,
+          missing,
+          riskIds: lookupRows(formRiskRows, projectName, formName).map((risk) => String(risk?.risk_id || "").trim()).filter(Boolean).slice(0, 4),
+          hasEvent,
+          hasSql,
+        });
+      });
+    } else {
+      lines.push("- No traceability rows available.");
+    }
+
+    lines.push("", "### R. Sprint Dependency Map");
+    if (traceabilityRows.length) {
+      lines.push("| Form | Suggested sprint | Depends on | Shared Components Required | Rationale |");
+      lines.push("|---|---|---|---|---|");
+      const variantGateNeeded = Boolean(rawVariantDiff.decision_required);
+      const emittedKeys = new Set();
+      traceabilityRows
+        .sort((a, b) => (b.missing.length - a.missing.length) || (a.qualifiedForm.localeCompare(b.qualifiedForm)))
+        .slice(0, 400)
+        .forEach((item) => {
+          if (!item.formKey || emittedKeys.has(item.formKey)) return;
+          emittedKeys.add(item.formKey);
+          const deps = [];
+          if (variantGateNeeded) deps.push("DEC-VARIANT-001");
+          if (item.missing.includes("sql_map")) deps.push("Q.sql_map");
+          if (item.missing.includes("event_map")) deps.push("Q.event_map");
+          if (item.missing.includes("business_rules")) deps.push("Q.business_rules");
+          item.riskIds.slice(0, 2).forEach((id) => deps.push(id));
+          const shared = Array.from(lookupSet(formSharedComponents, item.projectName, item.formName)).sort();
+          let sprint = "Sprint 2 (Parity hardening)";
+          let rationale = "Form has baseline traceability and can move into parity build/test.";
+          if (item.missing.includes("event_map") || item.missing.includes("sql_map")) {
+            sprint = "Sprint 0 (Discovery closure)";
+            rationale = "Close traceability gaps before modernization changes.";
+          } else if (item.riskIds.length) {
+            sprint = "Sprint 1 (Risk-first modernization)";
+            rationale = "Implement remediation-first changes for high-risk legacy behavior.";
+          }
+          lines.push(`| ${item.qualifiedForm || item.formName} | ${sprint} | ${deps.join(", ") || "none"} | ${shared.slice(0, 5).join(", ") || "none"} | ${rationale} |`);
+        });
+    } else {
+      lines.push("- No sprint dependency rows available.");
+    }
   }
   return lines.join("\n");
 }
@@ -1781,6 +2466,7 @@ function wireAnalystDocActions(rootNode, run) {
   if (!rootNode || !run?.run_id) return;
   const exportSummaryBtn = rootNode.querySelector("[data-analyst-export-summary]");
   const exportFullBtn = rootNode.querySelector("[data-analyst-export-full]");
+  const exportBusinessDocxBtn = rootNode.querySelector("[data-analyst-export-business-docx]");
   const uploadTrigger = rootNode.querySelector("[data-analyst-upload-trigger]");
   const uploadInput = rootNode.querySelector("[data-analyst-upload-file]");
   const statusNode = rootNode.querySelector("[data-analyst-doc-status]");
@@ -1807,6 +2493,56 @@ function wireAnalystDocActions(rootNode, run) {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       downloadText(`analyst-tech-req-full-${run.run_id}-${stamp}.md`, markdown, "text/markdown;charset=utf-8");
       setStatus("Full evidence technical requirements document exported.");
+    });
+  }
+
+  if (exportBusinessDocxBtn) {
+    exportBusinessDocxBtn.addEventListener("click", async () => {
+      try {
+        exportBusinessDocxBtn.setAttribute("disabled", "true");
+        setStatus("Generating business-ready DOCX (LLM-enhanced)...");
+        const response = await fetch(`/api/runs/${encodeURIComponent(String(run.run_id))}/analyst-docx?mode=llm_rich&style=strict_template`, {
+          method: "GET",
+        });
+        if (!response.ok) {
+          let message = `HTTP ${response.status}`;
+          try {
+            const payload = await response.json();
+            message = String(payload?.error || message);
+          } catch (_err) {
+            // no-op
+          }
+          throw new Error(message);
+        }
+        const blob = await response.blob();
+        const header = String(response.headers.get("content-disposition") || "");
+        const match = header.match(/filename=\"?([^\";]+)\"?/i);
+        const fallback = `analyst-business-brief-${String(run.run_id)}-${new Date().toISOString().replace(/[:.]/g, "-")}.docx`;
+        const filename = (match && match[1]) ? match[1] : fallback;
+        const renderMode = String(response.headers.get("x-docx-render-mode") || "deterministic").trim().toLowerCase();
+        const styleMode = String(response.headers.get("x-docx-style-mode") || "").trim().toLowerCase();
+        const llmReason = String(response.headers.get("x-docx-llm-reason") || "").trim();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        if (renderMode === "llm_rich") {
+          const styleSuffix = styleMode ? `, style=${styleMode}` : "";
+          setStatus(`Business-ready DOCX exported (LLM-enhanced${styleSuffix}).`);
+        } else {
+          const suffix = llmReason ? ` Fallback reason: ${llmReason}` : "";
+          const styleSuffix = styleMode ? ` style=${styleMode}.` : "";
+          setStatus(`Business-ready DOCX exported (deterministic fallback).${styleSuffix}${suffix}`);
+        }
+      } catch (err) {
+        setStatus(`Business DOCX export failed: ${err?.message || err}`, true);
+      } finally {
+        exportBusinessDocxBtn.removeAttribute("disabled");
+      }
     });
   }
 
@@ -6327,6 +7063,15 @@ function renderAnalystReadable(output) {
   const rawLegacyInventory = (rawArtifacts.legacy_inventory && typeof rawArtifacts.legacy_inventory === "object")
     ? rawArtifacts.legacy_inventory
     : null;
+  const rawRepoLandscape = (rawArtifacts.repo_landscape && typeof rawArtifacts.repo_landscape === "object")
+    ? rawArtifacts.repo_landscape
+    : null;
+  const rawScopeLock = (rawArtifacts.scope_lock && typeof rawArtifacts.scope_lock === "object")
+    ? rawArtifacts.scope_lock
+    : null;
+  const rawVariantInventory = (rawArtifacts.variant_inventory && typeof rawArtifacts.variant_inventory === "object")
+    ? rawArtifacts.variant_inventory
+    : null;
   const rawDependencyInventory = (rawArtifacts.dependency_inventory && typeof rawArtifacts.dependency_inventory === "object")
     ? rawArtifacts.dependency_inventory
     : null;
@@ -6339,8 +7084,17 @@ function renderAnalystReadable(output) {
   const rawSqlMap = (rawArtifacts.sql_map && typeof rawArtifacts.sql_map === "object")
     ? rawArtifacts.sql_map
     : null;
+  const rawDataAccessMap = (rawArtifacts.data_access_map && typeof rawArtifacts.data_access_map === "object")
+    ? rawArtifacts.data_access_map
+    : null;
+  const rawRecordsetOps = (rawArtifacts.recordset_ops && typeof rawArtifacts.recordset_ops === "object")
+    ? rawArtifacts.recordset_ops
+    : null;
   const rawProcedureSummary = (rawArtifacts.procedure_summary && typeof rawArtifacts.procedure_summary === "object")
     ? rawArtifacts.procedure_summary
+    : null;
+  const rawFormDossier = (rawArtifacts.form_dossier && typeof rawArtifacts.form_dossier === "object")
+    ? rawArtifacts.form_dossier
     : null;
   const rawBusinessRules = (rawArtifacts.business_rule_catalog && typeof rawArtifacts.business_rule_catalog === "object")
     ? rawArtifacts.business_rule_catalog
@@ -6348,8 +7102,26 @@ function renderAnalystReadable(output) {
   const rawDetectorFindings = (rawArtifacts.detector_findings && typeof rawArtifacts.detector_findings === "object")
     ? rawArtifacts.detector_findings
     : null;
+  const rawRiskRegister = (rawArtifacts.risk_register && typeof rawArtifacts.risk_register === "object")
+    ? rawArtifacts.risk_register
+    : null;
+  const rawOrphanAnalysis = (rawArtifacts.orphan_analysis && typeof rawArtifacts.orphan_analysis === "object")
+    ? rawArtifacts.orphan_analysis
+    : null;
   const rawDeliveryConstitution = (rawArtifacts.delivery_constitution && typeof rawArtifacts.delivery_constitution === "object")
     ? rawArtifacts.delivery_constitution
+    : null;
+  const rawVariantDiffReport = (rawArtifacts.variant_diff_report && typeof rawArtifacts.variant_diff_report === "object")
+    ? rawArtifacts.variant_diff_report
+    : null;
+  const rawReportingModel = (rawArtifacts.reporting_model && typeof rawArtifacts.reporting_model === "object")
+    ? rawArtifacts.reporting_model
+    : null;
+  const rawIdentityAccessModel = (rawArtifacts.identity_access_model && typeof rawArtifacts.identity_access_model === "object")
+    ? rawArtifacts.identity_access_model
+    : null;
+  const rawDiscoverReviewChecklist = (rawArtifacts.discover_review_checklist && typeof rawArtifacts.discover_review_checklist === "object")
+    ? rawArtifacts.discover_review_checklist
     : null;
   const artifactIndex = (rawArtifacts.artifact_index && typeof rawArtifacts.artifact_index === "object")
     ? rawArtifacts.artifact_index
@@ -6400,17 +7172,48 @@ function renderAnalystReadable(output) {
     ? specKitDecomposition.executable_contracts
     : {};
   const clarificationRows = Array.isArray(discoverySpec.needs_clarification) ? discoverySpec.needs_clarification : [];
+  const discoverReview = (report.discover_review && typeof report.discover_review === "object")
+    ? report.discover_review
+    : {};
+  const checklistRowsRaw = Array.isArray(rawDiscoverReviewChecklist?.checks)
+    ? rawDiscoverReviewChecklist.checks
+    : (Array.isArray(rawDiscoverReviewChecklist?.items) ? rawDiscoverReviewChecklist.items : []);
+  const discoverReviewChecks = Array.isArray(discoverReview.checks) && discoverReview.checks.length
+    ? discoverReview.checks
+    : checklistRowsRaw.map((row, idx) => ({
+      id: String(row?.id || `review_${idx + 1}`),
+      status: String(row?.status || row?.result || "warn").toLowerCase(),
+      title: String(row?.title || row?.check || row?.why || row?.action || "Review check"),
+      detail: String(row?.detail || row?.notes || row?.why || row?.action || ""),
+    }));
+  const blockingReviewChecks = discoverReviewChecks.filter((row) => {
+    const status = String(row?.status || "").toLowerCase();
+    const severity = String(row?.severity || "").toLowerCase();
+    return status === "fail" || severity === "blocker" || severity === "high";
+  });
   const refToRaw = {
     legacy_inventory_ref: "legacy_inventory",
+    repo_landscape_ref: "repo_landscape",
+    scope_lock_ref: "scope_lock",
+    variant_inventory_ref: "variant_inventory",
     dependency_inventory_ref: "dependency_inventory",
     dependency_list_ref: "dependency_inventory",
     event_map_ref: "event_map",
     sql_catalog_ref: "sql_catalog",
     sql_map_ref: "sql_map",
+    data_access_map_ref: "data_access_map",
+    recordset_ops_ref: "recordset_ops",
     procedure_summary_ref: "procedure_summary",
+    form_dossier_ref: "form_dossier",
     business_rules_ref: "business_rule_catalog",
     detector_findings_ref: "detector_findings",
+    risk_register_ref: "risk_register",
+    orphan_analysis_ref: "orphan_analysis",
     delivery_constitution_ref: "delivery_constitution",
+    variant_diff_report_ref: "variant_diff_report",
+    reporting_model_ref: "reporting_model",
+    identity_access_model_ref: "identity_access_model",
+    discover_review_checklist_ref: "discover_review_checklist",
     artifact_index_ref: "artifact_index",
   };
   const artifactRefRows = Object.entries(appendixRefs);
@@ -6463,10 +7266,10 @@ function renderAnalystReadable(output) {
       <h5 class="text-sm font-semibold text-ink-950">Analyst report</h5>
       ${revised ? `<div class="mt-2 rounded border border-slate-300 bg-white p-2"><strong>Human revised document:</strong><pre class="mono mt-1 whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(revised.slice(0, 2000))}${revised.length > 2000 ? "\n...[truncated]" : ""}</pre></div>` : ""}
       <div class="mt-2 flex flex-wrap items-center gap-2">
-        ${tabButton("spec", "Spec")}
-        ${!clientMode ? tabButton("plan", "Plan") : ""}
+        ${tabButton("spec", "Decision brief")}
+        ${!clientMode ? tabButton("plan", "Delivery spec") : ""}
         ${!clientMode ? tabButton("tasks", "Tasks") : ""}
-        ${tabButton("evidence", "Evidence")}
+        ${tabButton("evidence", "Evidence appendix")}
         ${!clientMode ? tabButton("maps", "Maps") : ""}
         ${tabButton("history", "History")}
       </div>
@@ -6480,13 +7283,18 @@ function renderAnalystReadable(output) {
       <div><strong>SIL:</strong> SCM ${escapeHtml(String(metadata.context_reference?.scm_version || "1.0"))} / CP ${escapeHtml(String(metadata.context_reference?.cp_version || "1.0"))} / HA ${escapeHtml(String(metadata.context_reference?.ha_version || "1.0"))}</div>
       <div><strong>Generated:</strong> ${escapeHtml(String(metadata.generated_at || ""))}</div>
         </div>
+        <div class="mt-2 rounded border ${blockingReviewChecks.length ? "border-rose-300 bg-rose-50" : "border-emerald-300 bg-emerald-50"} p-2">
+          <div class="text-xs font-semibold ${blockingReviewChecks.length ? "text-rose-900" : "text-emerald-900"}">Blocking verification items (${blockingReviewChecks.length})</div>
+          <p class="mt-1 text-[11px] ${blockingReviewChecks.length ? "text-rose-800" : "text-emerald-800"}">Resolve blockers before final planning and estimation.</p>
+          <ul class="mt-1 list-disc pl-5 text-[11px]">${blockingReviewChecks.map((row) => `<li><strong>${escapeHtml(String(row.id || "review"))}</strong> ${escapeHtml(String(row.title || row.detail || ""))}${row.detail ? `<div class="text-slate-800">${escapeHtml(String(row.detail || ""))}</div>` : ""}</li>`).join("") || "<li>No blocking verification items.</li>"}</ul>
+        </div>
         <div class="mt-2 rounded border border-slate-300 bg-white p-2">
           <div class="text-xs font-semibold text-slate-900">Decision brief</div>
       <table class="mt-2 w-full border-collapse text-[11px] text-slate-900">
         <tbody>
           <tr><td class="w-52 border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Readiness</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(glance.readiness_score ?? "n/a"))}/100</td></tr>
           <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Risk tier</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(glance.risk_tier || "n/a"))}</td></tr>
-          <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Inventory</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(`${String(inventory.projects ?? 0)} projects, ${String(inventory.forms ?? 0)} forms, ${String(inventory.dependencies ?? 0)} dependencies`)}</td></tr>
+          <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Inventory</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(`${String(inventory.projects ?? 0)} projects, ${String(inventory.forms ?? 0)} forms (${String(inventory.forms_referenced ?? 0)} referenced, ${String(inventory.forms_unmapped ?? 0)} unmapped), ${String(inventory.dependencies ?? 0)} dependencies`)}</td></tr>
           <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Top tables</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(inventory.tables_touched) ? inventory.tables_touched : []).join(", ") || "none")}</td></tr>
           <tr><td class="border border-slate-300 bg-slate-50 px-2 py-1 font-semibold">Headline</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(glance.headline || ""))}</td></tr>
         </tbody>
@@ -6512,6 +7320,8 @@ function renderAnalystReadable(output) {
       </div>
       <div class="mt-2 text-[11px] font-semibold">Needs clarification (${clarificationRows.length})</div>
       <ul class="list-disc pl-5 text-[11px]">${clarificationRows.map((row) => `<li><strong>${escapeHtml(String(row.id || "Q"))}</strong> [${escapeHtml(String(row.severity || "medium").toUpperCase())}] ${escapeHtml(String(row.question || ""))} <span class="text-slate-700">(owner: ${escapeHtml(String(row.owner || "Unassigned"))})</span></li>`).join("") || "<li>No open clarification markers.</li>"}</ul>
+      <div class="mt-2 text-[11px] font-semibold">Discover review (${discoverReviewChecks.length})</div>
+      <ul class="list-disc pl-5 text-[11px]">${discoverReviewChecks.map((row) => `<li><strong>${escapeHtml(String(row.id || "review"))}</strong> [${escapeHtml(String(row.status || "WARN").toUpperCase())}] ${escapeHtml(String(row.title || row.detail || ""))}${row.detail ? `<div class="text-slate-800">${escapeHtml(String(row.detail || ""))}</div>` : ""}</li>`).join("") || "<li>No review checklist generated.</li>"}</ul>
         </div>
       </section>
 
@@ -6629,14 +7439,26 @@ function renderAnalystReadable(output) {
             </thead>
             <tbody>
               <tr><td class="border border-slate-300 px-2 py-1">Legacy inventory</td><td class="border border-slate-300 px-2 py-1">${Number(rawLegacyInventory?.projects?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Project/file/system inventory</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Repo landscape</td><td class="border border-slate-300 px-2 py-1">${Number(rawRepoLandscape?.projects?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Project/variant scope orientation</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Scope lock</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(rawScopeLock?.status || "REQUIRED"))}</td><td class="border border-slate-300 px-2 py-1">Explicit in-scope variant decision</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Variant inventory</td><td class="border border-slate-300 px-2 py-1">${Number(rawVariantInventory?.variants?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Variant appendix and drift summary</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">Dependency inventory</td><td class="border border-slate-300 px-2 py-1">${dependencies.length}</td><td class="border border-slate-300 px-2 py-1">ActiveX/COM/DLL risk and replacement planning</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">Event map</td><td class="border border-slate-300 px-2 py-1">${eventMap.length}</td><td class="border border-slate-300 px-2 py-1">Entrypoints, calls, side effects</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">SQL catalog</td><td class="border border-slate-300 px-2 py-1">${sqlCatalog.length}</td><td class="border border-slate-300 px-2 py-1">Query contract and data touchpoints</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">SQL map</td><td class="border border-slate-300 px-2 py-1">${sqlMapEntries.length}</td><td class="border border-slate-300 px-2 py-1">Form/Procedure to query/table risk mapping</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Data access map</td><td class="border border-slate-300 px-2 py-1">${Number(rawDataAccessMap?.rows?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Canonical Form/Handler/Table operation map</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Recordset ops</td><td class="border border-slate-300 px-2 py-1">${Number(rawRecordsetOps?.ops?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Non-literal ADO recordset write paths</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">Procedure summaries</td><td class="border border-slate-300 px-2 py-1">${procedureSummaries.length}</td><td class="border border-slate-300 px-2 py-1">Step-wise behavior decomposition</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Form dossiers</td><td class="border border-slate-300 px-2 py-1">${Number(rawFormDossier?.dossiers?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Business-purpose form deep dives with evidence</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">Business rules</td><td class="border border-slate-300 px-2 py-1">${businessRules.length}</td><td class="border border-slate-300 px-2 py-1">Rule extraction + BDD grounding</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">Detector findings</td><td class="border border-slate-300 px-2 py-1">${detectorFindings.length}</td><td class="border border-slate-300 px-2 py-1">Modernization risk hotspots</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Risk register</td><td class="border border-slate-300 px-2 py-1">${Number(rawRiskRegister?.risks?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Evidence-backed delivery and technical risks</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Orphan analysis</td><td class="border border-slate-300 px-2 py-1">${Number(rawOrphanAnalysis?.orphans?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Unmapped forms/modules and divergence signals</td></tr>
               <tr><td class="border border-slate-300 px-2 py-1">Delivery constitution</td><td class="border border-slate-300 px-2 py-1">${constitutionPrinciples.length}</td><td class="border border-slate-300 px-2 py-1">Project non-negotiables propagated across phases</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Variant diff report</td><td class="border border-slate-300 px-2 py-1">${Number(rawVariantDiffReport?.comparisons?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Project variant comparison and scope decision gate</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Reporting model</td><td class="border border-slate-300 px-2 py-1">${Number(rawReportingModel?.report_entrypoints?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">DataEnvironment/DataReport reconciliation</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Identity/access model</td><td class="border border-slate-300 px-2 py-1">${Number(rawIdentityAccessModel?.what_we_found?.auth_tables?.length || 0)}</td><td class="border border-slate-300 px-2 py-1">Role model and credential handling assumptions</td></tr>
+              <tr><td class="border border-slate-300 px-2 py-1">Discover review checklist</td><td class="border border-slate-300 px-2 py-1">${Number((Array.isArray(rawDiscoverReviewChecklist?.checks) ? rawDiscoverReviewChecklist.checks.length : (Array.isArray(rawDiscoverReviewChecklist?.items) ? rawDiscoverReviewChecklist.items.length : 0)) || 0)}</td><td class="border border-slate-300 px-2 py-1">PASS/WARN/FAIL gate before planning</td></tr>
             </tbody>
           </table>
         </div>
@@ -6898,10 +7720,11 @@ function renderAgentTabPanel() {
         <div class="flex flex-wrap items-center gap-2">
           <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
+          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Business DOCX</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export a summary or full evidence document, or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export business-ready DOCX, or upload an updated version.</p>
       </div>
     ` : ""}
     <div class="mt-2 rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs text-slate-800">${renderReadableOutput(stage, result?.output || {}, runUseCase)}</div>
@@ -7368,10 +8191,11 @@ function openStageModal(stage) {
         <div class="flex flex-wrap items-center gap-2">
           <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
+          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Business DOCX</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export a summary or full evidence document, or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export business-ready DOCX, or upload an updated version.</p>
       </div>
       <div class="mt-2">${renderReadableOutput(stage, result.output || {}, runUseCase)}</div>
     `;
@@ -7507,6 +8331,25 @@ function renderApprovalPanel() {
     el.approveCloudCredentials.value = cfg.credentials || el.cloudCredentials.value || "";
     const extra = cfg.extra || {};
     el.approveCloudExtra.value = Object.keys(extra).map((k) => `${k}=${extra[k]}`).join("\n");
+  }
+  if (pending.type === "discover_review") {
+    const blockers = Array.isArray(pending.unresolved_blocking) ? pending.unresolved_blocking : [];
+    const blockerSummary = blockers
+      .slice(0, 6)
+      .map((row) => {
+        const id = String(row?.id || "").trim();
+        const title = String(row?.title || row?.detail || "").trim();
+        return [id, title].filter(Boolean).join(": ");
+      })
+      .filter(Boolean)
+      .join(" | ");
+    const overall = String(pending.overall_status || "FAIL").toUpperCase();
+    el.approvalMessage.textContent = [
+      pending.message || "",
+      `Overall: ${overall}`,
+      blockers.length ? `Blocking: ${blockers.length}` : "",
+      blockerSummary,
+    ].filter(Boolean).join(" | ");
   }
 }
 
@@ -7735,6 +8578,13 @@ async function submitApproval(decision) {
       credentials: (el.approveCloudCredentials.value || "").trim(),
       extra: parseKeyValueLines(el.approveCloudExtra.value || ""),
     };
+  }
+  if (pending.type === "discover_review" && decision === "approve") {
+    const blockers = Array.isArray(pending.unresolved_blocking) ? pending.unresolved_blocking : [];
+    payload.waived_ids = blockers
+      .map((row) => String(row?.id || "").trim())
+      .filter(Boolean);
+    payload.note = "Approved from run approval panel";
   }
 
   try {

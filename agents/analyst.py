@@ -567,8 +567,22 @@ OUTPUT REQUIREMENTS:
         project_file: str,
         known_paths_by_lower: dict[str, str],
     ) -> str:
-        member = self._normalize_legacy_path(member_path)
-        project = self._normalize_legacy_path(project_file)
+        def _canon(raw: str) -> str:
+            value = self._normalize_legacy_path(raw)
+            parts: list[str] = []
+            for token in str(value).split("/"):
+                part = str(token).strip()
+                if not part or part == ".":
+                    continue
+                if part == "..":
+                    if parts:
+                        parts.pop()
+                    continue
+                parts.append(part)
+            return "/".join(parts)
+
+        member = _canon(member_path)
+        project = _canon(project_file)
         if not member:
             return ""
         project_dir = ""
@@ -577,10 +591,18 @@ OUTPUT REQUIREMENTS:
         candidates = [member]
         if project_dir:
             candidates.insert(0, f"{project_dir}/{member}")
+        candidates = [_canon(cand) for cand in candidates if _canon(cand)]
+        # Keep order stable while removing duplicates.
+        candidates = list(dict.fromkeys(candidates))
         for cand in candidates:
             hit = known_paths_by_lower.get(cand.lower())
             if hit:
                 return hit
+        member_leaf = member.rsplit("/", 1)[-1].strip().lower()
+        if member_leaf:
+            for lower_path, hit in known_paths_by_lower.items():
+                if lower_path == member_leaf or lower_path.endswith("/" + member_leaf):
+                    return hit
         return ""
 
     def _extract_project_text_signals(self, text: str) -> dict[str, list[str]]:
@@ -873,6 +895,7 @@ OUTPUT REQUIREMENTS:
             controls: set[str] = set()
             activex: set[str] = set()
             events: set[str] = set()
+            event_keys: set[str] = set()
             procedures: set[str] = set()
             tables: set[str] = set()
             input_signals: set[str] = set()
@@ -901,6 +924,8 @@ OUTPUT REQUIREMENTS:
                     activex.add(str(value))
                 for value in sig.get("event_handlers", []) if isinstance(sig.get("event_handlers", []), list) else []:
                     events.add(str(value))
+                for value in sig.get("event_handler_keys", []) if isinstance(sig.get("event_handler_keys", []), list) else []:
+                    event_keys.add(str(value))
                 text = str(files.get(resolved, ""))
                 if text:
                     signals = self._extract_project_text_signals(text)
@@ -961,6 +986,8 @@ OUTPUT REQUIREMENTS:
                     "controls": sorted_controls,
                     "activex_dependencies": sorted(activex)[: self.LEGACY_MAX_DEPENDENCIES],
                     "event_handlers": sorted_events,
+                    "event_handler_keys": sorted(event_keys)[: self.LEGACY_MAX_CONTROLS * 3],
+                    "event_handler_count_exact": max(len(event_keys), len(sorted_events)),
                     "business_objective_hypothesis": objective,
                     "key_business_capabilities": capabilities,
                     "primary_workflows": workflows,
@@ -1001,6 +1028,7 @@ OUTPUT REQUIREMENTS:
                         "controls": set(),
                         "activex_dependencies": set(),
                         "event_handlers": set(),
+                        "event_handler_keys": set(),
                         "procedures": set(),
                         "tables": set(),
                         "input_signals": set(),
@@ -1018,6 +1046,8 @@ OUTPUT REQUIREMENTS:
                     bucket["activex_dependencies"].add(str(value))
                 for value in sig.get("event_handlers", []) if isinstance(sig.get("event_handlers", []), list) else []:
                     bucket["event_handlers"].add(str(value))
+                for value in sig.get("event_handler_keys", []) if isinstance(sig.get("event_handler_keys", []), list) else []:
+                    bucket["event_handler_keys"].add(str(value))
                 path_lower = norm.lower()
                 if path_lower.endswith(".frm"):
                     bucket["member_type_counts"]["Form"] = int(bucket["member_type_counts"].get("Form", 0)) + 1
@@ -1042,6 +1072,7 @@ OUTPUT REQUIREMENTS:
                 forms_sorted = sorted(bucket["forms"])[: self.LEGACY_MAX_FORMS]
                 controls_sorted = sorted(bucket["controls"])[: self.LEGACY_MAX_CONTROLS]
                 events_sorted = sorted(bucket["event_handlers"])[: self.LEGACY_MAX_CONTROLS]
+                event_keys_sorted = sorted(bucket["event_handler_keys"])[: self.LEGACY_MAX_CONTROLS * 3]
                 procs_sorted = sorted(bucket["procedures"])[:120]
                 tables_sorted = sorted(bucket["tables"])[:80]
                 inputs_sorted = sorted(bucket["input_signals"])[:40]
@@ -1068,6 +1099,8 @@ OUTPUT REQUIREMENTS:
                         "controls": controls_sorted,
                         "activex_dependencies": sorted(bucket["activex_dependencies"])[: self.LEGACY_MAX_DEPENDENCIES],
                         "event_handlers": events_sorted,
+                        "event_handler_keys": event_keys_sorted,
+                        "event_handler_count_exact": max(len(bucket["event_handler_keys"]), len(events_sorted)),
                         "business_objective_hypothesis": objective,
                         "key_business_capabilities": capabilities,
                         "primary_workflows": self._build_project_workflows(forms_sorted, events_sorted, procs_sorted),
@@ -1096,6 +1129,37 @@ OUTPUT REQUIREMENTS:
                         ],
                     }
                 )
+
+        name_buckets: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name_key = str(row.get("project_name", "")).strip().lower()
+            if not name_key:
+                continue
+            name_buckets.setdefault(name_key, []).append(row)
+        for bucket in name_buckets.values():
+            if len(bucket) <= 1:
+                continue
+            used: set[str] = set()
+            for idx, row in enumerate(bucket, start=1):
+                base_name = str(row.get("project_name", "")).strip() or f"Project {idx}"
+                project_file = self._normalize_legacy_path(str(row.get("project_file", "")))
+                hint = project_file.replace("\\", "/").strip("/")
+                if hint:
+                    parts = [p for p in hint.split("/") if p]
+                    hint = "/".join(parts[-2:]) if len(parts) >= 2 else parts[0]
+                else:
+                    hint = f"variant-{idx}"
+                candidate = f"{base_name} ({hint})"
+                dedup = candidate
+                suffix = 2
+                while dedup.lower() in used:
+                    dedup = f"{candidate} #{suffix}"
+                    suffix += 1
+                row["project_name_original"] = base_name
+                row["project_name"] = dedup
+                used.add(dedup.lower())
 
         rows.sort(key=lambda row: str(row.get("project_name", "")).lower())
         return rows[: self.LEGACY_MAX_PROJECTS]
@@ -1441,6 +1505,7 @@ Analyze this code chunk and extract behavior compactly.
         dll_set: set[str] = set()
         ocx_set: set[str] = set()
         event_handlers_set: set[str] = set()
+        event_handler_keys_set: set[str] = set()
         project_members_set: set[str] = set()
         sql_query_set: set[str] = set()
         win32_declares_set: set[str] = set()
@@ -1475,6 +1540,38 @@ Analyze this code chunk and extract behavior compactly.
             if not isinstance(sig, dict) or not sig:
                 continue
             vb6_by_path[self._normalize_legacy_path(path)] = sig
+            sig_forms = [str(x).strip() for x in sig.get("forms", []) if str(x).strip()] if isinstance(sig.get("forms", []), list) else []
+            sig_controls = [str(x).strip() for x in sig.get("controls", []) if str(x).strip()] if isinstance(sig.get("controls", []), list) else []
+            sig_events = [str(x).strip() for x in sig.get("event_handlers", []) if str(x).strip()] if isinstance(sig.get("event_handlers", []), list) else []
+            sig_dependencies = [str(x).strip() for x in sig.get("activex_dependencies", []) if str(x).strip()] if isinstance(sig.get("activex_dependencies", []), list) else []
+            sig_members = [str(x).strip() for x in sig.get("project_members", []) if str(x).strip()] if isinstance(sig.get("project_members", []), list) else []
+            for token in sig_forms:
+                forms_set.add(token)
+            for token in sig_controls:
+                controls_set.add(token)
+            for token in sig_events:
+                event_handlers_set.add(token)
+            for token in sig_dependencies:
+                activex_set.add(token)
+                upper = token.upper()
+                if upper.endswith(".DLL"):
+                    dll_set.add(token)
+                if upper.endswith(".OCX"):
+                    ocx_set.add(token)
+                if ".DLL" in upper and upper.count(".DLL") == 1 and not upper.endswith(".DLL"):
+                    dll_set.add(token)
+                if ".OCX" in upper and upper.count(".OCX") == 1 and not upper.endswith(".OCX"):
+                    ocx_set.add(token)
+            for token in sig_members:
+                project_members_set.add(token)
+            if sig_forms:
+                for form_token in sig_forms:
+                    c_bucket = form_control_map.setdefault(form_token, set())
+                    e_bucket = form_event_map.setdefault(form_token, set())
+                    for ctl in sig_controls:
+                        c_bucket.add(ctl)
+                    for ev in sig_events:
+                        e_bucket.add(ev)
             ftype = str(sig.get("vb6_file_type", "")).strip() or "unknown"
             file_type_coverage[ftype] = int(file_type_coverage.get(ftype, 0) or 0) + 1
             if bool(sig.get("is_binary_companion", False)):
@@ -1534,6 +1631,10 @@ Analyze this code chunk and extract behavior compactly.
                     com_references_set.add(text_ref)
             call_by_name_sites_total += int(com_surface.get("call_by_name_sites", 0) or 0)
             createobject_sites_total += int(com_surface.get("createobject_getobject_sites", 0) or 0)
+            for value in sig.get("event_handler_keys", []) if isinstance(sig.get("event_handler_keys", []), list) else []:
+                token = str(value).strip()
+                if token:
+                    event_handler_keys_set.add(token)
             err_profile = sig.get("error_handling_profile", {}) if isinstance(sig.get("error_handling_profile", {}), dict) else {}
             for key in error_profile_totals:
                 error_profile_totals[key] = int(error_profile_totals.get(key, 0) or 0) + int(err_profile.get(key, 0) or 0)
@@ -1614,6 +1715,7 @@ Analyze this code chunk and extract behavior compactly.
                 event_text = str(row).strip()
                 if event_text:
                     event_handlers_set.add(event_text)
+                    event_handler_keys_set.add(event_text)
             for row in extracted.get("project_members", []) if isinstance(extracted.get("project_members", []), list) else []:
                 member_text = str(row).strip()
                 if member_text:
@@ -1664,18 +1766,67 @@ Analyze this code chunk and extract behavior compactly.
 
         vb6_projects = self._build_vb6_project_breakdown(project_definitions, vb6_by_path, bundle_file_map)
 
+        ui_event_rows_all = list(ui_event_map_index.values())
+        ui_form_handler_map: dict[str, set[str]] = {}
+        ui_form_sql_touches: dict[str, int] = {}
+        for row in ui_event_rows_all:
+            if not isinstance(row, dict):
+                continue
+            form_token = str(row.get("form", "")).strip()
+            if not form_token:
+                continue
+            normalized_form = form_token.split("::", 1)[-1].strip().lower()
+            if not normalized_form:
+                continue
+            bucket = ui_form_handler_map.setdefault(normalized_form, set())
+            handler = str(row.get("event_handler", "")).strip()
+            if handler:
+                bucket.add(handler)
+            sql_touches = row.get("sql_touches", []) if isinstance(row.get("sql_touches", []), list) else []
+            ui_form_sql_touches[normalized_form] = int(ui_form_sql_touches.get(normalized_form, 0) or 0) + len(sql_touches)
+
         forms_details: list[dict[str, Any]] = []
+        form_coverage: list[dict[str, Any]] = []
         project_scoped_forms: list[tuple[str, str]] = []
+        project_scoped_form_bases: set[str] = set()
+        form_member_path_map: dict[tuple[str, str], list[str]] = {}
         for project in vb6_projects:
             if not isinstance(project, dict):
                 continue
             pname = str(project.get("project_name", "")).strip() or "VB6 Project"
+            member_files = [
+                self._normalize_legacy_path(str(path))
+                for path in (project.get("member_files", []) if isinstance(project.get("member_files", []), list) else [])
+                if str(path).strip()
+            ]
             for form_value in project.get("forms", []) if isinstance(project.get("forms", []), list) else []:
                 form_id = str(form_value).strip()
                 if form_id:
                     project_scoped_forms.append((pname, form_id))
+                    form_tail = form_id.split(":", 1)[-1].strip().lower()
+                    if form_tail:
+                        project_scoped_form_bases.add(form_tail)
+                        matches = [
+                            path for path in member_files
+                            if str(path).lower().endswith(f"/{form_tail}.frm")
+                            or str(path).lower().endswith(f"/{form_tail}.ctl")
+                            or str(path).lower().endswith(f"/{form_tail}.cls")
+                        ]
+                        if matches:
+                            form_member_path_map[(pname, form_id)] = matches
+        discovered_unmapped_form_ids: list[str] = []
         if project_scoped_forms:
-            form_iter = project_scoped_forms[: self.LEGACY_MAX_FORMS]
+            for fid in sorted(forms_set):
+                form_id = str(fid).strip()
+                if not form_id:
+                    continue
+                form_tail = form_id.split(":", 1)[-1].strip().lower()
+                if form_tail and form_tail not in project_scoped_form_bases:
+                    discovered_unmapped_form_ids.append(form_id)
+            form_iter = (
+                project_scoped_forms
+                + [("(unmapped)", fid) for fid in discovered_unmapped_form_ids]
+            )[: self.LEGACY_MAX_FORMS]
         else:
             form_iter = [("", fid) for fid in sorted(forms_set)[: self.LEGACY_MAX_FORMS]]
 
@@ -1695,17 +1846,90 @@ Analyze this code chunk and extract behavior compactly.
                     if str(ev).split("_", 1)[0].strip().lower() in control_names
                 ]
                 form_events = inferred_events[:60]
+            normalized_form_name = str(form_name).strip().lower()
+            expected_events: set[str] = set()
+            for path in form_member_path_map.get((project_name, form_id), []):
+                sig = vb6_by_path.get(self._normalize_legacy_path(path), {})
+                if not isinstance(sig, dict):
+                    continue
+                for value in sig.get("event_handler_keys", []) if isinstance(sig.get("event_handler_keys", []), list) else []:
+                    token = str(value).strip()
+                    if token:
+                        expected_events.add(token)
+                for value in sig.get("event_handlers", []) if isinstance(sig.get("event_handlers", []), list) else []:
+                    token = str(value).strip()
+                    if token:
+                        expected_events.add(f"{form_name}::{token}")
+            ui_handlers = ui_form_handler_map.get(normalized_form_name, set())
+            extracted_handlers_count = len(form_events)
+            expected_handlers_count = max(len(expected_events), len(ui_handlers), extracted_handlers_count)
+            explained_handlers_count = extracted_handlers_count
+            sql_touched_count = int(ui_form_sql_touches.get(normalized_form_name, 0) or 0)
+            coverage_score = 1.0 if expected_handlers_count == 0 else min(1.0, extracted_handlers_count / float(expected_handlers_count))
+            confidence_score = min(
+                0.99,
+                0.55
+                + (0.28 * coverage_score)
+                + (0.08 if sql_touched_count > 0 else 0.0)
+                + (0.06 if bool(form_controls) else 0.0)
+                + (0.03 if bool(project_name) else 0.0),
+            )
+            scoped_form_name = f"{project_name}::{form_name}" if project_name else form_name
+            business_use = self._infer_form_business_use(form_name, form_controls, form_events)
             forms_details.append(
                 {
-                    "form_name": (f"{project_name}::{form_name}" if project_name else form_name),
+                    "form_name": scoped_form_name,
                     "form_type": form_type,
-                    "business_use": self._infer_form_business_use(form_name, form_controls, form_events),
+                    "project_name": project_name,
+                    "base_form_name": form_name,
+                    "business_use": business_use,
                     "controls": form_controls,
                     "event_handlers": form_events,
+                    "expected_handlers_count": expected_handlers_count,
+                    "extracted_handlers_count": extracted_handlers_count,
+                    "explained_handlers_count": explained_handlers_count,
+                    "sql_touched_count": sql_touched_count,
+                    "coverage_score": round(coverage_score, 4),
+                    "confidence_score": round(confidence_score, 4),
+                }
+            )
+            form_coverage.append(
+                {
+                    "form_name": scoped_form_name,
+                    "project_name": project_name,
+                    "coverage_score": round(coverage_score, 4),
+                    "confidence_score": round(confidence_score, 4),
+                    "expected_handlers_count": expected_handlers_count,
+                    "extracted_handlers_count": extracted_handlers_count,
+                    "explained_handlers_count": explained_handlers_count,
+                    "sql_touched_count": sql_touched_count,
+                    "risk_count": 0,
                 }
             )
 
         all_forms_unique: list[str] = sorted(forms_set)[: self.LEGACY_MAX_FORMS]
+        discovered_form_file_count = len(
+            [
+                p
+                for p, sig in vb6_by_path.items()
+                if isinstance(sig, dict)
+                and str(p).lower().endswith((".frm", ".ctl"))
+            ]
+        )
+        mapped_form_file_count = len(
+            {
+                self._normalize_legacy_path(path)
+                for _, matches in form_member_path_map.items()
+                for path in matches
+                if str(path).strip()
+            }
+        )
+        unmapped_form_file_count = max(0, discovered_form_file_count - mapped_form_file_count)
+        referenced_form_count = sum(
+            len(project.get("forms", []) if isinstance(project.get("forms", []), list) else [])
+            for project in vb6_projects
+            if isinstance(project, dict)
+        )
         business_rules_catalog = self._extract_business_rules_catalog(
             bundle_file_map=bundle_file_map,
             vb6_projects=vb6_projects,
@@ -1720,12 +1944,13 @@ Analyze this code chunk and extract behavior compactly.
             if isinstance(modernization_readiness.get("recommended_strategy", {}), dict)
             else {}
         )
-        ui_event_map = list(ui_event_map_index.values())[:240]
+        ui_event_map = ui_event_rows_all[:240]
         pitfall_detectors = sorted(
             [row for row in pitfall_detector_index.values() if isinstance(row, dict)],
             key=lambda row: str(row.get("id", "")),
         )[:120]
         forms_count_reported = len(forms_details)
+        event_handler_count_exact = max(len(event_handler_keys_set), len(ui_event_map), len(event_handlers_set))
         source_target_state = dict(state or {})
         if target_lang:
             source_target_state["modernization_language"] = target_lang
@@ -1745,19 +1970,26 @@ Analyze this code chunk and extract behavior compactly.
 
         legacy_inventory = {
             "summary": (
-                f"Detected {len(vb6_projects)} VB6 project(s), {forms_count_reported} forms/usercontrols, "
+                f"Detected {len(vb6_projects)} VB6 project(s), {forms_count_reported} form entries "
+                f"({referenced_form_count} referenced + {unmapped_form_file_count} unmapped discovered files), "
                 f"{len(controls_set)} controls, {len(activex_set)} ActiveX/COM dependencies, "
-                f"{len(event_handlers_set)} event handlers, {len(bas_module_paths)} .bas modules "
+                f"{event_handler_count_exact} event handlers, {len(bas_module_paths)} .bas modules "
                 f"({bas_procedure_count} procedures). "
                 f"Modernization readiness score={readiness_score}/100 "
                 f"({str(readiness_strategy.get('name', 'strategy pending'))})."
             ),
+            "form_count_referenced": referenced_form_count,
+            "form_count_discovered_files": discovered_form_file_count,
+            "form_count_unmapped_files": unmapped_form_file_count,
             "vb6_projects": vb6_projects,
             "forms": forms_details,
+            "form_coverage": form_coverage[: self.LEGACY_MAX_FORMS],
             "activex_controls": sorted(activex_set)[: self.LEGACY_MAX_DEPENDENCIES],
             "dll_dependencies": sorted(dll_set)[: self.LEGACY_MAX_DEPENDENCIES],
             "ocx_dependencies": sorted(ocx_set)[: self.LEGACY_MAX_DEPENDENCIES],
             "event_handlers": sorted(event_handlers_set)[: self.LEGACY_MAX_CONTROLS],
+            "event_handler_keys": sorted(event_handler_keys_set)[: self.LEGACY_MAX_CONTROLS * 3],
+            "event_handler_count_exact": event_handler_count_exact,
             "project_members": sorted(project_members_set)[: self.LEGACY_MAX_CONTROLS],
             "database_tables": sorted(tables_set)[:60],
             "procedures": sorted(functions_set)[:120],
@@ -1809,6 +2041,19 @@ Analyze this code chunk and extract behavior compactly.
                             if isinstance(row.get("event_handlers", []), list)
                             else []
                         ),
+                        "event_handler_count_exact": int(
+                            row.get("event_handler_count_exact", 0)
+                            or len(
+                                row.get("event_handler_keys", [])
+                                if isinstance(row.get("event_handler_keys", []), list)
+                                else []
+                            )
+                            or len(
+                                row.get("event_handlers", [])
+                                if isinstance(row.get("event_handlers", []), list)
+                                else []
+                            )
+                        ),
                         "member_files": row.get("member_files", [])[:30]
                         if isinstance(row.get("member_files", []), list)
                         else [],
@@ -1834,9 +2079,14 @@ Analyze this code chunk and extract behavior compactly.
                 ],
                 "forms": [f"{pname}::{fid}" if pname else fid for pname, fid in form_iter][: self.LEGACY_MAX_FORMS],
                 "forms_unique": all_forms_unique,
+                "form_count_referenced": referenced_form_count,
+                "form_count_discovered_files": discovered_form_file_count,
+                "form_count_unmapped_files": unmapped_form_file_count,
                 "controls": sorted(controls_set)[: self.LEGACY_MAX_CONTROLS],
                 "activex_dependencies": sorted(activex_set)[: self.LEGACY_MAX_DEPENDENCIES],
                 "event_handlers": sorted(event_handlers_set)[: self.LEGACY_MAX_CONTROLS],
+                "event_handler_keys": sorted(event_handler_keys_set)[: self.LEGACY_MAX_CONTROLS * 3],
+                "event_handler_count_exact": event_handler_count_exact,
                 "project_members": sorted(project_members_set)[: self.LEGACY_MAX_CONTROLS],
                 "ui_event_map": ui_event_map[:160],
                 "sql_query_catalog": sorted(sql_query_set)[:120],
@@ -1860,6 +2110,7 @@ Analyze this code chunk and extract behavior compactly.
                 },
                 "binary_companion_files": binary_companions[:120],
                 "business_rules_catalog": business_rules_catalog[:120],
+                "form_coverage": form_coverage[: self.LEGACY_MAX_FORMS],
             },
         }
 
@@ -1868,7 +2119,7 @@ Analyze this code chunk and extract behavior compactly.
             + " legacy analysis completed. "
             + f"chunks={chunk_count}, llm_chunks={llm_chunk_limit}, extracted_contracts={len(contracts)}, "
             + f"projects={len(vb6_projects)}, forms={forms_count_reported}, activex={len(activex_set)}, "
-            + f"dlls={len(dll_set)}, ocx={len(ocx_set)}, business_rules={len(business_rules_catalog)}, "
+            + f"event_handlers={event_handler_count_exact}, dlls={len(dll_set)}, ocx={len(ocx_set)}, business_rules={len(business_rules_catalog)}, "
             + f"sql={len(sql_query_set)}, win32_declares={len(win32_declares_set)}, readiness={readiness_score}.\n"
             + f"source_target={str(source_target_profile.get('source', {}).get('language', 'legacy'))}"
             + f"->{str(source_target_profile.get('target', {}).get('language', 'unspecified'))}.\n"
@@ -1979,6 +2230,27 @@ Analyze this code chunk and extract behavior compactly.
                     else [],
                 }
             )
+        ui_form_control_map: dict[str, set[str]] = {}
+        ui_form_event_map: dict[str, set[str]] = {}
+        ui_form_sql_count: dict[str, int] = {}
+        for row in ui_event_map[:400]:
+            if not isinstance(row, dict):
+                continue
+            form_token = str(row.get("form", "")).strip()
+            if not form_token:
+                continue
+            normalized = form_token.split("::", 1)[-1].strip().lower()
+            if not normalized:
+                continue
+            control = str(row.get("control", "")).strip()
+            event_handler = str(row.get("event_handler", "")).strip()
+            if control:
+                ui_form_control_map.setdefault(normalized, set()).add(control)
+            if event_handler:
+                ui_form_event_map.setdefault(normalized, set()).add(event_handler)
+            sql_touches = row.get("sql_touches", []) if isinstance(row.get("sql_touches", []), list) else []
+            ui_form_sql_count[normalized] = int(ui_form_sql_count.get(normalized, 0) or 0) + len(sql_touches)
+
         forms_details: list[dict[str, Any]] = []
         if vb6_projects:
             for project in vb6_projects[: self.LEGACY_MAX_PROJECTS]:
@@ -1993,16 +2265,42 @@ Analyze this code chunk and extract behavior compactly.
                         head, tail = raw.split(":", 1)
                         form_type = head or "Form"
                         form_name = tail or raw
+                    normalized = str(form_name).strip().lower()
+                    controls = sorted(ui_form_control_map.get(normalized, set()))[:60]
+                    event_handlers = sorted(ui_form_event_map.get(normalized, set()))[:120]
+                    extracted = len(event_handlers)
+                    expected = max(
+                        extracted,
+                        int(project.get("event_handler_count_exact", 0) or 0) // max(1, int(project.get("forms_count", 0) or len(project.get("forms", [])) or 1)),
+                    )
+                    coverage = 1.0 if expected <= 0 else min(1.0, extracted / float(expected))
+                    confidence = min(
+                        0.99,
+                        0.55 + (0.25 * coverage) + (0.1 if controls else 0.0) + (0.08 if ui_form_sql_count.get(normalized, 0) > 0 else 0.0),
+                    )
                     forms_details.append(
                         {
                             "form_name": f"{pname}::{form_name}",
                             "form_type": form_type,
-                            "business_use": self._infer_form_business_use(form_name, [], []),
-                            "controls": [],
-                            "event_handlers": [],
+                            "project_name": pname,
+                            "base_form_name": form_name,
+                            "business_use": self._infer_form_business_use(form_name, controls, event_handlers),
+                            "controls": controls,
+                            "event_handlers": event_handlers,
+                            "expected_handlers_count": expected,
+                            "extracted_handlers_count": extracted,
+                            "explained_handlers_count": extracted,
+                            "sql_touched_count": int(ui_form_sql_count.get(normalized, 0) or 0),
+                            "coverage_score": round(coverage, 4),
+                            "confidence_score": round(confidence, 4),
                         }
                     )
-        for form_id in forms_raw[: self.LEGACY_MAX_FORMS]:
+        existing_norm_forms = {
+            str(row.get("base_form_name", "") or row.get("form_name", "")).split("::", 1)[-1].strip().lower()
+            for row in forms_details
+            if isinstance(row, dict)
+        }
+        for form_id in forms_raw[: self.LEGACY_MAX_FORMS * 2]:
             form_text = str(form_id).strip()
             if not form_text:
                 continue
@@ -2012,37 +2310,116 @@ Analyze this code chunk and extract behavior compactly.
                 head, tail = form_text.split(":", 1)
                 form_type = head or "Form"
                 form_name = tail or form_text
+            normalized = str(form_name).strip().lower()
+            if vb6_projects and normalized in existing_norm_forms:
+                continue
+            controls = sorted(ui_form_control_map.get(normalized, set()))[:60]
+            event_handlers = sorted(ui_form_event_map.get(normalized, set()))[:120]
+            extracted = len(event_handlers)
+            expected = max(extracted, len(event_handlers))
+            coverage = 1.0 if expected <= 0 else min(1.0, extracted / float(expected))
+            confidence = min(0.99, 0.55 + (0.25 * coverage) + (0.1 if controls else 0.0))
             forms_details.append(
                 {
                     "form_name": form_name,
                     "form_type": form_type,
-                    "business_use": self._infer_form_business_use(form_name, [], []),
-                    "controls": [],
-                    "event_handlers": [],
+                    "project_name": "",
+                    "base_form_name": form_name,
+                    "business_use": self._infer_form_business_use(form_name, controls, event_handlers),
+                    "controls": controls,
+                    "event_handlers": event_handlers,
+                    "expected_handlers_count": expected,
+                    "extracted_handlers_count": extracted,
+                    "explained_handlers_count": extracted,
+                    "sql_touched_count": int(ui_form_sql_count.get(normalized, 0) or 0),
+                    "coverage_score": round(coverage, 4),
+                    "confidence_score": round(confidence, 4),
                 }
             )
         if forms_details:
-            dedupe: list[dict[str, Any]] = []
-            seen_forms: set[str] = set()
+            dedupe_map: dict[str, dict[str, Any]] = {}
             for row in forms_details:
                 key = f"{row.get('form_type','')}|{row.get('form_name','')}"
-                if key in seen_forms:
+                existing = dedupe_map.get(key)
+                if not existing:
+                    dedupe_map[key] = row
                     continue
-                seen_forms.add(key)
-                dedupe.append(row)
-            forms_details = dedupe[: self.LEGACY_MAX_FORMS]
+                existing_controls = existing.get("controls", []) if isinstance(existing.get("controls", []), list) else []
+                existing_events = existing.get("event_handlers", []) if isinstance(existing.get("event_handlers", []), list) else []
+                row_controls = row.get("controls", []) if isinstance(row.get("controls", []), list) else []
+                row_events = row.get("event_handlers", []) if isinstance(row.get("event_handlers", []), list) else []
+                merged_controls = sorted({str(x) for x in [*existing_controls, *row_controls] if str(x).strip()})[:60]
+                merged_events = sorted({str(x) for x in [*existing_events, *row_events] if str(x).strip()})[:120]
+                existing["controls"] = merged_controls
+                existing["event_handlers"] = merged_events
+                existing["extracted_handlers_count"] = len(merged_events)
+                existing["explained_handlers_count"] = len(merged_events)
+                existing["expected_handlers_count"] = max(
+                    int(existing.get("expected_handlers_count", 0) or 0),
+                    int(row.get("expected_handlers_count", 0) or 0),
+                    len(merged_events),
+                )
+                expected = int(existing.get("expected_handlers_count", 0) or 0)
+                coverage = 1.0 if expected <= 0 else min(1.0, len(merged_events) / float(expected))
+                existing["coverage_score"] = round(coverage, 4)
+                existing["confidence_score"] = round(
+                    min(0.99, 0.55 + (0.25 * coverage) + (0.1 if merged_controls else 0.0)),
+                    4,
+                )
+            forms_details = list(dedupe_map.values())[: self.LEGACY_MAX_FORMS * 2]
+        form_coverage = [
+            {
+                "form_name": str(row.get("form_name", "")).strip(),
+                "project_name": str(row.get("project_name", "")).strip(),
+                "coverage_score": float(row.get("coverage_score", 0.0) or 0.0),
+                "confidence_score": float(row.get("confidence_score", 0.0) or 0.0),
+                "expected_handlers_count": int(row.get("expected_handlers_count", 0) or 0),
+                "extracted_handlers_count": int(row.get("extracted_handlers_count", 0) or 0),
+                "explained_handlers_count": int(row.get("explained_handlers_count", 0) or 0),
+                "sql_touched_count": int(row.get("sql_touched_count", 0) or 0),
+            }
+            for row in forms_details[: self.LEGACY_MAX_FORMS]
+            if isinstance(row, dict)
+        ]
+        event_handler_count_exact = int(
+            vb6.get("event_handler_count_exact", 0)
+            or len(vb6.get("event_handler_keys", []) if isinstance(vb6.get("event_handler_keys", []), list) else [])
+            or len(ui_event_map)
+            or len(vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [])
+        )
+        referenced_form_count = int(
+            vb6.get("form_count_referenced", 0)
+            or sum(
+                len(row.get("forms", []) if isinstance(row.get("forms", []), list) else [])
+                for row in vb6_projects
+                if isinstance(row, dict)
+            )
+        )
+        discovered_form_file_count = int(vb6.get("form_count_discovered_files", 0) or len(forms_details))
+        unmapped_form_file_count = int(
+            vb6.get("form_count_unmapped_files", 0)
+            or max(0, discovered_form_file_count - referenced_form_count)
+        )
         return {
             "summary": (
-                f"Discover cache indicates {len(vb6_projects)} VB6 project(s), {len(forms_details)} forms/usercontrols, "
+                f"Discover cache indicates {len(vb6_projects)} VB6 project(s), {len(forms_details)} form entries "
+                f"({referenced_form_count} referenced + {unmapped_form_file_count} unmapped discovered files), "
                 f"{len(vb6.get('controls', []) if isinstance(vb6.get('controls', []), list) else [])} controls and "
-                f"{len(vb6.get('activex_dependencies', []) if isinstance(vb6.get('activex_dependencies', []), list) else [])} ActiveX/COM dependencies."
+                f"{len(vb6.get('activex_dependencies', []) if isinstance(vb6.get('activex_dependencies', []), list) else [])} ActiveX/COM dependencies, "
+                f"{event_handler_count_exact} event handlers."
             ),
+            "form_count_referenced": referenced_form_count,
+            "form_count_discovered_files": discovered_form_file_count,
+            "form_count_unmapped_files": unmapped_form_file_count,
             "vb6_projects": vb6_projects,
             "forms": forms_details,
+            "form_coverage": form_coverage,
             "activex_controls": vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [],
             "dll_dependencies": [str(x) for x in vb6.get("activex_dependencies", []) if str(x).upper().endswith(".DLL")] if isinstance(vb6.get("activex_dependencies", []), list) else [],
             "ocx_dependencies": [str(x) for x in vb6.get("activex_dependencies", []) if str(x).upper().endswith(".OCX")] if isinstance(vb6.get("activex_dependencies", []), list) else [],
             "event_handlers": vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [],
+            "event_handler_keys": vb6.get("event_handler_keys", []) if isinstance(vb6.get("event_handler_keys", []), list) else [],
+            "event_handler_count_exact": event_handler_count_exact,
             "project_members": vb6.get("project_members", []) if isinstance(vb6.get("project_members", []), list) else [],
             "database_tables": [],
             "procedures": [],
@@ -2065,9 +2442,14 @@ Analyze this code chunk and extract behavior compactly.
                 "project_count": len(vb6_projects),
                 "projects": vb6.get("projects", []) if isinstance(vb6.get("projects", []), list) else [],
                 "forms": [str(row.get("form_name", "")) for row in forms_details if isinstance(row, dict)],
+                "form_count_referenced": referenced_form_count,
+                "form_count_discovered_files": discovered_form_file_count,
+                "form_count_unmapped_files": unmapped_form_file_count,
                 "controls": vb6.get("controls", []) if isinstance(vb6.get("controls", []), list) else [],
                 "activex_dependencies": vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [],
                 "event_handlers": vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [],
+                "event_handler_keys": vb6.get("event_handler_keys", []) if isinstance(vb6.get("event_handler_keys", []), list) else [],
+                "event_handler_count_exact": event_handler_count_exact,
                 "project_members": vb6.get("project_members", []) if isinstance(vb6.get("project_members", []), list) else [],
                 "ui_event_map": ui_event_map[:160],
                 "sql_query_catalog": sql_catalog[:120],
@@ -2082,6 +2464,7 @@ Analyze this code chunk and extract behavior compactly.
                 "bas_module_summary": bas_module_summary,
                 "binary_companion_files": binary_companions[:120],
                 "business_rules_catalog": business_rules[:120],
+                "form_coverage": form_coverage,
             },
         }
 
@@ -2564,11 +2947,11 @@ BUSINESS OBJECTIVES:
     ) -> list[dict[str, Any]]:
         minimum = int(deterministic.get("evaluation_harness", {}).get("minimum_non_functional_requirements", 5) or 5)
         templates = [
-            ("NFR-AUTO-001", "Auditability", "security", "100% privileged and financial actions produce immutable audit events."),
-            ("NFR-AUTO-002", "Observability", "reliability", "95% of requests propagate correlation_id and trace_id across service boundaries."),
-            ("NFR-AUTO-003", "Performance", "performance", "P95 latency remains under 300ms for critical synchronous endpoints."),
-            ("NFR-AUTO-004", "Availability", "reliability", "Critical services maintain 99.9% availability in target environment."),
-            ("NFR-AUTO-005", "Scalability", "scalability", "System supports 3x normal peak throughput without functional degradation."),
+            ("NFR-AUTO-001", "Auditability", "security", "100% critical state changes are logged with actor, action, and outcome."),
+            ("NFR-AUTO-002", "Observability", "reliability", "Critical flows emit trace/correlation identifiers for diagnosis."),
+            ("NFR-AUTO-003", "Performance parity", "performance", "Critical legacy flows do not regress by more than 20% versus baseline."),
+            ("NFR-AUTO-004", "Operational reliability", "reliability", "Recovery and fallback procedures are documented and validated for critical failures."),
+            ("NFR-AUTO-005", "Capacity planning", "scalability", "Target runtime sustains measured legacy peak load with agreed safety headroom."),
             ("NFR-AUTO-006", "Security posture", "security", "All sensitive data is encrypted at rest and in transit."),
         ]
         used_ids = {str(item.get("id", "")).strip() for item in nfr}
@@ -2594,12 +2977,387 @@ BUSINESS OBJECTIVES:
             used_ids.add(rid)
         return nfr
 
+    def _tokenize_grounding_text(self, text: str) -> set[str]:
+        stop = {
+            "the", "and", "for", "with", "that", "this", "from", "into", "must", "should", "will",
+            "are", "was", "were", "have", "has", "had", "using", "through", "under", "without",
+            "application", "system", "legacy", "modernized", "modernization", "workflow", "requirement",
+            "data", "flow", "user", "users", "service", "services", "support", "supports",
+        }
+        tokens = {t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_]{2,}", str(text or "").lower())}
+        return {t for t in tokens if t not in stop}
+
+    def _collect_legacy_grounding_terms(self, legacy_inventory: dict[str, Any]) -> set[str]:
+        terms: set[str] = set()
+        forms = legacy_inventory.get("forms", [])
+        if isinstance(forms, list):
+            for row in forms[:400]:
+                if isinstance(row, dict):
+                    terms.update(self._tokenize_grounding_text(str(row.get("base_form_name", ""))))
+                    terms.update(self._tokenize_grounding_text(str(row.get("form_name", ""))))
+                    terms.update(self._tokenize_grounding_text(str(row.get("business_use", ""))))
+                else:
+                    terms.update(self._tokenize_grounding_text(str(row)))
+        tables = legacy_inventory.get("database_tables", [])
+        if isinstance(tables, list):
+            for row in tables[:300]:
+                terms.update(self._tokenize_grounding_text(str(row)))
+        procedures = legacy_inventory.get("procedures", [])
+        if isinstance(procedures, list):
+            for row in procedures[:500]:
+                terms.update(self._tokenize_grounding_text(str(row)))
+        rules = legacy_inventory.get("business_rules_catalog", [])
+        if isinstance(rules, list):
+            for rule in rules[:500]:
+                if not isinstance(rule, dict):
+                    continue
+                terms.update(self._tokenize_grounding_text(str(rule.get("statement", ""))))
+                terms.update(self._tokenize_grounding_text(str(rule.get("scope", ""))))
+        projects = legacy_inventory.get("vb6_projects", [])
+        if isinstance(projects, list):
+            for project in projects[:64]:
+                if not isinstance(project, dict):
+                    continue
+                terms.update(self._tokenize_grounding_text(str(project.get("project_name", ""))))
+                for arr_key in ("forms", "key_business_capabilities", "primary_workflows"):
+                    rows = project.get(arr_key, [])
+                    if isinstance(rows, list):
+                        for row in rows[:120]:
+                            terms.update(self._tokenize_grounding_text(str(row)))
+        return terms
+
+    def _classify_requirement_grounding(
+        self,
+        item: dict[str, Any],
+        legacy_terms: set[str],
+        *,
+        is_non_functional: bool,
+    ) -> tuple[str, str]:
+        title = str(item.get("title", "")).strip()
+        description = str(item.get("description", "")).strip()
+        acceptance = item.get("acceptance_criteria", [])
+        acceptance_text = " ".join(str(x) for x in acceptance if str(x).strip()) if isinstance(acceptance, list) else ""
+        text = " ".join([title, description, acceptance_text]).lower()
+        extension_markers = [
+            "payment gateway",
+            "horizontal scaling",
+            "kubernetes",
+            "microservice",
+            "10,000 concurrent",
+            "1000 concurrent",
+            "99.9%",
+            "global rollout",
+        ]
+        if any(marker in text for marker in extension_markers):
+            return ("proposed_extension", "contains capability/scale targets not evidenced in legacy scan")
+
+        overlap = len(self._tokenize_grounding_text(text).intersection(legacy_terms))
+        if overlap >= 2:
+            return ("derived_from_legacy", f"matched {overlap} legacy terms")
+        if is_non_functional and overlap == 0 and any(
+            marker in text for marker in ("failover", "horizontal", "multi-region", "auto-scaling", "five nines")
+        ):
+            return ("proposed_extension", "non-functional target appears cloud-template based")
+        if overlap >= 1:
+            return ("derived_from_legacy", f"matched {overlap} legacy term")
+        return ("proposed_extension", "no direct grounding evidence in extracted legacy artifacts")
+
+    def _ground_requirements_for_legacy_parity(
+        self,
+        functional: list[dict[str, Any]],
+        non_functional: list[dict[str, Any]],
+        legacy_inventory: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+        legacy_terms = self._collect_legacy_grounding_terms(legacy_inventory)
+        proposed: dict[str, list[dict[str, Any]]] = {"functional": [], "non_functional": []}
+        grounded_f: list[dict[str, Any]] = []
+        grounded_n: list[dict[str, Any]] = []
+
+        for row in functional:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            classification, reason = self._classify_requirement_grounding(item, legacy_terms, is_non_functional=False)
+            item["grounding"] = {"classification": classification, "reason": reason}
+            if classification == "derived_from_legacy":
+                grounded_f.append(item)
+            else:
+                proposed["functional"].append(item)
+
+        for row in non_functional:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            classification, reason = self._classify_requirement_grounding(item, legacy_terms, is_non_functional=True)
+            item["grounding"] = {"classification": classification, "reason": reason}
+            if classification == "derived_from_legacy":
+                grounded_n.append(item)
+            else:
+                proposed["non_functional"].append(item)
+
+        # Do not return empty lists; preserve forward progress if grounding fails unexpectedly.
+        if not grounded_f:
+            grounded_f = [dict(row) for row in functional if isinstance(row, dict)]
+        if not grounded_n:
+            grounded_n = [dict(row) for row in non_functional if isinstance(row, dict)]
+
+        return grounded_f, grounded_n, proposed
+
+    def _build_grounded_bdd_features(
+        self,
+        parsed: dict[str, Any],
+        functional_requirements: list[dict[str, Any]],
+        *,
+        limit: int,
+        existing_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        legacy_inventory = (
+            parsed.get("legacy_code_inventory", {})
+            if isinstance(parsed.get("legacy_code_inventory", {}), dict)
+            else {}
+        )
+        vb6_analysis = (
+            parsed.get("vb6_analysis", {})
+            if isinstance(parsed.get("vb6_analysis", {}), dict)
+            else {}
+        )
+        ui_rows = legacy_inventory.get("ui_event_map", [])
+        if not isinstance(ui_rows, list) or not ui_rows:
+            ui_rows = vb6_analysis.get("ui_event_map", [])
+        if not isinstance(ui_rows, list):
+            ui_rows = []
+
+        def _normalize_form_label(raw: str) -> str:
+            text = str(raw or "").strip()
+            if not text:
+                return ""
+            if "::" in text:
+                return text
+            lowered = text.lower()
+            if lowered.startswith(("form:", "usercontrol:", "control:", "module:")):
+                return text.split(":", 1)[-1].strip()
+            return text
+
+        handler_to_form: dict[str, str] = {}
+        for form_row in legacy_inventory.get("forms", []) if isinstance(legacy_inventory.get("forms", []), list) else []:
+            if not isinstance(form_row, dict):
+                continue
+            form_name = _normalize_form_label(
+                str(form_row.get("form_name", "")).strip()
+                or str(form_row.get("base_form_name", "")).strip()
+            )
+            if not form_name:
+                continue
+            event_handlers = form_row.get("event_handlers", [])
+            if not isinstance(event_handlers, list):
+                continue
+            for handler_name in event_handlers:
+                token = str(handler_name or "").strip().lower()
+                if token and token not in handler_to_form:
+                    handler_to_form[token] = form_name
+
+        def _tokens(text: str) -> set[str]:
+            return {
+                t
+                for t in re.findall(r"[a-zA-Z][a-zA-Z0-9_]{2,}", str(text or "").lower())
+                if t not in {"form", "event", "click", "load", "change", "handler", "legacy", "workflow"}
+            }
+
+        def _extract_tables(sql_touches: list[str]) -> list[str]:
+            found: list[str] = []
+            seen: set[str] = set()
+            for sql in sql_touches[:20]:
+                for m in re.findall(r"(?i)\b(?:from|join|into|update)\s+([A-Za-z_][A-Za-z0-9_]*)", str(sql or "")):
+                    name = str(m or "").strip()
+                    if not name:
+                        continue
+                    key = name.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    found.append(name)
+            return found[:6]
+
+        rows: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        for row in ui_rows[:800]:
+            if not isinstance(row, dict):
+                continue
+            form = _normalize_form_label(str(row.get("form", "")).strip())
+            handler = str(row.get("event_handler", "")).strip()
+            event = str(row.get("event", "")).strip()
+            control = str(row.get("control", "")).strip()
+            if not handler and not control:
+                continue
+            if not form and handler:
+                form = _normalize_form_label(handler_to_form.get(handler.lower(), ""))
+            form_base = form
+            key = f"{form_base.lower()}|{handler.lower()}|{event.lower()}|{control.lower()}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            sql_touches = [str(x).strip() for x in row.get("sql_touches", []) if str(x).strip()] if isinstance(row.get("sql_touches", []), list) else []
+            tables = _extract_tables(sql_touches)
+            rows.append(
+                {
+                    "form": form_base or form or "legacy_form",
+                    "handler": handler or f"{control}_{event}" if control and event else (handler or "legacy_handler"),
+                    "event": event,
+                    "control": control,
+                    "sql_touches": sql_touches[:6],
+                    "tables": tables,
+                }
+            )
+        rows.sort(key=lambda r: (len(r.get("sql_touches", [])), len(r.get("tables", []))), reverse=True)
+
+        if not rows:
+            return []
+
+        req_index: list[tuple[str, set[str], str]] = []
+        fallback_req = ""
+        for fr in functional_requirements:
+            if not isinstance(fr, dict):
+                continue
+            rid = str(fr.get("id", "")).strip()
+            title = str(fr.get("title", "")).strip()
+            desc = str(fr.get("description", "")).strip()
+            priority = str(fr.get("priority", "P1")).strip().upper()
+            if not rid:
+                continue
+            if not fallback_req or priority == "P0":
+                fallback_req = rid
+            req_index.append((rid, _tokens(f"{title} {desc}"), priority))
+        if not fallback_req and req_index:
+            fallback_req = req_index[0][0]
+
+        def _select_requirement(flow: dict[str, Any]) -> str:
+            flow_terms = _tokens(" ".join([flow.get("form", ""), flow.get("handler", ""), " ".join(flow.get("tables", []))]))
+            best_id = fallback_req
+            best_score = -1
+            best_priority = "P3"
+            for rid, terms, priority in req_index:
+                score = len(flow_terms.intersection(terms))
+                if score > best_score or (score == best_score and priority < best_priority):
+                    best_id = rid
+                    best_score = score
+                    best_priority = priority
+            return best_id
+
+        features: list[dict[str, Any]] = []
+        idx = 1
+        for flow in rows:
+            if len(features) >= max(1, int(limit or 1)):
+                break
+            feature_id = f"BDD-LEGACY-{idx:03d}"
+            while feature_id in existing_ids:
+                idx += 1
+                feature_id = f"BDD-LEGACY-{idx:03d}"
+            existing_ids.add(feature_id)
+            form = str(flow.get("form", "")).strip() or "legacy_form"
+            handler = str(flow.get("handler", "")).strip() or "legacy_handler"
+            event = str(flow.get("event", "")).strip() or "event"
+            control = str(flow.get("control", "")).strip()
+            tables = [str(x).strip() for x in flow.get("tables", []) if str(x).strip()]
+            sql_touches = [str(x).strip() for x in flow.get("sql_touches", []) if str(x).strip()]
+            req_id = _select_requirement(flow)
+            title = f"{form} {event} flow parity"
+            given_line = (
+                f'    Given legacy form "{form}" control "{control}" handles event "{event}"'
+                if control
+                else f'    Given legacy form "{form}" handles event "{event}"'
+            )
+            then_data_line = (
+                f'    And data side effects preserve table contracts for {", ".join(tables[:3])}'
+                if tables
+                else "    And data side effects remain equivalent to legacy behavior"
+            )
+            gherkin = (
+                f"Feature: {title}\n"
+                f"  Scenario: {handler} preserves legacy business behavior\n"
+                f"{given_line}\n"
+                f'    And legacy handler "{handler}" is triggered\n'
+                f'    When the modernization target executes "{handler}"\n'
+                "    Then the user-visible outcome matches legacy behavior\n"
+                f"{then_data_line}\n"
+                f'    And traceability links include legacy form "{form}" and handler "{handler}"'
+            )
+            if sql_touches:
+                gherkin += (
+                    "\n"
+                    f'    And SQL touchpoints are equivalent to legacy statement "{sql_touches[0][:120]}"'
+                )
+            features.append(
+                {
+                    "id": feature_id,
+                    "title": title,
+                    "source_requirement_ids": [req_id] if req_id else [],
+                    "gherkin": gherkin,
+                }
+            )
+            idx += 1
+        return features
+
     def _normalize_bdd_features(
         self,
         parsed: dict[str, Any],
         functional_requirements: list[dict[str, Any]],
         deterministic: dict[str, Any],
     ) -> list[dict[str, Any]]:
+        legacy_inventory = (
+            parsed.get("legacy_code_inventory", {})
+            if isinstance(parsed.get("legacy_code_inventory", {}), dict)
+            else {}
+        )
+        ui_rows = legacy_inventory.get("ui_event_map", [])
+        if not isinstance(ui_rows, list):
+            ui_rows = []
+
+        legacy_markers: set[str] = set()
+        for row in ui_rows[:400]:
+            if not isinstance(row, dict):
+                continue
+            for token in (
+                str(row.get("form", "")).strip(),
+                str(row.get("event_handler", "")).strip(),
+                str(row.get("control", "")).strip(),
+            ):
+                if token and len(token) >= 3:
+                    legacy_markers.add(token.lower())
+            sql_touches = row.get("sql_touches", [])
+            if isinstance(sql_touches, list):
+                for sql in sql_touches[:4]:
+                    for match in re.findall(
+                        r"(?i)\b(?:from|join|into|update)\s+([A-Za-z_][A-Za-z0-9_]*)",
+                        str(sql or ""),
+                    ):
+                        name = str(match or "").strip()
+                        if name and len(name) >= 3:
+                            legacy_markers.add(name.lower())
+
+        def _is_generic_bdd_text(text: str) -> bool:
+            lower = str(text or "").lower()
+            if not lower.strip():
+                return True
+            direct_markers = (
+                "given requirement",
+                "when requirement",
+                "then requirement",
+                "given the vb6 application",
+                "when analyzing",
+                "identified and documented",
+                "document all sql interactions",
+                "extract and document business rules",
+                "replacement strategy is documented",
+            )
+            if any(marker in lower for marker in direct_markers):
+                return True
+            if "legacy form" in lower and "legacy handler" in lower:
+                return False
+            if legacy_markers and any(marker in lower for marker in legacy_markers):
+                return False
+            vague_markers = ("document", "analyze", "identify", "catalog", "inventory")
+            return any(marker in lower for marker in vague_markers)
+
         candidates: list[dict[str, Any]] = []
         top_level_bdd = parsed.get("bdd_contract", {})
         if isinstance(top_level_bdd, dict) and isinstance(top_level_bdd.get("features"), list):
@@ -2611,10 +3369,14 @@ BUSINESS OBJECTIVES:
                 candidates.extend([x for x in nested_bdd.get("features", []) if isinstance(x, dict)])
 
         normalized: list[dict[str, Any]] = []
+        existing_ids: set[str] = set()
         for idx, item in enumerate(candidates, start=1):
             rid_list = item.get("source_requirement_ids", [])
             req_ids = [str(x).strip() for x in rid_list if str(x).strip()] if isinstance(rid_list, list) else []
             feature_id = str(item.get("id", "")).strip() or f"BDD-{idx:03d}"
+            if feature_id in existing_ids:
+                feature_id = f"{feature_id}-{idx:02d}"
+            existing_ids.add(feature_id)
             title = str(item.get("title", "")).strip() or f"Business Behavior {idx}"
             gherkin = str(item.get("gherkin", "")).strip()
             if not gherkin:
@@ -2635,6 +3397,27 @@ BUSINESS OBJECTIVES:
             )
 
         min_scenarios = int(deterministic.get("evaluation_harness", {}).get("minimum_bdd_scenarios", 5) or 5)
+        generic_count = sum(
+            1
+            for row in normalized
+            if _is_generic_bdd_text(" ".join([str(row.get("title", "")), str(row.get("gherkin", ""))]))
+        )
+        grounded_target = max(min_scenarios, 5)
+        grounded = self._build_grounded_bdd_features(
+            parsed,
+            functional_requirements,
+            limit=grounded_target,
+            existing_ids=existing_ids,
+        )
+        if grounded:
+            retained = [
+                row
+                for row in normalized
+                if not _is_generic_bdd_text(" ".join([str(row.get("title", "")), str(row.get("gherkin", ""))]))
+            ]
+            normalized = retained[: max(0, grounded_target // 2)]
+            normalized.extend(grounded[:grounded_target])
+
         seed_requirements = functional_requirements if functional_requirements else []
         idx = 1
         while len(normalized) < min_scenarios and seed_requirements:
@@ -2642,12 +3425,16 @@ BUSINESS OBJECTIVES:
             fr_id = str(fr.get("id", f"FR-{idx:03d}"))
             title = str(fr.get("title", f"Requirement {idx}"))
             feature_id = f"{fr_id}-BDD-{idx:02d}"
+            if feature_id in existing_ids:
+                idx += 1
+                continue
+            existing_ids.add(feature_id)
             gherkin = (
                 f"Feature: {title}\n"
                 f"  Scenario: {feature_id} happy path\n"
-                f"    Given requirement {fr_id} is enabled in the target environment\n"
-                f"    When a valid request is submitted for {title.lower()}\n"
-                "    Then the system returns the expected result and logs traceability identifiers"
+                f"    Given legacy behavior mapped to requirement {fr_id} is identified\n"
+                f"    When a valid modernization request is submitted for {title.lower()}\n"
+                "    Then the system returns the expected result and preserves legacy side-effect contracts"
             )
             normalized.append(
                 {
@@ -2737,9 +3524,14 @@ BUSINESS OBJECTIVES:
         primary_caps = deterministic.get("capability_mapping", {}).get("primary_capabilities", [])
         regs = deterministic.get("regulatory_constraints", [])
         classes = {str(x).upper() for x in deterministic.get("data_classification", [])}
+        objective_text = str(deterministic.get("normalized_requirement", {}).get("raw_requirement", "")).lower()
+        banking_like = any(
+            marker in objective_text
+            for marker in ("bank", "banking", "payment", "ledger", "transaction", "account")
+        )
         compliance_expected = bool(classes.intersection({"PII", "PCI", "PHI"})) or str(
             deterministic.get("domain_pack_ref", {}).get("id", "")
-        ).startswith("banking")
+        ).startswith("banking") or banking_like
         gates: list[dict[str, Any]] = []
 
         gates.append(
@@ -3366,6 +4158,15 @@ BUSINESS OBJECTIVES:
                 if isinstance(merged_inventory.get("vb6_analysis", {}), dict):
                     vb6_existing = {**vb6_existing, **merged_inventory.get("vb6_analysis", {})}
                 out["vb6_analysis"] = vb6_existing
+            functional, non_functional, proposed_additions = self._ground_requirements_for_legacy_parity(
+                functional=functional,
+                non_functional=non_functional,
+                legacy_inventory=merged_inventory,
+            )
+            out["functional_requirements"] = functional
+            out["non_functional_requirements"] = non_functional
+            if proposed_additions.get("functional") or proposed_additions.get("non_functional"):
+                out["proposed_additions"] = proposed_additions
         if compact_skill:
             out["legacy_skill_profile"] = compact_skill
 
