@@ -2773,7 +2773,8 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         project_id = _clean(project.get("project_name")) or f"project:{pidx}"
         project_file = _clean(project.get("project_file"))
         if project_file:
-            project_id = f"{project_id}|{project_file.replace('\\', '/')}"
+            project_file_norm = project_file.replace("\\", "/")
+            project_id = f"{project_id}|{project_file_norm}"
         projects_out.append(
             {
                 "project_id": project_id,
