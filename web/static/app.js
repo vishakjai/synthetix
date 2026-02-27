@@ -439,6 +439,7 @@ const state = {
     requestKey: "",
     threadId: "",
     requestToken: "",
+    inFlightPromise: null,
   },
   domainPackCatalog: [],
   currentRunId: "",
@@ -5651,6 +5652,10 @@ function analystBriefRequestKey() {
 function renderDiscoverAnalystBrief() {
   if (!el.discoverAnalystBriefStatus || !el.discoverAnalystBriefPreview) return;
   const view = state.discoverAnalystBrief || {};
+  if (el.discoverRunAnalystBrief) {
+    el.discoverRunAnalystBrief.disabled = !!view.loading;
+    el.discoverRunAnalystBrief.textContent = view.loading ? "Running Analyst Brief..." : "Run Analyst Brief";
+  }
   const loadingData = (view.data && typeof view.data === "object") ? view.data : null;
   if (view.loading && !loadingData) {
     el.discoverAnalystBriefStatus.textContent = "Analyst Agent is reading sampled source files and inferring functionality...";
@@ -5747,6 +5752,10 @@ function renderDiscoverAnalystBrief() {
 
 async function loadDiscoverAnalystBrief({ force = false } = {}) {
   const reqKey = analystBriefRequestKey();
+  const activePromise = state.discoverAnalystBrief?.inFlightPromise;
+  if (activePromise && typeof activePromise.then === "function") {
+    return activePromise;
+  }
   if (!force && reqKey && reqKey === state.discoverAnalystBrief.requestKey && state.discoverAnalystBrief.data) {
     renderDiscoverAnalystBrief();
     return;
@@ -5763,97 +5772,111 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
     requestKey: reqKey,
     threadId: previousThreadId,
     requestToken,
+    inFlightPromise: null,
   };
   renderDiscoverAnalystBrief();
-  const integration = getIntegrationContext();
-  try {
-    const discoverData = await api("/api/discover/analyst-brief", {
-      integration_context: integration,
-      objectives: String(el.objectives?.value || "").trim(),
-      use_case: currentUseCase(),
-      legacy_code: String(el.legacyCode?.value || "").trim(),
-      database_source: String(el.dbSource?.value || "").trim(),
-      database_target: String(el.dbTarget?.value || "").trim(),
-      database_schema: String(el.dbSchema?.value || "").trim(),
-      repo_provider: String(integration?.brownfield?.repo_provider || ""),
-      repo_url: String(integration?.brownfield?.repo_url || "").trim(),
-    }, "POST");
+  const runPromise = (async () => {
+    const integration = getIntegrationContext();
+    try {
+      const discoverData = await api("/api/discover/analyst-brief", {
+        integration_context: integration,
+        objectives: String(el.objectives?.value || "").trim(),
+        use_case: currentUseCase(),
+        legacy_code: String(el.legacyCode?.value || "").trim(),
+        database_source: String(el.dbSource?.value || "").trim(),
+        database_target: String(el.dbTarget?.value || "").trim(),
+        database_schema: String(el.dbSchema?.value || "").trim(),
+        repo_provider: String(integration?.brownfield?.repo_provider || ""),
+        repo_url: String(integration?.brownfield?.repo_url || "").trim(),
+      }, "POST");
 
-    const candidateThreadParts = [
-      String(integration?.project_state_detected || ""),
-      String(integration?.brownfield?.repo_url || ""),
-      String(integration?.greenfield?.repo_target || ""),
-      String(currentUseCase() || ""),
-    ].filter(Boolean);
-    const inferredThreadId = previousThreadId || `discover-${slugifyValue(candidateThreadParts.join("-")) || "thread"}`;
+      const candidateThreadParts = [
+        String(integration?.project_state_detected || ""),
+        String(integration?.brownfield?.repo_url || ""),
+        String(integration?.greenfield?.repo_target || ""),
+        String(currentUseCase() || ""),
+      ].filter(Boolean);
+      const inferredThreadId = previousThreadId || `discover-${slugifyValue(candidateThreadParts.join("-")) || "thread"}`;
 
-    const requirement = String(el.objectives?.value || "").trim()
-      || String(discoverData?.analyst_brief?.summary?.overview || "").trim()
-      || "Analyze repository context and produce a requirements pack.";
+      const requirement = String(el.objectives?.value || "").trim()
+        || String(discoverData?.analyst_brief?.summary?.overview || "").trim()
+        || "Analyze repository context and produce a requirements pack.";
 
-    let aasData = (discoverData?.aas && typeof discoverData.aas === "object") ? discoverData.aas : null;
-    if (!aasData) {
-      try {
-        aasData = await api("/api/agents/analyst/analyze-requirement", {
-          requirement,
-          business_objective: requirement,
-          use_case: currentUseCase(),
-          thread_id: inferredThreadId,
-          workspace_id: "default-workspace",
-          client_id: "default-client",
-          project_id: slugifyValue(String(integration?.brownfield?.repo_url || integration?.greenfield?.repo_target || "default-project")) || "default-project",
-          domain_pack_id: String(integration?.domain_pack_id || ""),
-          domain_pack: integration?.custom_domain_pack || null,
-          jurisdiction: String(integration?.jurisdiction || ""),
-          data_classification: Array.isArray(integration?.data_classification) ? integration.data_classification : [],
-          integration_context: integration,
-        }, "POST");
-      } catch (_aasErr) {
-        aasData = null;
+      let aasData = (discoverData?.aas && typeof discoverData.aas === "object") ? discoverData.aas : null;
+      if (!aasData) {
+        try {
+          aasData = await api("/api/agents/analyst/analyze-requirement", {
+            requirement,
+            business_objective: requirement,
+            use_case: currentUseCase(),
+            thread_id: inferredThreadId,
+            workspace_id: "default-workspace",
+            client_id: "default-client",
+            project_id: slugifyValue(String(integration?.brownfield?.repo_url || integration?.greenfield?.repo_target || "default-project")) || "default-project",
+            domain_pack_id: String(integration?.domain_pack_id || ""),
+            domain_pack: integration?.custom_domain_pack || null,
+            jurisdiction: String(integration?.jurisdiction || ""),
+            data_classification: Array.isArray(integration?.data_classification) ? integration.data_classification : [],
+            integration_context: integration,
+          }, "POST");
+        } catch (_aasErr) {
+          aasData = null;
+        }
       }
-    }
 
-    const mergedData = {
-      ...(discoverData && typeof discoverData === "object" ? discoverData : {}),
-    };
-    if (aasData && typeof aasData === "object") {
-      mergedData.aas = aasData;
-      mergedData.assistant_summary = String(aasData.assistant_summary || "");
-      mergedData.requirements_pack = (aasData.requirements_pack && typeof aasData.requirements_pack === "object")
-        ? aasData.requirements_pack
-        : {};
-      mergedData.quality_gates = Array.isArray(aasData.quality_gates) ? aasData.quality_gates : [];
-      mergedData.thread_id = String(aasData.thread_id || inferredThreadId);
-    } else {
-      mergedData.thread_id = inferredThreadId;
-    }
+      const mergedData = {
+        ...(discoverData && typeof discoverData === "object" ? discoverData : {}),
+      };
+      if (aasData && typeof aasData === "object") {
+        mergedData.aas = aasData;
+        mergedData.assistant_summary = String(aasData.assistant_summary || "");
+        mergedData.requirements_pack = (aasData.requirements_pack && typeof aasData.requirements_pack === "object")
+          ? aasData.requirements_pack
+          : {};
+        mergedData.quality_gates = Array.isArray(aasData.quality_gates) ? aasData.quality_gates : [];
+        mergedData.thread_id = String(aasData.thread_id || inferredThreadId);
+      } else {
+        mergedData.thread_id = inferredThreadId;
+      }
 
-    if (String(state.discoverAnalystBrief?.requestToken || "") !== requestToken) {
-      return;
+      if (String(state.discoverAnalystBrief?.requestToken || "") !== requestToken) {
+        return;
+      }
+      state.discoverAnalystBrief = {
+        loading: false,
+        error: "",
+        data: mergedData,
+        requestKey: reqKey,
+        threadId: String(mergedData.thread_id || inferredThreadId),
+        requestToken: "",
+        inFlightPromise: runPromise,
+      };
+    } catch (err) {
+      if (String(state.discoverAnalystBrief?.requestToken || "") !== requestToken) {
+        return;
+      }
+      state.discoverAnalystBrief = {
+        loading: false,
+        error: String(err?.message || err || "Failed to run analyst brief."),
+        data: previousData,
+        requestKey: reqKey,
+        threadId: previousThreadId,
+        requestToken: "",
+        inFlightPromise: runPromise,
+      };
     }
-    state.discoverAnalystBrief = {
-      loading: false,
-      error: "",
-      data: mergedData,
-      requestKey: reqKey,
-      threadId: String(mergedData.thread_id || inferredThreadId),
-      requestToken: "",
-    };
-  } catch (err) {
-    if (String(state.discoverAnalystBrief?.requestToken || "") !== requestToken) {
-      return;
+    renderDiscoverAnalystBrief();
+    renderDiscoverInsights();
+  })();
+  state.discoverAnalystBrief.inFlightPromise = runPromise;
+  try {
+    await runPromise;
+  } finally {
+    if (state.discoverAnalystBrief?.inFlightPromise === runPromise) {
+      state.discoverAnalystBrief.inFlightPromise = null;
     }
-    state.discoverAnalystBrief = {
-      loading: false,
-      error: String(err?.message || err || "Failed to run analyst brief."),
-      data: previousData,
-      requestKey: reqKey,
-      threadId: previousThreadId,
-      requestToken: "",
-    };
+    renderDiscoverAnalystBrief();
   }
-  renderDiscoverAnalystBrief();
-  renderDiscoverInsights();
 }
 
 async function loadDiscoverGithubTree() {
@@ -10051,8 +10074,17 @@ function bindEvents() {
     autoTriggerDiscoverExternalViews({ force: true });
   });
   el.discoverRunAnalystBrief?.addEventListener("click", () => {
+    if (state.discoverAnalystBrief?.loading) return;
     loadDiscoverAnalystBrief({ force: true }).catch((err) => {
-      state.discoverAnalystBrief = { loading: false, error: String(err?.message || err || "Failed to run analyst brief."), data: null, requestKey: "", threadId: "" };
+      state.discoverAnalystBrief = {
+        loading: false,
+        error: String(err?.message || err || "Failed to run analyst brief."),
+        data: null,
+        requestKey: "",
+        threadId: "",
+        requestToken: "",
+        inFlightPromise: null,
+      };
       renderDiscoverAnalystBrief();
     });
   });

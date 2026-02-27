@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
@@ -135,6 +136,10 @@ STAGE_COLLAB_PROPOSAL_LIMIT = 320
 STAGE_COLLAB_DECISION_LIMIT = 320
 STAGE_CHAT_LLM_STAGES = {1, 2, 3, 6}
 DISCOVER_REVIEW_MIN_COVERAGE = 0.85
+DISCOVER_ANALYST_BRIEF_CACHE_TTL_SEC = max(0, int(os.getenv("DISCOVER_ANALYST_BRIEF_CACHE_TTL_SEC", "180") or 180))
+DISCOVER_ANALYST_BRIEF_LOCK = asyncio.Lock()
+DISCOVER_ANALYST_BRIEF_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
+DISCOVER_ANALYST_BRIEF_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _utc_now() -> str:
@@ -143,6 +148,58 @@ def _utc_now() -> str:
 
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _discover_analyst_brief_cache_key(payload: dict[str, Any]) -> str:
+    try:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
+    except Exception:
+        encoded = str(payload)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _prune_discover_analyst_brief_cache_locked(now: float) -> None:
+    if DISCOVER_ANALYST_BRIEF_CACHE_TTL_SEC <= 0:
+        DISCOVER_ANALYST_BRIEF_CACHE.clear()
+        return
+    stale_keys = [
+        key
+        for key, (stamp, _) in DISCOVER_ANALYST_BRIEF_CACHE.items()
+        if now - float(stamp or 0.0) > DISCOVER_ANALYST_BRIEF_CACHE_TTL_SEC
+    ]
+    for key in stale_keys:
+        DISCOVER_ANALYST_BRIEF_CACHE.pop(key, None)
+
+
+async def _discover_analyst_brief_singleflight(
+    cache_key: str,
+    compute: Any,
+) -> dict[str, Any]:
+    now = time.monotonic()
+    async with DISCOVER_ANALYST_BRIEF_LOCK:
+        _prune_discover_analyst_brief_cache_locked(now)
+        cached = DISCOVER_ANALYST_BRIEF_CACHE.get(cache_key)
+        if cached and DISCOVER_ANALYST_BRIEF_CACHE_TTL_SEC > 0:
+            return copy.deepcopy(cached[1])
+        task = DISCOVER_ANALYST_BRIEF_INFLIGHT.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(compute())
+            DISCOVER_ANALYST_BRIEF_INFLIGHT[cache_key] = task
+    try:
+        result = await task
+    except Exception:
+        async with DISCOVER_ANALYST_BRIEF_LOCK:
+            if DISCOVER_ANALYST_BRIEF_INFLIGHT.get(cache_key) is task:
+                DISCOVER_ANALYST_BRIEF_INFLIGHT.pop(cache_key, None)
+        raise
+
+    async with DISCOVER_ANALYST_BRIEF_LOCK:
+        if DISCOVER_ANALYST_BRIEF_INFLIGHT.get(cache_key) is task:
+            DISCOVER_ANALYST_BRIEF_INFLIGHT.pop(cache_key, None)
+        if DISCOVER_ANALYST_BRIEF_CACHE_TTL_SEC > 0:
+            DISCOVER_ANALYST_BRIEF_CACHE[cache_key] = (time.monotonic(), copy.deepcopy(result))
+            _prune_discover_analyst_brief_cache_locked(time.monotonic())
+    return copy.deepcopy(result)
 
 
 def _workflow_state_for_stage(stage_num: int) -> str:
@@ -3737,8 +3794,7 @@ async def api_discover_github_tree(request):
     )
 
 
-async def api_discover_analyst_brief(request):
-    payload = _get_json(await request.body())
+async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> JSONResponse:
     integration_ctx = _extract_integration_context(payload)
     brownfield = integration_ctx.get("brownfield", {}) if isinstance(integration_ctx.get("brownfield", {}), dict) else {}
     sample_mode = bool(integration_ctx.get("sample_dataset_enabled", False) or payload.get("sample_dataset_enabled", False))
@@ -4055,6 +4111,33 @@ async def api_discover_analyst_brief(request):
         fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
     )
     return JSONResponse(response_payload)
+
+
+async def api_discover_analyst_brief(request):
+    payload = _get_json(await request.body())
+    cache_key = _discover_analyst_brief_cache_key(payload)
+
+    async def _compute_marshaled() -> dict[str, Any]:
+        response = await _api_discover_analyst_brief_impl(request, payload)
+        try:
+            raw_body = bytes(response.body or b"")
+            body_obj = _get_json(raw_body)
+            if not isinstance(body_obj, dict):
+                body_obj = {"ok": False, "error": "discover analyst brief returned a non-object payload"}
+        except Exception as exc:
+            body_obj = {"ok": False, "error": f"failed to decode discover analyst brief response: {exc}"}
+        return {
+            "status_code": int(getattr(response, "status_code", 200) or 200),
+            "body": body_obj,
+        }
+
+    marshaled = await _discover_analyst_brief_singleflight(cache_key, _compute_marshaled)
+    status_code = int(marshaled.get("status_code", 200) or 200)
+    body = marshaled.get("body", {})
+    if not isinstance(body, dict):
+        body = {"ok": False, "error": "discover analyst brief cache payload was invalid"}
+        status_code = 500
+    return JSONResponse(body, status_code=status_code)
 
 
 def _discover_linear_issues_response(payload: dict[str, Any]) -> JSONResponse:
