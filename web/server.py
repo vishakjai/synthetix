@@ -105,6 +105,7 @@ CONTEXT_GRAPH_DB = CONTEXT_VAULT_ROOT / "context_graph.db"
 CONTRACT_SCHEMA_DIR = ROOT / ".deliveryos" / "schemas"
 DRIFT_LOCK = threading.Lock()
 DRIFT_INTERVAL_SEC = max(0, int(os.getenv("SIL_DRIFT_INTERVAL_SEC", "900") or 900))
+DOCGEN_ROOT = ROOT / "synthetix-docgen"
 
 AGENT_CARDS = [
     {"stage": 1, "name": "Analyst Agent", "icon": "📋"},
@@ -5075,6 +5076,9 @@ def _ensure_analyst_report_v2(output: dict[str, Any]) -> dict[str, Any]:
         pass
     try:
         enriched["analyst_report_v2"] = build_analyst_report_v2(enriched)
+        qa_report = enriched.get("analyst_report_v2", {}).get("qa_report_v1", {})
+        if isinstance(qa_report, dict) and qa_report:
+            enriched["qa_report_v1"] = qa_report
     except Exception:
         pass
     return enriched
@@ -5251,6 +5255,93 @@ def _extract_json_from_llm_text(raw: str) -> dict[str, Any]:
     except Exception:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_analyst_markdown_for_docgen(
+    *,
+    pipeline_state: dict[str, Any],
+    analyst_output: dict[str, Any],
+) -> str:
+    state_md = str(pipeline_state.get("analyst_document_markdown", "")).strip()
+    if state_md:
+        return state_md
+    revised_md = str(analyst_output.get("human_revised_document_markdown", "")).strip()
+    if revised_md:
+        return revised_md
+    try:
+        # Reuse the same markdown composer used by the CLI exporter so UI/CLI remain aligned.
+        from scripts.run_vb6_analyst_markdown import build_full_markdown  # noqa: WPS433
+
+        return str(build_full_markdown(analyst_output, mode="full") or "").strip()
+    except Exception as exc:
+        raise RuntimeError(f"Unable to compose analyst markdown for docgen: {exc}") from exc
+
+
+def _ensure_synthetix_docgen_dependencies() -> None:
+    package_json = DOCGEN_ROOT / "package.json"
+    if not package_json.exists():
+        raise RuntimeError(f"synthetix-docgen package.json not found at {DOCGEN_ROOT}")
+    node_bin = shutil.which("node")
+    npm_bin = shutil.which("npm")
+    if not node_bin:
+        raise RuntimeError("Node.js is required for synthetix-docgen (node not found in PATH)")
+    if not npm_bin:
+        raise RuntimeError("npm is required for synthetix-docgen (npm not found in PATH)")
+    docx_module = DOCGEN_ROOT / "node_modules" / "docx"
+    if docx_module.exists():
+        return
+    proc = subprocess.run(
+        [npm_bin, "install", "--no-audit", "--no-fund"],
+        cwd=str(DOCGEN_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if proc.returncode != 0:
+        stderr = str(proc.stderr or "").strip()
+        stdout = str(proc.stdout or "").strip()
+        tail = stderr or stdout or "npm install failed"
+        raise RuntimeError(f"Failed to install synthetix-docgen dependencies: {tail[-600:]}")
+
+
+def _run_synthetix_docgen(
+    *,
+    markdown_text: str,
+    doc_type: str,
+    run_id: str,
+) -> tuple[bytes, str]:
+    if doc_type not in {"ba_brief", "tech_workbook"}:
+        raise RuntimeError(f"Unsupported doc type: {doc_type}")
+    _ensure_synthetix_docgen_dependencies()
+    node_bin = shutil.which("node")
+    if not node_bin:
+        raise RuntimeError("Node.js is required for synthetix-docgen")
+
+    with tempfile.TemporaryDirectory(prefix=f"docgen-{safe_name(run_id)}-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        md_path = tmp / "analyst-output.md"
+        out_dir = tmp / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(markdown_text, encoding="utf-8")
+
+        proc = subprocess.run(
+            [node_bin, "index.js", "--md", str(md_path), "--out", str(out_dir)],
+            cwd=str(DOCGEN_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if proc.returncode != 0:
+            stderr = str(proc.stderr or "").strip()
+            stdout = str(proc.stdout or "").strip()
+            detail = stderr or stdout or "docgen command failed"
+            raise RuntimeError(f"synthetix-docgen failed: {detail[-800:]}")
+
+        file_name = "ba_brief.docx" if doc_type == "ba_brief" else "tech_workbook.docx"
+        target = out_dir / file_name
+        if not target.exists():
+            raise RuntimeError(f"Expected output not found: {target}")
+        return target.read_bytes(), file_name
 
 
 def _maybe_build_docx_llm_plan(
@@ -5461,6 +5552,57 @@ async def api_download_analyst_docx(request):
             "X-Docx-LLM-Reason": str(llm_meta.get("reason", ""))[:220],
             "X-Docx-LLM-Provider": str(llm_meta.get("provider", ""))[:80],
             "X-Docx-LLM-Model": str(llm_meta.get("model", ""))[:120],
+        },
+    )
+
+
+async def api_download_analyst_docgen_docx(request):
+    run_id = request.path_params.get("run_id", "")
+    run = MANAGER.get_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    query = request.query_params
+    doc_type = str(query.get("type", "ba_brief")).strip().lower()
+    if doc_type not in {"ba_brief", "tech_workbook"}:
+        return JSONResponse({"ok": False, "error": "type must be ba_brief or tech_workbook"}, status_code=400)
+
+    pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _analyst_output_from_state(pipeline_state)
+    if not isinstance(analyst_output, dict) or not analyst_output:
+        return JSONResponse({"ok": False, "error": "analyst output not found for this run"}, status_code=404)
+
+    try:
+        markdown_text = _build_analyst_markdown_for_docgen(
+            pipeline_state=pipeline_state,
+            analyst_output=analyst_output,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"unable to prepare analyst markdown: {exc}"}, status_code=500)
+    if not markdown_text:
+        return JSONResponse({"ok": False, "error": "analyst markdown is empty"}, status_code=500)
+
+    try:
+        docx_bytes, base_name = _run_synthetix_docgen(
+            markdown_text=markdown_text,
+            doc_type=doc_type,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_run_id = safe_name(str(run_id or "run"))
+    file_stub = "ba-brief" if doc_type == "ba_brief" else "tech-workbook"
+    filename = f"analyst-{file_stub}-{safe_run_id}-{stamp}.docx"
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Docgen-Type": doc_type,
+            "X-Docgen-Source": base_name,
         },
     )
 
@@ -8964,6 +9106,7 @@ routes = [
     Route("/api/runs/{run_id:str}/rerun", api_rerun_stage, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/chat", api_stage_chat, methods=["POST"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/proposals", api_stage_create_proposal, methods=["POST"]),

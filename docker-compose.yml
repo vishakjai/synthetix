@@ -1,0 +1,22 @@
+services:
+  synthetix:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: synthetix-app
+    ports:
+      - "8788:8080"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    volumes:
+      - ./pipeline_runs:/app/pipeline_runs
+      - ./run_artifacts:/app/run_artifacts
+      - ./team_data:/app/team_data
+      - ./context_vault:/app/context_vault
+      - ./.deliveryos:/app/.deliveryos
+      - ./deploy_output:/app/deploy_output
+    restart: unless-stopped
+    init: true

@@ -4215,6 +4215,9 @@ BUSINESS OBJECTIVES:
             self.log(f"[{self.name}] WARN: failed to build raw_artifacts: {exc}")
         try:
             out["analyst_report_v2"] = build_analyst_report_v2(out)
+            qa_report = out.get("analyst_report_v2", {}).get("qa_report_v1", {})
+            if isinstance(qa_report, dict) and qa_report:
+                out["qa_report_v1"] = qa_report
         except Exception as exc:
             self.log(f"[{self.name}] WARN: failed to build analyst_report_v2: {exc}")
         return out

@@ -477,6 +477,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     ) -> str:
         form_token = _clean(form_name).lower()
         is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
+        if form_token.endswith("frmsearch") or form_token == "frmsearch":
+            return "Record Search"
         if form_token.endswith("frmtransactions") or form_token.endswith("transactions"):
             return "Transaction History"
         if form_token.endswith("frmtransaction") or form_token.endswith("transaction"):
@@ -527,7 +529,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         if any(key in token_blob for key in ("report", "datareport", "dataenvironment")):
             return "Reporting"
         if any(key in token_blob for key in ("search", "lookup", "find")):
-            return "Search"
+            return "Record Search"
         if any(key in token_blob for key in ("main", "mdiform", "toolbar")):
             return "Navigation Hub"
         if any(key in token_blob for key in ("balance", "tblbalance")):
@@ -953,35 +955,51 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 semantic_by_key[key] = semantic
 
     donor_rules_by_semantic: dict[str, list[dict[str, Any]]] = {}
+
+    def _semantic_group(semantic_name: str) -> str:
+        s = _clean(semantic_name).lower()
+        if s in {"transaction entry", "transaction history", "transaction ledger"}:
+            return "transaction_workflow"
+        if s in {"password management", "authentication", "authentication entry"}:
+            return "authentication_workflow"
+        if s in {"record search", "search"}:
+            return "record_search_workflow"
+        return s
+
     allowed_semantics = {
         "deposit capture",
         "withdrawal processing",
+        "transaction entry",
         "transaction ledger",
+        "transaction history",
         "customer management",
         "account type maintenance",
         "password management",
+        "authentication",
+        "record search",
     }
     for key, rows in form_rule_rows.items():
         semantic = semantic_by_key.get(key, "")
         if semantic not in allowed_semantics or not rows:
             continue
-        donor_rules_by_semantic.setdefault(semantic, [])
+        semantic_bucket = _semantic_group(semantic)
+        donor_rules_by_semantic.setdefault(semantic_bucket, [])
         for r in rows:
             rid = _clean(_as_dict(r).get("rule_id") or _as_dict(r).get("id"))
             existing = {
                 _clean(_as_dict(x).get("rule_id") or _as_dict(x).get("id"))
-                for x in donor_rules_by_semantic[semantic]
+                for x in donor_rules_by_semantic[semantic_bucket]
             }
             if rid and rid in existing:
                 continue
-            donor_rules_by_semantic[semantic].append(r)
+            donor_rules_by_semantic[semantic_bucket].append(r)
 
     for key, semantic in semantic_by_key.items():
         if semantic not in allowed_semantics:
             continue
         if form_rule_rows.get(key):
             continue
-        mirrored = donor_rules_by_semantic.get(semantic, [])
+        mirrored = donor_rules_by_semantic.get(_semantic_group(semantic), [])
         if mirrored:
             form_rule_rows[key] = mirrored[:8]
 
@@ -1235,11 +1253,24 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     if rule_rows:
         lines.append("| Rule ID | Form | Layer | Category | Business Meaning | Implementation Evidence | Risk links |")
         lines.append("|---|---|---|---|---|---|---|")
+        known_form_bases = {
+            _base_form_name(_as_dict(d).get("form_name"))
+            for d in raw_form_dossiers
+            if _base_form_name(_as_dict(d).get("form_name"))
+        }
+        variant_projects_by_base: dict[str, set[str]] = {}
+        for dossier in raw_form_dossiers:
+            d = _as_dict(dossier)
+            base = _base_form_name(d.get("form_name"))
+            proj = _clean(d.get("project_name"))
+            if base and proj:
+                variant_projects_by_base.setdefault(base, set()).add(proj)
         rules_by_form: dict[str, list[dict[str, str]]] = {}
         raw_rules_by_form: dict[str, list[dict[str, Any]]] = {}
         seen_rule_form_pairs: set[tuple[str, str]] = set()
         seen_source_variant_pairs: set[tuple[str, str]] = set()
         emitted_form_labels: set[str] = set()
+        emitted_qualified_form_labels: set[str] = set()
         existing_rule_numbers: list[int] = []
         used_output_rule_ids: set[str] = set()
         saturated_meaning_templates = {
@@ -1279,7 +1310,13 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                         continue
                     if re.search(r"_(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$", token_low):
                         continue
-                    if ("frm" not in token_low and not token_low.startswith("form") and token_low not in {"main", "mdiform", "login"}):
+                    normalized_base = _base_form_name(token)
+                    if (
+                        "frm" not in token_low
+                        and not token_low.startswith("form")
+                        and token_low not in {"main", "mdiform", "login"}
+                        and normalized_base not in known_form_bases
+                    ):
                         continue
                     normalized_display = "main" if token_low == "main" else token
                     if normalized_display not in forms_out:
@@ -1320,6 +1357,20 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             saturated_meaning_forms.setdefault(meaning_text, set()).add(form_label)
             saturated_suppressed_count[meaning_text] = int(saturated_suppressed_count.get(meaning_text, 0)) + 1
             return meaning_text, True, first_rule
+
+        def _pick_backfill_rule(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+            if not candidates:
+                return {}
+            preferred: dict[str, Any] = {}
+            for row in candidates:
+                r = _as_dict(row)
+                category = _clean(r.get("category") or r.get("rule_type") or "other")
+                meaning = _rule_business_meaning(_clean(r.get("statement")), category)
+                if meaning and meaning not in saturated_meaning_templates:
+                    return r
+                if not preferred:
+                    preferred = r
+            return preferred
 
         for row in rule_rows[:700]:
             r = _as_dict(row)
@@ -1368,6 +1419,10 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             for form_item in rule_forms[:16]:
                 form_display = "main" if _base_form_name(form_item) == "main" else _clean(form_item) or "n/a"
                 base_form = _base_form_name(form_display) or _clean(form_display).lower() or "n/a"
+                is_generic_base = bool(re.fullmatch(r"(form\d+|frm\d+)", base_form))
+                if "::" not in form_display and is_generic_base and len(variant_projects_by_base.get(base_form, set())) > 1:
+                    # Emit qualified variant rows instead of ambiguous bare generic form names.
+                    continue
                 pair = (source_rule_id.lower(), base_form.lower())
                 if pair in seen_rule_form_pairs:
                     continue
@@ -1400,6 +1455,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     )
                 )
                 emitted_form_labels.add(_qualified_form_name("", form_display).lower())
+                if "::" in form_display:
+                    emitted_qualified_form_labels.add(_clean(form_display).lower())
                 rules_by_form.setdefault(base_form, []).append({"rule_id": output_rule_id, "meaning": row_meaning})
                 raw_rules_by_form.setdefault(base_form, []).append(r)
 
@@ -1453,8 +1510,57 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     )
                 )
                 emitted_form_labels.add(qualified_form.lower())
+                emitted_qualified_form_labels.add(qualified_form.lower())
                 rules_by_form.setdefault(base_name, []).append({"rule_id": mirrored_rule_id, "meaning": mirrored_meaning})
                 raw_rules_by_form.setdefault(base_name, []).append(m)
+
+        # E/Q synchronization backfill: if Q can see rules for a qualified form but E has no
+        # qualified row, emit one deterministic qualified rule row.
+        for dossier in raw_form_dossiers:
+            d = _as_dict(dossier)
+            project_name = _clean(d.get("project_name"))
+            form_name = _clean(d.get("form_name"))
+            base_name = _base_form_name(form_name)
+            if not base_name:
+                continue
+            qualified_form = _qualified_form_name(project_name, "main" if base_name == "main" else form_name)
+            if not qualified_form or qualified_form.lower() in emitted_qualified_form_labels:
+                continue
+            candidate_rows = _lookup_rows(form_rule_rows, project_name, form_name)
+            if not candidate_rows:
+                continue
+            chosen = _pick_backfill_rule(candidate_rows)
+            if not chosen:
+                continue
+            source_rule_id = _clean(chosen.get("rule_id") or chosen.get("id") or "n/a")
+            category = _clean(chosen.get("category") or chosen.get("rule_type") or "other")
+            statement = _clean(chosen.get("statement"))
+            layer = "Data" if category.lower() in {"data_persistence", "calculation_logic", "threshold_rule"} else "Presentation"
+            backfill_meaning = _rule_business_meaning(statement, category) or statement or "n/a"
+            backfill_rule_id, source_hint = _allocate_rule_id(source_rule_id)
+            related_risk_ids = {
+                _clean(_as_dict(risk_row).get("risk_id"))
+                for risk_row in _lookup_rows(form_risk_rows, project_name, form_name)
+                if _clean(_as_dict(risk_row).get("risk_id"))
+            }
+            evidence = f"variant_backfill_for_eq_sync (source={source_rule_id or 'n/a'})"
+            if source_hint and source_hint.lower() != backfill_rule_id.lower():
+                evidence = f"{evidence}; source_rule={source_hint}"
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(backfill_rule_id),
+                    _escape_pipe(qualified_form),
+                    _escape_pipe(layer),
+                    _escape_pipe(category),
+                    _escape_pipe(backfill_meaning),
+                    _escape_pipe(evidence),
+                    _escape_pipe(", ".join(sorted(related_risk_ids)[:6]) or "none"),
+                )
+            )
+            emitted_form_labels.add(qualified_form.lower())
+            emitted_qualified_form_labels.add(qualified_form.lower())
+            rules_by_form.setdefault(base_name, []).append({"rule_id": backfill_rule_id, "meaning": backfill_meaning})
+            raw_rules_by_form.setdefault(base_name, []).append(chosen)
 
         if rules_by_form:
             dossier_by_base_form: dict[str, dict[str, Any]] = {}

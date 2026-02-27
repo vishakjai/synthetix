@@ -90,6 +90,13 @@ def _collect_report_data(report: dict[str, Any], raw_artifacts: dict[str, Any] |
     backlog = _as_list(_as_dict(delivery.get("backlog")).get("items"))
     testing = _as_dict(delivery.get("testing_and_evidence"))
     quality_gates = _as_list(testing.get("quality_gates"))
+    qa_report = _as_dict(report.get("qa_report_v1"))
+    if not qa_report:
+        qa_report = _as_dict(_as_dict(raw_artifacts).get("qa_report_v1")) if isinstance(raw_artifacts, dict) else {}
+    qa_summary = _as_dict(qa_report.get("summary"))
+    qa_structural = _as_dict(qa_report.get("structural"))
+    qa_semantic = _as_dict(qa_report.get("semantic"))
+    qa_quality_gates = _as_list(qa_report.get("quality_gates"))
     open_questions = _as_list(delivery.get("open_questions"))
     appendix = _as_dict(report.get("appendix"))
     artifact_refs = _as_dict(appendix.get("artifact_refs"))
@@ -109,6 +116,11 @@ def _collect_report_data(report: dict[str, Any], raw_artifacts: dict[str, Any] |
         "backlog": backlog,
         "testing": testing,
         "quality_gates": quality_gates,
+        "qa_report": qa_report,
+        "qa_summary": qa_summary,
+        "qa_structural_checks": _as_list(qa_structural.get("checks")),
+        "qa_semantic_checks": _as_list(qa_semantic.get("checks")),
+        "qa_quality_gates": qa_quality_gates,
         "open_questions": open_questions,
         "artifact_refs": artifact_refs,
         "raw_artifacts": raw,
@@ -219,13 +231,20 @@ def _extract_forms_from_text(value: Any) -> list[str]:
     text = _clean(value)
     if not text:
         return []
-    forms = re.findall(r"([A-Za-z0-9_]+(?:\.frm)?)", text)
+    forms = re.findall(r"([A-Za-z0-9_./-]+)", text)
     out: list[str] = []
     for form in forms:
         low = form.lower()
+        if low.endswith((".bas", ".cls", ".ctl", ".vbp", ".vbg", ".res", ".dsr", ".mdl", ".mod")):
+            continue
         if "frm" not in low and not low.startswith("form"):
             continue
-        normalized = form[:-4] if low.endswith(".frm") else form
+        normalized = form.rsplit("/", 1)[-1]
+        normalized = normalized[:-4] if normalized.lower().endswith(".frm") else normalized
+        normalized = normalized.rstrip(".,;:()[]{}")
+        nlow = normalized.lower()
+        if re.search(r"_(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$", nlow):
+            continue
         if normalized not in out:
             out.append(normalized)
     return out
@@ -237,6 +256,395 @@ def _project_label(name: str, path_map: dict[str, str]) -> str:
         return "n/a"
     path = _clean(path_map.get(key))
     return f"{key} [{path}]" if path else key
+
+
+def _project_from_scoped(value: Any) -> str:
+    text = _clean(value)
+    if "::" in text:
+        return _clean(text.split("::", 1)[0])
+    return ""
+
+
+def _form_key(project_name: Any, form_name: Any) -> str:
+    form = _base_form_name(form_name)
+    project = _clean(project_name).lower()
+    return f"{project}::{form}" if project and form else form
+
+
+def _base_only_key(form_name: Any) -> str:
+    base = _base_form_name(form_name)
+    return f"__base__::{base}" if base else ""
+
+
+def _form_keys(project_name: Any, form_name: Any) -> list[str]:
+    keys: list[str] = []
+    scoped = _form_key(project_name, form_name)
+    if scoped:
+        keys.append(scoped)
+    base_key = _base_only_key(form_name)
+    if base_key and base_key not in keys:
+        keys.append(base_key)
+    return keys
+
+
+def _lookup_rows(mapping: dict[str, list[dict[str, Any]]], project_name: Any, form_name: Any) -> list[dict[str, Any]]:
+    scoped = _form_key(project_name, form_name)
+    base_key = _base_only_key(form_name)
+    if scoped and scoped in mapping and mapping[scoped]:
+        return mapping[scoped]
+    if base_key and base_key in mapping and mapping[base_key]:
+        return mapping[base_key]
+    return []
+
+
+def _lookup_set(mapping: dict[str, set[str]], project_name: Any, form_name: Any) -> set[str]:
+    scoped = _form_key(project_name, form_name)
+    base_key = _base_only_key(form_name)
+    if scoped and scoped in mapping and mapping[scoped]:
+        return mapping[scoped]
+    if base_key and base_key in mapping and mapping[base_key]:
+        return mapping[base_key]
+    return set()
+
+
+def _lookup_control_map(mapping: dict[str, dict[str, str]], project_name: Any, form_name: Any) -> dict[str, str]:
+    scoped = _form_key(project_name, form_name)
+    base_key = _base_only_key(form_name)
+    if scoped and scoped in mapping and mapping[scoped]:
+        return mapping[scoped]
+    if base_key and base_key in mapping and mapping[base_key]:
+        return mapping[base_key]
+    return {}
+
+
+def _qualified_form_name(project_name: Any, form_name: Any) -> str:
+    project = _clean(project_name)
+    form = _clean(form_name)
+    if project and form:
+        return f"{project}::{form}"
+    return form or "n/a"
+
+
+def _split_words(token: str) -> str:
+    raw = _clean(token)
+    lowered = raw.lower()
+    if lowered.startswith("dtpicker"):
+        raw = raw[len("dtpicker"):]
+        raw = f"date{raw}" if raw else "date"
+        lowered = raw.lower()
+    for prefix in ("txt", "cbo", "cmb", "dtp", "msk", "lst", "chk", "opt", "lbl", "cmd"):
+        if lowered.startswith(prefix) and len(raw) > len(prefix):
+            lower_raw = raw.lower()
+            if prefix == "opt" and lower_raw.startswith("option"):
+                continue
+            if prefix == "chk" and lower_raw.startswith("check"):
+                continue
+            if prefix == "txt" and lower_raw.startswith("text"):
+                continue
+            if prefix == "cbo" and lower_raw.startswith("combo"):
+                continue
+            raw = raw[len(prefix):]
+            break
+    raw = re.sub(r"[_\\-]+", " ", raw)
+    raw = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", raw)
+    raw = re.sub(r"([A-Za-z])(id|no)\b", r"\1 \2", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"([A-Za-z])([0-9])", r"\1 \2", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw.lower()
+
+
+def _is_data_input_control(control_id: str) -> bool:
+    cid = _clean(control_id).lower()
+    return cid.startswith(("txt", "cbo", "cmb", "dtp", "msk", "lst", "chk", "opt"))
+
+
+def _to_business_input(control_id: str) -> str:
+    words = _split_words(control_id)
+    return words or _clean(control_id).lower()
+
+
+def _callable_kind(procedure_name: Any, form_name: Any, event_hint: Any = "") -> str:
+    proc = _clean(procedure_name).lower()
+    form = _base_form_name(form_name)
+    evt = _clean(event_hint).lower()
+    if form == "shared_module":
+        return "shared_function"
+    if evt:
+        return "event_handler"
+    if re.search(r"_(click|change|load|keypress|keydown|keyup|gotfocus|lostfocus|activate|deactivate)$", proc):
+        return "event_handler"
+    if proc.startswith(("cmd", "lbl", "txt", "cbo", "opt", "chk")):
+        return "event_handler"
+    return "procedure"
+
+
+def _semantic_form_alias(
+    *,
+    form_name: str,
+    purpose: str,
+    db_tables: set[str],
+    procedures: list[dict[str, Any]],
+    rules: list[dict[str, Any]],
+    controls: list[str] | None = None,
+) -> str:
+    form_token = _clean(form_name).lower()
+    is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
+    purpose_low = _clean(purpose).lower()
+    if "deposit capture" in purpose_low:
+        return "Deposit Capture"
+    if "withdrawal processing" in purpose_low:
+        return "Withdrawal Processing"
+    if "customer profile" in purpose_low:
+        return "Customer Management"
+    if "transaction ledger" in purpose_low:
+        return "Transaction Ledger"
+    if "account type maintenance" in purpose_low:
+        return "Account Type Maintenance"
+    token_blob = " ".join(
+        [
+            form_token,
+            _clean(purpose).lower(),
+            " ".join(_clean(x).lower() for x in db_tables if _clean(x)),
+            " ".join(_clean(_as_dict(p).get("procedure_name")).lower() for p in procedures),
+            " ".join(_clean(_as_dict(r).get("statement")).lower() for r in rules),
+            " ".join(_clean(x).lower() for x in (controls or []) if _clean(x)),
+        ]
+    )
+    if any(key in token_blob for key in ("login", "logi", "username", "password", "txtpass", "pass1", "credential")):
+        return "Password Management" if any(key in token_blob for key in ("txtpass", "pass1", "credential")) else "Authentication"
+    has_strong_transaction_signal = any(
+        key in token_blob for key in ("transction", "tbltransaction", "transaction ledger", "ledger")
+    )
+    if has_strong_transaction_signal or ("debit" in token_blob and "credit" in token_blob):
+        return "Transaction Ledger"
+    if any(key in token_blob for key in ("withdraw", "debit")):
+        return "Withdrawal Processing"
+    if any(key in token_blob for key in ("deposit", "credit", "balancedt")) and not any(
+        key in token_blob for key in ("transaction", "transction", "debit")
+    ):
+        return "Deposit Capture"
+    if any(key in token_blob for key in ("customer", "tblcustomer")) and any(
+        key in token_blob for key in ("interest", "min balance", "account type", "acctype")
+    ):
+        return "Customer Management"
+    if any(key in token_blob for key in ("accounttype", "acctype")):
+        return "Account Type Maintenance"
+    if any(key in token_blob for key in ("customer", "tblcustomer")):
+        return "Customer Management"
+    if any(key in token_blob for key in ("report", "datareport", "dataenvironment")):
+        return "Reporting"
+    if any(key in token_blob for key in ("search", "lookup", "find")):
+        return "Search"
+    if any(key in token_blob for key in ("main", "mdiform", "toolbar")):
+        return "Navigation Hub"
+    if any(key in token_blob for key in ("balance", "tblbalance")):
+        return "Balance Inquiry"
+    if any(key in token_blob for key in ("timer", "progressbar", "splash")):
+        return "Splash/Loading"
+    if is_generic_form and form_token == "form9":
+        return "Authentication Entry"
+    if is_generic_form and form_token == "form1":
+        return "Navigation/Menu"
+    if is_generic_form and any(key in token_blob for key in ("dated", "datejoined", "dtpicker", "date 1", "from date", "to date")):
+        return "Date/Period Entry"
+    cleaned_purpose = _clean(purpose).rstrip(".")
+    if cleaned_purpose:
+        short = re.sub(r"\bworkflow\b", "", cleaned_purpose, flags=re.IGNORECASE)
+        short = re.sub(r"\s+", " ", short).strip(" -")
+        generic_phrases = {
+            "business executed through event-driven ui controls",
+            "business workflow executed through event-driven ui controls",
+            "application navigation and module routing",
+        }
+        if short.lower() in generic_phrases:
+            return ""
+        if short:
+            return short
+    return ""
+
+
+def _display_form_name(form_name: str, alias: str) -> str:
+    generic = bool(re.fullmatch(r"(form\d+|frm\d+)", _clean(form_name).lower()))
+    if generic and _clean(alias):
+        return f"{_clean(form_name)} [{_clean(alias)}]"
+    return _clean(form_name)
+
+
+def _rule_business_meaning(statement: str, category: str) -> str:
+    stmt = _clean(statement)
+    low = stmt.lower()
+    if re.search(r"keyascii\s*=\s*13", low):
+        return "Pressing Enter triggers the same action flow as the primary button."
+    if "case keyascii" in low:
+        return "Keyboard input routing determines which action path is executed."
+    if re.search(r"\.state\s*=\s*1", low):
+        return "The action proceeds only when the recordset/connection is active."
+    if re.search(r"\.recordcount\s*>\s*0", low):
+        return "The action proceeds only when matching records are found."
+    if ("max(" in low and "+ 1" in low) or ("max(" in low and "+1" in low):
+        return "A new identifier is generated as current maximum value plus one."
+    if "computed value rule" in low or "currbalance" in low:
+        if "lblbalance.caption" in low:
+            return "Balance is recalculated from the displayed balance label and entered amount (UI-derived source)."
+        return "Balance is recalculated using the entered amount and current account value."
+    if "case button.index" in low or "case buttonmenu.key" in low:
+        return "User menu selection routes the workflow to the corresponding module."
+    if "threshold decision rule" in low and "if " in low:
+        cond = stmt.split("IF", 1)[-1].strip()
+        cond = re.sub(r"\s*THEN.*$", "", cond, flags=re.IGNORECASE).strip()
+        return f"The workflow continues only when this condition is true: {cond}."
+    if "executes transaction workflow through procedures" in low:
+        return "Workflow is orchestrated through UI event handlers and internal procedures."
+    if "reads/writes persisted entities" in low:
+        return "Form persists and retrieves records from the listed tables."
+    if "authenticate users" in low:
+        return "User authentication is required before entering the workflow."
+    if category.lower() in {"data_persistence", "calculation_logic", "threshold_rule"}:
+        return "Business behavior is enforced through data and calculation logic."
+    return stmt
+
+
+def _business_effect_from_sql(op: str, table: str) -> str:
+    op_low = _clean(op).lower()
+    table_low = _clean(table).lower()
+    if op_low == "select":
+        if "balance" in table_low:
+            return "Customer balance and account details displayed for review."
+        if "customer" in table_low:
+            return "Customer details displayed for review."
+        if "transction" in table_low or "transaction" in table_low:
+            return "Transaction history displayed for review."
+        if "accounttype" in table_low:
+            return "Account type details displayed for selection."
+        if "logi" in table_low or "login" in table_low:
+            return "User credentials validated against stored records."
+    if "deposit" in table_low:
+        return "Deposit transaction recorded."
+    if "withdraw" in table_low:
+        return "Withdrawal transaction recorded."
+    if "balance" in table_low:
+        return "Account balance updated."
+    if "transction" in table_low or "transaction" in table_low:
+        return "Transaction ledger updated."
+    if "customer" in table_low and op_low in {"insert", "update", "delete"}:
+        return "Customer profile data updated."
+    if "accounttype" in table_low:
+        return "Account type configuration updated."
+    if "logi" in table_low or "login" in table_low:
+        return "User authentication record validated."
+    if op_low == "insert":
+        return f"New record created in {table}."
+    if op_low == "update":
+        return f"Existing records updated in {table}."
+    if op_low == "delete":
+        return f"Records deleted from {table}."
+    return ""
+
+
+def _fallback_business_effects(
+    *,
+    alias: str,
+    purpose: str,
+    inputs: set[str],
+    db_tables: list[str],
+    rules: list[dict[str, Any]],
+) -> list[str]:
+    token_blob = " ".join(
+        [
+            _clean(alias).lower(),
+            _clean(purpose).lower(),
+            " ".join(_clean(x).lower() for x in sorted(inputs)),
+            " ".join(_clean(x).lower() for x in db_tables),
+            " ".join(_clean(_as_dict(r).get("statement")).lower() for r in rules),
+        ]
+    )
+    effects: list[str] = []
+    if any(x in token_blob for x in ["deposit", "amount deposited", "credit"]):
+        effects.append("Deposit transaction recorded.")
+        effects.append("Account balance recalculated.")
+    if any(x in token_blob for x in ["withdraw", "amount withdrawn", "debit"]):
+        effects.append("Withdrawal transaction recorded.")
+        effects.append("Account balance recalculated.")
+    if any(x in token_blob for x in ["transaction ledger", "transction", "transaction"]):
+        effects.append("Transaction history updated.")
+    if any(x in token_blob for x in ["customer management", "customer profile"]):
+        effects.append("Customer profile created or updated.")
+    if any(x in token_blob for x in ["account type", "acctype", "accounttype"]):
+        effects.append("Account type master data maintained.")
+    if any(x in token_blob for x in ["authentication", "login", "password"]):
+        effects.append("User access is validated before workflow continuation.")
+    if any(x in token_blob for x in ["search", "lookup"]):
+        effects.append("Matching records displayed to the user.")
+    if any(x in token_blob for x in ["navigation hub", "main", "toolbar"]):
+        effects.append("Navigation routes the user to selected module screens.")
+    if not effects and db_tables:
+        if any("balance" in _clean(t).lower() for t in db_tables):
+            effects.append("Account balance information refreshed.")
+        if any("customer" in _clean(t).lower() for t in db_tables):
+            effects.append("Customer details loaded/updated for the selected workflow.")
+    dedup: list[str] = []
+    for eff in effects:
+        e = _clean(eff)
+        if e and e not in dedup:
+            dedup.append(e)
+    return dedup[:6]
+
+
+def _infer_form_type(*, form_name: str, purpose: str, procedures: list[dict[str, Any]], controls: list[Any], tables: set[str]) -> str:
+    form_low = form_name.lower()
+    purpose_low = purpose.lower()
+    control_text = " ".join(_clean(c).lower() for c in controls)
+    proc_names = {_clean(_as_dict(p).get("procedure_name")).lower() for p in procedures}
+    if "splash" in form_low or "splash" in purpose_low:
+        return "Splash"
+    if (
+        form_low in {"main", "mdiform"}
+        or form_low.startswith("mdi")
+        or "toolbar" in control_text
+        or any("toolbar" in x for x in proc_names)
+    ):
+        return "MDI_Host"
+    if (
+        "login" in form_low
+        or "auth" in purpose_low
+        or ("form9" in form_low and ({"logi", "login"} & {t.lower() for t in tables}))
+    ):
+        return "Login"
+    if form_low.startswith(("rpt", "datareport")):
+        return "Report"
+    return "Child"
+
+
+def _normalize_data_touchpoints(values: list[str]) -> list[str]:
+    known_tables = {
+        "accounttype",
+        "balancedt",
+        "customer",
+        "deposit",
+        "withdrawal",
+        "transactions",
+        "transctions",
+        "login",
+        "logi",
+        "tblbalances",
+        "tblcustomers",
+        "tbltransactions",
+    }
+    out: list[str] = []
+    for value in values:
+        token = _clean(value).lower()
+        if not token:
+            continue
+        if token in {"con", "rs", "label", "button", "textbox", "combobox"}:
+            continue
+        if token.startswith(("cmd", "txt", "lbl", "cbo", "cmb", "chk", "opt", "lst", "frm", "form", "module")):
+            continue
+        if token in {"accountno", "accountid", "customerid", "transactionid", "dated", "datejoined", "address", "amount"}:
+            continue
+        if token in known_tables or token.startswith("tbl"):
+            if token not in out:
+                out.append(token)
+    return out[:16]
 
 
 def _resolve_paragraph_style(doc: Any, role: str) -> Any:
@@ -478,7 +886,8 @@ def _build_business_docx_bytes_rich(
         _set_run_style(bp.add_run(f"- {_clean(bullet)}"), size=9, color=COLOR_TEXT)
 
     inv = data["inventory"]
-    tables_touched = [str(x).strip() for x in _as_list(inv.get("tables_touched")) if str(x).strip()]
+    tables_touched_raw = [str(x).strip() for x in _as_list(inv.get("tables_touched")) if str(x).strip()]
+    tables_touched = _normalize_data_touchpoints(tables_touched_raw)
     summary_table = _build_table(doc, ["Category", "Summary"])
     summary_rows = [
         ("Readiness", f"{_clean(data['glance'].get('readiness_score')) or 'n/a'}/100"),
@@ -552,84 +961,156 @@ def _build_business_docx_bytes_rich(
         )
         _set_cell_shading(gate_table.rows[idx + 1].cells[1], _gate_fill(result))
 
+    qa_summary = _as_dict(data.get("qa_summary"))
+    qa_structural_checks = _as_list(data.get("qa_structural_checks"))
+    qa_semantic_checks = _as_list(data.get("qa_semantic_checks"))
+    qa_quality_gates = _as_list(data.get("qa_quality_gates"))
+    _add_paragraph_with_role(doc, "QA Summary", role="heading2")
+    qa_overview = _build_table(
+        doc,
+        ["Status", "Pass", "Warn", "Fail", "Blockers", "Semantic Warn"],
+    )
+    _add_table_row(
+        qa_overview,
+        [
+            _clean(qa_summary.get("status")) or "NOT_RUN",
+            str(_to_int(qa_summary.get("pass_count"))),
+            str(_to_int(qa_summary.get("warn_count"))),
+            str(_to_int(qa_summary.get("fail_count"))),
+            str(_to_int(qa_summary.get("blocker_count"))),
+            str(_to_int(qa_summary.get("semantic_warn_count"))),
+        ],
+        alt=False,
+    )
+    if qa_quality_gates:
+        qa_gate_table = _build_table(doc, ["QA Gate", "Result", "Description"])
+        for idx, row in enumerate(qa_quality_gates[:20]):
+            r = _as_dict(row)
+            result = _clean(r.get("result")) or "warn"
+            _add_table_row(
+                qa_gate_table,
+                [
+                    _clean(r.get("id")) or "qa_gate",
+                    result.upper(),
+                    _clean(r.get("description")) or "n/a",
+                ],
+                alt=(idx % 2 == 1),
+            )
+            _set_cell_shading(qa_gate_table.rows[idx + 1].cells[1], _gate_fill(result))
+    qa_structural_table = _build_table(doc, ["Check ID", "Result", "Blocking", "Detail"])
+    if qa_structural_checks:
+        for idx, row in enumerate(qa_structural_checks[:40]):
+            r = _as_dict(row)
+            result = _clean(r.get("result")) or "warn"
+            _add_table_row(
+                qa_structural_table,
+                [
+                    _clean(r.get("check_id") or r.get("id")) or f"check_{idx+1}",
+                    result.upper(),
+                    "yes" if bool(r.get("blocking")) else "no",
+                    _clean(r.get("detail")) or "n/a",
+                ],
+                alt=(idx % 2 == 1),
+            )
+            _set_cell_shading(qa_structural_table.rows[idx + 1].cells[1], _gate_fill(result))
+    else:
+        _add_table_row(qa_structural_table, ["none", "PASS", "no", "No structural checks emitted."], alt=False)
+    qa_semantic_table = _build_table(doc, ["Check ID", "Severity", "Confidence", "Detail"])
+    if qa_semantic_checks:
+        for idx, row in enumerate(qa_semantic_checks[:40]):
+            r = _as_dict(row)
+            severity = _clean(r.get("severity")) or "medium"
+            _add_table_row(
+                qa_semantic_table,
+                [
+                    _clean(r.get("check_id") or r.get("id")) or f"semantic_{idx+1}",
+                    severity.upper(),
+                    _clean(r.get("confidence")) or "n/a",
+                    _clean(r.get("detail")) or "n/a",
+                ],
+                alt=(idx % 2 == 1),
+            )
+            _set_cell_shading(qa_semantic_table.rows[idx + 1].cells[1], _severity_fill(severity))
+    else:
+        _add_table_row(qa_semantic_table, ["none", "LOW", "n/a", "No semantic warnings."], alt=False)
+
     # Raw artifacts for detailed BA sections
+    raw_legacy = _as_dict(raw.get("legacy_inventory"))
+    projects = _as_list(raw_legacy.get("projects"))
     raw_event_map = _as_list(_as_dict(raw.get("event_map")).get("entries"))
     raw_sql_map = _as_list(_as_dict(raw.get("sql_map")).get("entries"))
     raw_procedures = _as_list(_as_dict(raw.get("procedure_summary")).get("procedures"))
     raw_form_dossiers = _as_list(_as_dict(raw.get("form_dossier")).get("dossiers"))
     raw_rules = _as_list(_as_dict(raw.get("business_rule_catalog")).get("rules"))
     raw_risks = _as_list(_as_dict(raw.get("risk_register")).get("risks"))
+    raw_orphans = _as_list(_as_dict(raw.get("orphan_analysis")).get("orphans"))
     raw_landscape = _as_list(_as_dict(raw.get("repo_landscape")).get("projects"))
     raw_variant_diff = _as_dict(raw.get("variant_diff_report"))
-    raw_deps = _as_list(_as_dict(raw.get("dependency_inventory")).get("dependencies"))
 
     project_path_by_name: dict[str, str] = {}
     project_dependencies_by_name: dict[str, set[str]] = {}
+    project_tables_by_name: dict[str, set[str]] = {}
+    project_display_name_counts: dict[str, int] = {}
     for row in raw_landscape:
         r = _as_dict(row)
         raw_id = _clean(r.get("id"))
         left = raw_id.split("|", 1)[0] if "|" in raw_id else raw_id
+        project_display_name_counts[left or "variant"] = project_display_name_counts.get(left or "variant", 0) + 1
         path = _clean(r.get("path"))
-        deps = {_clean(x) for x in _as_list(r.get("dependencies")) if _clean(x)}
-        for key in [left, _clean(r.get("name")), raw_id]:
-            key_clean = _clean(key)
-            if not key_clean:
+        deps = set(_as_list(r.get("dependencies")))
+        tables = set(_clean(t) for t in _as_list(r.get("db_touchpoints")) if _clean(t))
+        names = [left, _clean(r.get("name")), raw_id]
+        for name in names:
+            key = _clean(name)
+            if not key:
                 continue
-            if key_clean not in project_path_by_name and path:
-                project_path_by_name[key_clean] = path
-            project_dependencies_by_name.setdefault(key_clean, set()).update(deps)
+            if key not in project_path_by_name and path:
+                project_path_by_name[key] = path
+            project_dependencies_by_name.setdefault(key, set()).update(dep for dep in deps if _clean(dep))
+            project_tables_by_name.setdefault(key, set()).update(tables)
 
     form_sql_rows: dict[str, list[dict[str, Any]]] = {}
     form_db_tables: dict[str, set[str]] = {}
     for row in raw_sql_map:
         r = _as_dict(row)
-        tables = {_clean(x) for x in _as_list(r.get("tables")) if _clean(x)}
-        for form_key in {
-            _base_form_name(r.get("form")),
-            _base_form_name(r.get("form_base")),
-            _base_form_name(r.get("variant")),
-        }:
-            if not form_key:
-                continue
-            form_sql_rows.setdefault(form_key, []).append(r)
-            form_db_tables.setdefault(form_key, set()).update(tables)
+        tables = set(_clean(t) for t in _as_list(r.get("tables")) if _clean(t))
+        project_name = _clean(r.get("variant")) or _project_from_scoped(r.get("form"))
+        form_name = _clean(r.get("form_base")) or _clean(r.get("form"))
+        keys = _form_keys(project_name, form_name)
+        if not keys:
+            continue
+        for key in keys:
+            form_sql_rows.setdefault(key, []).append(r)
+            form_db_tables.setdefault(key, set()).update(tables)
+        if project_name:
+            project_tables_by_name.setdefault(project_name, set()).update(tables)
 
     form_event_rows: dict[str, list[dict[str, Any]]] = {}
+    event_handler_by_key_proc: dict[tuple[str, str], set[str]] = {}
+    form_shared_components: dict[str, set[str]] = {}
     for row in raw_event_map:
         r = _as_dict(row)
-        for form_key in {
-            _base_form_name(r.get("container")),
-            _base_form_name(r.get("name")),
-            _base_form_name(_as_dict(r.get("handler")).get("symbol")),
-        }:
-            if not form_key:
-                continue
-            form_event_rows.setdefault(form_key, []).append(r)
+        container = _clean(r.get("container")) or _clean(r.get("name"))
+        project_name = _project_from_scoped(container) or _project_from_scoped(_as_dict(r.get("handler")).get("symbol"))
+        form_name = _base_form_name(container) or _base_form_name(_as_dict(r.get("handler")).get("symbol"))
+        keys = _form_keys(project_name, form_name)
+        if not keys:
+            continue
+        for key in keys:
+            form_event_rows.setdefault(key, []).append(r)
+        for call in [_clean(c) for c in _as_list(r.get("calls")) if _clean(c)]:
+            for key in keys:
+                event_handler_by_key_proc.setdefault((key, call), set()).add(
+                    _clean(_as_dict(r.get("handler")).get("symbol")) or _clean(r.get("entry_id"))
+                )
 
     form_proc_rows: dict[str, list[dict[str, Any]]] = {}
     for row in raw_procedures:
         r = _as_dict(row)
-        key = _base_form_name(r.get("form"))
-        if key:
+        project_name = _project_from_scoped(r.get("form"))
+        form_name = _base_form_name(r.get("form"))
+        for key in _form_keys(project_name, form_name):
             form_proc_rows.setdefault(key, []).append(r)
-
-    form_rule_rows: dict[str, list[dict[str, Any]]] = {}
-    for row in raw_rules:
-        r = _as_dict(row)
-        texts = [
-            _clean(_as_dict(r.get("scope")).get("component_id")),
-            _clean(r.get("statement")),
-        ]
-        for ev in _as_list(r.get("evidence")):
-            e = _as_dict(ev)
-            texts.append(_clean(_as_dict(e.get("external_ref")).get("ref")))
-            texts.append(_clean(_as_dict(e.get("file_span")).get("path")))
-        forms: set[str] = set()
-        for text in texts:
-            for form in _extract_forms_from_text(text):
-                forms.add(_base_form_name(form))
-        for form_key in [x for x in forms if x]:
-            form_rule_rows.setdefault(form_key, []).append(r)
 
     form_risk_rows: dict[str, list[dict[str, Any]]] = {}
     for row in raw_risks:
@@ -641,25 +1122,212 @@ def _build_business_docx_bytes_rich(
             texts.append(_clean(_as_dict(e.get("file_span")).get("path")))
         forms: set[str] = set()
         for text in texts:
-            for form in _extract_forms_from_text(text):
-                forms.add(_base_form_name(form))
-        for form_key in [x for x in forms if x]:
-            form_risk_rows.setdefault(form_key, []).append(r)
+            for form_name in _extract_forms_from_text(text):
+                forms.add(_base_form_name(form_name))
+        for dossier in raw_form_dossiers:
+            d = _as_dict(dossier)
+            if _base_form_name(d.get("form_name")) not in forms:
+                continue
+            for key in _form_keys(d.get("project_name"), d.get("form_name")):
+                form_risk_rows.setdefault(key, []).append(r)
+
+    form_rule_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in raw_rules:
+        r = _as_dict(row)
+        texts = [_clean(_as_dict(r.get("scope")).get("component_id")), _clean(r.get("statement"))]
+        for ev in _as_list(r.get("evidence")):
+            e = _as_dict(ev)
+            texts.append(_clean(_as_dict(e.get("external_ref")).get("ref")))
+            texts.append(_clean(_as_dict(e.get("file_span")).get("path")))
+        forms: set[str] = set()
+        for text in texts:
+            for form_name in _extract_forms_from_text(text):
+                forms.add(_base_form_name(form_name))
+        for dossier in raw_form_dossiers:
+            d = _as_dict(dossier)
+            if _base_form_name(d.get("form_name")) not in forms:
+                continue
+            for key in _form_keys(d.get("project_name"), d.get("form_name")):
+                form_rule_rows.setdefault(key, []).append(r)
+
+    semantic_by_key: dict[str, str] = {}
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        project_name = _clean(d.get("project_name"))
+        form_name = _clean(d.get("form_name"))
+        if not form_name:
+            continue
+        proc_rows = _lookup_rows(form_proc_rows, project_name, form_name)
+        sql_rows = _lookup_rows(form_sql_rows, project_name, form_name)
+        table_hints = {
+            _clean(t)
+            for item in sql_rows
+            for t in _as_list(_as_dict(item).get("tables"))
+            if _clean(t)
+        }
+        alias = _semantic_form_alias(
+            form_name=form_name,
+            purpose=_clean(d.get("purpose")),
+            db_tables=table_hints,
+            procedures=proc_rows,
+            rules=_lookup_rows(form_rule_rows, project_name, form_name),
+            controls=[_clean(x) for x in _as_list(d.get("controls")) if _clean(x)],
+        )
+        semantic = _clean(alias).lower()
+        if semantic:
+            for key in _form_keys(project_name, form_name):
+                semantic_by_key[key] = semantic
+
+    donor_rules_by_semantic: dict[str, list[dict[str, Any]]] = {}
+    allowed_semantics = {
+        "deposit capture",
+        "withdrawal processing",
+        "transaction ledger",
+        "customer management",
+        "account type maintenance",
+        "password management",
+    }
+    for key, rows in form_rule_rows.items():
+        semantic = semantic_by_key.get(key, "")
+        if semantic not in allowed_semantics or not rows:
+            continue
+        donor_rules_by_semantic.setdefault(semantic, [])
+        for r in rows:
+            rid = _clean(_as_dict(r).get("rule_id") or _as_dict(r).get("id"))
+            existing = {
+                _clean(_as_dict(x).get("rule_id") or _as_dict(x).get("id"))
+                for x in donor_rules_by_semantic[semantic]
+            }
+            if rid and rid in existing:
+                continue
+            donor_rules_by_semantic[semantic].append(r)
+
+    for key, semantic in semantic_by_key.items():
+        if semantic not in allowed_semantics:
+            continue
+        if form_rule_rows.get(key):
+            continue
+        mirrored = donor_rules_by_semantic.get(semantic, [])
+        if mirrored:
+            form_rule_rows[key] = mirrored[:8]
+
+    form_control_type_by_key: dict[str, dict[str, str]] = {}
+    for row in raw_form_dossiers:
+        r = _as_dict(row)
+        keys = _form_keys(r.get("project_name"), r.get("form_name"))
+        if not keys:
+            continue
+        for key in keys:
+            mapping = form_control_type_by_key.setdefault(key, {})
+            for ctl in _as_list(r.get("controls")):
+                ctl_text = _clean(ctl)
+                if not ctl_text:
+                    continue
+                if ":" in ctl_text:
+                    ctl_type, ctl_name = ctl_text.split(":", 1)
+                else:
+                    ctl_type, ctl_name = ctl_text, ctl_text
+                mapping[_clean(ctl_name).lower()] = _clean(ctl_type)
+
+    shared_module_procs = {
+        _clean(_as_dict(proc).get("procedure_name"))
+        for proc in raw_procedures
+        if _base_form_name(_as_dict(proc).get("form")) == "shared_module"
+    }
+    for key, events in form_event_rows.items():
+        for e in events:
+            ev = _as_dict(e)
+            for call in [_clean(c) for c in _as_list(ev.get("calls")) if _clean(c)]:
+                if call in shared_module_procs:
+                    form_shared_components.setdefault(key, set()).add(call)
+
+    dossier_by_key: dict[str, dict[str, Any]] = {}
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        for key in _form_keys(d.get("project_name"), d.get("form_name")):
+            if key and key not in dossier_by_key:
+                dossier_by_key[key] = d
+
+    discovered_forms: list[dict[str, str]] = []
+    seen_discovered: set[str] = set()
+
+    def _normalize_discovered_form_name(value: Any) -> str:
+        raw_name = _clean(value)
+        if not raw_name:
+            return ""
+        leaf = Path(raw_name).name
+        if ":" in leaf:
+            left, right = leaf.split(":", 1)
+            if _clean(left).lower() in {"form", "mdiform"} and _clean(right):
+                leaf = _clean(right)
+        return _clean(leaf)
+
+    def _add_discovered(project_name: Any, form_name: Any, source: str) -> None:
+        pname = _clean(project_name)
+        fname = _normalize_discovered_form_name(form_name)
+        if not fname:
+            return
+        key = _form_key(pname, fname)
+        if not key or key in seen_discovered:
+            return
+        seen_discovered.add(key)
+        discovered_forms.append({"project_name": pname, "form_name": fname, "form_key": key, "source": source})
+
+    for proj in projects:
+        p = _as_dict(proj)
+        pname = _clean(p.get("name"))
+        for form_name in _as_list(p.get("forms")):
+            _add_discovered(pname, form_name, "project.forms")
+        for asset in _as_list(p.get("ui_assets")):
+            a = _as_dict(asset)
+            if _clean(a.get("kind")).lower() in {"form", "screen"}:
+                _add_discovered(pname, a.get("name"), "project.ui_assets")
+        for member in _as_list(p.get("members")):
+            m = _as_dict(member)
+            kind = _clean(m.get("kind")).lower()
+            path = _clean(m.get("path"))
+            if kind == "form" or path.lower().endswith(".frm"):
+                _add_discovered(pname, Path(path).name, "project.members")
+
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        _add_discovered(d.get("project_name"), d.get("form_name"), "form_dossier")
+
+    orphan_by_key: dict[str, dict[str, Any]] = {}
+    orphan_unmapped_count = 0
+    for orphan in raw_orphans:
+        o = _as_dict(orphan)
+        orphan_form = _clean(o.get("form")) or Path(_clean(o.get("path"))).stem
+        orphan_project = _clean(o.get("project_name"))
+        if orphan_form == "(unmapped_form_files)":
+            summary_text = _clean(o.get("behavior_summary"))
+            m = re.search(r"(\\d+)\\s+discovered\\s+form\\s+files", summary_text, flags=re.IGNORECASE)
+            if m:
+                orphan_unmapped_count = int(m.group(1))
+            continue
+        key = _form_key(orphan_project, orphan_form)
+        if key:
+            orphan_by_key[key] = o
+            _add_discovered(orphan_project, orphan_form, "orphan_analysis")
 
     # Section O
     doc.add_page_break()
     _add_paragraph_with_role(doc, "Section O - Project Dependency Map", role="heading1")
     _add_section_intro(doc, _as_dict(plan.get("section_intros")).get("dependency_map", ""))
     project_table = _build_table(doc, ["Project", "Path", "Forms", "Dependencies", "DB touchpoints"])
-    for idx, row in enumerate(raw_landscape[:80]):
+    for idx, row in enumerate(raw_landscape[:120]):
         r = _as_dict(row)
         raw_id = _clean(r.get("id"))
-        project_name = raw_id.split("|", 1)[0] if "|" in raw_id else raw_id
+        left = raw_id.split("|", 1)[0] if "|" in raw_id else raw_id
+        path = _clean(r.get("path"))
+        project_name = left or "variant"
+        if project_display_name_counts.get(project_name, 0) > 1 and path:
+            project_name = f"{project_name} ({path})"
         _add_table_row(
             project_table,
             [
-                project_name or "variant",
-                _clean(r.get("path")) or "n/a",
+                project_name,
+                path or "n/a",
                 str(_to_int(_as_dict(r.get("counts")).get("forms"))),
                 ", ".join(_as_list(r.get("dependencies"))[:6]) or "n/a",
                 ", ".join(_as_list(r.get("db_touchpoints"))[:8]) or "n/a",
@@ -669,11 +1337,6 @@ def _build_business_docx_bytes_rich(
 
     dep_rows: list[dict[str, str]] = []
     dep_seen: set[tuple[str, str, str, str]] = set()
-    shared_module_procs = {
-        _clean(_as_dict(proc).get("procedure_name"))
-        for proc in raw_procedures
-        if _base_form_name(_as_dict(proc).get("form")) == "shared_module"
-    }
     for entry in raw_event_map:
         e = _as_dict(entry)
         source = _clean(e.get("container") or e.get("form") or e.get("name")) or "n/a"
@@ -690,12 +1353,20 @@ def _build_business_docx_bytes_rich(
                 dep_type = "mdi_navigation"
             if not dep_type:
                 continue
-            evidence = _clean(e.get("entry_id") or e.get("name"))
-            key = (source, call, dep_type, evidence)
+            stable_evidence = _clean(_as_dict(e.get("handler")).get("symbol")) or f"{source}->{call}"
+            key = (source, call, dep_type, stable_evidence)
             if key in dep_seen:
                 continue
             dep_seen.add(key)
-            dep_rows.append({"from": source, "to": call, "type": dep_type, "evidence": evidence})
+            dep_rows.append(
+                {
+                    "from": source,
+                    "to": call,
+                    "type": dep_type,
+                    "evidence": stable_evidence,
+                    "blocks_sprint": "Sprint 1",
+                }
+            )
 
     schema = _as_dict(raw_variant_diff.get("schema_divergence"))
     for pair in _as_list(schema.get("blocking_pairs") or schema.get("pairs")):
@@ -713,133 +1384,339 @@ def _build_business_docx_bytes_rich(
         if key in dep_seen:
             continue
         dep_seen.add(key)
-        dep_rows.append({"from": left, "to": right, "type": "cross_variant_schema_conflict", "evidence": evidence})
+        dep_rows.append(
+            {
+                "from": left,
+                "to": right,
+                "type": "cross_variant_schema_conflict",
+                "evidence": evidence,
+                "blocks_sprint": "Sprint 0",
+            }
+        )
 
-    dep_table = _build_table(doc, ["From", "To", "Type", "Evidence"])
+    dep_table = _build_table(doc, ["From", "To", "Type", "Evidence", "Blocks Sprint"])
     if not dep_rows:
-        dep_rows = [{"from": "n/a", "to": "n/a", "type": "n/a", "evidence": "No project dependencies detected"}]
+        dep_rows = [
+            {"from": "n/a", "to": "n/a", "type": "n/a", "evidence": "No project dependencies detected", "blocks_sprint": "n/a"}
+        ]
     for idx, row in enumerate(dep_rows[:600]):
-        _add_table_row(dep_table, [row.get("from"), row.get("to"), row.get("type"), row.get("evidence")], alt=(idx % 2 == 1))
+        _add_table_row(
+            dep_table,
+            [row.get("from"), row.get("to"), row.get("type"), row.get("evidence"), row.get("blocks_sprint")],
+            alt=(idx % 2 == 1),
+            size=8,
+        )
 
-    # Section Q2/Q3 style form dossiers
+    # Section K
     doc.add_page_break()
     _add_paragraph_with_role(doc, "Section K - Form Dossiers (Extended)", role="heading1")
     _add_section_intro(doc, _as_dict(plan.get("section_intros")).get("form_dossiers", ""))
-    form_table = _build_table(doc, ["Form", "Project", "Purpose", "Inputs", "Outputs", "ActiveX used", "DB tables", "Rules", "Risks"])
-    for idx, row in enumerate(raw_form_dossiers[:280]):
-        r = _as_dict(row)
-        form_name = _clean(r.get("form_name")) or "n/a"
-        form_key = _base_form_name(form_name)
-        project_name = _clean(r.get("project_name"))
-        proc_rows = form_proc_rows.get(form_key, [])
-        inputs: set[str] = set()
-        outputs: set[str] = set()
-        for proc in proc_rows:
-            p = _as_dict(proc)
-            inputs.update(_clean(x) for x in _as_list(p.get("inputs")) if _clean(x))
-            outputs.update(_clean(x) for x in _as_list(p.get("tables_touched")) if _clean(x))
-            outputs.update(_clean(x) for x in _as_list(p.get("data_mutations")) if _clean(x))
-            outputs.update(_clean(x) for x in _as_list(p.get("navigation_side_effects")) if _clean(x))
+    form_table = _build_table(
+        doc,
+        [
+            "Form",
+            "Display Name",
+            "Project",
+            "form_type",
+            "status",
+            "Purpose",
+            "Inputs (data)",
+            "Outputs (effects)",
+            "ActiveX used",
+            "DB tables",
+            "actions",
+            "coverage_score",
+            "confidence_score",
+            "exclusion_reason",
+        ],
+    )
+    excluded_rows: list[dict[str, str]] = []
+    for idx, form_ref in enumerate(
+        sorted(discovered_forms, key=lambda x: (_clean(x.get("project_name")), _clean(x.get("form_name")).lower()))[:900]
+    ):
+        project_name = _clean(form_ref.get("project_name"))
+        form_name = _clean(form_ref.get("form_name"))
+        form_key = _clean(form_ref.get("form_key")) or _form_key(project_name, form_name)
+        base_key = _base_only_key(form_name)
+        dossier = _as_dict(dossier_by_key.get(form_key) or dossier_by_key.get(base_key))
+        orphan_row = _as_dict(orphan_by_key.get(form_key) or orphan_by_key.get(base_key))
 
-        activex: set[str] = set()
-        for ctl in _as_list(r.get("controls")):
-            ctl_name = _clean(ctl)
-            if not ctl_name:
+        status = "mapped" if dossier else "excluded"
+        exclusion_reason = ""
+        if status != "mapped":
+            exclusion_reason = _clean(orphan_row.get("recommendation")) or "missing_from_form_dossier"
+
+        purpose = _clean(dossier.get("purpose") or orphan_row.get("behavior_summary"))
+        proc_rows_for_form = _lookup_rows(form_proc_rows, project_name, form_name)
+        sql_rows_for_form = _lookup_rows(form_sql_rows, project_name, form_name)
+        form_rules = _lookup_rows(form_rule_rows, project_name, form_name)
+        db_tables_set = _lookup_set(form_db_tables, project_name, form_name)
+        db_tables = sorted(db_tables_set)
+        form_controls = _as_list(dossier.get("controls"))
+
+        alias = _semantic_form_alias(
+            form_name=form_name,
+            purpose=purpose,
+            db_tables=db_tables_set,
+            procedures=proc_rows_for_form,
+            rules=form_rules,
+            controls=[_clean(x) for x in form_controls if _clean(x)],
+        )
+        display_name = _display_form_name(form_name, alias) or form_name
+        form_type = _infer_form_type(
+            form_name=form_name,
+            purpose=purpose,
+            procedures=proc_rows_for_form,
+            controls=form_controls,
+            tables=db_tables_set,
+        )
+
+        input_values: set[str] = set()
+        for ctl in form_controls:
+            ctl_text = _clean(ctl)
+            if not ctl_text:
                 continue
-            prefix = ctl_name.split(":", 1)[0]
-            if prefix and prefix.upper() != "VB":
-                activex.add(prefix)
+            ctl_name = _clean(ctl_text.split(":", 1)[-1])
+            if _is_data_input_control(ctl_name):
+                input_values.add(_to_business_input(ctl_name))
+        for proc in proc_rows_for_form:
+            p = _as_dict(proc)
+            for raw_input in _as_list(p.get("inputs")):
+                token = _clean(raw_input).split(".", 1)[0]
+                if _is_data_input_control(token):
+                    input_values.add(_to_business_input(token))
+
+        output_values: set[str] = set()
+        for sql_row in sql_rows_for_form:
+            sr = _as_dict(sql_row)
+            op = _clean(sr.get("operation") or sr.get("kind"))
+            for table in _as_list(sr.get("tables")):
+                effect = _business_effect_from_sql(op, _clean(table))
+                if effect:
+                    output_values.add(effect)
+        if not output_values:
+            fallback = _fallback_business_effects(
+                alias=alias,
+                purpose=purpose,
+                inputs=input_values,
+                db_tables=db_tables,
+                rules=form_rules,
+            )
+            output_values.update(fallback)
+
+        form_activex: set[str] = set()
+        for ctl in form_controls:
+            ctl_text = _clean(ctl)
+            if not ctl_text:
+                continue
+            ctl_type = _clean(ctl_text.split(":", 1)[0])
+            if ctl_type and not ctl_type.upper().startswith("VB"):
+                form_activex.add(ctl_type)
         for dep in project_dependencies_by_name.get(project_name, set()):
             dep_name = _clean(dep)
             if dep_name.lower().endswith((".ocx", ".dll")) or "MSCOM" in dep_name.upper() or "MSFLEX" in dep_name.upper():
-                activex.add(dep_name)
+                form_activex.add(dep_name)
+
+        coverage = float(_as_dict(dossier.get("coverage")).get("coverage_score") or 0)
+        raw_conf = float(_as_dict(dossier.get("coverage")).get("confidence_score") or 0)
+        action_count = len(_as_list(dossier.get("actions"))) if dossier else len(proc_rows_for_form)
+        generic_purpose = _clean(purpose).lower() in {
+            "business workflow executed through event-driven ui controls.",
+            "business workflow executed through event-driven ui controls",
+            "potential orphan flow detected.",
+            "potential orphan flow detected",
+        }
+        coverage_clamped = max(0.0, min(1.0, coverage))
+        confidence = 0.22 + (0.45 * coverage_clamped)
+        confidence += min(0.14, 0.02 * action_count)
+        confidence += min(0.08, 0.015 * len(proc_rows_for_form))
+        confidence += min(0.08, 0.02 * len(db_tables))
+        confidence += 0.09 if sql_rows_for_form else -0.08
+        confidence += 0.08 if not generic_purpose else -0.12
+        if not input_values:
+            confidence -= 0.06
+        if action_count == 0:
+            confidence -= 0.16
+        if bool(re.fullmatch(r"(form\d+|frm\d+)", form_name.lower())) and not _clean(alias):
+            confidence -= 0.08
+        if 0 < raw_conf <= 1 and abs(raw_conf - 0.92) > 1e-4:
+            confidence = (confidence * 0.8) + (raw_conf * 0.2)
+        confidence = max(0.1, min(0.98, confidence))
 
         _add_table_row(
             form_table,
             [
-                form_name,
+                _qualified_form_name(project_name, form_name),
+                display_name or "n/a",
                 _project_label(project_name, project_path_by_name),
-                _clean(r.get("purpose")) or "n/a",
-                ", ".join(sorted(inputs)[:6]) or "n/a",
-                ", ".join(sorted(outputs)[:6]) or "n/a",
-                ", ".join(sorted(activex)[:6]) or "n/a",
-                ", ".join(sorted(form_db_tables.get(form_key, set()))[:8]) or "n/a",
-                str(len(form_rule_rows.get(form_key, []))),
-                str(len(form_risk_rows.get(form_key, []))),
+                form_type,
+                status,
+                purpose or "n/a",
+                ", ".join(sorted(input_values)[:8]) or "n/a",
+                ", ".join(sorted(output_values)[:8]) or "n/a",
+                ", ".join(sorted(form_activex)[:6]) or "n/a",
+                ", ".join(db_tables[:8]) or "n/a",
+                str(action_count),
+                f"{coverage:.2f}",
+                f"{confidence:.2f}",
+                exclusion_reason or "n/a",
             ],
             alt=(idx % 2 == 1),
             size=8,
         )
 
+        if status != "mapped":
+            excluded_rows.append(
+                {
+                    "form": _qualified_form_name(project_name, form_name),
+                    "reason": exclusion_reason or "missing_from_form_dossier",
+                    "source": _clean(form_ref.get("source")) or "detected",
+                }
+            )
+
+    if excluded_rows or orphan_unmapped_count > 0:
+        _add_paragraph_with_role(doc, "K1. Excluded/Unresolved Forms", role="heading2")
+        excluded_table = _build_table(doc, ["Form", "Reason", "Source"])
+        for idx, row in enumerate(excluded_rows[:400]):
+            _add_table_row(
+                excluded_table,
+                [row.get("form"), row.get("reason"), row.get("source")],
+                alt=(idx % 2 == 1),
+                size=8,
+            )
+        if orphan_unmapped_count > 0:
+            _add_table_row(
+                excluded_table,
+                [
+                    "(unmapped_form_files)",
+                    f"reconcile_project_membership ({orphan_unmapped_count} unresolved form files)",
+                    "orphan_analysis",
+                ],
+                alt=(len(excluded_rows) % 2 == 1),
+                size=8,
+            )
+
     _add_paragraph_with_role(doc, "Business Rules by Form", role="heading2")
-    rule_table = _build_table(doc, ["Rule ID", "Form", "Category", "Statement"])
+    rule_table = _build_table(doc, ["Rule ID", "Form", "Layer", "Category", "Business Meaning", "Risk links"])
     rules_rendered = 0
-    for row in raw_rules[:900]:
+    seen_rule_form: set[tuple[str, str]] = set()
+
+    def _rule_layer(category: str, evidence_text: str, statement_text: str) -> str:
+        layer = "Presentation"
+        low = f"{evidence_text} {statement_text}".lower()
+        if category.lower() in {"data_persistence", "calculation_logic", "threshold_rule"} or any(
+            x in low for x in ["select ", "insert ", "update ", "delete ", "table"]
+        ):
+            layer = "Data"
+        if any(x in low for x in [".bas", "module", "shared"]):
+            layer = "Shared"
+        return layer
+
+    for row in raw_rules[:1200]:
         r = _as_dict(row)
+        statement = _clean(r.get("statement"))
         evidence = ", ".join(
             [
                 _clean(_as_dict(ev).get("external_ref", {}).get("ref") or _as_dict(ev).get("file_span", {}).get("path"))
                 for ev in _as_list(r.get("evidence"))
             ]
         )
-        forms: list[str] = []
-        for source in [
-            _clean(_as_dict(r.get("scope")).get("component_id")),
-            _clean(r.get("statement")),
-            evidence,
-        ]:
-            for f in _extract_forms_from_text(source):
-                if f not in forms:
-                    forms.append(f)
-        form_value = ", ".join(forms[:3]) or _clean(_as_dict(r.get("scope")).get("component_id")) or "n/a"
-        _add_table_row(
-            rule_table,
-            [
-                _clean(r.get("rule_id") or r.get("id")) or "BR",
-                form_value,
-                _clean(r.get("category") or "other"),
-                _clean(r.get("statement")) or "n/a",
-            ],
-            alt=(rules_rendered % 2 == 1),
-            size=8,
-        )
-        rules_rendered += 1
-        if rules_rendered >= 220:
-            break
+        rule_forms: list[str] = []
+        for source in [statement, evidence]:
+            for form_name in _extract_forms_from_text(source):
+                if form_name not in rule_forms:
+                    rule_forms.append(form_name)
+        if not rule_forms:
+            rule_forms = [_clean(_as_dict(r.get("scope")).get("component_id")) or "n/a"]
+        category = _clean(r.get("category") or r.get("rule_type") or "other")
+        meaning = _rule_business_meaning(statement, category)
+        if ("splash" in " ".join(rule_forms).lower() or "splash" in evidence.lower()) and "balance is recalculated" in meaning.lower():
+            meaning = "Splash/loading behavior advances progress state before opening workflow screens."
+        layer = _rule_layer(category, evidence, statement)
+        rule_id = _clean(r.get("rule_id") or r.get("id")) or "BR"
+
+        for form_value in rule_forms[:8]:
+            base_form = _base_form_name(form_value) or _base_form_name(_clean(_as_dict(r.get("scope")).get("component_id")))
+            pair = (rule_id, base_form or "n/a")
+            if pair in seen_rule_form:
+                continue
+            seen_rule_form.add(pair)
+            related_risk_ids: set[str] = set()
+            if base_form:
+                for dossier in raw_form_dossiers:
+                    d = _as_dict(dossier)
+                    if _base_form_name(d.get("form_name")) != base_form:
+                        continue
+                    for risk_row in _lookup_rows(form_risk_rows, d.get("project_name"), d.get("form_name")):
+                        rid = _clean(_as_dict(risk_row).get("risk_id"))
+                        if rid:
+                            related_risk_ids.add(rid)
+            rule_low = statement.lower()
+            for risk_row in raw_risks:
+                rr = _as_dict(risk_row)
+                rid = _clean(rr.get("risk_id"))
+                desc = _clean(rr.get("description")).lower()
+                if not rid:
+                    continue
+                if any(token in desc and token in rule_low for token in ["caption", "balance", "customerid", "delete", "injection", "credential", "password"]):
+                    related_risk_ids.add(rid)
+            _add_table_row(
+                rule_table,
+                [
+                    rule_id,
+                    form_value or "n/a",
+                    layer,
+                    category,
+                    meaning or statement or "n/a",
+                    ", ".join(sorted(related_risk_ids)[:6]) or "none",
+                ],
+                alt=(rules_rendered % 2 == 1),
+                size=8,
+            )
+            rules_rendered += 1
+
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        project_name = _clean(d.get("project_name"))
+        form_name = _clean(d.get("form_name"))
+        base_form = _base_form_name(form_name)
+        if not base_form:
+            continue
+        mirrored_rows = _lookup_rows(form_rule_rows, project_name, form_name)
+        for mr in mirrored_rows[:8]:
+            rule_id = _clean(_as_dict(mr).get("rule_id") or _as_dict(mr).get("id")) or "BR"
+            pair = (rule_id, base_form)
+            if pair in seen_rule_form:
+                continue
+            seen_rule_form.add(pair)
+            category = _clean(_as_dict(mr).get("category") or _as_dict(mr).get("rule_type") or "other")
+            meaning = _rule_business_meaning(_clean(_as_dict(mr).get("statement")), category)
+            _add_table_row(
+                rule_table,
+                [rule_id, _qualified_form_name(project_name, form_name), "Data", category, meaning or "n/a", "none"],
+                alt=(rules_rendered % 2 == 1),
+                size=8,
+            )
+            rules_rendered += 1
+
     if rules_rendered == 0:
-        _add_table_row(rule_table, ["BR-NA", "n/a", "n/a", "No business rules available"], alt=False)
+        _add_table_row(rule_table, ["BR-NA", "n/a", "n/a", "n/a", "No business rules available", "none"], alt=False)
 
     # Section P
     doc.add_page_break()
     _add_paragraph_with_role(doc, "Section P - Form Flow Traces", role="heading1")
     _add_section_intro(doc, _as_dict(plan.get("section_intros")).get("flow_traces", ""))
-    for form_idx, row in enumerate(raw_form_dossiers[:60], start=1):
+    for form_idx, row in enumerate(raw_form_dossiers[:120], start=1):
         r = _as_dict(row)
         form_name = _clean(r.get("form_name")) or f"Form-{form_idx}"
-        form_key = _base_form_name(form_name)
         project_name = _clean(r.get("project_name"))
-        _add_paragraph_with_role(
-            doc,
-            f"{form_name} ({_project_label(project_name, project_path_by_name)})",
-            role="heading2",
-        )
+        _add_paragraph_with_role(doc, f"{_qualified_form_name(project_name, form_name)} ({_project_label(project_name, project_path_by_name)})", role="heading2")
 
-        activex: set[str] = set()
-        for ctl in _as_list(r.get("controls")):
-            ctl_name = _clean(ctl)
-            if not ctl_name:
-                continue
-            prefix = ctl_name.split(":", 1)[0]
-            if prefix and prefix.upper() != "VB":
-                activex.add(prefix)
-        for dep in project_dependencies_by_name.get(project_name, set()):
-            dep_name = _clean(dep)
-            if dep_name.lower().endswith((".ocx", ".dll")) or "MSCOM" in dep_name.upper() or "MSFLEX" in dep_name.upper():
-                activex.add(dep_name)
+        events = _lookup_rows(form_event_rows, project_name, form_name)
+        procedures = _lookup_rows(form_proc_rows, project_name, form_name)
+        sql_entries = _lookup_rows(form_sql_rows, project_name, form_name)
+        control_map = _lookup_control_map(form_control_type_by_key, project_name, form_name)
 
-        events = form_event_rows.get(form_key, [])
-        procedures = form_proc_rows.get(form_key, [])
-        sql_entries = form_sql_rows.get(form_key, [])
         procedure_names: set[str] = set()
         for proc in procedures:
             name = _clean(_as_dict(proc).get("procedure_name"))
@@ -850,51 +1727,60 @@ def _build_business_docx_bytes_rich(
             if name:
                 procedure_names.add(name)
 
-        trace_table = _build_table(doc, ["Procedure", "Event", "ActiveX", "SQL IDs", "Tables", "Trace status"])
+        trace_table = _build_table(doc, ["Callable", "Kind", "Event", "ActiveX", "SQL IDs", "Tables", "Trace status"])
         if not procedure_names:
             _add_table_row(
                 trace_table,
                 [
                     "n/a",
                     "n/a",
-                    ", ".join(sorted(activex)[:5]) or "n/a",
                     "n/a",
-                    ", ".join(sorted(form_db_tables.get(form_key, set()))[:8]) or "n/a",
+                    "n/a",
+                    "n/a",
+                    ", ".join(sorted(_lookup_set(form_db_tables, project_name, form_name))[:8]) or "n/a",
                     "TRACE_GAP",
                 ],
                 alt=False,
+                size=8,
             )
-            _set_cell_shading(trace_table.rows[1].cells[5], COLOR_RISK_MED_BG)
+            _set_cell_shading(trace_table.rows[1].cells[6], COLOR_RISK_MED_BG)
             continue
 
-        for idx, proc_name in enumerate(sorted(procedure_names)[:80]):
-            related_events = [
-                _as_dict(e)
-                for e in events
-                if proc_name in _clean(_as_dict(e).get("handler", {}).get("symbol"))
-            ]
-            related_sql = [
-                _as_dict(s)
-                for s in sql_entries
-                if _clean(_as_dict(s).get("procedure")) == proc_name
-            ]
+        for idx, proc_name in enumerate(sorted(procedure_names)[:120]):
+            related_events = [_as_dict(e) for e in events if proc_name in _clean(_as_dict(e).get("handler", {}).get("symbol"))]
+            related_sql = [_as_dict(s) for s in sql_entries if _clean(_as_dict(s).get("procedure")) == proc_name]
+            activex_hits: list[str] = []
+            for e in related_events:
+                trigger_control = _clean(_as_dict(e.get("trigger")).get("control"))
+                ctl_type = _clean(control_map.get(trigger_control.lower()))
+                if trigger_control and ctl_type and not ctl_type.upper().startswith("VB"):
+                    activex_hits.append(f"{trigger_control}:{ctl_type}")
             sql_ids = sorted({_clean(x.get("sql_id")) for x in related_sql if _clean(x.get("sql_id"))})
-            tables = sorted({_clean(t) for x in related_sql for t in _as_list(_as_dict(x).get("tables")) if _clean(t)})
-            trace_ok = bool(related_events) and bool(related_sql) and bool(activex)
+            table_names = sorted({_clean(t) for x in related_sql for t in _as_list(_as_dict(x).get("tables")) if _clean(t)})
+            event_refs = set(event_handler_by_key_proc.get((_form_key(project_name, form_name), proc_name), set()))
+            if not event_refs:
+                event_refs = {_clean(_as_dict(e.get("handler")).get("symbol")) for e in related_events if _clean(_as_dict(e.get("handler")).get("symbol"))}
+            trace_ok = bool(sql_ids) and bool(table_names)
+            kind = _callable_kind(
+                proc_name,
+                form_name,
+                _clean(_as_dict(related_events[0].get("trigger")).get("event")) if related_events else "",
+            )
             _add_table_row(
                 trace_table,
                 [
                     proc_name,
-                    ", ".join(_clean(e.get("entry_id")) for e in related_events[:3]) or "n/a",
-                    ", ".join(sorted(activex)[:5]) or "n/a",
+                    kind,
+                    ", ".join(sorted(event_refs)[:3]) or "n/a",
+                    ", ".join(sorted(set(activex_hits))[:5]) or "n/a",
                     ", ".join(sql_ids[:6]) or "n/a",
-                    ", ".join(tables[:8]) or "n/a",
+                    ", ".join(table_names[:8]) or "n/a",
                     "OK" if trace_ok else "TRACE_GAP",
                 ],
                 alt=(idx % 2 == 1),
                 size=8,
             )
-            _set_cell_shading(trace_table.rows[idx + 1].cells[5], COLOR_RISK_LOW_BG if trace_ok else COLOR_RISK_MED_BG)
+            _set_cell_shading(trace_table.rows[idx + 1].cells[6], COLOR_RISK_LOW_BG if trace_ok else COLOR_RISK_MED_BG)
 
     # Section Q
     doc.add_page_break()
@@ -902,18 +1788,33 @@ def _build_business_docx_bytes_rich(
     _add_section_intro(doc, _as_dict(plan.get("section_intros")).get("traceability", ""))
     trace_table = _build_table(
         doc,
-        ["Form", "Project", "has_event_map", "has_sql_map", "has_business_rules", "has_risk_entry", "missing_links"],
+        [
+            "Form",
+            "Project",
+            "has_event_map",
+            "has_sql_map",
+            "has_business_rules",
+            "has_risk_entry",
+            "completeness_score",
+            "missing_links",
+        ],
     )
     traceability_rows: list[dict[str, Any]] = []
-    for idx, row in enumerate(raw_form_dossiers[:300]):
-        r = _as_dict(row)
-        form_name = _clean(r.get("form_name")) or "n/a"
-        project_name = _clean(r.get("project_name"))
-        form_key = _base_form_name(form_name)
-        has_event = bool(form_event_rows.get(form_key))
-        has_sql = bool(form_sql_rows.get(form_key))
-        has_rules = bool(form_rule_rows.get(form_key))
-        has_risk = bool(form_risk_rows.get(form_key))
+    seen_trace_keys: set[str] = set()
+    for idx, form_ref in enumerate(
+        sorted(discovered_forms, key=lambda x: (_clean(x.get("project_name")), _clean(x.get("form_name")).lower()))[:500]
+    ):
+        form_name = _clean(form_ref.get("form_name")) or "n/a"
+        project_name = _clean(form_ref.get("project_name"))
+        form_key = _clean(form_ref.get("form_key")) or _form_key(project_name, form_name)
+        if form_key in seen_trace_keys:
+            continue
+        seen_trace_keys.add(form_key)
+        has_event = bool(_lookup_rows(form_event_rows, project_name, form_name))
+        has_sql = bool(_lookup_rows(form_sql_rows, project_name, form_name))
+        has_rules = bool(_lookup_rows(form_rule_rows, project_name, form_name))
+        has_risk = bool(_lookup_rows(form_risk_rows, project_name, form_name))
+        has_proc = bool(_lookup_rows(form_proc_rows, project_name, form_name))
         missing: list[str] = []
         if not has_event:
             missing.append("event_map")
@@ -923,15 +1824,19 @@ def _build_business_docx_bytes_rich(
             missing.append("business_rules")
         if not has_risk:
             missing.append("risk_register")
+        if not has_proc:
+            missing.append("procedure_summary")
+        completeness_score = int((int(has_event) + int(has_sql) + int(has_rules) + int(has_risk) + int(has_proc)) * 20)
         _add_table_row(
             trace_table,
             [
-                form_name,
+                _qualified_form_name(project_name, form_name),
                 _project_label(project_name, project_path_by_name),
                 "yes" if has_event else "no",
                 "yes" if has_sql else "no",
                 "yes" if has_rules else "no",
                 "yes" if has_risk else "no",
+                str(completeness_score),
                 ", ".join(missing) or "none",
             ],
             alt=(idx % 2 == 1),
@@ -940,10 +1845,13 @@ def _build_business_docx_bytes_rich(
         traceability_rows.append(
             {
                 "form_name": form_name,
+                "project_name": project_name,
+                "form_key": form_key,
+                "qualified_form": _qualified_form_name(project_name, form_name),
                 "missing": missing,
                 "risk_ids": [
                     _clean(_as_dict(rr).get("risk_id"))
-                    for rr in form_risk_rows.get(form_key, [])[:4]
+                    for rr in _lookup_rows(form_risk_rows, project_name, form_name)[:4]
                     if _clean(_as_dict(rr).get("risk_id"))
                 ],
             }
@@ -952,16 +1860,22 @@ def _build_business_docx_bytes_rich(
     # Section R
     _add_paragraph_with_role(doc, "Section R - Sprint Dependency Map", role="heading1")
     _add_section_intro(doc, _as_dict(plan.get("section_intros")).get("sprints", ""))
-    sprint_table = _build_table(doc, ["Form", "Suggested sprint", "Depends on", "Rationale"])
+    sprint_table = _build_table(doc, ["Form", "Suggested sprint", "Depends on", "Shared Components Required", "Rationale"])
     variant_gate_needed = bool(raw_variant_diff.get("decision_required"))
     sorted_rows = sorted(
         traceability_rows,
-        key=lambda row: (len(_as_list(row.get("missing"))), _clean(row.get("form_name"))),
+        key=lambda row: (len(_as_list(row.get("missing"))), 0 if _as_list(row.get("risk_ids")) else 1, _clean(row.get("qualified_form"))),
         reverse=True,
     )
     if not sorted_rows:
-        sorted_rows = [{"form_name": "n/a", "missing": ["event_map"], "risk_ids": []}]
-    for idx, row in enumerate(sorted_rows[:300]):
+        sorted_rows = [{"form_name": "n/a", "project_name": "", "form_key": "", "qualified_form": "n/a", "missing": ["event_map"], "risk_ids": []}]
+    emitted: set[str] = set()
+    for idx, row in enumerate(sorted_rows[:500]):
+        form_key = _clean(row.get("form_key"))
+        if form_key and form_key in emitted:
+            continue
+        if form_key:
+            emitted.add(form_key)
         missing = _as_list(row.get("missing"))
         risk_ids = _as_list(row.get("risk_ids"))
         deps: list[str] = []
@@ -973,24 +1887,25 @@ def _build_business_docx_bytes_rich(
             deps.append("Q.event_map")
         if "business_rules" in missing:
             deps.append("Q.business_rules")
-        deps.extend([_clean(x) for x in risk_ids[:2] if _clean(x)])
-
+        if risk_ids:
+            deps.extend([_clean(x) for x in risk_ids[:2] if _clean(x)])
         if "event_map" in missing or "sql_map" in missing:
             sprint = "Sprint 0 (Discovery closure)"
-            rationale = "Close traceability gaps before modernization delivery starts."
+            rationale = "Close traceability gaps before modernization changes."
         elif risk_ids:
             sprint = "Sprint 1 (Risk-first modernization)"
-            rationale = "Prioritize high-risk remediations before parity rollout."
+            rationale = "Implement remediation-first changes for high-risk legacy behavior."
         else:
             sprint = "Sprint 2 (Parity hardening)"
-            rationale = "Traceability is present; proceed with parity implementation/testing."
-
+            rationale = "Form has baseline traceability and can move into parity build/test."
+        shared_required = sorted(_lookup_set(form_shared_components, row.get("project_name"), row.get("form_name")))
         _add_table_row(
             sprint_table,
             [
-                _clean(row.get("form_name")) or "n/a",
+                _clean(row.get("qualified_form")) or _clean(row.get("form_name")) or "n/a",
                 sprint,
                 ", ".join(deps) or "none",
+                ", ".join(shared_required[:5]) or "none",
                 rationale,
             ],
             alt=(idx % 2 == 1),
@@ -1157,6 +2072,19 @@ def _build_business_paragraphs(payload: dict[str, Any], run_id: str) -> list[tup
         lines.append((f"Objective: {objective}", False))
     lines.append((f"Readiness Score: {_clean(data['glance'].get('readiness_score')) or 'n/a'}/100", False))
     lines.append((f"Risk Tier: {_clean(data['glance'].get('risk_tier')) or 'n/a'}", False))
+    qa_summary = _as_dict(data.get("qa_summary"))
+    if qa_summary:
+        lines.append(
+            (
+                "QA Summary: "
+                f"status={_clean(qa_summary.get('status')) or 'NOT_RUN'}, "
+                f"pass={_to_int(qa_summary.get('pass_count'))}, "
+                f"warn={_to_int(qa_summary.get('warn_count'))}, "
+                f"fail={_to_int(qa_summary.get('fail_count'))}, "
+                f"blockers={_to_int(qa_summary.get('blocker_count'))}",
+                False,
+            )
+        )
     lines.append(("Generated by Synthetix Analyst Agent", False))
     return lines
 

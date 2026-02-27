@@ -1,0 +1,331 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "synthetix-docgen/data.schema.json",
+  "title": "Synthetix DocGen Data Object",
+  "description": "Structured data object produced by parse-md.js and consumed by ba-brief.js and tech-workbook.js",
+  "type": "object",
+  "required": ["meta", "projects", "mapped_forms", "rules", "risks", "active_q", "active_sprints"],
+  "properties": {
+
+    "meta": {
+      "type": "object",
+      "description": "Document-level metadata shown on cover pages and headers",
+      "required": ["title", "generated_at"],
+      "properties": {
+        "title":        { "type": "string", "description": "Project/system name e.g. 'VB6 Banking System'" },
+        "repo_url":     { "type": "string", "description": "Repository URL shown on cover page" },
+        "generated_at": { "type": "string", "description": "ISO date string e.g. '2026-02-27'" }
+      }
+    },
+
+    "qa": {
+      "type": "object",
+      "description": "QA gate results from the analyst run (informational only — not rendered in documents)",
+      "properties": {
+        "status": { "type": "string", "enum": ["PASS", "FAIL", "WARN", "UNKNOWN"] },
+        "checks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "status": { "type": "string" },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "decision_brief": {
+      "type": "object",
+      "description": "Key-value pairs shown in the Executive Snapshot summary table (BA Brief Sec 1)",
+      "additionalProperties": { "type": "string" }
+    },
+
+    "decisions": {
+      "type": "array",
+      "description": "Blocking decisions required before sprint planning. Rendered in Decisions Required table.",
+      "items": {
+        "type": "object",
+        "required": ["id", "description"],
+        "properties": {
+          "id":          { "type": "string",  "description": "e.g. 'DEC-001' or 'Q-VARIANT-001'" },
+          "description": { "type": "string",  "description": "Full description of the decision required" }
+        }
+      }
+    },
+
+    "backlog": {
+      "type": "array",
+      "description": "Derived backlog items (informational — not rendered in current documents)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id":          { "type": "string" },
+          "priority":    { "type": "string" },
+          "type":        { "type": "string" },
+          "outcome":     { "type": "string" },
+          "acceptance":  { "type": "string" }
+        }
+      }
+    },
+
+    "projects": {
+      "type": "array",
+      "description": "Section A — project inventory. One row per .vbp project. Rendered in Tech Workbook Sec 1.",
+      "items": {
+        "type": "object",
+        "required": ["project"],
+        "properties": {
+          "project":      { "type": "string", "description": "Project name e.g. 'Project1 (BANKING.vbp)'" },
+          "type":         { "type": "string", "description": "e.g. 'Standard EXE'" },
+          "startup":      { "type": "string", "description": "Startup form/module name" },
+          "members":      { "type": "string", "description": "Total member count" },
+          "forms":        { "type": "string", "description": "Active form count" },
+          "dependencies": { "type": "string", "description": "External dependency count" },
+          "shared_tables":{ "type": "string", "description": "Shared table list" }
+        }
+      }
+    },
+
+    "dependencies": {
+      "type": "array",
+      "description": "Section B — external dependencies (OCX, DLL, COM). Rendered in Tech Workbook Sec 3.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name":   { "type": "string" },
+          "type":   { "type": "string" },
+          "guid":   { "type": "string" },
+          "forms":  { "type": "string" },
+          "risk":   { "type": "string" },
+          "action": { "type": "string" }
+        }
+      }
+    },
+
+    "events": {
+      "type": "array",
+      "description": "Section C — event handler inventory (informational)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "form":    { "type": "string" },
+          "handler": { "type": "string" },
+          "event":   { "type": "string" },
+          "calls":   { "type": "string" },
+          "activex": { "type": "string" }
+        }
+      }
+    },
+
+    "sql_entries": {
+      "type": "array",
+      "description": "Section D — SQL operations catalog. Rendered in Tech Workbook Sec 4, grouped by form.",
+      "items": {
+        "type": "object",
+        "required": ["id", "form", "op"],
+        "properties": {
+          "id":      { "type": "string",  "description": "e.g. 'SQL-001'" },
+          "form":    { "type": "string",  "description": "Form key (may or may not be qualified)" },
+          "handler": { "type": "string",  "description": "Event handler or procedure name" },
+          "op":      { "type": "string",  "description": "SELECT | INSERT | UPDATE | DELETE" },
+          "tables":  { "type": "string",  "description": "Comma-separated table names" },
+          "columns": { "type": "string",  "description": "Columns referenced (optional)" }
+        }
+      }
+    },
+
+    "rules": {
+      "type": "array",
+      "description": "Section E — business rules. Rendered in BA Brief Sec 3, grouped by form.",
+      "items": {
+        "type": "object",
+        "required": ["id", "form", "meaning"],
+        "properties": {
+          "id":       { "type": "string",  "description": "e.g. 'BR-001'. Must be unique." },
+          "form":     { "type": "string",  "description": "Form key. 'n/a' for project-level rules." },
+          "layer":    { "type": "string",  "description": "e.g. 'UI', 'BL', 'DAL'" },
+          "category": { "type": "string",  "description": "e.g. 'business_objective', 'input_validation'" },
+          "meaning":  { "type": "string",  "description": "Human-readable business meaning (no code literals)" },
+          "evidence": { "type": "string",  "description": "Source file:line reference" },
+          "risk":     { "type": "string",  "description": "RISK-xxx reference or 'none'" }
+        }
+      }
+    },
+
+    "rule_consolidation": {
+      "type": "array",
+      "description": "Section E2 — consolidated/suppressed rules. Informational, not rendered in documents.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule_id":            { "type": "string" },
+          "consolidated_count": { "type": "number" },
+          "form_count":         { "type": "number" },
+          "forms":              { "type": "string" },
+          "canonical_meaning":  { "type": "string" }
+        }
+      }
+    },
+
+    "findings": {
+      "type": "array",
+      "description": "Section F — detector findings. Rendered in Tech Workbook Sec 8.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id":          { "type": "string" },
+          "category":    { "type": "string" },
+          "form":        { "type": "string" },
+          "description": { "type": "string" },
+          "action":      { "type": "string" }
+        }
+      }
+    },
+
+    "mapped_forms": {
+      "type": "array",
+      "description": "Section K (mapped) — active forms. Rendered in BA Brief Sec 2 and Tech Workbook Sec 2.",
+      "items": {
+        "type": "object",
+        "required": ["form", "project"],
+        "properties": {
+          "form":             { "type": "string",  "description": "Qualified form key e.g. 'BANK_SYSTEM::frmDeposits'" },
+          "display_name":     { "type": "string",  "description": "Alias e.g. 'frmDeposits [Deposit Capture]'" },
+          "project":          { "type": "string",  "description": "Project name including display name in brackets" },
+          "form_type":        { "type": "string",  "description": "MDI_Host | MDI_Child | Login | Standard | Module" },
+          "status":           { "type": "string",  "enum": ["mapped", "excluded"] },
+          "purpose":          { "type": "string",  "description": "One-sentence business purpose (BA-friendly)" },
+          "inputs":           { "type": "string",  "description": "User-visible input fields" },
+          "outputs":          { "type": "string",  "description": "Business outcome when action completes" },
+          "activex":          { "type": "string",  "description": "ActiveX controls used" },
+          "db_tables":        { "type": "string",  "description": "Database tables touched" },
+          "actions":          { "type": "string",  "description": "Callable count or summary" },
+          "coverage":         { "type": "string",  "description": "Coverage percentage string e.g. '85%'" },
+          "confidence":       { "type": "string",  "description": "high | medium | low" },
+          "exclusion_reason": { "type": "string",  "description": "Reason for exclusion (excluded forms only)" }
+        }
+      }
+    },
+
+    "excluded_forms": {
+      "type": "array",
+      "description": "Section K (excluded) — raw excluded form entries (includes duplicates across variants)",
+      "items": { "$ref": "#/properties/mapped_forms/items" }
+    },
+
+    "excluded_unique": {
+      "type": "array",
+      "description": "Deduplicated excluded forms — one entry per filename. Rendered in BA Brief K1 table.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":     { "type": "string",  "description": "Short filename e.g. 'report.frm'" },
+          "type":     { "type": "string",  "description": "Form type" },
+          "projects": { "type": "array", "items": { "type": "string" }, "description": "Projects where this file appears" }
+        }
+      }
+    },
+
+    "risks": {
+      "type": "array",
+      "description": "Section L — risk register. Rendered in BA Brief Sec 6 and Tech Workbook Sec 7.",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "description"],
+        "properties": {
+          "id":          { "type": "string",  "description": "e.g. 'RISK-001'" },
+          "severity":    { "type": "string",  "description": "HIGH | MEDIUM | LOW (case-insensitive in renderer)" },
+          "form":        { "type": "string",  "description": "Affected form key" },
+          "description": { "type": "string",  "description": "Risk description" },
+          "action":      { "type": "string",  "description": "Recommended remediation action" }
+        }
+      }
+    },
+
+    "dep_map": {
+      "type": "array",
+      "description": "Section O — dependency/relationship map. Rendered in Tech Workbook Sec 6.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from":     { "type": "string" },
+          "to":       { "type": "string" },
+          "type":     { "type": "string",  "description": "mdi_navigation | shared_module_call | cross_variant_schema_conflict" },
+          "evidence": { "type": "string" },
+          "blocks":   { "type": "string",  "description": "Which sprint this blocks e.g. 'Sprint 1'" }
+        }
+      }
+    },
+
+    "form_traces": {
+      "type": "object",
+      "description": "Section P — per-form callable traces. Keys are form names. Rendered in Tech Workbook Sec 5.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "callable": { "type": "string",  "description": "Procedure or event handler name" },
+            "kind":     { "type": "string",  "description": "event_handler | procedure" },
+            "event":    { "type": "string",  "description": "Triggering VB6 event" },
+            "activex":  { "type": "string" },
+            "sql_ids":  { "type": "string",  "description": "Comma-separated SQL IDs from Section D" },
+            "tables":   { "type": "string",  "description": "Tables touched" },
+            "status":   { "type": "string",  "description": "OK | TRACE_GAP" }
+          }
+        }
+      }
+    },
+
+    "traceability": {
+      "type": "array",
+      "description": "Section Q — coverage matrix (alias: active_q). Rendered in BA Brief Sec 4.",
+      "items": { "$ref": "#/properties/active_q/items" }
+    },
+
+    "active_q": {
+      "type": "array",
+      "description": "Section Q — active form coverage matrix. Rendered in BA Brief Sec 4 traceability table.",
+      "items": {
+        "type": "object",
+        "required": ["form", "score"],
+        "properties": {
+          "form":               { "type": "string",  "description": "Qualified form key" },
+          "project":            { "type": "string",  "description": "Project name" },
+          "has_event_map":      { "type": "string",  "description": "yes | no" },
+          "has_sql_map":        { "type": "string",  "description": "yes | no" },
+          "has_business_rules": { "type": "string",  "description": "yes | no" },
+          "has_risk_entry":     { "type": "string",  "description": "yes | no" },
+          "score":              { "type": "number",  "description": "0-100 coverage score" },
+          "missing_links":      { "type": "string",  "description": "Comma-separated missing dimension names" }
+        }
+      }
+    },
+
+    "sprints": {
+      "type": "array",
+      "description": "Section R — sprint assignments (alias: active_sprints). Rendered in BA Brief Sec 5.",
+      "items": { "$ref": "#/properties/active_sprints/items" }
+    },
+
+    "active_sprints": {
+      "type": "array",
+      "description": "Section R — sprint assignments. Rendered in BA Brief Sec 5 sprint dependency table.",
+      "items": {
+        "type": "object",
+        "required": ["form", "sprint"],
+        "properties": {
+          "form":       { "type": "string",  "description": "Qualified form key" },
+          "sprint":     { "type": "string",  "description": "Sprint 0 — Discovery | Sprint 1 — Risk-First | Sprint 2 — Hardening" },
+          "depends_on": { "type": "string",  "description": "Dependency form name or '—'" },
+          "shared":     { "type": "string",  "description": "Shared component name or 'none'" },
+          "rationale":  { "type": "string",  "description": "Sprint assignment rationale" }
+        }
+      }
+    }
+
+  }
+}

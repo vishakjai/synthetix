@@ -490,6 +490,10 @@ const state = {
   analyst: {
     selectedTab: "spec",
   },
+  runStart: {
+    pending: false,
+    startedAt: 0,
+  },
 };
 
 let mermaidInitialized = false;
@@ -1908,6 +1912,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const semanticFormAlias = ({ formName, purpose, dbTables, procedures, rules, controls = [] }) => {
     const formToken = String(formName || "").toLowerCase();
     const isGenericForm = /^(form\d+|frm\d+)$/i.test(formToken);
+    if (formToken.endsWith("frmsearch") || formToken === "frmsearch") return "Record Search";
     if (formToken.endsWith("frmtransactions") || formToken.endsWith("transactions")) return "Transaction History";
     if (formToken.endsWith("frmtransaction") || formToken.endsWith("transaction")) return "Transaction Entry";
     const purposeLow = String(purpose || "").toLowerCase();
@@ -1935,7 +1940,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     if (["accounttype", "acctype"].some((k) => tokenBlob.includes(k))) return "Account Type Maintenance";
     if (["customer", "tblcustomer"].some((k) => tokenBlob.includes(k))) return "Customer Management";
     if (["report", "datareport", "dataenvironment"].some((k) => tokenBlob.includes(k))) return "Reporting";
-    if (["search", "lookup", "find"].some((k) => tokenBlob.includes(k))) return "Search";
+    if (["search", "lookup", "find"].some((k) => tokenBlob.includes(k))) return "Record Search";
     if (["main", "mdiform", "toolbar"].some((k) => tokenBlob.includes(k))) return "Navigation Hub";
     if (["balance", "tblbalance"].some((k) => tokenBlob.includes(k))) return "Balance Inquiry";
     if (["timer", "progressbar", "splash"].some((k) => tokenBlob.includes(k))) return "Splash/Loading";
@@ -2171,6 +2176,9 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
       });
     });
   });
+  const knownFormBases = new Set(
+    rawFormDossiers.map((d) => baseFormName(d?.form_name)).filter(Boolean),
+  );
   const ruleFormBases = (ruleRow) => {
     const scope = (ruleRow?.scope && typeof ruleRow.scope === "object") ? ruleRow.scope : {};
     const candidates = [
@@ -2195,7 +2203,8 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         if (!low) return;
         if (/\.(bas|cls|ctl|ctx|vbp|vbg|res|dsr|dca|dcx)$/i.test(low)) return;
         if (/(?:_|^)(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$/i.test(low)) return;
-        if (!(low.includes("frm") || low.startsWith("form") || ["main", "mdiform", "login"].includes(low))) return;
+        const normalizedBase = baseFormName(raw);
+        if (!(low.includes("frm") || low.startsWith("form") || ["main", "mdiform", "login"].includes(low) || knownFormBases.has(normalizedBase))) return;
         const base = baseFormName(raw);
         if (base) bases.add(base);
       });
@@ -2250,32 +2259,44 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     });
   });
   const donorRulesBySemantic = {};
+  const semanticGroup = (semantic) => {
+    const s = String(semantic || "").trim().toLowerCase();
+    if (["transaction entry", "transaction history", "transaction ledger"].includes(s)) return "transaction_workflow";
+    if (["password management", "authentication", "authentication entry"].includes(s)) return "authentication_workflow";
+    if (["record search", "search"].includes(s)) return "record_search_workflow";
+    return s;
+  };
   const allowedSemantics = new Set([
     "deposit capture",
     "withdrawal processing",
+    "transaction entry",
     "transaction ledger",
+    "transaction history",
     "customer management",
     "account type maintenance",
     "password management",
+    "authentication",
+    "record search",
   ]);
   Object.entries(formRuleRows).forEach(([key, rows]) => {
     const semantic = String(semanticByKey[key] || "").trim();
     if (!allowedSemantics.has(semantic)) return;
     const list = Array.isArray(rows) ? rows : [];
     if (!list.length) return;
-    if (!donorRulesBySemantic[semantic]) donorRulesBySemantic[semantic] = [];
-    const existingIds = new Set(donorRulesBySemantic[semantic].map((r) => String(r?.rule_id || r?.id || "").trim()).filter(Boolean));
+    const semanticBucket = semanticGroup(semantic);
+    if (!donorRulesBySemantic[semanticBucket]) donorRulesBySemantic[semanticBucket] = [];
+    const existingIds = new Set(donorRulesBySemantic[semanticBucket].map((r) => String(r?.rule_id || r?.id || "").trim()).filter(Boolean));
     list.forEach((r) => {
       const rid = String(r?.rule_id || r?.id || "").trim();
       if (rid && existingIds.has(rid)) return;
-      donorRulesBySemantic[semantic].push(r);
+      donorRulesBySemantic[semanticBucket].push(r);
       if (rid) existingIds.add(rid);
     });
   });
   Object.entries(semanticByKey).forEach(([key, semantic]) => {
     if (!allowedSemantics.has(semantic)) return;
     if (Array.isArray(formRuleRows[key]) && formRuleRows[key].length) return;
-    const mirrored = Array.isArray(donorRulesBySemantic[semantic]) ? donorRulesBySemantic[semantic].slice(0, 8) : [];
+    const mirrored = Array.isArray(donorRulesBySemantic[semanticGroup(semantic)]) ? donorRulesBySemantic[semanticGroup(semantic)].slice(0, 8) : [];
     if (mirrored.length) formRuleRows[key] = mirrored;
   });
   const formControlTypeByKey = {};
@@ -2508,11 +2529,20 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     if (ruleRows.length) {
       lines.push("| Rule ID | Form | Layer | Category | Business Meaning | Implementation Evidence | Risk links |");
       lines.push("|---|---|---|---|---|---|---|");
+      const variantProjectsByBase = {};
+      rawFormDossiers.forEach((dossier) => {
+        const base = baseFormName(dossier?.form_name);
+        const proj = String(dossier?.project_name || "").trim();
+        if (!base || !proj) return;
+        if (!variantProjectsByBase[base]) variantProjectsByBase[base] = new Set();
+        variantProjectsByBase[base].add(proj);
+      });
       const rulesByForm = {};
       const rawRulesByForm = {};
       const seenRuleFormPairs = new Set();
       const seenSourceVariantPairs = new Set();
       const emittedFormLabels = new Set();
+      const emittedQualifiedFormLabels = new Set();
       const existingRuleNumbers = [];
       const usedOutputRuleIds = new Set();
       const saturatedMeaningTemplates = new Set([
@@ -2548,7 +2578,8 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
             if (!low) return;
             if (/\.(bas|cls|ctl|ctx|vbp|vbg|res|dsr|dca|dcx)$/i.test(low)) return;
             if (/(?:_|^)(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$/i.test(low)) return;
-            if (!(low.includes("frm") || low.startsWith("form") || ["main", "mdiform", "login"].includes(low))) return;
+            const normalizedBase = baseFormName(token);
+            if (!(low.includes("frm") || low.startsWith("form") || ["main", "mdiform", "login"].includes(low) || knownFormBases.has(normalizedBase))) return;
             const normalizedDisplay = (low === "main") ? "main" : token;
             if (!formsOut.includes(normalizedDisplay)) formsOut.push(normalizedDisplay);
           });
@@ -2597,6 +2628,19 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         return { text, suppress: true, anchorRuleId: first };
       };
 
+      const pickBackfillRule = (candidates) => {
+        const rows = Array.isArray(candidates) ? candidates : [];
+        if (!rows.length) return null;
+        let preferred = null;
+        for (const row of rows) {
+          const category = String(row?.category || row?.rule_type || "other").trim();
+          const meaning = ruleBusinessMeaning(String(row?.statement || ""), category);
+          if (meaning && !saturatedMeaningTemplates.has(meaning)) return row;
+          if (!preferred) preferred = row;
+        }
+        return preferred;
+      };
+
       ruleRows.slice(0, 700).forEach((row) => {
         const sourceRuleId = String(row?.rule_id || row?.id || "n/a").trim() || "n/a";
         const m = sourceRuleId.match(/(\d+)$/);
@@ -2632,6 +2676,8 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         ruleForms.slice(0, 16).forEach((formItem) => {
           const formDisplay = (baseFormName(formItem) === "main") ? "main" : (String(formItem || "").trim() || "n/a");
           const normalized = baseFormName(formDisplay) || String(formDisplay || "").trim().toLowerCase() || "n/a";
+          const isGenericBase = /^(form\d+|frm\d+)$/i.test(normalized);
+          if (!String(formDisplay || "").includes("::") && isGenericBase && (variantProjectsByBase[normalized]?.size || 0) > 1) return;
           const pairKey = `${sourceRuleId.toLowerCase()}::${normalized.toLowerCase()}`;
           if (seenRuleFormPairs.has(pairKey)) return;
           seenRuleFormPairs.add(pairKey);
@@ -2655,6 +2701,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
           }
           lines.push(`| ${allocated.id} | ${String(formDisplay || "n/a")} | ${layer} | ${category} | ${rowMeaning.replace(/\|/g, "\\|") || "n/a"} | ${String(evidenceOut || "n/a").replace(/\|/g, "\\|")} | ${Array.from(relatedRiskIds).sort().slice(0, 6).join(", ") || "none"} |`);
           emittedFormLabels.add(String(formDisplay || "n/a").toLowerCase());
+          if (String(formDisplay || "").includes("::")) emittedQualifiedFormLabels.add(String(formDisplay || "").toLowerCase());
           if (!rulesByForm[normalized]) rulesByForm[normalized] = [];
           if (!rawRulesByForm[normalized]) rawRulesByForm[normalized] = [];
           rulesByForm[normalized].push({ rule_id: allocated.id, meaning: rowMeaning });
@@ -2698,11 +2745,49 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
           const evidence = `mirrored_from_variant_mapping (source=${sourceRuleId || "n/a"})`;
           lines.push(`| ${mirroredRuleId} | ${qualified} | ${layer} | ${category} | ${mirroredMeaning.replace(/\|/g, "\\|")} | ${evidence.replace(/\|/g, "\\|")} | ${Array.from(relatedRiskIds).sort().slice(0, 6).join(", ") || "none"} |`);
           emittedFormLabels.add(String(qualified || "n/a").toLowerCase());
+          emittedQualifiedFormLabels.add(String(qualified || "").toLowerCase());
           if (!rulesByForm[base]) rulesByForm[base] = [];
           if (!rawRulesByForm[base]) rawRulesByForm[base] = [];
           rulesByForm[base].push({ rule_id: mirroredRuleId, meaning: mirroredMeaning });
           rawRulesByForm[base].push(mr);
         });
+      });
+
+      // E/Q synchronization backfill: emit one qualified row when Q has rules for a form
+      // but E has no qualified row for that form label.
+      rawFormDossiers.forEach((dossier) => {
+        const projectName = String(dossier?.project_name || "").trim();
+        const formName = String(dossier?.form_name || "").trim();
+        const base = baseFormName(formName);
+        if (!base) return;
+        const qualified = qualifiedFormName(projectName, base === "main" ? "main" : formName);
+        if (!qualified || emittedQualifiedFormLabels.has(String(qualified).toLowerCase())) return;
+        const candidateRows = lookupRows(formRuleRows, projectName, formName);
+        if (!Array.isArray(candidateRows) || !candidateRows.length) return;
+        const chosen = pickBackfillRule(candidateRows);
+        if (!chosen) return;
+        const sourceRuleId = String(chosen?.rule_id || chosen?.id || "n/a").trim() || "n/a";
+        const category = String(chosen?.category || chosen?.rule_type || "other").trim() || "other";
+        const statement = String(chosen?.statement || "");
+        const layer = ["data_persistence", "calculation_logic", "threshold_rule"].includes(category.toLowerCase()) ? "Data" : "Presentation";
+        const backfillMeaning = ruleBusinessMeaning(statement, category) || statement || "n/a";
+        const allocated = allocateRuleId(sourceRuleId);
+        const relatedRiskIds = new Set();
+        lookupRows(formRiskRows, projectName, formName).forEach((riskRow) => {
+          const ridRisk = String(riskRow?.risk_id || "").trim();
+          if (ridRisk) relatedRiskIds.add(ridRisk);
+        });
+        let evidence = `variant_backfill_for_eq_sync (source=${sourceRuleId || "n/a"})`;
+        if (allocated.sourceHint && allocated.sourceHint.toLowerCase() !== allocated.id.toLowerCase()) {
+          evidence = `${evidence}; source_rule=${allocated.sourceHint}`;
+        }
+        lines.push(`| ${allocated.id} | ${qualified} | ${layer} | ${category} | ${String(backfillMeaning || "n/a").replace(/\|/g, "\\|")} | ${String(evidence).replace(/\|/g, "\\|")} | ${Array.from(relatedRiskIds).sort().slice(0, 6).join(", ") || "none"} |`);
+        emittedFormLabels.add(String(qualified || "n/a").toLowerCase());
+        emittedQualifiedFormLabels.add(String(qualified || "").toLowerCase());
+        if (!rulesByForm[base]) rulesByForm[base] = [];
+        if (!rawRulesByForm[base]) rawRulesByForm[base] = [];
+        rulesByForm[base].push({ rule_id: allocated.id, meaning: backfillMeaning });
+        rawRulesByForm[base].push(chosen);
       });
 
       if (Object.keys(rulesByForm).length) {
@@ -3249,6 +3334,8 @@ function wireAnalystDocActions(rootNode, run) {
   if (!rootNode || !run?.run_id) return;
   const exportSummaryBtn = rootNode.querySelector("[data-analyst-export-summary]");
   const exportFullBtn = rootNode.querySelector("[data-analyst-export-full]");
+  const exportBaBriefDocxBtn = rootNode.querySelector("[data-analyst-export-ba-brief-docx]");
+  const exportTechWorkbookDocxBtn = rootNode.querySelector("[data-analyst-export-tech-workbook-docx]");
   const exportBusinessDocxBtn = rootNode.querySelector("[data-analyst-export-business-docx]");
   const uploadTrigger = rootNode.querySelector("[data-analyst-upload-trigger]");
   const uploadInput = rootNode.querySelector("[data-analyst-upload-file]");
@@ -3257,6 +3344,45 @@ function wireAnalystDocActions(rootNode, run) {
     if (!statusNode) return;
     statusNode.textContent = String(text || "");
     statusNode.className = `mt-1 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
+  };
+
+  const exportDocgenDocx = async (docType, btn, label) => {
+    try {
+      if (btn) btn.setAttribute("disabled", "true");
+      setStatus(`Generating ${label}...`);
+      const response = await fetch(
+        `/api/runs/${encodeURIComponent(String(run.run_id))}/analyst-docgen-docx?type=${encodeURIComponent(docType)}`,
+        { method: "GET" },
+      );
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+          const payload = await response.json();
+          message = String(payload?.error || message);
+        } catch (_err) {
+          // no-op
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const header = String(response.headers.get("content-disposition") || "");
+      const match = header.match(/filename=\"?([^\";]+)\"?/i);
+      const fallback = `${docType}-${String(run.run_id)}-${new Date().toISOString().replace(/[:.]/g, "-")}.docx`;
+      const filename = (match && match[1]) ? match[1] : fallback;
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setStatus(`${label} exported.`);
+    } catch (err) {
+      setStatus(`${label} export failed: ${err?.message || err}`, true);
+    } finally {
+      if (btn) btn.removeAttribute("disabled");
+    }
   };
 
   if (exportSummaryBtn) {
@@ -3276,6 +3402,18 @@ function wireAnalystDocActions(rootNode, run) {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       downloadText(`analyst-tech-req-full-${run.run_id}-${stamp}.md`, markdown, "text/markdown;charset=utf-8");
       setStatus("Full evidence technical requirements document exported.");
+    });
+  }
+
+  if (exportBaBriefDocxBtn) {
+    exportBaBriefDocxBtn.addEventListener("click", async () => {
+      await exportDocgenDocx("ba_brief", exportBaBriefDocxBtn, "BA Brief DOCX");
+    });
+  }
+
+  if (exportTechWorkbookDocxBtn) {
+    exportTechWorkbookDocxBtn.addEventListener("click", async () => {
+      await exportDocgenDocx("tech_workbook", exportTechWorkbookDocxBtn, "Tech Workbook DOCX");
     });
   }
 
@@ -5460,7 +5598,7 @@ function renderDiscoverLinearIssuesPreview() {
   if (!issues.length) {
     el.bfLinearIssuesStatus.textContent = "No issue list loaded.";
     el.bfLinearIssuesStatus.className = "text-[11px] text-slate-700";
-    el.bfLinearIssuesPreview.innerHTML = `<p class="text-slate-700">Set issue provider and click <strong>Load issues</strong>.</p>`;
+    el.bfLinearIssuesPreview.innerHTML = `<p class="text-slate-700">Issue tracker is optional. Configure provider + board/project only if you want linked issue context.</p>`;
     return;
   }
   const team = (view.team && typeof view.team === "object") ? view.team : {};
@@ -5727,6 +5865,13 @@ async function loadDiscoverGithubTree() {
 async function loadDiscoverLinearIssues() {
   const integration = getIntegrationContext();
   const issueProvider = String(integration?.brownfield?.issue_provider || "").toLowerCase();
+  const issueProject = String(integration?.brownfield?.issue_project || "").trim();
+  if (!issueProvider || !issueProject) {
+    state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
+    renderDiscoverIntegrationPreviews();
+    renderDiscoverInsights();
+    return;
+  }
   if (issueProvider && !["linear", "jira"].includes(issueProvider)) {
     state.discoverLinearIssues = {
       loading: false,
@@ -5744,8 +5889,8 @@ async function loadDiscoverLinearIssues() {
   try {
     const data = await api("/api/discover/issues", {
       integration_context: integration,
-      issue_provider: issueProvider || "linear",
-      issue_project: String(integration?.brownfield?.issue_project || "").trim(),
+      issue_provider: issueProvider,
+      issue_project: issueProject,
       max_issues: 80,
     }, "POST");
     state.discoverLinearIssues = {
@@ -5912,7 +6057,7 @@ function applyIntegrationContext(ctx) {
   const gf = (ctx.greenfield && typeof ctx.greenfield === "object") ? ctx.greenfield : {};
   if (el.gfRepoDestination) el.gfRepoDestination.value = String(gf.repo_destination || "");
   if (el.gfRepoTarget) el.gfRepoTarget.value = String(gf.repo_target || "");
-  if (el.gfTrackerProvider) el.gfTrackerProvider.value = String(gf.tracker_provider || "jira");
+  if (el.gfTrackerProvider) el.gfTrackerProvider.value = String(gf.tracker_provider || "none");
   if (el.gfTrackerProject) el.gfTrackerProject.value = String(gf.tracker_project || "");
   if (el.gfSaveGenerated) el.gfSaveGenerated.checked = gf.save_generated_codebase !== false;
   if (el.gfReadWriteTracker) el.gfReadWriteTracker.checked = gf.read_write_tracker !== false;
@@ -6003,8 +6148,7 @@ function discoverStepCompletion() {
   } else if (integration.project_state_detected === "greenfield") {
     connectComplete = connectComplete
       && !!integration.greenfield.repo_destination
-      && !!integration.greenfield.repo_target
-      && (!!integration.greenfield.tracker_provider === false || integration.greenfield.tracker_provider === "none" || !!integration.greenfield.tracker_project);
+      && !!integration.greenfield.repo_target;
   }
   const objective = String(el.objectives?.value || "").trim();
   const customDomainPackValid = !String(integration.domain_pack_error || "").trim()
@@ -6102,9 +6246,16 @@ function renderDiscoverStepper() {
       ].join(" | ");
       el.discoverResultsIntegrations.textContent = `Integrations: Brownfield (${linked})`;
     } else if (integration.project_state_detected === "greenfield") {
+      const trackerConfigured = !!integration.greenfield.tracker_provider
+        && integration.greenfield.tracker_provider !== "none"
+        && !!integration.greenfield.tracker_project;
+      const trackerPartiallyConfigured = (
+        (!!integration.greenfield.tracker_provider && integration.greenfield.tracker_provider !== "none")
+        || !!integration.greenfield.tracker_project
+      ) && !trackerConfigured;
       const linked = [
         integration.greenfield.repo_destination && integration.greenfield.repo_target ? "target repo ready" : "target repo missing",
-        integration.greenfield.tracker_provider === "none" || (integration.greenfield.tracker_provider && integration.greenfield.tracker_project) ? "tracker ready" : "tracker missing",
+        trackerConfigured ? "tracker linked" : (trackerPartiallyConfigured ? "tracker incomplete (optional)" : "tracker optional"),
       ].join(" | ");
       el.discoverResultsIntegrations.textContent = `Integrations: Greenfield (${linked})`;
     } else {
@@ -7747,6 +7898,11 @@ function renderProgress() {
   const pct = Math.round((completed / AGENTS.length) * 100);
   el.progressFill.style.width = `${pct}%`;
   el.progressMeta.textContent = `${completed} / ${AGENTS.length} stages complete`;
+  if (state.runStart?.pending) {
+    const elapsed = Math.max(0, Math.floor((Date.now() - Number(state.runStart.startedAt || Date.now())) / 1000));
+    el.pipelineStatusText.textContent = `STARTING RUN... (${elapsed}s)`;
+    return;
+  }
   el.pipelineStatusText.textContent = (state.currentRun?.status || "idle").toUpperCase();
 }
 
@@ -8474,10 +8630,25 @@ function renderCurrentAgentPanel() {
         ${result?.output ? `<button data-open-stage="${agent.stage}" class="btn-dark mt-2 rounded-md px-3 py-1.5 text-xs font-semibold">View Output</button>` : ""}
       </div>
     </div>
+    ${Number(agent.stage) === 1 && run?.run_id && result?.output ? `
+      <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <button data-analyst-export-ba-brief-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BA Brief</button>
+          <button data-analyst-export-tech-workbook-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Workbook</button>
+          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Legacy Business</button>
+          <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
+          <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
+        </div>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Quick exports for Analyst output.</p>
+      </div>
+    ` : ""}
   `;
 
   const openBtn = el.currentAgentPanel.querySelector("[data-open-stage]");
   if (openBtn) openBtn.addEventListener("click", () => openStageModal(Number(openBtn.getAttribute("data-open-stage"))));
+  if (Number(agent.stage) === 1 && run?.run_id && result?.output) {
+    wireAnalystDocActions(el.currentAgentPanel, run);
+  }
 }
 
 function renderAgentTabs() {
@@ -8531,11 +8702,13 @@ function renderAgentTabPanel() {
         <div class="flex flex-wrap items-center gap-2">
           <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
-          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Business DOCX</button>
+          <button data-analyst-export-ba-brief-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BA Brief</button>
+          <button data-analyst-export-tech-workbook-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Workbook</button>
+          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Legacy Business</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export business-ready DOCX, or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export BA Brief or Tech Workbook DOCX, or upload an updated version.</p>
       </div>
     ` : ""}
     <div class="mt-2 rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs text-slate-800">${renderReadableOutput(stage, result?.output || {}, runUseCase)}</div>
@@ -9002,11 +9175,13 @@ function openStageModal(stage) {
         <div class="flex flex-wrap items-center gap-2">
           <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
-          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Business DOCX</button>
+          <button data-analyst-export-ba-brief-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BA Brief</button>
+          <button data-analyst-export-tech-workbook-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Workbook</button>
+          <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Legacy Business</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export business-ready DOCX, or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export BA Brief or Tech Workbook DOCX, or upload an updated version.</p>
       </div>
       <div class="mt-2">${renderReadableOutput(stage, result.output || {}, runUseCase)}</div>
     `;
@@ -9041,6 +9216,7 @@ function renderFlowDiagram() {
 function renderRunControls() {
   const status = String(state.currentRun?.status || "").toLowerCase();
   const hasRun = Boolean(state.currentRunId);
+  const isStarting = !!state.runStart?.pending;
   const canPause = hasRun && (status === "running" || status === "waiting_approval");
   const canResume = hasRun && status === "paused";
   const canRerun = hasRun && status && status !== "running";
@@ -9052,6 +9228,12 @@ function renderRunControls() {
   if (el.runRerunStage) el.runRerunStage.disabled = !canRerun;
   if (el.runAbort) el.runAbort.disabled = !canAbort;
   if (el.runIntervene) el.runIntervene.disabled = !canIntervene;
+  if (el.runPipeline) {
+    el.runPipeline.disabled = isStarting;
+    el.runPipeline.textContent = isStarting ? "Starting Run..." : "Start Run";
+    el.runPipeline.classList.toggle("opacity-60", isStarting);
+    el.runPipeline.classList.toggle("cursor-not-allowed", isStarting);
+  }
 }
 
 async function runControl(action, payload = {}) {
@@ -9414,13 +9596,23 @@ function selectedStageAgentIdsForRun() {
 }
 
 async function startRun() {
+  if (state.runStart?.pending) return;
   const objectives = (el.objectives.value || "").trim();
   if (!objectives) {
     alert("Business challenge is required.");
     return;
   }
+  state.runStart.pending = true;
+  state.runStart.startedAt = Date.now();
+  setGlobalSearchStatus("Starting run request...");
+  renderRunControls();
+  renderProgress();
   const integrationContext = getIntegrationContext();
   if (String(integrationContext.domain_pack_error || "").trim()) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
     alert(`Domain Pack configuration error: ${integrationContext.domain_pack_error}`);
     setMode(MODES.DISCOVER);
     setWizardStep(1);
@@ -9438,6 +9630,10 @@ async function startRun() {
   const selectedProvider = String(el.provider.value || "anthropic").toLowerCase();
   const llmProvider = state.settings?.llm?.providers?.[selectedProvider] || {};
   if (!llmProvider.has_secret) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
     alert(`No ${selectedProvider} API key is configured. Save it in Settings > LLM credentials.`);
     setMode(MODES.SETTINGS);
     return;
@@ -9450,21 +9646,37 @@ async function startRun() {
       const provider = String(integration?.brownfield?.repo_provider || "").toLowerCase();
       const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
       if (provider !== "github" || !repoUrl) {
+        state.runStart.pending = false;
+        state.runStart.startedAt = 0;
+        renderRunControls();
+        renderProgress();
         alert("Code modernization repository scan mode requires a connected GitHub repository in Discover Connect.");
         return;
       }
     } else if (!(el.legacyCode.value || "").trim()) {
+      state.runStart.pending = false;
+      state.runStart.startedAt = 0;
+      renderRunControls();
+      renderProgress();
       alert("Legacy code is required for code modernization use case.");
       return;
     }
   }
   if (useCase === "database_conversion" && !(el.dbSchema.value || "").trim()) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
     alert("Legacy schema/SQL is required for database conversion use case.");
     return;
   }
   const discoverCompletion = discoverStepCompletion();
   const requiresConnectStep = useCase === "code_modernization" && isModernizationRepoScanMode();
   if (!discoverCompletion.scopeComplete || !discoverCompletion.scanComplete || (requiresConnectStep && !discoverCompletion.connectComplete)) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
     const blockers = [];
     if (requiresConnectStep && !discoverCompletion.connectComplete) blockers.push("Connect");
     if (!discoverCompletion.scopeComplete) blockers.push("Define scope");
@@ -9478,6 +9690,10 @@ async function startRun() {
     return;
   }
   if (String(el.deploymentTarget.value || "local").toLowerCase() === "cloud" && !el.enableCloudPromotion?.checked) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
     alert("Cloud target is locked by local-first policy. Enable 'cloud promotion for this run' to continue.");
     return;
   }
@@ -9527,29 +9743,48 @@ async function startRun() {
     integration_context: integrationContext,
   };
 
+  let data = null;
   try {
-    const data = await api("/api/runs", payload);
-    state.currentRunId = data.run_id;
-    state.selectedStage = 1;
-    state.currentRun = {
-      run_id: data.run_id,
-      status: "running",
-      current_stage: 0,
-      stage_status: {},
-      progress_logs: [],
-      pipeline_state: null,
-      error_message: null,
-      retry_count: 0,
-      team_id: state.teamSelection.teamId,
-      team_name: state.teamSelection.teamName,
-    };
-    renderRun();
-    await refreshRunHistory();
-    await syncRun(data.run_id);
-    setMode(MODES.BUILD);
+    data = await api("/api/runs", payload);
   } catch (err) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    setGlobalSearchStatus(`Start run failed: ${err.message || err}`, true);
+    renderRunControls();
+    renderProgress();
     alert(`Failed to start run: ${err.message}`);
+    return;
   }
+
+  // Treat run creation as the authoritative success point. Follow-up sync
+  // failures should not make the UI appear as if the run never started.
+  state.currentRunId = data.run_id;
+  state.selectedStage = 1;
+  state.currentRun = {
+    run_id: data.run_id,
+    status: "running",
+    current_stage: 0,
+    stage_status: {},
+    progress_logs: [],
+    pipeline_state: null,
+    error_message: null,
+    retry_count: 0,
+    team_id: state.teamSelection.teamId,
+    team_name: state.teamSelection.teamName,
+  };
+  state.runStart.pending = false;
+  state.runStart.startedAt = 0;
+  setGlobalSearchStatus(`Run ${data.run_id} started. Streaming live updates...`);
+  setMode(MODES.BUILD);
+  renderRun();
+
+  Promise.allSettled([refreshRunHistory(), syncRun(data.run_id)]).then((results) => {
+    const failed = results.filter((row) => row.status === "rejected");
+    if (failed.length) {
+      console.warn("Run started but follow-up sync failed", failed);
+      setGlobalSearchStatus("Run started, but initial sync is delayed. Live stream will continue updating.", true);
+    }
+  });
 }
 
 async function refreshArtifactsList() {

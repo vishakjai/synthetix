@@ -42,6 +42,45 @@ python web/server.py
 # Open http://127.0.0.1:8788
 ```
 
+## Docker Compose (Recommended for start/stop)
+
+Use Docker Compose if you want one-command lifecycle management and a consistent runtime environment.
+
+```bash
+# from repo root
+docker compose up -d --build
+# Open http://127.0.0.1:8788
+```
+
+Stop/remove container:
+
+```bash
+docker compose down
+```
+
+Useful operations:
+
+```bash
+docker compose logs -f synthetix
+docker compose restart synthetix
+```
+
+Persistent data is mounted to local folders so history/artifacts survive container restarts:
+
+- `pipeline_runs/`
+- `run_artifacts/`
+- `team_data/`
+- `context_vault/`
+- `.deliveryos/`
+- `deploy_output/`
+
+Set provider keys in your shell (or `.env`) before `docker compose up`:
+
+```bash
+export OPENAI_API_KEY="..."
+export ANTHROPIC_API_KEY="..."
+```
+
 In the UI:
 - Paste legacy ASP source in **Legacy ASP Code**
 - Set **Target Modernization Language**

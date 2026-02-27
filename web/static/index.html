@@ -296,25 +296,14 @@
             </p>
           </div>
         </div>
-        <div class="mt-4 grid gap-2 text-xs text-slate-700 sm:grid-cols-4">
-          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>Work ID:</strong> context-driven</div>
-          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>Run ID:</strong> immutable</div>
-          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>Artifacts:</strong> versioned</div>
-          <div class="rounded-lg border border-slate-300 bg-slate-50 px-3 py-2"><strong>RBAC:</strong> policy-bound</div>
-        </div>
       </header>
 
       <section id="home-screen" class="rounded-2xl border border-slate-300/70 bg-white/90 p-6 shadow-card backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="dashboard-title" class="text-xl font-semibold text-ink-950">Portfolio overview</h2>
-          <p id="dashboard-subtitle" class="text-xs text-slate-700">Delivery outcomes, risk posture, and governance status.</p>
+          <h2 id="dashboard-title" class="text-xl font-semibold text-ink-950">Project runs</h2>
+          <p id="dashboard-subtitle" class="text-xs text-slate-700">Recent run history across projects.</p>
         </div>
-        <div id="dashboard-kpi-row" class="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5"></div>
-        <div class="mt-4 grid gap-3 xl:grid-cols-2">
-          <div id="dashboard-main-left" class="rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
-          <div id="dashboard-main-right" class="rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
-        </div>
-        <div id="dashboard-bottom" class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
+        <div id="dashboard-runs-list" class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-4"></div>
         <div class="mt-4 grid gap-3 md:grid-cols-3">
           <button id="home-work-btn" class="rounded-xl border border-slate-300 bg-sky-50 p-4 text-left text-slate-900 hover:border-sky-400">
             <p class="text-sm font-semibold">Start system ingestion</p>
@@ -470,11 +459,7 @@
                 </select>
                 <button id="detect-project-state" class="btn-light rounded-lg px-3 py-2 text-xs font-semibold">Detect</button>
               </div>
-              <div id="project-state-result" class="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800">State: pending detection (choose auto detect, greenfield, brownfield, or sample dataset)</div>
-              <div class="mt-2 flex flex-wrap gap-2">
-                <button id="discover-use-sample" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Use sample dataset</button>
-                <span class="text-[11px] text-slate-700">Loads ACME demo integrations and objectives so you can run without external credentials.</span>
-              </div>
+              <div id="project-state-result" class="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-800">State: pending detection (choose auto detect, greenfield, or brownfield)</div>
 
               <div id="brownfield-integrations" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3">
                 <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Brownfield Integrations</p>
@@ -497,7 +482,7 @@
                   <div>
                     <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Issue management</label>
                     <select id="bf-issue-provider" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
-                      <option value="">Select</option>
+                      <option value="">None (optional)</option>
                       <option value="jira">Jira</option>
                       <option value="linear">Linear</option>
                       <option value="azureboards">Azure Boards</option>
@@ -532,7 +517,7 @@
                     <span id="bf-linear-issues-status" class="text-[11px] text-slate-700">No issue list loaded.</span>
                   </div>
                   <div id="bf-linear-issues-preview" class="mt-2 max-h-56 overflow-auto rounded-md border border-slate-300 bg-white p-2 text-[11px] text-slate-900">
-                    <p class="text-slate-700">Set issue provider and board/project value, then click <strong>Load issues</strong>.</p>
+                    <p class="text-slate-700">Issue tracker is optional. If configured, click <strong>Load issues</strong> to preview linked work items.</p>
                   </div>
                 </div>
               </div>
@@ -558,10 +543,10 @@
                   <div>
                     <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Tracker</label>
                     <select id="gf-tracker-provider" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                      <option value="none">None (optional)</option>
                       <option value="jira">Jira</option>
                       <option value="linear">Linear</option>
                       <option value="azureboards">Azure Boards</option>
-                      <option value="none">None</option>
                     </select>
                   </div>
                   <div>
