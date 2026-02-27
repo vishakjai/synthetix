@@ -146,6 +146,7 @@ const el = {
   cmdkEmpty: document.getElementById("cmdk-empty"),
   dashboardTitle: document.getElementById("dashboard-title"),
   dashboardSubtitle: document.getElementById("dashboard-subtitle"),
+  dashboardRunsList: document.getElementById("dashboard-runs-list"),
   dashboardKpiRow: document.getElementById("dashboard-kpi-row"),
   dashboardMainLeft: document.getElementById("dashboard-main-left"),
   dashboardMainRight: document.getElementById("dashboard-main-right"),
@@ -193,7 +194,6 @@ const el = {
   systemMapClear: document.getElementById("system-map-clear"),
   projectStateMode: document.getElementById("project-state-mode"),
   detectProjectState: document.getElementById("detect-project-state"),
-  discoverUseSample: document.getElementById("discover-use-sample"),
   projectStateResult: document.getElementById("project-state-result"),
   brownfieldIntegrations: document.getElementById("brownfield-integrations"),
   greenfieldIntegrations: document.getElementById("greenfield-integrations"),
@@ -1630,6 +1630,15 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const decisions = brief.decisions_required || {};
   const backlog = report.delivery_spec?.backlog?.items || [];
   const testing = report.delivery_spec?.testing_and_evidence || {};
+  const qaReport = (report.qa_report_v1 && typeof report.qa_report_v1 === "object")
+    ? report.qa_report_v1
+    : ((output.qa_report_v1 && typeof output.qa_report_v1 === "object") ? output.qa_report_v1 : {});
+  const qaSummary = (qaReport.summary && typeof qaReport.summary === "object") ? qaReport.summary : {};
+  const qaStructural = (qaReport.structural && typeof qaReport.structural === "object") ? qaReport.structural : {};
+  const qaSemantic = (qaReport.semantic && typeof qaReport.semantic === "object") ? qaReport.semantic : {};
+  const qaStructuralChecks = Array.isArray(qaStructural.checks) ? qaStructural.checks : [];
+  const qaSemanticChecks = Array.isArray(qaSemantic.checks) ? qaSemantic.checks : [];
+  const qaGates = Array.isArray(qaReport.quality_gates) ? qaReport.quality_gates : [];
   const appendix = report.appendix || {};
   const openQuestions = Array.isArray(report.delivery_spec?.open_questions) ? report.delivery_spec.open_questions : [];
 
@@ -1693,6 +1702,29 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     lines.push(`  - ${String(gate.id || "gate")}: ${String(gate.result || "warn").toUpperCase()} | ${String(gate.description || "")}`);
   });
   if (!Array.isArray(testing.quality_gates) || !testing.quality_gates.length) lines.push("  - None");
+  lines.push("- QA summary:");
+  if (Object.keys(qaSummary).length) {
+    lines.push(`  - Status: ${String(qaSummary.status || "PASS")}`);
+    lines.push(`  - Structural: pass=${String(qaSummary.pass_count ?? 0)}, warn=${String(qaSummary.warn_count ?? 0)}, fail=${String(qaSummary.fail_count ?? 0)}, blockers=${String(qaSummary.blocker_count ?? 0)}`);
+    if (Array.isArray(qaGates) && qaGates.length) {
+      qaGates.forEach((gate) => {
+        lines.push(`  - QA Gate ${String(gate.id || "qa_gate")}: ${String(gate.result || "warn").toUpperCase()} | ${String(gate.description || "")}`);
+      });
+    }
+    if (qaStructuralChecks.length) {
+      const blocking = qaStructuralChecks.filter((row) => Boolean(row && row.blocking));
+      lines.push(`  - Structural checks: ${qaStructuralChecks.length} total (${blocking.length} blocking)`);
+    }
+    if (qaSemanticChecks.length) {
+      lines.push(`  - Semantic checks: ${qaSemanticChecks.length} warning(s)`);
+      qaSemanticChecks.slice(0, 8).forEach((row) => {
+        lines.push(`    - ${String(row?.check_id || row?.id || "semantic_check")}: ${String(row?.severity || "medium").toUpperCase()} | ${String(row?.detail || "")}`);
+      });
+    }
+  } else {
+    lines.push("  - None");
+  }
+  lines.push("  - Rule consolidation notes are documented in Appendix Section E2 when duplicate rule templates are suppressed.");
 
   lines.push("", "### Open Questions");
   openQuestions.forEach((q, idx) => {
@@ -1702,6 +1734,25 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   });
   if (!openQuestions.length) lines.push("- None");
 
+  lines.push("", "## QA Validation Summary");
+  if (Object.keys(qaSummary).length) {
+    lines.push(`- Overall status: ${String(qaSummary.status || "PASS")}`);
+    lines.push(`- Structural summary: pass=${String(qaSummary.pass_count ?? 0)}, warn=${String(qaSummary.warn_count ?? 0)}, fail=${String(qaSummary.fail_count ?? 0)}, blockers=${String(qaSummary.blocker_count ?? 0)}`);
+    const autoFixes = Array.isArray(qaSummary.auto_fixes_applied) ? qaSummary.auto_fixes_applied : [];
+    if (autoFixes.length) {
+      lines.push("- Auto-fixes applied:");
+      autoFixes.slice(0, 12).forEach((fix) => lines.push(`  - ${String(fix || "").trim()}`));
+    }
+    if (qaSemanticChecks.length) {
+      lines.push("- Active semantic warnings:");
+      qaSemanticChecks.slice(0, 10).forEach((row) => {
+        lines.push(`  - ${String(row?.check_id || row?.id || "semantic_check")}: ${String(row?.detail || "")}`);
+      });
+    }
+  } else {
+    lines.push("- No QA artifact present.");
+  }
+
   lines.push("", "## Evidence Appendix");
   const refs = appendix.artifact_refs || {};
   Object.entries(refs).forEach(([k, v]) => {
@@ -1710,7 +1761,10 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   lines.push("- High-volume sections included in structured artifact (inventory, dependencies, event map, SQL catalog, business rules).");
   lines.push("", "## Appendix Snapshot");
   const hv = appendix.high_volume_sections || {};
-  const raw = (output.raw_artifacts && typeof output.raw_artifacts === "object") ? output.raw_artifacts : {};
+  const rawFromReport = (report.raw_artifacts && typeof report.raw_artifacts === "object") ? report.raw_artifacts : {};
+  const raw = Object.keys(rawFromReport).length
+    ? rawFromReport
+    : ((output.raw_artifacts && typeof output.raw_artifacts === "object") ? output.raw_artifacts : {});
   const rawEventMap = Array.isArray(raw.event_map?.entries) ? raw.event_map.entries : [];
   const rawSql = Array.isArray(raw.sql_catalog?.statements) ? raw.sql_catalog.statements : [];
   const rawSqlMap = Array.isArray(raw.sql_map?.entries) ? raw.sql_map.entries : [];
@@ -1812,6 +1866,212 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     if (formLow.startsWith("rpt") || formLow.startsWith("datareport")) return "Report";
     return "Child";
   };
+  const splitWords = (token) => {
+    let raw = String(token || "").trim();
+    let lowered = raw.toLowerCase();
+    if (lowered.startsWith("dtpicker")) {
+      raw = raw.slice("dtpicker".length);
+      raw = raw ? `date${raw}` : "date";
+      lowered = raw.toLowerCase();
+    }
+    ["txt", "cbo", "cmb", "dtp", "msk", "lst", "chk", "opt", "lbl", "cmd"].forEach((prefix) => {
+      if (!(raw && lowered.startsWith(prefix) && raw.length > prefix.length)) return;
+      const lowerRaw = raw.toLowerCase();
+      if (prefix === "opt" && lowerRaw.startsWith("option")) return;
+      if (prefix === "chk" && lowerRaw.startsWith("check")) return;
+      if (prefix === "txt" && lowerRaw.startsWith("text")) return;
+      if (prefix === "cbo" && lowerRaw.startsWith("combo")) return;
+      raw = raw.slice(prefix.length);
+    });
+    raw = raw.replace(/[_-]+/g, " ");
+    raw = raw.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+    raw = raw.replace(/([A-Za-z])(id|no)\b/gi, "$1 $2");
+    raw = raw.replace(/([A-Za-z])([0-9])/g, "$1 $2");
+    raw = raw.replace(/\s+/g, " ").trim();
+    return raw.toLowerCase();
+  };
+  const isDataInputControl = (controlId) => {
+    const cid = String(controlId || "").trim().toLowerCase();
+    return ["txt", "cbo", "cmb", "dtp", "msk", "lst", "chk", "opt"].some((p) => cid.startsWith(p));
+  };
+  const toBusinessInput = (controlId) => splitWords(controlId) || String(controlId || "").trim().toLowerCase();
+  const callableKind = (procedureName, formName, eventHint = "") => {
+    const proc = String(procedureName || "").trim().toLowerCase();
+    const form = baseFormName(formName);
+    const evt = String(eventHint || "").trim().toLowerCase();
+    if (form === "shared_module") return "shared_function";
+    if (evt) return "event_handler";
+    if (/_((click|change|load|keypress|keydown|keyup|gotfocus|lostfocus|activate|deactivate))$/i.test(proc)) return "event_handler";
+    if (/^(cmd|lbl|txt|cbo|opt|chk)/i.test(proc)) return "event_handler";
+    return "procedure";
+  };
+  const semanticFormAlias = ({ formName, purpose, dbTables, procedures, rules, controls = [] }) => {
+    const formToken = String(formName || "").toLowerCase();
+    const isGenericForm = /^(form\d+|frm\d+)$/i.test(formToken);
+    if (formToken.endsWith("frmtransactions") || formToken.endsWith("transactions")) return "Transaction History";
+    if (formToken.endsWith("frmtransaction") || formToken.endsWith("transaction")) return "Transaction Entry";
+    const purposeLow = String(purpose || "").toLowerCase();
+    if (purposeLow.includes("deposit capture")) return "Deposit Capture";
+    if (purposeLow.includes("withdrawal processing")) return "Withdrawal Processing";
+    if (purposeLow.includes("customer profile")) return "Customer Management";
+    if (purposeLow.includes("transaction ledger")) return "Transaction Ledger";
+    if (purposeLow.includes("account type maintenance")) return "Account Type Maintenance";
+    const tokenBlob = [
+      formToken,
+      String(purpose || "").toLowerCase(),
+      Array.from(dbTables || []).map((x) => String(x || "").toLowerCase()).join(" "),
+      (Array.isArray(procedures) ? procedures : []).map((p) => String(p?.procedure_name || "").toLowerCase()).join(" "),
+      (Array.isArray(rules) ? rules : []).map((r) => String(r?.statement || "").toLowerCase()).join(" "),
+      (Array.isArray(controls) ? controls : []).map((c) => String(c || "").toLowerCase()).join(" "),
+    ].join(" ");
+    if (["login", "logi", "username", "password", "txtpass", "pass1", "credential"].some((k) => tokenBlob.includes(k))) {
+      return ["txtpass", "pass1", "credential"].some((k) => tokenBlob.includes(k)) ? "Password Management" : "Authentication";
+    }
+    const hasStrongTransactionSignal = ["transction", "tbltransaction", "transaction ledger", "ledger"].some((k) => tokenBlob.includes(k));
+    if (hasStrongTransactionSignal || (tokenBlob.includes("debit") && tokenBlob.includes("credit"))) return "Transaction Ledger";
+    if (["withdraw", "debit"].some((k) => tokenBlob.includes(k))) return "Withdrawal Processing";
+    if (["deposit", "credit", "balancedt"].some((k) => tokenBlob.includes(k)) && !["transaction", "transction", "debit"].some((k) => tokenBlob.includes(k))) return "Deposit Capture";
+    if (["customer", "tblcustomer"].some((k) => tokenBlob.includes(k)) && ["interest", "min balance", "account type", "acctype"].some((k) => tokenBlob.includes(k))) return "Customer Management";
+    if (["accounttype", "acctype"].some((k) => tokenBlob.includes(k))) return "Account Type Maintenance";
+    if (["customer", "tblcustomer"].some((k) => tokenBlob.includes(k))) return "Customer Management";
+    if (["report", "datareport", "dataenvironment"].some((k) => tokenBlob.includes(k))) return "Reporting";
+    if (["search", "lookup", "find"].some((k) => tokenBlob.includes(k))) return "Search";
+    if (["main", "mdiform", "toolbar"].some((k) => tokenBlob.includes(k))) return "Navigation Hub";
+    if (["balance", "tblbalance"].some((k) => tokenBlob.includes(k))) return "Balance Inquiry";
+    if (["timer", "progressbar", "splash"].some((k) => tokenBlob.includes(k))) return "Splash/Loading";
+    if (isGenericForm && formToken === "form9") return "Authentication Entry";
+    if (isGenericForm && formToken === "form1") return "Navigation/Menu";
+    if (isGenericForm && ["dated", "datejoined", "dtpicker", "date 1", "from date", "to date"].some((k) => tokenBlob.includes(k))) return "Date/Period Entry";
+    const cleaned = String(purpose || "").replace(/\bworkflow\b/ig, "").replace(/\s+/g, " ").trim().replace(/[.-]+$/, "");
+    const genericPhrases = new Set([
+      "business executed through event-driven ui controls",
+      "business workflow executed through event-driven ui controls",
+      "application navigation and module routing",
+    ]);
+    if (genericPhrases.has(cleaned.toLowerCase())) return "";
+    return cleaned;
+  };
+  const displayFormName = (formName, alias) => {
+    const form = String(formName || "").trim();
+    const semantic = String(alias || "").trim();
+    if (!semantic) return form;
+    const generic = /^(form\d+|frm\d+)$/i.test(form);
+    if (generic) return `${form} [${semantic}]`;
+    const normalizedName = form.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const normalizedAlias = semantic.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const ambiguousBankForm = ["frmtransaction", "frmtransactions", "main"].includes(form.toLowerCase());
+    if (ambiguousBankForm || (normalizedAlias && !normalizedName.includes(normalizedAlias))) {
+      return `${form} [${semantic}]`;
+    }
+    return form;
+  };
+  const ruleBusinessMeaning = (statement, category) => {
+    const stmt = String(statement || "").trim();
+    const low = stmt.toLowerCase();
+    if (/keyascii\s*=\s*13/i.test(low)) return "Pressing Enter triggers the same action flow as the primary button.";
+    if (low.includes("case keyascii")) return "Keyboard input routing determines which action path is executed.";
+    if (/\.\s*state\s*=\s*1/i.test(low)) return "The action proceeds only when the recordset/connection is active.";
+    if (/\.\s*recordcount\s*>\s*0/i.test(low)) return "The action proceeds only when matching records are found.";
+    if ((low.includes("max(") && low.includes("+ 1")) || (low.includes("max(") && low.includes("+1"))) return "A new identifier is generated as current maximum value plus one.";
+    if (low.includes("computed value rule") || low.includes("currbalance")) {
+      if (low.includes("lblbalance.caption")) return "Balance is recalculated from the displayed balance label and entered amount (UI-derived source).";
+      return "Balance is recalculated using the entered amount and current account value.";
+    }
+    if (low.includes("case button.index") || low.includes("case buttonmenu.key")) return "User menu selection routes the workflow to the corresponding module.";
+    if (low.includes("threshold decision rule") && low.includes("if ")) {
+      const rhs = String(stmt.split("IF").pop() || "").replace(/\s*THEN.*$/i, "").trim();
+      return `The workflow continues only when this condition is true: ${rhs}.`;
+    }
+    if (low.includes("executes transaction workflow through procedures")) return "Workflow is orchestrated through UI event handlers and internal procedures.";
+    if (low.includes("reads/writes persisted entities")) return "Form persists and retrieves records from the listed tables.";
+    if (low.includes("authenticate users")) return "User authentication is required before entering the workflow.";
+    if (["data_persistence", "calculation_logic", "threshold_rule"].includes(String(category || "").toLowerCase())) return "Business behavior is enforced through data and calculation logic.";
+    return stmt;
+  };
+  const businessEffectFromSql = (operation, table) => {
+    const op = String(operation || "").trim().toLowerCase();
+    const tbl = String(table || "").trim();
+    const low = tbl.toLowerCase();
+    if (op === "select") {
+      if (low.includes("balance")) return "Customer balance and account details displayed for review.";
+      if (low.includes("customer")) return "Customer details displayed for review.";
+      if (low.includes("transction") || low.includes("transaction")) return "Transaction history displayed for review.";
+      if (low.includes("accounttype")) return "Account type details displayed for selection.";
+      if (low.includes("logi") || low.includes("login")) return "User credentials validated against stored records.";
+    }
+    if (low.includes("deposit")) return "Deposit transaction recorded.";
+    if (low.includes("withdraw")) return "Withdrawal transaction recorded.";
+    if (low.includes("balance")) return "Account balance updated.";
+    if (low.includes("transction") || low.includes("transaction")) return "Transaction ledger updated.";
+    if (low.includes("customer") && ["insert", "update", "delete"].includes(op)) return "Customer profile data updated.";
+    if (low.includes("accounttype")) return "Account type configuration updated.";
+    if (low.includes("logi") || low.includes("login")) return "User authentication record validated.";
+    if (op === "insert") return `New record created in ${tbl}.`;
+    if (op === "update") return `Existing records updated in ${tbl}.`;
+    if (op === "delete") return `Records deleted from ${tbl}.`;
+    return "";
+  };
+  const fallbackBusinessEffects = ({ alias, purpose, inputs, dbTables, rules }) => {
+    const tokenBlob = [
+      String(alias || "").toLowerCase(),
+      String(purpose || "").toLowerCase(),
+      Array.from(inputs || []).map((x) => String(x || "").toLowerCase()).join(" "),
+      (Array.isArray(dbTables) ? dbTables : []).map((x) => String(x || "").toLowerCase()).join(" "),
+      (Array.isArray(rules) ? rules : []).map((r) => String(r?.statement || "").toLowerCase()).join(" "),
+    ].join(" ");
+    const effects = [];
+    if (["deposit", "amount deposited", "credit"].some((k) => tokenBlob.includes(k))) {
+      effects.push("Deposit transaction recorded.");
+      effects.push("Account balance recalculated.");
+    }
+    if (["withdraw", "amount withdrawn", "debit"].some((k) => tokenBlob.includes(k))) {
+      effects.push("Withdrawal transaction recorded.");
+      effects.push("Account balance recalculated.");
+    }
+    if (["transaction ledger", "transction", "transaction"].some((k) => tokenBlob.includes(k))) effects.push("Transaction history updated.");
+    if (["customer management", "customer profile"].some((k) => tokenBlob.includes(k))) effects.push("Customer profile created or updated.");
+    if (["account type", "acctype", "accounttype"].some((k) => tokenBlob.includes(k))) effects.push("Account type master data maintained.");
+    if (["authentication", "login", "password"].some((k) => tokenBlob.includes(k))) effects.push("User access is validated before workflow continuation.");
+    if (["search", "lookup"].some((k) => tokenBlob.includes(k))) effects.push("Matching records displayed to the user.");
+    if (["navigation hub", "main", "toolbar"].some((k) => tokenBlob.includes(k))) effects.push("Navigation routes the user to selected module screens.");
+    if (!effects.length && (Array.isArray(dbTables) ? dbTables : []).some((t) => String(t || "").toLowerCase().includes("balance"))) effects.push("Account balance information refreshed.");
+    if (!effects.length && (Array.isArray(dbTables) ? dbTables : []).some((t) => String(t || "").toLowerCase().includes("customer"))) effects.push("Customer details loaded/updated for the selected workflow.");
+    return Array.from(new Set(effects.filter(Boolean))).slice(0, 6);
+  };
+  const dossierBusinessRuleSummary = ({ formName, dossier, ruleRows = [] }) => {
+    const d = dossier && typeof dossier === "object" ? dossier : null;
+    if (!d) return "";
+    const controls = Array.isArray(d.controls) ? d.controls : [];
+    const inputValues = new Set();
+    controls.forEach((ctl) => {
+      const ctlName = String(ctl || "").trim();
+      if (!ctlName) return;
+      const controlId = String(ctlName.split(":").pop() || "").trim();
+      if (isDataInputControl(controlId)) inputValues.add(toBusinessInput(controlId));
+    });
+    const dbTables = Array.isArray(d.db_tables) ? d.db_tables.map((t) => String(t || "").trim()).filter(Boolean) : [];
+    const purpose = String(d.purpose || "").trim().replace(/[.]+$/, "");
+    const alias = semanticFormAlias({
+      formName,
+      purpose,
+      dbTables: new Set(dbTables),
+      procedures: [],
+      rules: ruleRows,
+      controls,
+    });
+    const effects = fallbackBusinessEffects({
+      alias,
+      purpose,
+      inputs: inputValues,
+      dbTables,
+      rules: ruleRows,
+    });
+    const parts = [];
+    if (inputValues.size) parts.push(`Captures ${Array.from(inputValues).sort().slice(0, 6).join(", ")}.`);
+    if (effects.length) parts.push(`Business outcome: ${effects.slice(0, 3).join("; ")}.`);
+    if (purpose && !purpose.toLowerCase().includes("event-driven ui controls")) parts.unshift(purpose);
+    return parts.join(" ").trim();
+  };
   const projectPathByName = {};
   const projectDepsByName = {};
   const projectTablesByName = {};
@@ -1911,15 +2171,49 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
       });
     });
   });
+  const ruleFormBases = (ruleRow) => {
+    const scope = (ruleRow?.scope && typeof ruleRow.scope === "object") ? ruleRow.scope : {};
+    const candidates = [
+      String(scope.form || "").trim(),
+      String(scope.form_key || "").trim(),
+      String(scope.component_id || "").trim(),
+      String(ruleRow?.form || "").trim(),
+      ...(Array.isArray(scope.forms) ? scope.forms.map((x) => String(x || "").trim()) : []),
+      ...(Array.isArray(scope.form_keys) ? scope.form_keys.map((x) => String(x || "").trim()) : []),
+    ];
+    const bases = new Set();
+    candidates.forEach((cand) => {
+      if (!cand) return;
+      const splitTokens = cand.split(/[,;|]/).map((part) => String(part || "").trim()).filter(Boolean);
+      (splitTokens.length ? splitTokens : [cand]).forEach((tokenIn) => {
+        let raw = String(tokenIn || "").trim();
+        if (!raw) return;
+        if (raw.includes("::")) raw = String(raw.split("::", 2)[1] || "").trim();
+        raw = String(raw.split("/").pop() || "").trim();
+        raw = raw.replace(/\.(frm|ctl|cls|bas)$/i, "").replace(/[.,;:()[\]{}]+$/g, "");
+        const low = raw.toLowerCase();
+        if (!low) return;
+        if (/\.(bas|cls|ctl|ctx|vbp|vbg|res|dsr|dca|dcx)$/i.test(low)) return;
+        if (/(?:_|^)(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$/i.test(low)) return;
+        if (!(low.includes("frm") || low.startsWith("form") || ["main", "mdiform", "login"].includes(low))) return;
+        const base = baseFormName(raw);
+        if (base) bases.add(base);
+      });
+    });
+    const textHints = [
+      String(scope.component_id || "").trim(),
+      String(ruleRow?.statement || "").trim(),
+      ...(Array.isArray(ruleRow?.evidence) ? ruleRow.evidence.map((ev) => String(ev?.external_ref?.ref || ev?.file_span?.path || "").trim()) : []),
+    ];
+    textHints.forEach((text) => extractFormsFromText(text).forEach((f) => {
+      const base = baseFormName(f);
+      if (base) bases.add(base);
+    }));
+    return bases;
+  };
   const formRuleRows = {};
   rawRules.forEach((row) => {
-    const texts = [
-      String(row?.scope?.component_id || ""),
-      String(row?.statement || ""),
-      ...(Array.isArray(row?.evidence) ? row.evidence.map((ev) => String(ev?.external_ref?.ref || ev?.file_span?.path || "")) : []),
-    ];
-    const forms = new Set();
-    texts.forEach((text) => extractFormsFromText(text).forEach((f) => forms.add(baseFormName(f))));
+    const forms = ruleFormBases(row);
     rawFormDossiers.forEach((dossier) => {
       if (!forms.has(baseFormName(dossier?.form_name))) return;
       formKeys(dossier?.project_name, dossier?.form_name).forEach((key) => {
@@ -1927,6 +2221,62 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         formRuleRows[key].push(row);
       });
     });
+  });
+  // Mirror rules across equivalent forms for cross-variant generic form names (e.g., Form3 vs frmDeposits).
+  const semanticByKey = {};
+  rawFormDossiers.forEach((dossier) => {
+    const projectName = String(dossier?.project_name || "").trim();
+    const formName = String(dossier?.form_name || "").trim();
+    if (!formName) return;
+    const procRows = lookupRows(formProcRows, projectName, formName);
+    const sqlRows = lookupRows(formSqlRows, projectName, formName);
+    const tableHints = new Set();
+    sqlRows.forEach((item) => (Array.isArray(item?.tables) ? item.tables : []).forEach((t) => {
+      const v = String(t || "").trim();
+      if (v) tableHints.add(v);
+    }));
+    const alias = semanticFormAlias({
+      formName,
+      purpose: String(dossier?.purpose || "").trim(),
+      dbTables: tableHints,
+      procedures: procRows,
+      rules: lookupRows(formRuleRows, projectName, formName),
+      controls: Array.isArray(dossier?.controls) ? dossier.controls : [],
+    });
+    const semantic = String(alias || "").trim().toLowerCase();
+    if (!semantic) return;
+    formKeys(projectName, formName).forEach((key) => {
+      semanticByKey[key] = semantic;
+    });
+  });
+  const donorRulesBySemantic = {};
+  const allowedSemantics = new Set([
+    "deposit capture",
+    "withdrawal processing",
+    "transaction ledger",
+    "customer management",
+    "account type maintenance",
+    "password management",
+  ]);
+  Object.entries(formRuleRows).forEach(([key, rows]) => {
+    const semantic = String(semanticByKey[key] || "").trim();
+    if (!allowedSemantics.has(semantic)) return;
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return;
+    if (!donorRulesBySemantic[semantic]) donorRulesBySemantic[semantic] = [];
+    const existingIds = new Set(donorRulesBySemantic[semantic].map((r) => String(r?.rule_id || r?.id || "").trim()).filter(Boolean));
+    list.forEach((r) => {
+      const rid = String(r?.rule_id || r?.id || "").trim();
+      if (rid && existingIds.has(rid)) return;
+      donorRulesBySemantic[semantic].push(r);
+      if (rid) existingIds.add(rid);
+    });
+  });
+  Object.entries(semanticByKey).forEach(([key, semantic]) => {
+    if (!allowedSemantics.has(semantic)) return;
+    if (Array.isArray(formRuleRows[key]) && formRuleRows[key].length) return;
+    const mirrored = Array.isArray(donorRulesBySemantic[semantic]) ? donorRulesBySemantic[semantic].slice(0, 8) : [];
+    if (mirrored.length) formRuleRows[key] = mirrored;
   });
   const formControlTypeByKey = {};
   rawFormDossiers.forEach((row) => {
@@ -1983,6 +2333,70 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
       if (!dependencyToForms[name]) dependencyToForms[name] = new Set();
       dependencyToForms[name].add(qForm);
     });
+  });
+  const legacyProjects = Array.isArray(raw?.legacy_inventory?.projects)
+    ? raw.legacy_inventory.projects
+    : (Array.isArray(hv?.legacy_inventory?.projects) ? hv.legacy_inventory.projects : []);
+  const dossierByKey = {};
+  rawFormDossiers.forEach((row) => {
+    formKeys(row?.project_name, row?.form_name).forEach((key) => {
+      if (key && !dossierByKey[key]) dossierByKey[key] = row;
+    });
+  });
+  const discoveredForms = [];
+  const seenDiscovered = new Set();
+  const normalizeDiscoveredFormName = (value) => {
+    const rawName = String(value || "").trim();
+    if (!rawName) return "";
+    const leaf = rawName.split("/").pop();
+    if (!leaf) return "";
+    if (leaf.includes(":")) {
+      const [left, right] = leaf.split(":", 2);
+      if (["form", "mdiform"].includes(String(left || "").trim().toLowerCase()) && String(right || "").trim()) {
+        return String(right || "").trim();
+      }
+    }
+    return String(leaf || "").trim();
+  };
+  const addDiscovered = (projectName, formName, source) => {
+    const pname = String(projectName || "").trim();
+    const fname = normalizeDiscoveredFormName(formName);
+    if (!fname) return;
+    const key = formKey(pname, fname);
+    if (!key || seenDiscovered.has(key)) return;
+    seenDiscovered.add(key);
+    discoveredForms.push({ project_name: pname, form_name: fname, form_key: key, source });
+  };
+  legacyProjects.forEach((project) => {
+    const pname = String(project?.name || "").trim();
+    (Array.isArray(project?.forms) ? project.forms : []).forEach((f) => addDiscovered(pname, f, "project.forms"));
+    (Array.isArray(project?.ui_assets) ? project.ui_assets : []).forEach((asset) => {
+      const kind = String(asset?.kind || "").toLowerCase();
+      if (kind === "form" || kind === "screen") addDiscovered(pname, asset?.name, "project.ui_assets");
+    });
+    (Array.isArray(project?.members) ? project.members : []).forEach((member) => {
+      const kind = String(member?.kind || "").toLowerCase();
+      const path = String(member?.path || "");
+      if (kind === "form" || path.toLowerCase().endsWith(".frm")) addDiscovered(pname, path.split("/").pop(), "project.members");
+    });
+  });
+  rawFormDossiers.forEach((row) => addDiscovered(row?.project_name, row?.form_name, "form_dossier"));
+  const orphanByKey = {};
+  let orphanUnmappedCount = 0;
+  rawOrphans.forEach((row) => {
+    const orphanForm = normalizeDiscoveredFormName(String(row?.form || "").trim() || String(row?.path || "").split("/").pop().replace(/\.frm$/i, ""));
+    const orphanProject = String(row?.project_name || "").trim();
+    if (orphanForm === "(unmapped_form_files)") {
+      const summary = String(row?.behavior_summary || "");
+      const m = summary.match(/(\d+)\s+discovered\s+form\s+files/i);
+      if (m) orphanUnmappedCount = Number(m[1] || 0);
+      return;
+    }
+    const key = formKey(orphanProject, orphanForm);
+    if (key) {
+      orphanByKey[key] = row;
+      addDiscovered(orphanProject, orphanForm, "orphan_analysis");
+    }
   });
   lines.push(`- Legacy inventory: ${raw.legacy_inventory ? "present" : (hv.legacy_inventory ? "present" : "missing")}`);
   lines.push(`- Event map rows: ${rawEventMap.length || (Array.isArray(hv.event_map) ? hv.event_map.length : 0)}`);
@@ -2092,28 +2506,250 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
 
     lines.push("", "### E. Business Rules");
     if (ruleRows.length) {
-      lines.push("| Rule ID | Form | Layer | Category | Statement | Evidence |");
-      lines.push("|---|---|---|---|---|---|");
+      lines.push("| Rule ID | Form | Layer | Category | Business Meaning | Implementation Evidence | Risk links |");
+      lines.push("|---|---|---|---|---|---|---|");
+      const rulesByForm = {};
+      const rawRulesByForm = {};
+      const seenRuleFormPairs = new Set();
+      const seenSourceVariantPairs = new Set();
+      const emittedFormLabels = new Set();
+      const existingRuleNumbers = [];
+      const usedOutputRuleIds = new Set();
+      const saturatedMeaningTemplates = new Set([
+        "Balance is recalculated using the entered amount and current account value.",
+        "The action proceeds only when the recordset/connection is active.",
+      ]);
+      const canonicalMeaningRuleIds = {};
+      const saturatedMeaningForms = {};
+      const saturatedSuppressedCount = {};
+
+      const ruleFormsFromRow = (row, evidenceText) => {
+        const scope = (row?.scope && typeof row.scope === "object") ? row.scope : {};
+        const formsOut = [];
+        const candidates = [
+          scope.form,
+          scope.form_key,
+          scope.component_id,
+          row?.form,
+          ...(Array.isArray(scope.forms) ? scope.forms : []),
+          ...(Array.isArray(scope.form_keys) ? scope.form_keys : []),
+        ];
+        candidates.forEach((cand) => {
+          const rawToken = String(cand || "").trim();
+          if (!rawToken) return;
+          const splitTokens = rawToken.split(/[,;|]/).map((part) => String(part || "").trim()).filter(Boolean);
+          (splitTokens.length ? splitTokens : [rawToken]).forEach((tokenIn) => {
+            let token = String(tokenIn || "").trim();
+            if (!token) return;
+            if (token.includes("::")) token = token.split("::", 2)[1] || "";
+            token = String(token.split("/").pop() || "").trim();
+            token = token.replace(/\.(frm|ctl|cls|bas)$/i, "").replace(/[.,;:()[\]{}]+$/g, "");
+            const low = token.toLowerCase();
+            if (!low) return;
+            if (/\.(bas|cls|ctl|ctx|vbp|vbg|res|dsr|dca|dcx)$/i.test(low)) return;
+            if (/(?:_|^)(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$/i.test(low)) return;
+            if (!(low.includes("frm") || low.startsWith("form") || ["main", "mdiform", "login"].includes(low))) return;
+            const normalizedDisplay = (low === "main") ? "main" : token;
+            if (!formsOut.includes(normalizedDisplay)) formsOut.push(normalizedDisplay);
+          });
+        });
+        [String(row?.statement || ""), String(evidenceText || "")].forEach((src) => {
+          extractFormsFromText(src).forEach((formName) => {
+            const normalizedDisplay = (baseFormName(formName) === "main") ? "main" : formName;
+            if (!formsOut.includes(normalizedDisplay)) formsOut.push(normalizedDisplay);
+          });
+        });
+        return formsOut;
+      };
+
+      const nextMirroredRuleId = () => {
+        let nextNum = (existingRuleNumbers.length ? Math.max(...existingRuleNumbers) : 0) + 1;
+        while (usedOutputRuleIds.has(`br-${String(nextNum).padStart(3, "0")}`)) nextNum += 1;
+        existingRuleNumbers.push(nextNum);
+        const rid = `BR-${String(nextNum).padStart(3, "0")}`;
+        usedOutputRuleIds.add(rid.toLowerCase());
+        return rid;
+      };
+
+      const allocateRuleId = (sourceRuleId) => {
+        const sid = String(sourceRuleId || "").trim();
+        if (/^BR-\d+$/i.test(sid) && !usedOutputRuleIds.has(sid.toLowerCase())) {
+          usedOutputRuleIds.add(sid.toLowerCase());
+          return { id: sid, sourceHint: "" };
+        }
+        return { id: nextMirroredRuleId(), sourceHint: sid };
+      };
+
+      const canonicalizeSaturatedMeaning = (meaningText, ruleId, formLabel) => {
+        const text = String(meaningText || "").trim();
+        if (!saturatedMeaningTemplates.has(text)) return { text, suppress: false, anchorRuleId: ruleId };
+        const first = String(canonicalMeaningRuleIds[text] || "").trim();
+        if (!first) {
+          canonicalMeaningRuleIds[text] = ruleId;
+          if (!saturatedMeaningForms[text]) saturatedMeaningForms[text] = new Set();
+          saturatedMeaningForms[text].add(String(formLabel || "").trim() || "n/a");
+          saturatedSuppressedCount[text] = Number(saturatedSuppressedCount[text] || 0);
+          return { text, suppress: false, anchorRuleId: ruleId };
+        }
+        if (!saturatedMeaningForms[text]) saturatedMeaningForms[text] = new Set();
+        saturatedMeaningForms[text].add(String(formLabel || "").trim() || "n/a");
+        saturatedSuppressedCount[text] = Number(saturatedSuppressedCount[text] || 0) + 1;
+        return { text, suppress: true, anchorRuleId: first };
+      };
+
       ruleRows.slice(0, 700).forEach((row) => {
-        const ruleId = String(row?.rule_id || row?.id || "");
+        const sourceRuleId = String(row?.rule_id || row?.id || "n/a").trim() || "n/a";
+        const m = sourceRuleId.match(/(\d+)$/);
+        if (m) existingRuleNumbers.push(Number(m[1] || 0));
         const category = String(row?.category || row?.rule_type || "other");
-        const statement = String(row?.statement || "").replace(/\|/g, "\\|");
+        const statement = String(row?.statement || "");
         const ev = Array.isArray(row?.evidence)
           ? row.evidence.map((e) => String(e?.external_ref?.ref || e?.file_span?.path || e?.ref || "")).filter(Boolean).slice(0, 3).join(", ")
           : String(row?.evidence || "");
-        const forms = [];
-        [String(row?.statement || ""), ev].forEach((src) => {
-          extractFormsFromText(src).forEach((f) => {
-            if (!forms.includes(f)) forms.push(f);
-          });
-        });
-        const formValue = forms.length ? forms.slice(0, 4).join(", ") : "n/a";
+        const forms = ruleFormsFromRow(row, ev);
+        const ruleForms = forms.length ? forms : ["n/a"];
         const evidenceLow = `${String(row?.statement || "")} ${ev}`.toLowerCase();
         let layer = "Presentation";
         if (["data_persistence", "calculation_logic", "threshold_rule"].includes(category.toLowerCase()) || ["select ", "insert ", "update ", "delete ", "table"].some((x) => evidenceLow.includes(x))) layer = "Data";
         if ([".bas", "module", "shared"].some((x) => evidenceLow.includes(x))) layer = "Shared";
-        lines.push(`| ${ruleId || "n/a"} | ${String(formValue || "n/a")} | ${layer} | ${category} | ${statement || "n/a"} | ${ev || "n/a"} |`);
+        const relatedRiskIds = new Set();
+        const ruleBaseForms = new Set(ruleForms.map((f) => baseFormName(f)).filter(Boolean));
+        rawFormDossiers.forEach((dossier) => {
+          if (!ruleBaseForms.has(baseFormName(dossier?.form_name))) return;
+          lookupRows(formRiskRows, dossier?.project_name, dossier?.form_name).forEach((riskRow) => {
+            const rid = String(riskRow?.risk_id || "").trim();
+            if (rid) relatedRiskIds.add(rid);
+          });
+        });
+        const ruleLow = statement.toLowerCase();
+        rawRisks.forEach((riskRow) => {
+          const desc = String(riskRow?.description || "").toLowerCase();
+          const rid = String(riskRow?.risk_id || "").trim();
+          if (!rid) return;
+          if (["caption", "balance", "customerid", "delete", "injection", "credential", "password"].some((token) => desc.includes(token) && ruleLow.includes(token))) relatedRiskIds.add(rid);
+        });
+        const meaning = ruleBusinessMeaning(statement, category);
+        ruleForms.slice(0, 16).forEach((formItem) => {
+          const formDisplay = (baseFormName(formItem) === "main") ? "main" : (String(formItem || "").trim() || "n/a");
+          const normalized = baseFormName(formDisplay) || String(formDisplay || "").trim().toLowerCase() || "n/a";
+          const pairKey = `${sourceRuleId.toLowerCase()}::${normalized.toLowerCase()}`;
+          if (seenRuleFormPairs.has(pairKey)) return;
+          seenRuleFormPairs.add(pairKey);
+          let rowMeaning = meaning;
+          if ((String(formDisplay || "").toLowerCase().includes("splash") || String(ev || "").toLowerCase().includes("splash")) && rowMeaning.toLowerCase().includes("balance is recalculated")) {
+            rowMeaning = "Splash/loading behavior advances progress state before opening workflow screens.";
+          }
+          const allocated = allocateRuleId(sourceRuleId);
+          const saturation = canonicalizeSaturatedMeaning(rowMeaning, allocated.id, formDisplay);
+          rowMeaning = saturation.text;
+          if (saturation.suppress) {
+            if (!rulesByForm[normalized]) rulesByForm[normalized] = [];
+            if (!rawRulesByForm[normalized]) rawRulesByForm[normalized] = [];
+            rulesByForm[normalized].push({ rule_id: saturation.anchorRuleId, meaning: rowMeaning });
+            rawRulesByForm[normalized].push(row);
+            return;
+          }
+          let evidenceOut = ev || "n/a";
+          if (allocated.sourceHint && allocated.sourceHint.toLowerCase() !== allocated.id.toLowerCase()) {
+            evidenceOut = evidenceOut !== "n/a" ? `${evidenceOut}; source_rule=${allocated.sourceHint}` : `source_rule=${allocated.sourceHint}`;
+          }
+          lines.push(`| ${allocated.id} | ${String(formDisplay || "n/a")} | ${layer} | ${category} | ${rowMeaning.replace(/\|/g, "\\|") || "n/a"} | ${String(evidenceOut || "n/a").replace(/\|/g, "\\|")} | ${Array.from(relatedRiskIds).sort().slice(0, 6).join(", ") || "none"} |`);
+          emittedFormLabels.add(String(formDisplay || "n/a").toLowerCase());
+          if (!rulesByForm[normalized]) rulesByForm[normalized] = [];
+          if (!rawRulesByForm[normalized]) rawRulesByForm[normalized] = [];
+          rulesByForm[normalized].push({ rule_id: allocated.id, meaning: rowMeaning });
+          rawRulesByForm[normalized].push(row);
+        });
       });
+
+      rawFormDossiers.forEach((dossier) => {
+        const projectName = String(dossier?.project_name || "").trim();
+        const formName = String(dossier?.form_name || "").trim();
+        const base = baseFormName(formName);
+        if (!base) return;
+        const qualified = qualifiedFormName(projectName, base === "main" ? "main" : formName);
+        if (emittedFormLabels.has(String(qualified || "").toLowerCase())) return;
+        const mirroredRows = lookupRows(formRuleRows, projectName, formName);
+        mirroredRows.slice(0, 10).forEach((mr) => {
+          const sourceRuleId = String(mr?.rule_id || mr?.id || "n/a").trim() || "n/a";
+          const sourcePair = `${sourceRuleId.toLowerCase()}::${qualified.toLowerCase()}`;
+          if (seenSourceVariantPairs.has(sourcePair)) return;
+          seenSourceVariantPairs.add(sourcePair);
+          const category = String(mr?.category || mr?.rule_type || "other").trim() || "other";
+          const statement = String(mr?.statement || "");
+          const meaning = ruleBusinessMeaning(statement, category);
+          const layer = ["data_persistence", "calculation_logic", "threshold_rule"].includes(category.toLowerCase()) ? "Data" : "Presentation";
+          const relatedRiskIds = new Set();
+          lookupRows(formRiskRows, projectName, formName).forEach((riskRow) => {
+            const ridRisk = String(riskRow?.risk_id || "").trim();
+            if (ridRisk) relatedRiskIds.add(ridRisk);
+          });
+          const mirroredAllocated = allocateRuleId(sourceRuleId);
+          const mirroredRuleId = mirroredAllocated.id;
+          const saturation = canonicalizeSaturatedMeaning((meaning || statement || "n/a"), mirroredRuleId, qualified);
+          const mirroredMeaning = saturation.text;
+          if (saturation.suppress) {
+            if (!rulesByForm[base]) rulesByForm[base] = [];
+            if (!rawRulesByForm[base]) rawRulesByForm[base] = [];
+            rulesByForm[base].push({ rule_id: saturation.anchorRuleId, meaning: mirroredMeaning });
+            rawRulesByForm[base].push(mr);
+            return;
+          }
+          const evidence = `mirrored_from_variant_mapping (source=${sourceRuleId || "n/a"})`;
+          lines.push(`| ${mirroredRuleId} | ${qualified} | ${layer} | ${category} | ${mirroredMeaning.replace(/\|/g, "\\|")} | ${evidence.replace(/\|/g, "\\|")} | ${Array.from(relatedRiskIds).sort().slice(0, 6).join(", ") || "none"} |`);
+          emittedFormLabels.add(String(qualified || "n/a").toLowerCase());
+          if (!rulesByForm[base]) rulesByForm[base] = [];
+          if (!rawRulesByForm[base]) rawRulesByForm[base] = [];
+          rulesByForm[base].push({ rule_id: mirroredRuleId, meaning: mirroredMeaning });
+          rawRulesByForm[base].push(mr);
+        });
+      });
+
+      if (Object.keys(rulesByForm).length) {
+        const dossierByBaseForm = {};
+        rawFormDossiers.forEach((dossier) => {
+          const key = baseFormName(dossier?.form_name);
+          if (key && !dossierByBaseForm[key]) dossierByBaseForm[key] = dossier;
+        });
+        lines.push("", "### E1. Rule Cross-Reference by Form");
+        Object.keys(rulesByForm).sort().slice(0, 220).forEach((formName) => {
+          const rows = Array.isArray(rulesByForm[formName]) ? rulesByForm[formName] : [];
+          const ruleIds = Array.from(new Set(rows.map((r) => String(r?.rule_id || "").trim()).filter(Boolean))).sort().slice(0, 8).join(", ") || "n/a";
+          const summaries = [];
+          rows.forEach((r) => {
+            const m = String(r?.meaning || "").trim();
+            if (m && !summaries.includes(m)) summaries.push(m);
+          });
+          const dossierSummary = dossierBusinessRuleSummary({
+            formName,
+            dossier: dossierByBaseForm[formName],
+            ruleRows: Array.isArray(rawRulesByForm[formName]) ? rawRulesByForm[formName] : [],
+          });
+          if (dossierSummary && !summaries.includes(dossierSummary)) summaries.unshift(dossierSummary);
+          lines.push(`- ${formName}: rule_ids=[${ruleIds}]; summary=${(summaries.slice(0, 3).join(" / ") || "n/a").replace(/\|/g, "\\|")}`);
+        });
+      }
+      const sharedRows = Array.from(saturatedMeaningTemplates)
+        .map((meaning) => {
+          const suppressed = Number(saturatedSuppressedCount[meaning] || 0);
+          const forms = Array.from(saturatedMeaningForms[meaning] instanceof Set ? saturatedMeaningForms[meaning] : []).sort();
+          return {
+            meaning,
+            anchor: String(canonicalMeaningRuleIds[meaning] || "").trim() || "n/a",
+            suppressed,
+            forms,
+          };
+        })
+        .filter((row) => row.suppressed > 0);
+      if (sharedRows.length) {
+        lines.push("", "### E2. Shared Rule Consolidation");
+        sharedRows.forEach((row) => {
+          const preview = row.forms.slice(0, 12).join(", ") || "n/a";
+          const suffix = row.forms.length > 12 ? ` (+${row.forms.length - 12} more)` : "";
+          lines.push(`- ${row.anchor}: consolidated ${row.suppressed} duplicate row(s); applies to ${row.forms.length} form(s): ${(preview + suffix).replace(/\|/g, "\\|")}`);
+          lines.push(`  - Canonical meaning: ${String(row.meaning || "n/a").replace(/\|/g, "\\|")}`);
+        });
+      }
     } else {
       lines.push("- No business rules available.");
     }
@@ -2148,6 +2784,16 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
       sqlMapRows.slice(0, 700).forEach((row) => {
         const projectName = String(row?.variant || "").trim() || projectFromScoped(row?.form);
         const formName = String(row?.form_base || "").trim() || String(row?.form || "").trim();
+        const procRowsForForm = lookupRows(formProcRows, projectName, formName);
+        const dbTablesForForm = Array.from(lookupSet(formDbTables, projectName, formName)).sort();
+        const dossier = dossierByKey[formKey(projectName, formName)] || dossierByKey[baseOnlyKey(formName)] || {};
+        const alias = semanticFormAlias({
+          formName,
+          purpose: String(dossier?.purpose || ""),
+          dbTables: new Set(dbTablesForForm),
+          procedures: procRowsForForm,
+          rules: lookupRows(formRuleRows, projectName, formName),
+        });
         const procName = String(row?.procedure || "").trim();
         const relatedEvents = lookupRows(formEventRows, projectName, formName).filter((evt) => {
           const handler = String(evt?.handler?.symbol || "").trim();
@@ -2166,21 +2812,23 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         const hasSql = Boolean(String(row?.sql_id || "").trim());
         const hasTables = Array.isArray(row?.tables) && row.tables.length > 0;
         const traceComplete = hasSql && hasTables;
-        lines.push(`| ${qualifiedFormName(projectName, formName)} | ${String(row?.procedure || "n/a")} | ${String(row?.operation || "unknown")} | ${tables || "n/a"} | ${risks || "none"} | ${Array.from(new Set(activexHits)).slice(0, 4).join(", ") || "n/a"} | ${traceComplete ? "yes" : "no"} |`);
+        lines.push(`| ${qualifiedFormName(projectName, displayFormName(formName, alias))} | ${String(row?.procedure || "n/a")} | ${String(row?.operation || "unknown")} | ${tables || "n/a"} | ${risks || "none"} | ${Array.from(new Set(activexHits)).slice(0, 4).join(", ") || "n/a"} | ${traceComplete ? "yes" : "no"} |`);
       });
     } else {
       lines.push("- No SQL map rows available.");
     }
 
-    lines.push("", "### I. Procedure Summaries");
+    lines.push("", "### I. Handler and Procedure Summaries");
     if (procedureRows.length) {
-      lines.push("| Procedure | Form | SQL IDs | Steps | Risks |");
-      lines.push("|---|---|---|---|---|");
+      lines.push("| Callable | Kind | Form | SQL IDs | Steps | Risks |");
+      lines.push("|---|---|---|---|---|---|");
       procedureRows.slice(0, 700).forEach((row) => {
+        const procName = String(row?.procedure_name || row?.procedure_id || "n/a");
+        const kind = callableKind(procName, row?.form, String(row?.trigger?.event || ""));
         const sqlIds = Array.isArray(row?.sql_ids) ? row.sql_ids.slice(0, 6).join(", ") : "";
         const steps = Array.isArray(row?.steps) ? row.steps.slice(0, 2).join(" / ").replace(/\|/g, "\\|") : "";
         const risks = Array.isArray(row?.risks) ? row.risks.slice(0, 5).join(", ") : "";
-        lines.push(`| ${String(row?.procedure_name || row?.procedure_id || "n/a")} | ${String(row?.form || "n/a")} | ${sqlIds || "n/a"} | ${steps || "n/a"} | ${risks || "none"} |`);
+        lines.push(`| ${procName} | ${kind} | ${String(row?.form || "n/a")} | ${sqlIds || "n/a"} | ${steps || "n/a"} | ${risks || "none"} |`);
       });
     } else {
       lines.push("- No procedure summaries available.");
@@ -2194,51 +2842,186 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     }
 
     lines.push("", "### K. Form Dossiers");
-    if (formDossierRows.length) {
-      lines.push("| Form | Project | form_type | Purpose | Inputs | Outputs | ActiveX used | DB tables | Actions | Coverage | Confidence |");
-      lines.push("|---|---|---|---|---|---|---|---|---:|---:|---:|");
-      formDossierRows.slice(0, 700).forEach((row) => {
-        const projectName = String(row?.project_name || "").trim();
-        const formName = String(row?.form_name || "").trim();
-        const actions = Array.isArray(row?.actions) ? row.actions.length : 0;
-        const coverage = Number(row?.coverage?.coverage_score || 0);
-        const confidence = Number(row?.coverage?.confidence_score || 0);
-        const procRows = lookupRows(formProcRows, projectName, formName);
-        const inputs = new Set();
-        const outputs = new Set();
-        procRows.forEach((proc) => {
-          (Array.isArray(proc?.tables_touched) ? proc.tables_touched : []).forEach((v) => { const x = String(v || "").trim(); if (x) outputs.add(x); });
-          (Array.isArray(proc?.data_mutations) ? proc.data_mutations : []).forEach((v) => { const x = String(v || "").trim(); if (x) outputs.add(x); });
-          (Array.isArray(proc?.navigation_side_effects) ? proc.navigation_side_effects : []).forEach((v) => { const x = String(v || "").trim(); if (x) outputs.add(x); });
-        });
-        const activex = new Set();
-        (Array.isArray(row?.controls) ? row.controls : []).forEach((ctl) => {
-          const name = String(ctl || "").trim();
-          if (!name) return;
-          const controlId = String(name.split(":").slice(-1)[0] || "").trim().toLowerCase();
-          if (["txt", "cbo", "cmb", "dtp", "msk", "chk", "opt", "lst"].some((p) => controlId.startsWith(p))) inputs.add(controlId);
-          const prefix = name.split(":")[0];
-          if (prefix && !prefix.toUpperCase().startsWith("VB")) activex.add(prefix);
-        });
-        const projectDeps = projectDepsByName[projectName];
-        if (projectDeps instanceof Set) {
-          Array.from(projectDeps).forEach((dep) => {
-            const d = String(dep || "").trim();
-            if (!d) return;
-            const up = d.toUpperCase();
-            if (d.toLowerCase().endsWith(".ocx") || d.toLowerCase().endsWith(".dll") || up.includes("MSCOM") || up.includes("MSFLEX")) activex.add(d);
+    if (discoveredForms.length) {
+      lines.push("| Form | Display Name | Project | form_type | Status | Purpose | Inputs (data) | Outputs (effects) | ActiveX used | DB tables | Actions | Coverage | Confidence | Exclusion reason |");
+      lines.push("|---|---|---|---|---|---|---|---|---|---|---:|---:|---:|---|");
+      const excludedRows = [];
+      discoveredForms
+        .slice()
+        .sort((a, b) => (String(a?.project_name || "").localeCompare(String(b?.project_name || "")) || String(a?.form_name || "").localeCompare(String(b?.form_name || ""))))
+        .slice(0, 900)
+        .forEach((formRef) => {
+          const projectName = String(formRef?.project_name || "").trim();
+          const formName = String(formRef?.form_name || "").trim();
+          const key = String(formRef?.form_key || "").trim() || formKey(projectName, formName);
+          const baseKey = baseOnlyKey(formName);
+          const dossier = dossierByKey[key] || dossierByKey[baseKey] || null;
+          const orphanRow = orphanByKey[key] || orphanByKey[baseKey] || null;
+
+          let status = "mapped";
+          let exclusionReason = "none";
+          if (!dossier) {
+            if (orphanRow) {
+              status = "orphan";
+              exclusionReason = String(orphanRow?.recommendation || orphanRow?.reason || "orphaned_form");
+            } else {
+              status = "excluded";
+              exclusionReason = "missing_from_form_dossier";
+            }
+          }
+
+          const procRows = lookupRows(formProcRows, projectName, formName);
+          const sqlRowsForForm = lookupRows(formSqlRows, projectName, formName);
+          const formRules = lookupRows(formRuleRows, projectName, formName);
+          const formControls = Array.isArray(dossier?.controls) ? dossier.controls : [];
+
+          const dbTablesSet = lookupSet(formDbTables, projectName, formName);
+          if (dbTablesSet instanceof Set && dbTablesSet.size === 0) {
+            sqlRowsForForm.forEach((sqlRow) => {
+              (Array.isArray(sqlRow?.tables) ? sqlRow.tables : []).forEach((tableName) => {
+                const tbl = String(tableName || "").trim();
+                if (tbl) dbTablesSet.add(tbl);
+              });
+            });
+          }
+          const dbTables = Array.from(dbTablesSet).sort();
+
+          let purpose = String(dossier?.purpose || "").trim();
+          const alias = semanticFormAlias({
+            formName: formName || "n/a",
+            purpose,
+            dbTables: new Set(dbTables),
+            procedures: procRows,
+            rules: formRules,
+            controls: formControls,
           });
-        }
-        const dbTables = Array.from(lookupSet(formDbTables, projectName, formName)).sort();
-        const formType = inferFormType({
-          formName,
-          purpose: String(row?.purpose || ""),
-          procedures: procRows,
-          controls: Array.isArray(row?.controls) ? row.controls : [],
-          tables: dbTables,
+          if (!purpose && alias) purpose = `${alias} workflow.`;
+          const displayName = displayFormName(formName || "n/a", alias);
+
+          const inputs = new Set();
+          formControls.forEach((controlName) => {
+            const token = String(controlName || "").trim();
+            if (!token) return;
+            const controlId = String(token.split(":").slice(-1)[0] || "").trim();
+            if (isDataInputControl(controlId)) inputs.add(toBusinessInput(controlId));
+          });
+          procRows.forEach((proc) => {
+            (Array.isArray(proc?.inputs) ? proc.inputs : []).forEach((inputName) => {
+              const token = String(inputName || "").trim();
+              if (isDataInputControl(token)) inputs.add(toBusinessInput(token));
+            });
+          });
+
+          const outputs = new Set();
+          sqlRowsForForm.forEach((sqlRow) => {
+            const op = String(sqlRow?.operation || "").trim().toLowerCase();
+            const tables = (Array.isArray(sqlRow?.tables) ? sqlRow.tables : []).map((x) => String(x || "").trim()).filter(Boolean);
+            if (!tables.length) return;
+            tables.forEach((tableName) => {
+              const effect = businessEffectFromSql(op, tableName);
+              if (effect) outputs.add(effect);
+            });
+          });
+          if (!outputs.size) {
+            procRows.forEach((proc) => {
+              (Array.isArray(proc?.data_mutations) ? proc.data_mutations : []).forEach((tableName) => {
+                const table = String(tableName || "").trim();
+                if (!table) return;
+                const effect = businessEffectFromSql("update", table);
+                if (effect) outputs.add(effect);
+              });
+            });
+            if (!outputs.size) {
+              fallbackBusinessEffects({
+                alias,
+                purpose,
+                inputs,
+                dbTables,
+                rules: formRules,
+              }).forEach((effect) => outputs.add(effect));
+            }
+          }
+
+          const activex = new Set();
+          formControls.forEach((ctl) => {
+            const name = String(ctl || "").trim();
+            if (!name) return;
+            const prefix = String(name.split(":")[0] || "").trim();
+            if (prefix && !prefix.toUpperCase().startsWith("VB")) activex.add(prefix);
+          });
+          const projectDeps = projectDepsByName[projectName];
+          if (projectDeps instanceof Set) {
+            Array.from(projectDeps).forEach((dep) => {
+              const d = String(dep || "").trim();
+              if (!d) return;
+              const up = d.toUpperCase();
+              if (d.toLowerCase().endsWith(".ocx") || d.toLowerCase().endsWith(".dll") || up.includes("MSCOM") || up.includes("MSFLEX")) activex.add(d);
+            });
+          }
+
+          const formType = inferFormType({
+            formName: formName || "n/a",
+            purpose,
+            procedures: procRows,
+            controls: formControls,
+            tables: dbTables,
+          });
+          const coverage = Number(dossier?.coverage?.coverage_score || 0);
+          const rawConfidence = Number(dossier?.coverage?.confidence_score || 0);
+          const actions = Array.isArray(dossier?.actions) ? dossier.actions.length : procRows.length;
+          const genericPurpose = new Set([
+            "business workflow executed through event-driven ui controls.",
+            "business workflow executed through event-driven ui controls",
+            "potential orphan flow detected.",
+            "potential orphan flow detected",
+          ]).has(String(purpose || "").trim().toLowerCase());
+          const coverageClamped = Math.max(0, Math.min(1, Number.isFinite(coverage) ? coverage : 0));
+          let confidence = 0.22 + (0.45 * coverageClamped);
+          confidence += Math.min(0.14, 0.02 * actions);
+          confidence += Math.min(0.08, 0.015 * procRows.length);
+          confidence += Math.min(0.08, 0.02 * dbTables.length);
+          confidence += sqlRowsForForm.length ? 0.09 : -0.08;
+          confidence += !genericPurpose ? 0.08 : -0.12;
+          if (!inputs.size) confidence -= 0.06;
+          if (!actions) confidence -= 0.16;
+          if (/^(form\d+|frm\d+)$/i.test(formName || "") && !String(alias || "").trim()) confidence -= 0.08;
+          if (rawConfidence > 0 && rawConfidence <= 1 && Math.abs(rawConfidence - 0.92) > 1e-4) {
+            confidence = (confidence * 0.8) + (rawConfidence * 0.2);
+          }
+          confidence = Math.max(0.1, Math.min(0.98, confidence));
+
+          if (status !== "mapped") {
+            excludedRows.push({
+              form: qualifiedFormName(projectName, formName),
+              reason: exclusionReason,
+              source: String(formRef?.source || "detected"),
+            });
+          }
+
+          lines.push(`| ${formName || "n/a"} | ${displayName || "n/a"} | ${projectLabel(projectName)} | ${formType} | ${status} | ${String(purpose || "n/a").replace(/\\|/g, "\\\\|")} | ${Array.from(inputs).sort().slice(0, 8).join(", ") || "n/a"} | ${Array.from(outputs).sort().slice(0, 8).join(", ") || "n/a"} | ${Array.from(activex).sort().slice(0, 6).join(", ") || "n/a"} | ${dbTables.slice(0, 8).join(", ") || "n/a"} | ${actions} | ${Number.isFinite(coverage) ? coverage.toFixed(2) : "0.00"} | ${Number.isFinite(confidence) ? confidence.toFixed(2) : "0.00"} | ${String(exclusionReason || "none").replace(/\\|/g, "\\\\|")} |`);
         });
-        lines.push(`| ${formName || "n/a"} | ${projectLabel(projectName)} | ${formType} | ${String(row?.purpose || "").replace(/\\|/g, "\\\\|")} | ${Array.from(inputs).sort().slice(0, 6).join(", ") || "n/a"} | ${Array.from(outputs).sort().slice(0, 6).join(", ") || "n/a"} | ${Array.from(activex).sort().slice(0, 6).join(", ") || "n/a"} | ${dbTables.slice(0, 8).join(", ") || "n/a"} | ${actions} | ${coverage.toFixed(2)} | ${confidence.toFixed(2)} |`);
-      });
+
+      const summaryCounts = (rawLegacy.summary && typeof rawLegacy.summary === "object" && rawLegacy.summary.counts && typeof rawLegacy.summary.counts === "object")
+        ? rawLegacy.summary.counts
+        : {};
+      const expectedForms = Number(summaryCounts.forms_or_screens || 0);
+      const renderedForms = discoveredForms.length;
+      if ((expectedForms > renderedForms) || orphanUnmappedCount > 0) {
+        const unresolved = orphanUnmappedCount || Math.max(0, expectedForms - renderedForms);
+        lines.push("");
+        lines.push(`- Coverage note: expected_forms=${expectedForms}, rendered_forms=${renderedForms}, unmapped_form_files=${unresolved}. Unmapped/placeholder forms are listed below.`);
+      }
+      if (excludedRows.length || orphanUnmappedCount > 0) {
+        lines.push("", "#### K1. Excluded/Unresolved Forms");
+        lines.push("| Form | Reason | Source |");
+        lines.push("|---|---|---|");
+        excludedRows.slice(0, 400).forEach((row) => {
+          lines.push(`| ${String(row?.form || "n/a")} | ${String(row?.reason || "excluded")} | ${String(row?.source || "detected")} |`);
+        });
+        if (orphanUnmappedCount > 0) {
+          lines.push(`| (unmapped_form_files) | reconcile_project_membership (${orphanUnmappedCount} unresolved form files) | orphan_analysis |`);
+        }
+      }
     } else {
       lines.push("- No form dossier rows available.");
     }
@@ -2974,43 +3757,7 @@ function _discoverData() {
   if (preview.nodes.length || preview.rules.length || preview.findings.length || preview.backlog.length) {
     return { ...preview, demo: false };
   }
-
-  if (!state.projectState.sampleDatasetEnabled) {
-    return { nodes: [], edges: [], rules: [], findings: [], backlog: [], demo: false };
-  }
-
-  const demoNodes = [
-    { id: "svc:orders", name: "orders-service", type: "service" },
-    { id: "svc:payments", name: "payments-service", type: "service" },
-    { id: "svc:inventory", name: "inventory-service", type: "service" },
-    { id: "svc:billing", name: "billing-monolith", type: "service" },
-    { id: "db:commerce", name: "commerce_db", type: "database" },
-    { id: "db:payments", name: "payments_db", type: "database" },
-    { id: "topic:order_created", name: "order.created", type: "message_topic" },
-  ];
-  const demoEdges = [
-    { from: "svc:orders", to: "svc:payments", type: "calls_http", confidence: { score: 0.93 } },
-    { from: "svc:orders", to: "topic:order_created", type: "publishes", confidence: { score: 0.9 } },
-    { from: "topic:order_created", to: "svc:inventory", type: "consumes", confidence: { score: 0.84 } },
-    { from: "svc:orders", to: "db:commerce", type: "writes", confidence: { score: 0.88 } },
-    { from: "svc:billing", to: "db:commerce", type: "reads", confidence: { score: 0.79 } },
-  ];
-  const demoRules = [
-    { id: "cp-1", category: "logging_observability", statement: "Logs include correlationId and traceId." },
-    { id: "cp-2", category: "testing", statement: "API handlers require unit tests in test/handlers." },
-    { id: "cp-3", category: "api_design", statement: "Error responses follow shared error envelope." },
-  ];
-  const demoFindings = [
-    { id: "f-1", severity: "high", title: "Billing monolith hotspot", description: "High churn and complexity in billing engine." },
-    { id: "f-2", severity: "high", title: "Shared DB smell", description: "orders-service and billing-monolith share commerce_db." },
-    { id: "f-3", severity: "medium", title: "Coverage gap in payments", description: "Low tests in payment retry handlers." },
-  ];
-  const demoBacklog = [
-    { id: "rem-001", priority: "P0", title: "Introduce payment idempotency store" },
-    { id: "rem-002", priority: "P1", title: "Strangler facade for billing monolith" },
-    { id: "rem-003", priority: "P1", title: "Upgrade vulnerable inventory dependency" },
-  ];
-  return { nodes: demoNodes, edges: demoEdges, rules: demoRules, findings: demoFindings, backlog: demoBacklog, demo: true };
+  return { nodes: [], edges: [], rules: [], findings: [], backlog: [], demo: false };
 }
 
 function _nodeKey(node, idx) {
@@ -3517,40 +4264,6 @@ function renderDiscoverInsights() {
         `
       : `<p class="text-slate-700">No convention rules available yet.</p>`;
   }
-}
-
-function applySampleDatasetPreset() {
-  state.projectState.sampleDatasetEnabled = true;
-  if (el.projectStateMode) el.projectStateMode.value = "brownfield";
-  if (el.bfRepoProvider) el.bfRepoProvider.value = "github";
-  if (el.bfRepoUrl) el.bfRepoUrl.value = "https://github.com/acme/acme-commerce-platform";
-  if (el.bfIssueProvider) el.bfIssueProvider.value = "jira";
-  if (el.bfIssueProject) el.bfIssueProject.value = "ACME";
-  if (el.bfDocsUrl) el.bfDocsUrl.value = "https://confluence.acme.local/commerce";
-  if (el.bfRuntimeTelemetry) el.bfRuntimeTelemetry.checked = true;
-  if (el.analysisDepth) el.analysisDepth.value = "deep";
-  if (el.telemetryMode) el.telemetryMode.value = "staging";
-  if (el.includePaths) el.includePaths.value = "services/\nlegacy/\ninfra/";
-  if (el.excludePaths) el.excludePaths.value = "node_modules/\ndist/\nvendor/";
-  if (el.domainPackSelect) el.domainPackSelect.value = "auto";
-  if (el.domainJurisdiction) el.domainJurisdiction.value = "AUTO";
-  if (el.domainDataClassification) el.domainDataClassification.value = "";
-  if (el.domainPackJson) el.domainPackJson.value = "";
-  if (el.taskType) el.taskType.value = "business_objectives";
-  if (el.objectives) {
-    el.objectives.value = "Improve payment reliability and compliance for ACME checkout while reducing duplicate charges and increasing traceability.";
-    el.objectives.dataset.autogen = "0";
-  }
-  applyProjectStateResult({
-    detected: "brownfield",
-    confidence: 0.99,
-    reason: "Using sample ACME brownfield dataset for guided demo.",
-  });
-  autoTriggerDiscoverExternalViews({ force: true });
-  renderDomainPackControls();
-  setDiscoverStep(4);
-  setDiscoverResultsView("city");
-  renderDiscoverInsights();
 }
 
 function renderNotifications(tab = "approvals") {
@@ -4412,24 +5125,56 @@ function renderSecurityDashboard(runs) {
   `;
 }
 
+function renderProjectRunsListDashboard(runs) {
+  if (!el.dashboardTitle || !el.dashboardSubtitle || !el.dashboardRunsList) return;
+  const rows = [...runs]
+    .sort((a, b) => asMs(b.updated_at || b.created_at) - asMs(a.updated_at || a.created_at))
+    .slice(0, 200);
+  el.dashboardTitle.textContent = "Project runs";
+  el.dashboardSubtitle.textContent = "Recent run history across projects.";
+  if (!rows.length) {
+    el.dashboardRunsList.innerHTML = `<p class="text-xs text-slate-700">No runs available yet.</p>`;
+    return;
+  }
+  el.dashboardRunsList.innerHTML = `
+    <div class="overflow-x-auto rounded-lg border border-slate-300 bg-white">
+      <table class="min-w-full divide-y divide-slate-200 text-xs text-slate-800">
+        <thead class="bg-slate-100 text-[11px] uppercase tracking-[0.12em] text-slate-700">
+          <tr>
+            <th class="px-3 py-2 text-left font-semibold">Run ID</th>
+            <th class="px-3 py-2 text-left font-semibold">Status</th>
+            <th class="px-3 py-2 text-left font-semibold">Created</th>
+            <th class="px-3 py-2 text-left font-semibold">Updated</th>
+            <th class="px-3 py-2 text-left font-semibold">Objective</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-200">
+          ${rows.map((run) => {
+            const runId = escapeHtml(String(run?.run_id || "-"));
+            const status = escapeHtml(String(run?.status || "unknown").toUpperCase());
+            const created = escapeHtml(String(run?.created_at || "").replace("T", " ").slice(0, 19) || "-");
+            const updated = escapeHtml(String(run?.updated_at || "").replace("T", " ").slice(0, 19) || "-");
+            const objective = escapeHtml(String(run?.business_objectives || run?.objective || "").trim().slice(0, 160) || "-");
+            return `
+              <tr class="align-top">
+                <td class="px-3 py-2 font-mono text-[11px] text-slate-900">${runId}</td>
+                <td class="px-3 py-2">${status}</td>
+                <td class="px-3 py-2">${created}</td>
+                <td class="px-3 py-2">${updated}</td>
+                <td class="px-3 py-2">${objective}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderPerspectiveDashboard() {
-  if (!el.dashboardKpiRow || !el.dashboardMainLeft || !el.dashboardMainRight || !el.dashboardBottom) return;
+  if (!el.dashboardRunsList) return;
   const runs = Array.isArray(state.dashboardRuns) ? state.dashboardRuns : [];
-  const tasks = Array.isArray(state.dashboardTasks) ? state.dashboardTasks : [];
-  const perspective = currentPerspective();
-  if (perspective === "delivery") {
-    renderDeliveryDashboard(runs, tasks);
-    return;
-  }
-  if (perspective === "engineering") {
-    renderEngineeringDashboard(runs);
-    return;
-  }
-  if (perspective === "security") {
-    renderSecurityDashboard(runs);
-    return;
-  }
-  renderExecutiveDashboard(runs, tasks);
+  renderProjectRunsListDashboard(runs);
 }
 
 function setContextOpsOutput(text) {
@@ -4621,13 +5366,12 @@ function detectProjectStateHeuristic() {
 
 function applyProjectStateResult(result) {
   const detected = String(result?.detected || "").toLowerCase();
-  const sampleDatasetEnabled = !!state.projectState.sampleDatasetEnabled;
   state.projectState = {
     mode: String(el.projectStateMode?.value || "auto"),
     detected,
     confidence: Number(result?.confidence || 0),
     reason: String(result?.reason || ""),
-    sampleDatasetEnabled,
+    sampleDatasetEnabled: false,
   };
   if (el.projectStateResult) {
     const pctConfidence = Math.round(state.projectState.confidence * 100);
@@ -4761,7 +5505,6 @@ function analystBriefRequestKey() {
     String(el.dbSchema?.value || "").trim().slice(0, 500),
     String(el.includePaths?.value || "").trim(),
     String(el.excludePaths?.value || "").trim(),
-    String(integration?.sample_dataset_enabled ? "sample" : "live"),
   ];
   return payload.join("|");
 }
@@ -4967,7 +5710,6 @@ async function loadDiscoverGithubTree() {
       integration_context: integration,
       repo_url: repoUrl,
       max_entries: 1200,
-      sample_dataset_enabled: !!integration.sample_dataset_enabled,
     }, "POST");
     state.discoverGithubTree = {
       loading: false,
@@ -4985,7 +5727,7 @@ async function loadDiscoverGithubTree() {
 async function loadDiscoverLinearIssues() {
   const integration = getIntegrationContext();
   const issueProvider = String(integration?.brownfield?.issue_provider || "").toLowerCase();
-  if (!integration.sample_dataset_enabled && issueProvider && !["linear", "jira"].includes(issueProvider)) {
+  if (issueProvider && !["linear", "jira"].includes(issueProvider)) {
     state.discoverLinearIssues = {
       loading: false,
       error: `Issue provider ${issueProvider.toUpperCase()} is not supported yet for preview.`,
@@ -5005,7 +5747,6 @@ async function loadDiscoverLinearIssues() {
       issue_provider: issueProvider || "linear",
       issue_project: String(integration?.brownfield?.issue_project || "").trim(),
       max_issues: 80,
-      sample_dataset_enabled: !!integration.sample_dataset_enabled,
     }, "POST");
     state.discoverLinearIssues = {
       loading: false,
@@ -5038,7 +5779,7 @@ function autoTriggerDiscoverExternalViews({ force = false } = {}) {
   const issueProject = String(integration?.brownfield?.issue_project || "").trim();
 
   if (repoProvider === "github" && repoUrl) {
-    const githubKey = `${repoProvider}|${repoUrl}|${integration.sample_dataset_enabled ? "sample" : "live"}`;
+    const githubKey = `${repoProvider}|${repoUrl}`;
     if (force || githubKey !== state.discoverAutoFetch.githubKey) {
       state.discoverAutoFetch.githubKey = githubKey;
       loadDiscoverGithubTree().catch((err) => {
@@ -5054,7 +5795,7 @@ function autoTriggerDiscoverExternalViews({ force = false } = {}) {
   }
 
   if (["linear", "jira"].includes(issueProvider) && issueProject) {
-    const linearKey = `${issueProvider}|${issueProject}|${integration.sample_dataset_enabled ? "sample" : "live"}`;
+    const linearKey = `${issueProvider}|${issueProject}`;
     if (force || linearKey !== state.discoverAutoFetch.linearKey) {
       state.discoverAutoFetch.linearKey = linearKey;
       loadDiscoverLinearIssues().catch((err) => {
@@ -5142,7 +5883,6 @@ function getIntegrationContext() {
       analyst_requirements_pack: analystReqPack ? analystReqPack : null,
     },
     cloud_promotion_enabled: !!el.enableCloudPromotion?.checked,
-    sample_dataset_enabled: !!state.projectState.sampleDatasetEnabled,
   };
 }
 
@@ -5153,7 +5893,7 @@ function applyIntegrationContext(ctx) {
   const detected = String(ctx.project_state_detected || "");
   const confidence = Number(ctx.project_state_confidence || 0);
   const reason = String(ctx.project_state_reason || "");
-  state.projectState.sampleDatasetEnabled = !!ctx.sample_dataset_enabled;
+  state.projectState.sampleDatasetEnabled = false;
   if (detected) {
     applyProjectStateResult({ detected, confidence, reason: reason || "Loaded from run context." });
   } else if (mode === "greenfield" || mode === "brownfield") {
@@ -5254,16 +5994,12 @@ function applyIntegrationContext(ctx) {
 
 function discoverStepCompletion() {
   const integration = getIntegrationContext();
-  const sampleMode = !!integration.sample_dataset_enabled;
   const projectStateReady = !!integration.project_state_detected;
   let connectComplete = projectStateReady;
-  if (sampleMode) connectComplete = true;
   if (integration.project_state_detected === "brownfield") {
     connectComplete = connectComplete
       && !!integration.brownfield.repo_provider
-      && !!integration.brownfield.repo_url
-      && !!integration.brownfield.issue_provider
-      && !!integration.brownfield.issue_project;
+      && !!integration.brownfield.repo_url;
   } else if (integration.project_state_detected === "greenfield") {
     connectComplete = connectComplete
       && !!integration.greenfield.repo_destination
@@ -5290,7 +6026,10 @@ function discoverStepCompletion() {
     )
     && (!isDatabaseConversionMode() || !!String(el.dbSchema?.value || "").trim())
     && customDomainPackValid;
-  const scanComplete = !!String(el.analysisDepth?.value || "").trim();
+  const analystData = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : null;
+  const scanComplete = !!(analystData && Object.keys(analystData).length);
   const resultsComplete = connectComplete && scopeComplete && scanComplete;
   return { connectComplete, scopeComplete, scanComplete, resultsComplete };
 }
@@ -5351,14 +6090,15 @@ function renderDiscoverStepper() {
       const ready = completion.resultsComplete
         ? "Baseline artifacts are published and ready for review."
         : "Complete missing fields to publish baseline artifacts.";
-      const sampleNote = integration.sample_dataset_enabled ? "Demo dataset mode enabled." : "";
-      el.discoverResultsSummary.textContent = `${ready} ${sampleNote} ${integration.project_state_reason || ""}`.trim();
+      el.discoverResultsSummary.textContent = `${ready} ${integration.project_state_reason || ""}`.trim();
     }
     el.discoverResultsState.textContent = `Project state: ${integration.project_state_detected || "pending"} (${Math.round((integration.project_state_confidence || 0) * 100)}%)`;
     if (integration.project_state_detected === "brownfield") {
+      const trackerConfigured = !!integration.brownfield.issue_provider && !!integration.brownfield.issue_project;
+      const trackerPartiallyConfigured = (!!integration.brownfield.issue_provider || !!integration.brownfield.issue_project) && !trackerConfigured;
       const linked = [
         integration.brownfield.repo_provider && integration.brownfield.repo_url ? "repo linked" : "repo missing",
-        integration.brownfield.issue_provider && integration.brownfield.issue_project ? "tracker linked" : "tracker missing",
+        trackerConfigured ? "tracker linked" : (trackerPartiallyConfigured ? "tracker incomplete (optional)" : "tracker optional"),
       ].join(" | ");
       el.discoverResultsIntegrations.textContent = `Integrations: Brownfield (${linked})`;
     } else if (integration.project_state_detected === "greenfield") {
@@ -5388,7 +6128,7 @@ function renderDiscoverStepper() {
 function validateDiscoverStep(step) {
   const c = discoverStepCompletion();
   if (step === 1 && !c.connectComplete) {
-    alert("Complete Connect sources, or use the sample dataset option to continue without external integrations.");
+    alert("Complete Connect sources to continue.");
     return false;
   }
   if (step === 2 && !c.scopeComplete) {
@@ -5396,7 +6136,7 @@ function validateDiscoverStep(step) {
     return false;
   }
   if (step === 3 && !c.scanComplete) {
-    alert("Complete Scanning system: choose analysis depth.");
+    alert("Complete Scanning system: run Analyst brief to finish Scan.");
     return false;
   }
   return true;
@@ -6266,7 +7006,6 @@ function buildDiscoverBaselineReport() {
       detected: integration.project_state_detected,
       confidence: integration.project_state_confidence,
       reason: integration.project_state_reason,
-      sample_dataset_enabled: !!integration.sample_dataset_enabled,
     },
     integrations: {
       brownfield: integration.brownfield || {},
@@ -7056,6 +7795,16 @@ function renderAnalystReadable(output) {
   const appendixRefs = (appendix.artifact_refs && typeof appendix.artifact_refs === "object")
     ? appendix.artifact_refs
     : {};
+  const qaReport = (report.qa_report_v1 && typeof report.qa_report_v1 === "object")
+    ? report.qa_report_v1
+    : ((output.qa_report_v1 && typeof output.qa_report_v1 === "object") ? output.qa_report_v1 : {});
+  const qaSummary = (qaReport.summary && typeof qaReport.summary === "object") ? qaReport.summary : {};
+  const qaStructural = (qaReport.structural && typeof qaReport.structural === "object") ? qaReport.structural : {};
+  const qaSemantic = (qaReport.semantic && typeof qaReport.semantic === "object") ? qaReport.semantic : {};
+  const qaStructuralChecks = Array.isArray(qaStructural.checks) ? qaStructural.checks : [];
+  const qaSemanticChecks = Array.isArray(qaSemantic.checks) ? qaSemantic.checks : [];
+  const qaQualityGates = Array.isArray(qaReport.quality_gates) ? qaReport.quality_gates : [];
+  const qaAmendments = Array.isArray(qaReport.amendment_diff_v1) ? qaReport.amendment_diff_v1 : [];
   const highVolume = appendix.high_volume_sections || {};
   const rawArtifacts = (output.raw_artifacts && typeof output.raw_artifacts === "object")
     ? output.raw_artifacts
@@ -7218,8 +7967,8 @@ function renderAnalystReadable(output) {
   };
   const artifactRefRows = Object.entries(appendixRefs);
   const allowedTabs = clientMode
-    ? ["spec", "evidence", "history"]
-    : ["spec", "plan", "tasks", "evidence", "maps", "history"];
+    ? ["spec", "qa", "evidence", "history"]
+    : ["spec", "plan", "tasks", "qa", "evidence", "maps", "history"];
   if (!allowedTabs.includes(String(state.analyst?.selectedTab || ""))) {
     state.analyst.selectedTab = allowedTabs[0];
   }
@@ -7269,6 +8018,7 @@ function renderAnalystReadable(output) {
         ${tabButton("spec", "Decision brief")}
         ${!clientMode ? tabButton("plan", "Delivery spec") : ""}
         ${!clientMode ? tabButton("tasks", "Tasks") : ""}
+        ${tabButton("qa", "QA")}
         ${tabButton("evidence", "Evidence appendix")}
         ${!clientMode ? tabButton("maps", "Maps") : ""}
         ${tabButton("history", "History")}
@@ -7406,6 +8156,67 @@ function renderAnalystReadable(output) {
         <details class="mt-2"><summary class="cursor-pointer text-[11px] font-semibold text-slate-900">Procedure summaries (${procedureSummaries.length})</summary><pre class="mono mt-1 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-800">${escapeHtml(JSON.stringify(procedureSummaries.slice(0, 120), null, 2))}</pre></details>
         <div class="mt-2 text-[11px] font-semibold">Delivery constitution (${constitutionPrinciples.length})</div>
         <ul class="list-disc pl-5 text-[11px]">${constitutionPrinciples.map((line) => `<li>${escapeHtml(String(line || ""))}</li>`).join("") || "<li>No constitution principles available.</li>"}</ul>
+      </section>
+
+      <section data-analyst-view-panel="qa" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
+        <div class="text-xs font-semibold text-slate-900">QA gate</div>
+        <p class="mt-1 text-[11px] text-slate-700">Deterministic structural assertions plus semantic plausibility checks over Analyst outputs.</p>
+        <div class="mt-2 grid gap-2 sm:grid-cols-5 text-[11px]">
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Status:</strong> ${escapeHtml(String(qaSummary.status || "NOT_RUN"))}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Pass:</strong> ${Number(qaSummary.pass_count || 0)}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Warn:</strong> ${Number(qaSummary.warn_count || 0)}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Fail:</strong> ${Number(qaSummary.fail_count || 0)}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 p-2"><strong>Blockers:</strong> ${Number(qaSummary.blocker_count || 0)}</div>
+        </div>
+        <div class="mt-2 text-[11px] font-semibold">QA quality gates (${qaQualityGates.length})</div>
+        <ul class="list-disc pl-5 text-[11px]">${qaQualityGates.map((gate) => `<li><span class="${gateBadge(gate.result)}">${escapeHtml(String(gate.result || "warn").toUpperCase())}</span> <strong class="ml-1">${escapeHtml(String(gate.id || "gate"))}</strong> ${escapeHtml(String(gate.description || ""))}</li>`).join("") || "<li>No QA gates emitted.</li>"}</ul>
+        <div class="mt-2 text-[11px] font-semibold">Structural checks (${qaStructuralChecks.length})</div>
+        <div class="overflow-x-auto">
+          <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+            <thead>
+              <tr>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">ID</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Result</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Blocking</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Detail</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Refs</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${qaStructuralChecks.slice(0, 200).map((check) => `<tr>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.check_id || check.id || "check"))}</td>
+                <td class="border border-slate-300 px-2 py-1"><span class="${gateBadge(check.result)}">${escapeHtml(String(check.result || "warn").toUpperCase())}</span></td>
+                <td class="border border-slate-300 px-2 py-1">${check.blocking ? "yes" : "no"}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.detail || ""))}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(check.refs) ? check.refs.join(", ") : "") || "n/a")}</td>
+              </tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='5'>No structural checks emitted.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        <div class="mt-2 text-[11px] font-semibold">Semantic checks (${qaSemanticChecks.length})</div>
+        <div class="overflow-x-auto">
+          <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+            <thead>
+              <tr>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">ID</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Severity</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Confidence</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Detail</th>
+                <th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Suggested fix</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${qaSemanticChecks.slice(0, 200).map((check) => `<tr>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.check_id || check.id || "check"))}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.severity || "medium").toUpperCase())}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.confidence ?? "n/a"))}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.detail || ""))}</td>
+                <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(check.suggested_fix || ""))}</td>
+              </tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='5'>No semantic checks emitted.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        <div class="mt-2 text-[11px]"><strong>Amendment diff entries:</strong> ${qaAmendments.length}</div>
       </section>
 
       <section data-analyst-view-panel="evidence" class="mt-2 rounded border border-slate-300 bg-white p-2 hidden">
@@ -8969,18 +9780,13 @@ function bindEvents() {
     if (state.discoverStep > 1) setDiscoverStep(state.discoverStep - 1);
   });
   el.projectStateMode?.addEventListener("change", () => {
-    state.projectState.sampleDatasetEnabled = false;
     const result = detectProjectStateHeuristic();
     applyProjectStateResult(result);
     autoTriggerDiscoverExternalViews({ force: true });
   });
   el.detectProjectState?.addEventListener("click", () => {
-    state.projectState.sampleDatasetEnabled = false;
     applyProjectStateResult(detectProjectStateHeuristic());
     autoTriggerDiscoverExternalViews({ force: true });
-  });
-  el.discoverUseSample?.addEventListener("click", () => {
-    applySampleDatasetPreset();
   });
   el.discoverRunAnalystBrief?.addEventListener("click", () => {
     loadDiscoverAnalystBrief({ force: true }).catch((err) => {

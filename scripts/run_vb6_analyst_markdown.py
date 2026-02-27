@@ -131,6 +131,15 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     decisions = _as_dict(brief.get("decisions_required"))
     delivery_spec = _as_dict(report.get("delivery_spec"))
     testing = _as_dict(delivery_spec.get("testing_and_evidence"))
+    qa_report = _as_dict(report.get("qa_report_v1"))
+    if not qa_report:
+        qa_report = _as_dict(output.get("qa_report_v1"))
+    qa_summary = _as_dict(qa_report.get("summary"))
+    qa_structural = _as_dict(qa_report.get("structural"))
+    qa_semantic = _as_dict(qa_report.get("semantic"))
+    qa_structural_checks = _as_list(qa_structural.get("checks"))
+    qa_semantic_checks = _as_list(qa_semantic.get("checks"))
+    qa_quality_gates = _as_list(qa_report.get("quality_gates"))
     backlog = _as_list(_as_dict(delivery_spec.get("backlog")).get("items"))
     appendix = _as_dict(report.get("appendix"))
     open_questions = _as_list(delivery_spec.get("open_questions"))
@@ -224,6 +233,40 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             )
     else:
         lines.append("  - None")
+    lines.append("- QA summary:")
+    if qa_summary:
+        qa_pass = qa_summary.get("pass_count", 0)
+        qa_warn = qa_summary.get("warn_count", 0)
+        qa_fail = qa_summary.get("fail_count", 0)
+        qa_blockers = qa_summary.get("blocker_count", 0)
+        lines.append(f"  - Status: {_clean(qa_summary.get('status')) or 'PASS'}")
+        lines.append(
+            "  - Structural: "
+            f"pass={qa_pass}, "
+            f"warn={qa_warn}, "
+            f"fail={qa_fail}, "
+            f"blockers={qa_blockers}"
+        )
+        for gate in qa_quality_gates[:8]:
+            g = _as_dict(gate)
+            lines.append(
+                f"  - QA Gate {_clean(g.get('id')) or 'qa_gate'}: "
+                f"{(_clean(g.get('result')) or 'warn').upper()} | {_clean(g.get('description'))}"
+            )
+        if qa_structural_checks:
+            blocking = sum(1 for row in qa_structural_checks if bool(_as_dict(row).get("blocking")))
+            lines.append(f"  - Structural checks: {len(qa_structural_checks)} total ({blocking} blocking)")
+        if qa_semantic_checks:
+            lines.append(f"  - Semantic checks: {len(qa_semantic_checks)} warning(s)")
+            for row in qa_semantic_checks[:8]:
+                r = _as_dict(row)
+                lines.append(
+                    f"    - {_clean(r.get('check_id') or r.get('id') or 'semantic_check')}: "
+                    f"{(_clean(r.get('severity')) or 'medium').upper()} | {_clean(r.get('detail'))}"
+                )
+    else:
+        lines.append("  - None")
+    lines.append("  - Rule consolidation notes are documented in Appendix Section E2 when duplicate rule templates are suppressed.")
 
     lines.extend(["", "### Open Questions"])
     if open_questions:
@@ -237,6 +280,36 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     else:
         lines.append("- None")
 
+    lines.extend(["", "## QA Validation Summary"])
+    if qa_summary:
+        qa_pass = qa_summary.get("pass_count", 0)
+        qa_warn = qa_summary.get("warn_count", 0)
+        qa_fail = qa_summary.get("fail_count", 0)
+        qa_blockers = qa_summary.get("blocker_count", 0)
+        lines.append(f"- Overall status: {_clean(qa_summary.get('status')) or 'PASS'}")
+        lines.append(
+            "- Structural summary: "
+            f"pass={qa_pass}, "
+            f"warn={qa_warn}, "
+            f"fail={qa_fail}, "
+            f"blockers={qa_blockers}"
+        )
+        auto_fixes = _as_list(qa_summary.get("auto_fixes_applied"))
+        if auto_fixes:
+            lines.append("- Auto-fixes applied:")
+            for fix in auto_fixes[:12]:
+                lines.append(f"  - {_clean(fix)}")
+        if qa_semantic_checks:
+            lines.append("- Active semantic warnings:")
+            for row in qa_semantic_checks[:10]:
+                r = _as_dict(row)
+                lines.append(
+                    f"  - {_clean(r.get('check_id') or r.get('id') or 'semantic_check')}: "
+                    f"{_clean(r.get('detail'))}"
+                )
+    else:
+        lines.append("- No QA artifact present.")
+
     lines.extend(["", "## Evidence Appendix"])
     refs = _as_dict(appendix.get("artifact_refs"))
     for key, value in refs.items():
@@ -246,7 +319,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
 
     lines.extend(["", "## Appendix Snapshot"])
     hv = _as_dict(appendix.get("high_volume_sections"))
-    raw = _as_dict(output.get("raw_artifacts"))
+    raw = _as_dict(report.get("raw_artifacts")) or _as_dict(output.get("raw_artifacts"))
     raw_event_map = _as_list(_as_dict(raw.get("event_map")).get("entries"))
     raw_sql = _as_list(_as_dict(raw.get("sql_catalog")).get("statements"))
     raw_sql_map = _as_list(_as_dict(raw.get("sql_map")).get("entries"))
@@ -344,6 +417,323 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             return "Report"
         return "Child"
 
+    def _split_words(token: str) -> str:
+        raw = _clean(token)
+        lowered = raw.lower()
+        if lowered.startswith("dtpicker"):
+            raw = raw[len("dtpicker"):]
+            raw = f"date{raw}" if raw else "date"
+            lowered = raw.lower()
+        for prefix in ("txt", "cbo", "cmb", "dtp", "msk", "lst", "chk", "opt", "lbl", "cmd"):
+            if lowered.startswith(prefix) and len(raw) > len(prefix):
+                lower_raw = raw.lower()
+                if prefix == "opt" and lower_raw.startswith("option"):
+                    continue
+                if prefix == "chk" and lower_raw.startswith("check"):
+                    continue
+                if prefix == "txt" and lower_raw.startswith("text"):
+                    continue
+                if prefix == "cbo" and lower_raw.startswith("combo"):
+                    continue
+                raw = raw[len(prefix):]
+                break
+        raw = re.sub(r"[_\\-]+", " ", raw)
+        raw = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", raw)
+        raw = re.sub(r"([A-Za-z])(id|no)\b", r"\1 \2", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"([A-Za-z])([0-9])", r"\1 \2", raw)
+        raw = re.sub(r"\s+", " ", raw).strip()
+        return raw.lower()
+
+    def _is_data_input_control(control_id: str) -> bool:
+        cid = _clean(control_id).lower()
+        return cid.startswith(("txt", "cbo", "cmb", "dtp", "msk", "lst", "chk", "opt"))
+
+    def _to_business_input(control_id: str) -> str:
+        words = _split_words(control_id)
+        return words or _clean(control_id).lower()
+
+    def _callable_kind(procedure_name: Any, form_name: Any, event_hint: Any = "") -> str:
+        proc = _clean(procedure_name).lower()
+        form = _base_form_name(form_name)
+        evt = _clean(event_hint).lower()
+        if form == "shared_module":
+            return "shared_function"
+        if evt:
+            return "event_handler"
+        if re.search(r"_(click|change|load|keypress|keydown|keyup|gotfocus|lostfocus|activate|deactivate)$", proc):
+            return "event_handler"
+        if proc.startswith(("cmd", "lbl", "txt", "cbo", "opt", "chk")):
+            return "event_handler"
+        return "procedure"
+
+    def _semantic_form_alias(
+        *,
+        form_name: str,
+        purpose: str,
+        db_tables: set[str],
+        procedures: list[dict[str, Any]],
+        rules: list[dict[str, Any]],
+        controls: list[str] | None = None,
+    ) -> str:
+        form_token = _clean(form_name).lower()
+        is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
+        if form_token.endswith("frmtransactions") or form_token.endswith("transactions"):
+            return "Transaction History"
+        if form_token.endswith("frmtransaction") or form_token.endswith("transaction"):
+            return "Transaction Entry"
+        purpose_low = _clean(purpose).lower()
+        if "deposit capture" in purpose_low:
+            return "Deposit Capture"
+        if "withdrawal processing" in purpose_low:
+            return "Withdrawal Processing"
+        if "customer profile" in purpose_low:
+            return "Customer Management"
+        if "transaction ledger" in purpose_low:
+            return "Transaction Ledger"
+        if "account type maintenance" in purpose_low:
+            return "Account Type Maintenance"
+        token_blob = " ".join(
+            [
+                form_token,
+                _clean(purpose).lower(),
+                " ".join(_clean(x).lower() for x in db_tables if _clean(x)),
+                " ".join(_clean(_as_dict(p).get("procedure_name")).lower() for p in procedures),
+                " ".join(_clean(_as_dict(r).get("statement")).lower() for r in rules),
+                " ".join(_clean(x).lower() for x in (controls or []) if _clean(x)),
+            ]
+        )
+        if any(key in token_blob for key in ("login", "logi", "username", "password", "txtpass", "pass1", "credential")):
+            return "Password Management" if any(key in token_blob for key in ("txtpass", "pass1", "credential")) else "Authentication"
+        has_strong_transaction_signal = any(
+            key in token_blob for key in ("transction", "tbltransaction", "transaction ledger", "ledger")
+        )
+        # Transaction/ledger semantics should win only on strong signals.
+        if has_strong_transaction_signal or ("debit" in token_blob and "credit" in token_blob):
+            return "Transaction Ledger"
+        if any(key in token_blob for key in ("withdraw", "debit")):
+            return "Withdrawal Processing"
+        if any(key in token_blob for key in ("deposit", "credit", "balancedt")) and not any(
+            key in token_blob for key in ("transaction", "transction", "debit")
+        ):
+            return "Deposit Capture"
+        if any(key in token_blob for key in ("customer", "tblcustomer")) and any(
+            key in token_blob for key in ("interest", "min balance", "account type", "acctype")
+        ):
+            return "Customer Management"
+        if any(key in token_blob for key in ("accounttype", "acctype")):
+            return "Account Type Maintenance"
+        if any(key in token_blob for key in ("customer", "tblcustomer")):
+            return "Customer Management"
+        if any(key in token_blob for key in ("report", "datareport", "dataenvironment")):
+            return "Reporting"
+        if any(key in token_blob for key in ("search", "lookup", "find")):
+            return "Search"
+        if any(key in token_blob for key in ("main", "mdiform", "toolbar")):
+            return "Navigation Hub"
+        if any(key in token_blob for key in ("balance", "tblbalance")):
+            return "Balance Inquiry"
+        if any(key in token_blob for key in ("timer", "progressbar", "splash")):
+            return "Splash/Loading"
+        if is_generic_form and form_token == "form9":
+            return "Authentication Entry"
+        if is_generic_form and form_token == "form1":
+            return "Navigation/Menu"
+        if is_generic_form and any(key in token_blob for key in ("dated", "datejoined", "dtpicker", "date 1", "from date", "to date")):
+            return "Date/Period Entry"
+        cleaned_purpose = _clean(purpose).rstrip(".")
+        if cleaned_purpose:
+            short = re.sub(r"\bworkflow\b", "", cleaned_purpose, flags=re.IGNORECASE)
+            short = re.sub(r"\s+", " ", short).strip(" -")
+            generic_phrases = {
+                "business executed through event-driven ui controls",
+                "business workflow executed through event-driven ui controls",
+                "application navigation and module routing",
+            }
+            if short.lower() in generic_phrases:
+                return ""
+            if short:
+                return short
+        return ""
+
+    def _display_form_name(form_name: str, alias: str) -> str:
+        name = _clean(form_name)
+        semantic = _clean(alias)
+        if not semantic:
+            return name
+        generic = bool(re.fullmatch(r"(form\d+|frm\d+)", name.lower()))
+        if generic:
+            return f"{name} [{semantic}]"
+        normalized_name = re.sub(r"[^a-z0-9]+", "", name.lower())
+        normalized_alias = re.sub(r"[^a-z0-9]+", "", semantic.lower())
+        ambiguous_bank_form = name.lower() in {"frmtransaction", "frmtransactions", "main"}
+        if ambiguous_bank_form or (normalized_alias and normalized_alias not in normalized_name):
+            return f"{name} [{semantic}]"
+        return name
+
+    def _rule_business_meaning(statement: str, category: str) -> str:
+        stmt = _clean(statement)
+        low = stmt.lower()
+        if re.search(r"keyascii\s*=\s*13", low):
+            return "Pressing Enter triggers the same action flow as the primary button."
+        if "case keyascii" in low:
+            return "Keyboard input routing determines which action path is executed."
+        if re.search(r"\.state\s*=\s*1", low):
+            return "The action proceeds only when the recordset/connection is active."
+        if re.search(r"\.recordcount\s*>\s*0", low):
+            return "The action proceeds only when matching records are found."
+        if ("max(" in low and "+ 1" in low) or ("max(" in low and "+1" in low):
+            return "A new identifier is generated as current maximum value plus one."
+        if "computed value rule" in low or "currbalance" in low:
+            if "lblbalance.caption" in low:
+                return "Balance is recalculated from the displayed balance label and entered amount (UI-derived source)."
+            return "Balance is recalculated using the entered amount and current account value."
+        if "case button.index" in low or "case buttonmenu.key" in low:
+            return "User menu selection routes the workflow to the corresponding module."
+        if "threshold decision rule" in low and "if " in low:
+            cond = stmt.split("IF", 1)[-1].strip()
+            cond = re.sub(r"\s*THEN.*$", "", cond, flags=re.IGNORECASE).strip()
+            return f"The workflow continues only when this condition is true: {cond}."
+        if "executes transaction workflow through procedures" in low:
+            return "Workflow is orchestrated through UI event handlers and internal procedures."
+        if "reads/writes persisted entities" in low:
+            return "Form persists and retrieves records from the listed tables."
+        if "authenticate users" in low:
+            return "User authentication is required before entering the workflow."
+        if category.lower() in {"data_persistence", "calculation_logic", "threshold_rule"}:
+            return "Business behavior is enforced through data and calculation logic."
+        return stmt
+
+    def _business_effect_from_sql(op: str, table: str) -> str:
+        op_low = _clean(op).lower()
+        table_low = _clean(table).lower()
+        if op_low == "select":
+            if "balance" in table_low:
+                return "Customer balance and account details displayed for review."
+            if "customer" in table_low:
+                return "Customer details displayed for review."
+            if "transction" in table_low or "transaction" in table_low:
+                return "Transaction history displayed for review."
+            if "accounttype" in table_low:
+                return "Account type details displayed for selection."
+            if "logi" in table_low or "login" in table_low:
+                return "User credentials validated against stored records."
+        if "deposit" in table_low:
+            return "Deposit transaction recorded."
+        if "withdraw" in table_low:
+            return "Withdrawal transaction recorded."
+        if "balance" in table_low:
+            return "Account balance updated."
+        if "transction" in table_low or "transaction" in table_low:
+            return "Transaction ledger updated."
+        if "customer" in table_low:
+            if op_low in {"insert", "update", "delete"}:
+                return "Customer profile data updated."
+        if "accounttype" in table_low:
+            return "Account type configuration updated."
+        if "logi" in table_low or "login" in table_low:
+            return "User authentication record validated."
+        if op_low == "insert":
+            return f"New record created in {table}."
+        if op_low == "update":
+            return f"Existing records updated in {table}."
+        if op_low == "delete":
+            return f"Records deleted from {table}."
+        return ""
+
+    def _fallback_business_effects(
+        *,
+        alias: str,
+        purpose: str,
+        inputs: set[str],
+        db_tables: list[str],
+        rules: list[dict[str, Any]],
+    ) -> list[str]:
+        token_blob = " ".join(
+            [
+                _clean(alias).lower(),
+                _clean(purpose).lower(),
+                " ".join(_clean(x).lower() for x in sorted(inputs)),
+                " ".join(_clean(x).lower() for x in db_tables),
+                " ".join(_clean(_as_dict(r).get("statement")).lower() for r in rules),
+            ]
+        )
+        effects: list[str] = []
+        if any(x in token_blob for x in ["deposit", "amount deposited", "credit"]):
+            effects.append("Deposit transaction recorded.")
+            effects.append("Account balance recalculated.")
+        if any(x in token_blob for x in ["withdraw", "amount withdrawn", "debit"]):
+            effects.append("Withdrawal transaction recorded.")
+            effects.append("Account balance recalculated.")
+        if any(x in token_blob for x in ["transaction ledger", "transction", "transaction"]):
+            effects.append("Transaction history updated.")
+        if any(x in token_blob for x in ["customer management", "customer profile"]):
+            effects.append("Customer profile created or updated.")
+        if any(x in token_blob for x in ["account type", "acctype", "accounttype"]):
+            effects.append("Account type master data maintained.")
+        if any(x in token_blob for x in ["authentication", "login", "password"]):
+            effects.append("User access is validated before workflow continuation.")
+        if any(x in token_blob for x in ["search", "lookup"]):
+            effects.append("Matching records displayed to the user.")
+        if any(x in token_blob for x in ["navigation hub", "main", "toolbar"]):
+            effects.append("Navigation routes the user to selected module screens.")
+        if not effects and db_tables:
+            if any("balance" in _clean(t).lower() for t in db_tables):
+                effects.append("Account balance information refreshed.")
+            if any("customer" in _clean(t).lower() for t in db_tables):
+                effects.append("Customer details loaded/updated for the selected workflow.")
+        # Deduplicate while preserving order
+        dedup: list[str] = []
+        for eff in effects:
+            e = _clean(eff)
+            if e and e not in dedup:
+                dedup.append(e)
+        return dedup[:6]
+
+    def _dossier_business_rule_summary(
+        *,
+        form_name: str,
+        dossier: dict[str, Any] | None,
+        rule_rows: list[dict[str, Any]],
+    ) -> str:
+        d = _as_dict(dossier)
+        if not d:
+            return ""
+        form_controls = _as_list(d.get("controls"))
+        input_values: set[str] = set()
+        for ctl in form_controls:
+            ctl_name = _clean(ctl)
+            if not ctl_name:
+                continue
+            control_id = _clean(ctl_name.split(":", 1)[-1])
+            if _is_data_input_control(control_id):
+                input_values.add(_to_business_input(control_id))
+
+        db_tables = [_clean(t) for t in _as_list(d.get("db_tables")) if _clean(t)]
+        purpose = _clean(d.get("purpose")).rstrip(".")
+        alias = _semantic_form_alias(
+            form_name=form_name,
+            purpose=purpose,
+            db_tables=set(db_tables),
+            procedures=[],
+            rules=rule_rows,
+            controls=form_controls,
+        )
+        effects = _fallback_business_effects(
+            alias=alias,
+            purpose=purpose,
+            inputs=input_values,
+            db_tables=db_tables,
+            rules=rule_rows,
+        )
+        parts: list[str] = []
+        if input_values:
+            parts.append(f"Captures {', '.join(sorted(input_values)[:6])}.")
+        if effects:
+            parts.append(f"Business outcome: {'; '.join(effects[:3])}.")
+        if purpose and "event-driven ui controls" not in purpose.lower():
+            parts.insert(0, purpose)
+        return " ".join(parts).strip()
+
     def _base_only_key(form_name: Any) -> str:
         base = _base_form_name(form_name)
         return f"__base__::{base}" if base else ""
@@ -384,6 +774,9 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         if base_key and base_key in mapping and mapping[base_key]:
             return mapping[base_key]
         return {}
+
+    raw_legacy = _as_dict(raw.get("legacy_inventory") or hv.get("legacy_inventory"))
+    projects = _as_list(raw_legacy.get("projects"))
 
     project_path_by_name: dict[str, str] = {}
     project_dependencies_by_name: dict[str, set[str]] = {}
@@ -468,27 +861,129 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             for key in _form_keys(d.get("project_name"), d.get("form_name")):
                 form_risk_rows.setdefault(key, []).append(r)
 
+    def _rule_form_bases(rule_row: dict[str, Any]) -> set[str]:
+        scope = _as_dict(rule_row.get("scope"))
+        candidates: list[str] = [
+            _clean(scope.get("form")),
+            _clean(scope.get("form_key")),
+            _clean(scope.get("component_id")),
+            _clean(rule_row.get("form")),
+            *[_clean(x) for x in _as_list(scope.get("forms"))],
+            *[_clean(x) for x in _as_list(scope.get("form_keys"))],
+        ]
+        bases: set[str] = set()
+        for cand in candidates:
+            if not cand:
+                continue
+            split_tokens = [part.strip() for part in re.split(r"[,;|]", cand) if part.strip()]
+            for token in (split_tokens or [cand]):
+                raw = _clean(token)
+                if not raw:
+                    continue
+                if "::" in raw:
+                    raw = raw.split("::", 1)[1]
+                raw = raw.split("/")[-1]
+                raw = re.sub(r"\.(frm|ctl|cls|bas)$", "", raw, flags=re.IGNORECASE)
+                raw = raw.rstrip(".,;:()[]{}")
+                low = raw.lower()
+                if not low:
+                    continue
+                if low.endswith((".bas", ".cls", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".dsr", ".dca", ".dcx")):
+                    continue
+                if re.search(r"_(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$", low):
+                    continue
+                if ("frm" not in low and not low.startswith("form") and low not in {"main", "mdiform", "login"}):
+                    continue
+                base = _base_form_name(raw)
+                if base:
+                    bases.add(base)
+        text_hints = [
+            _clean(_as_dict(rule_row.get("scope")).get("component_id")),
+            _clean(rule_row.get("statement")),
+        ]
+        for ev in _as_list(rule_row.get("evidence")):
+            e = _as_dict(ev)
+            text_hints.append(_clean(_as_dict(e.get("external_ref")).get("ref")))
+            text_hints.append(_clean(_as_dict(e.get("file_span")).get("path")))
+        for text in text_hints:
+            for form_name in _extract_forms_from_text(text):
+                base = _base_form_name(form_name)
+                if base:
+                    bases.add(base)
+        return bases
+
     form_rule_rows: dict[str, list[dict[str, Any]]] = {}
     for row in raw_rules:
         r = _as_dict(row)
-        texts = [
-            _clean(_as_dict(r.get("scope")).get("component_id")),
-            _clean(r.get("statement")),
-        ]
-        for ev in _as_list(r.get("evidence")):
-            e = _as_dict(ev)
-            texts.append(_clean(_as_dict(e.get("external_ref")).get("ref")))
-            texts.append(_clean(_as_dict(e.get("file_span")).get("path")))
-        forms: set[str] = set()
-        for text in texts:
-            for form_name in _extract_forms_from_text(text):
-                forms.add(_base_form_name(form_name))
+        forms = _rule_form_bases(r)
         for dossier in raw_form_dossiers:
             d = _as_dict(dossier)
             if _base_form_name(d.get("form_name")) not in forms:
                 continue
             for key in _form_keys(d.get("project_name"), d.get("form_name")):
                 form_rule_rows.setdefault(key, []).append(r)
+
+    # Mirror rules across equivalent forms when variants use generic names (e.g., Form3 vs frmDeposits).
+    semantic_by_key: dict[str, str] = {}
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        project_name = _clean(d.get("project_name"))
+        form_name = _clean(d.get("form_name"))
+        if not form_name:
+            continue
+        proc_rows = _lookup_rows(form_proc_rows, project_name, form_name)
+        sql_rows = _lookup_rows(form_sql_rows, project_name, form_name)
+        table_hints = {
+            _clean(t)
+            for item in sql_rows
+            for t in _as_list(_as_dict(item).get("tables"))
+            if _clean(t)
+        }
+        alias = _semantic_form_alias(
+            form_name=form_name,
+            purpose=_clean(d.get("purpose")),
+            db_tables=table_hints,
+            procedures=proc_rows,
+            rules=_lookup_rows(form_rule_rows, project_name, form_name),
+            controls=[_clean(x) for x in _as_list(d.get("controls")) if _clean(x)],
+        )
+        semantic = _clean(alias).lower()
+        if semantic:
+            for key in _form_keys(project_name, form_name):
+                semantic_by_key[key] = semantic
+
+    donor_rules_by_semantic: dict[str, list[dict[str, Any]]] = {}
+    allowed_semantics = {
+        "deposit capture",
+        "withdrawal processing",
+        "transaction ledger",
+        "customer management",
+        "account type maintenance",
+        "password management",
+    }
+    for key, rows in form_rule_rows.items():
+        semantic = semantic_by_key.get(key, "")
+        if semantic not in allowed_semantics or not rows:
+            continue
+        donor_rules_by_semantic.setdefault(semantic, [])
+        for r in rows:
+            rid = _clean(_as_dict(r).get("rule_id") or _as_dict(r).get("id"))
+            existing = {
+                _clean(_as_dict(x).get("rule_id") or _as_dict(x).get("id"))
+                for x in donor_rules_by_semantic[semantic]
+            }
+            if rid and rid in existing:
+                continue
+            donor_rules_by_semantic[semantic].append(r)
+
+    for key, semantic in semantic_by_key.items():
+        if semantic not in allowed_semantics:
+            continue
+        if form_rule_rows.get(key):
+            continue
+        mirrored = donor_rules_by_semantic.get(semantic, [])
+        if mirrored:
+            form_rule_rows[key] = mirrored[:8]
 
     # control lookup for per-form/per-procedure ActiveX trigger checks
     form_control_type_by_key: dict[str, dict[str, str]] = {}
@@ -546,6 +1041,75 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             if not dep_name:
                 continue
             dependency_to_forms.setdefault(dep_name.lower(), set()).add(qualified)
+
+    dossier_by_key: dict[str, dict[str, Any]] = {}
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        for key in _form_keys(d.get("project_name"), d.get("form_name")):
+            if key and key not in dossier_by_key:
+                dossier_by_key[key] = d
+
+    discovered_forms: list[dict[str, str]] = []
+    seen_discovered: set[str] = set()
+
+    def _normalize_discovered_form_name(value: Any) -> str:
+        raw_name = _clean(value)
+        if not raw_name:
+            return ""
+        leaf = Path(raw_name).name
+        if ":" in leaf:
+            left, right = leaf.split(":", 1)
+            if _clean(left).lower() in {"form", "mdiform"} and _clean(right):
+                leaf = _clean(right)
+        return _clean(leaf)
+
+    def _add_discovered(project_name: Any, form_name: Any, source: str) -> None:
+        pname = _clean(project_name)
+        fname = _normalize_discovered_form_name(form_name)
+        if not fname:
+            return
+        key = _form_key(pname, fname)
+        if not key or key in seen_discovered:
+            return
+        seen_discovered.add(key)
+        discovered_forms.append({"project_name": pname, "form_name": fname, "form_key": key, "source": source})
+
+    for proj in projects:
+        p = _as_dict(proj)
+        pname = _clean(p.get("name"))
+        for form_name in _as_list(p.get("forms")):
+            _add_discovered(pname, form_name, "project.forms")
+        for asset in _as_list(p.get("ui_assets")):
+            a = _as_dict(asset)
+            if _clean(a.get("kind")).lower() in {"form", "screen"}:
+                _add_discovered(pname, a.get("name"), "project.ui_assets")
+        for member in _as_list(p.get("members")):
+            m = _as_dict(member)
+            kind = _clean(m.get("kind")).lower()
+            path = _clean(m.get("path"))
+            if kind == "form" or path.lower().endswith(".frm"):
+                _add_discovered(pname, Path(path).name, "project.members")
+
+    for dossier in raw_form_dossiers:
+        d = _as_dict(dossier)
+        _add_discovered(d.get("project_name"), d.get("form_name"), "form_dossier")
+
+    orphan_by_key: dict[str, dict[str, Any]] = {}
+    orphan_unmapped_count = 0
+    for orphan in raw_orphans:
+        o = _as_dict(orphan)
+        orphan_form = _clean(o.get("form")) or Path(_clean(o.get("path"))).stem
+        orphan_project = _clean(o.get("project_name"))
+        if orphan_form == "(unmapped_form_files)":
+            summary_text = _clean(o.get("behavior_summary"))
+            m = re.search(r"(\\d+)\\s+discovered\\s+form\\s+files", summary_text, flags=re.IGNORECASE)
+            if m:
+                orphan_unmapped_count = int(m.group(1))
+            continue
+        key = _form_key(orphan_project, orphan_form)
+        if key:
+            orphan_by_key[key] = o
+            _add_discovered(orphan_project, orphan_form, "orphan_analysis")
 
     lines.append(f"- Legacy inventory: {'present' if raw.get('legacy_inventory') or hv.get('legacy_inventory') else 'missing'}")
     lines.append(f"- Event map rows: {len(raw_event_map) or len(_as_list(hv.get('event_map')))}")
@@ -669,8 +1233,94 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
 
     lines.extend(["", "### E. Business Rules"])
     if rule_rows:
-        lines.append("| Rule ID | Form | Layer | Category | Statement | Evidence |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| Rule ID | Form | Layer | Category | Business Meaning | Implementation Evidence | Risk links |")
+        lines.append("|---|---|---|---|---|---|---|")
+        rules_by_form: dict[str, list[dict[str, str]]] = {}
+        raw_rules_by_form: dict[str, list[dict[str, Any]]] = {}
+        seen_rule_form_pairs: set[tuple[str, str]] = set()
+        seen_source_variant_pairs: set[tuple[str, str]] = set()
+        emitted_form_labels: set[str] = set()
+        existing_rule_numbers: list[int] = []
+        used_output_rule_ids: set[str] = set()
+        saturated_meaning_templates = {
+            "Balance is recalculated using the entered amount and current account value.",
+            "The action proceeds only when the recordset/connection is active.",
+        }
+        canonical_meaning_rule_ids: dict[str, str] = {}
+        saturated_meaning_forms: dict[str, set[str]] = {}
+        saturated_suppressed_count: dict[str, int] = {}
+
+        def _rule_forms_from_row(rule_row: dict[str, Any], evidence_text: str) -> list[str]:
+            scope = _as_dict(rule_row.get("scope"))
+            forms_out: list[str] = []
+            candidates: list[Any] = [
+                scope.get("form"),
+                scope.get("form_key"),
+                scope.get("component_id"),
+                rule_row.get("form"),
+            ]
+            candidates.extend(_as_list(scope.get("forms")))
+            candidates.extend(_as_list(scope.get("form_keys")))
+            for cand in candidates:
+                raw_token = _clean(cand)
+                if not raw_token:
+                    continue
+                split_tokens = [part.strip() for part in re.split(r"[,;|]", raw_token) if part.strip()]
+                for token in (split_tokens or [raw_token]):
+                    if "::" in token:
+                        token = token.split("::", 1)[1]
+                    token = token.split("/")[-1]
+                    token = re.sub(r"\.(frm|ctl|cls|bas)$", "", token, flags=re.IGNORECASE)
+                    token = token.rstrip(".,;:()[]{}")
+                    token_low = token.lower()
+                    if not token_low:
+                        continue
+                    if token_low.endswith((".bas", ".cls", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".dsr", ".dca", ".dcx")):
+                        continue
+                    if re.search(r"_(click|change|load|keypress|gotfocus|lostfocus|activate|deactivate)$", token_low):
+                        continue
+                    if ("frm" not in token_low and not token_low.startswith("form") and token_low not in {"main", "mdiform", "login"}):
+                        continue
+                    normalized_display = "main" if token_low == "main" else token
+                    if normalized_display not in forms_out:
+                        forms_out.append(normalized_display)
+            for source in [_clean(rule_row.get("statement")), evidence_text]:
+                for form_name in _extract_forms_from_text(source):
+                    normalized_display = "main" if _base_form_name(form_name) == "main" else form_name
+                    if normalized_display not in forms_out:
+                        forms_out.append(normalized_display)
+            return forms_out
+
+        def _next_mirrored_rule_id() -> str:
+            next_num = (max(existing_rule_numbers) + 1) if existing_rule_numbers else 1
+            while f"br-{next_num:03d}" in used_output_rule_ids:
+                next_num += 1
+            existing_rule_numbers.append(next_num)
+            rule_id = f"BR-{next_num:03d}"
+            used_output_rule_ids.add(rule_id.lower())
+            return rule_id
+
+        def _allocate_rule_id(source_rule_id: str) -> tuple[str, str]:
+            sid = _clean(source_rule_id)
+            if sid and re.fullmatch(r"BR-\d+", sid, flags=re.IGNORECASE) and sid.lower() not in used_output_rule_ids:
+                used_output_rule_ids.add(sid.lower())
+                return sid, ""
+            generated = _next_mirrored_rule_id()
+            return generated, sid
+
+        def _canonicalize_saturated_meaning(meaning_text: str, rule_id: str, form_label: str) -> tuple[str, bool, str]:
+            if meaning_text not in saturated_meaning_templates:
+                return meaning_text, False, rule_id
+            first_rule = canonical_meaning_rule_ids.get(meaning_text)
+            if not first_rule:
+                canonical_meaning_rule_ids[meaning_text] = rule_id
+                saturated_meaning_forms.setdefault(meaning_text, set()).add(form_label)
+                saturated_suppressed_count.setdefault(meaning_text, 0)
+                return meaning_text, False, rule_id
+            saturated_meaning_forms.setdefault(meaning_text, set()).add(form_label)
+            saturated_suppressed_count[meaning_text] = int(saturated_suppressed_count.get(meaning_text, 0)) + 1
+            return meaning_text, True, first_rule
+
         for row in rule_rows[:700]:
             r = _as_dict(row)
             evidence = ""
@@ -683,15 +1333,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 )
             else:
                 evidence = _clean(r.get("evidence"))
-            rule_forms: list[str] = []
-            for source in [
-                _clean(r.get("statement")),
-                evidence,
-            ]:
-                for form_name in _extract_forms_from_text(source):
-                    if form_name not in rule_forms:
-                        rule_forms.append(form_name)
-            form_value = ", ".join(rule_forms[:4]) or "n/a"
+            rule_forms = _rule_forms_from_row(r, evidence) or ["n/a"]
             category = _clean(r.get("category") or r.get("rule_type") or "other")
             layer = "Presentation"
             evidence_low = f"{_clean(r.get('statement'))} {evidence}".lower()
@@ -699,16 +1341,171 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 layer = "Data"
             if any(x in evidence_low for x in [".bas", "module", "shared"]):
                 layer = "Shared"
-            lines.append(
-                "| {} | {} | {} | {} | {} | {} |".format(
-                    _escape_pipe(r.get("rule_id") or r.get("id") or "n/a"),
-                    _escape_pipe(form_value),
-                    _escape_pipe(layer),
-                    _escape_pipe(category),
-                    _escape_pipe(r.get("statement") or "n/a"),
-                    _escape_pipe(evidence or "n/a"),
+            related_risk_ids: set[str] = set()
+            rule_base_forms = {_base_form_name(f) for f in rule_forms if _base_form_name(f)}
+            for dossier in raw_form_dossiers:
+                d = _as_dict(dossier)
+                if _base_form_name(d.get("form_name")) not in rule_base_forms:
+                    continue
+                for risk_row in _lookup_rows(form_risk_rows, d.get("project_name"), d.get("form_name")):
+                    rid = _clean(_as_dict(risk_row).get("risk_id"))
+                    if rid:
+                        related_risk_ids.add(rid)
+            rule_low = _clean(r.get("statement")).lower()
+            for risk_row in raw_risks:
+                rr = _as_dict(risk_row)
+                desc = _clean(rr.get("description")).lower()
+                rid = _clean(rr.get("risk_id"))
+                if not rid:
+                    continue
+                if any(token in desc and token in rule_low for token in ["caption", "balance", "customerid", "delete", "injection", "credential", "password"]):
+                    related_risk_ids.add(rid)
+            meaning = _rule_business_meaning(_clean(r.get("statement")), category)
+            source_rule_id = _clean(r.get("rule_id") or r.get("id") or "n/a")
+            num_match = re.search(r"(\d+)$", source_rule_id)
+            if num_match:
+                existing_rule_numbers.append(int(num_match.group(1)))
+            for form_item in rule_forms[:16]:
+                form_display = "main" if _base_form_name(form_item) == "main" else _clean(form_item) or "n/a"
+                base_form = _base_form_name(form_display) or _clean(form_display).lower() or "n/a"
+                pair = (source_rule_id.lower(), base_form.lower())
+                if pair in seen_rule_form_pairs:
+                    continue
+                seen_rule_form_pairs.add(pair)
+                row_meaning = meaning
+                if ("splash" in _clean(form_display).lower() or "splash" in evidence.lower()) and "balance is recalculated" in row_meaning.lower():
+                    row_meaning = "Splash/loading behavior advances progress state before opening workflow screens."
+                output_rule_id, source_hint = _allocate_rule_id(source_rule_id)
+                row_meaning, saturated_suppressed, saturated_anchor_rule = _canonicalize_saturated_meaning(
+                    row_meaning,
+                    output_rule_id,
+                    form_display,
                 )
-            )
+                if saturated_suppressed:
+                    rules_by_form.setdefault(base_form, []).append({"rule_id": saturated_anchor_rule, "meaning": row_meaning})
+                    raw_rules_by_form.setdefault(base_form, []).append(r)
+                    continue
+                evidence_out = evidence or "n/a"
+                if source_hint and source_hint.lower() != output_rule_id.lower():
+                    evidence_out = f"{evidence_out}; source_rule={source_hint}" if evidence_out != "n/a" else f"source_rule={source_hint}"
+                lines.append(
+                    "| {} | {} | {} | {} | {} | {} | {} |".format(
+                        _escape_pipe(output_rule_id),
+                        _escape_pipe(form_display),
+                        _escape_pipe(layer),
+                        _escape_pipe(category),
+                        _escape_pipe(row_meaning),
+                        _escape_pipe(evidence_out),
+                        _escape_pipe(", ".join(sorted(related_risk_ids)[:6]) or "none"),
+                    )
+                )
+                emitted_form_labels.add(_qualified_form_name("", form_display).lower())
+                rules_by_form.setdefault(base_form, []).append({"rule_id": output_rule_id, "meaning": row_meaning})
+                raw_rules_by_form.setdefault(base_form, []).append(r)
+
+        for dossier in raw_form_dossiers:
+            d = _as_dict(dossier)
+            project_name = _clean(d.get("project_name"))
+            form_name = _clean(d.get("form_name"))
+            base_name = _base_form_name(form_name)
+            if not base_name:
+                continue
+            qualified_form = _qualified_form_name(project_name, "main" if _base_form_name(form_name) == "main" else form_name)
+            if qualified_form.lower() in emitted_form_labels:
+                continue
+            mirrored_rows = _lookup_rows(form_rule_rows, project_name, form_name)
+            for mr in mirrored_rows[:10]:
+                m = _as_dict(mr)
+                source_rule_id = _clean(m.get("rule_id") or m.get("id") or "n/a")
+                source_pair = (source_rule_id.lower(), qualified_form.lower())
+                if source_pair in seen_source_variant_pairs:
+                    continue
+                seen_source_variant_pairs.add(source_pair)
+                category = _clean(m.get("category") or m.get("rule_type") or "other")
+                statement = _clean(m.get("statement"))
+                meaning = _rule_business_meaning(statement, category)
+                layer = "Data" if category.lower() in {"data_persistence", "calculation_logic", "threshold_rule"} else "Presentation"
+                related_risk_ids = {
+                    _clean(_as_dict(risk_row).get("risk_id"))
+                for risk_row in _lookup_rows(form_risk_rows, project_name, form_name)
+                    if _clean(_as_dict(risk_row).get("risk_id"))
+                }
+                mirrored_rule_id, _ = _allocate_rule_id(source_rule_id)
+                mirrored_meaning, saturated_suppressed, saturated_anchor_rule = _canonicalize_saturated_meaning(
+                    meaning or statement or "n/a",
+                    mirrored_rule_id,
+                    qualified_form,
+                )
+                if saturated_suppressed:
+                    rules_by_form.setdefault(base_name, []).append({"rule_id": saturated_anchor_rule, "meaning": mirrored_meaning})
+                    raw_rules_by_form.setdefault(base_name, []).append(m)
+                    continue
+                evidence = f"mirrored_from_variant_mapping (source={source_rule_id or 'n/a'})"
+                lines.append(
+                    "| {} | {} | {} | {} | {} | {} | {} |".format(
+                        _escape_pipe(mirrored_rule_id),
+                        _escape_pipe(qualified_form),
+                        _escape_pipe(layer),
+                        _escape_pipe(category),
+                        _escape_pipe(mirrored_meaning),
+                        _escape_pipe(evidence),
+                        _escape_pipe(", ".join(sorted(related_risk_ids)[:6]) or "none"),
+                    )
+                )
+                emitted_form_labels.add(qualified_form.lower())
+                rules_by_form.setdefault(base_name, []).append({"rule_id": mirrored_rule_id, "meaning": mirrored_meaning})
+                raw_rules_by_form.setdefault(base_name, []).append(m)
+
+        if rules_by_form:
+            dossier_by_base_form: dict[str, dict[str, Any]] = {}
+            for dossier in raw_form_dossiers:
+                d = _as_dict(dossier)
+                key = _base_form_name(d.get("form_name"))
+                if key and key not in dossier_by_base_form:
+                    dossier_by_base_form[key] = d
+            lines.extend(["", "### E1. Rule Cross-Reference by Form"])
+            for form_name in sorted(rules_by_form.keys())[:220]:
+                rows = rules_by_form.get(form_name, [])
+                rule_ids = ", ".join(sorted({_clean(x.get("rule_id")) for x in rows if _clean(x.get("rule_id"))})[:8]) or "n/a"
+                summaries: list[str] = []
+                for entry in rows:
+                    row_meaning = _clean(entry.get("meaning"))
+                    if row_meaning and row_meaning not in summaries:
+                        summaries.append(row_meaning)
+                dossier_summary = _dossier_business_rule_summary(
+                    form_name=form_name,
+                    dossier=dossier_by_base_form.get(form_name),
+                    rule_rows=raw_rules_by_form.get(form_name, []),
+                )
+                if dossier_summary and dossier_summary not in summaries:
+                    summaries.insert(0, dossier_summary)
+                lines.append(
+                    "- {}: rule_ids=[{}]; summary={}".format(
+                        _escape_pipe(form_name),
+                        _escape_pipe(rule_ids),
+                        _escape_pipe(" / ".join(summaries[:3]) or "n/a"),
+                    )
+                )
+        shared_rows = [
+            (meaning, canonical_meaning_rule_ids.get(meaning), int(saturated_suppressed_count.get(meaning, 0)), sorted(saturated_meaning_forms.get(meaning, set())))
+            for meaning in saturated_meaning_templates
+            if int(saturated_suppressed_count.get(meaning, 0)) > 0
+        ]
+        if shared_rows:
+            lines.extend(["", "### E2. Shared Rule Consolidation"])
+            for meaning, anchor_rule, suppressed_count, forms in shared_rows:
+                preview_forms = ", ".join(forms[:12]) if forms else "n/a"
+                suffix = f" (+{len(forms) - 12} more)" if len(forms) > 12 else ""
+                lines.append(
+                    "- {}: consolidated {} duplicate row(s); applies to {} form(s): {}{}".format(
+                        _clean(anchor_rule) or "n/a",
+                        suppressed_count,
+                        len(forms),
+                        _escape_pipe(preview_forms),
+                        _escape_pipe(suffix),
+                    )
+                )
+                lines.append(f"  - Canonical meaning: {_escape_pipe(meaning)}")
     else:
         lines.append("- No business rules available.")
 
@@ -749,6 +1546,16 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             r = _as_dict(row)
             project_name = _clean(r.get("variant")) or _project_from_scoped(r.get("form"))
             form_name = _clean(r.get("form_base")) or _clean(r.get("form"))
+            proc_rows_for_form = _lookup_rows(form_proc_rows, project_name, form_name)
+            db_tables_for_form = sorted(_lookup_set(form_db_tables, project_name, form_name))
+            alias = _semantic_form_alias(
+                form_name=form_name,
+                purpose=_clean(_as_dict(dossier_by_key.get(_form_key(project_name, form_name)) or {}).get("purpose")),
+                db_tables=set(db_tables_for_form),
+                procedures=proc_rows_for_form,
+                rules=_lookup_rows(form_rule_rows, project_name, form_name),
+                controls=[],
+            )
             related_events = [
                 _as_dict(e)
                 for e in _lookup_rows(form_event_rows, project_name, form_name)
@@ -768,7 +1575,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             trace_complete = has_sql and has_tables
             lines.append(
                 "| {} | {} | {} | {} | {} | {} | {} |".format(
-                    _escape_pipe(_qualified_form_name(project_name, form_name)),
+                    _escape_pipe(_qualified_form_name(project_name, _display_form_name(form_name, alias))),
                     _escape_pipe(r.get("procedure") or "n/a"),
                     _escape_pipe(r.get("operation") or "unknown"),
                     _escape_pipe(", ".join(_as_list(r.get("tables"))[:6]) or "n/a"),
@@ -780,15 +1587,18 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     else:
         lines.append("- No SQL map rows available.")
 
-    lines.extend(["", "### I. Procedure Summaries"])
+    lines.extend(["", "### I. Handler and Procedure Summaries"])
     if raw_procedures:
-        lines.append("| Procedure | Form | SQL IDs | Steps | Risks |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| Callable | Kind | Form | SQL IDs | Steps | Risks |")
+        lines.append("|---|---|---|---|---|---|")
         for row in raw_procedures[:700]:
             r = _as_dict(row)
+            proc_name = _clean(r.get("procedure_name") or r.get("procedure_id") or "n/a")
+            kind = _callable_kind(proc_name, r.get("form"), _clean(_as_dict(r.get("trigger")).get("event")))
             lines.append(
-                "| {} | {} | {} | {} | {} |".format(
-                    _escape_pipe(r.get("procedure_name") or r.get("procedure_id") or "n/a"),
+                "| {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(proc_name),
+                    _escape_pipe(kind),
                     _escape_pipe(r.get("form") or "n/a"),
                     _escape_pipe(", ".join(_as_list(r.get("sql_ids"))[:6]) or "n/a"),
                     _escape_pipe(" / ".join(_as_list(r.get("steps"))[:2]) or "n/a"),
@@ -805,65 +1615,199 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         lines.append("- No delivery constitution principles available.")
 
     lines.extend(["", "### K. Form Dossiers"])
-    if raw_form_dossiers:
-        lines.append("| Form | Project | form_type | Purpose | Inputs | Outputs | ActiveX used | DB tables | Actions | Coverage | Confidence |")
-        lines.append("|---|---|---|---|---|---|---|---|---:|---:|---:|")
-        for row in raw_form_dossiers[:700]:
-            r = _as_dict(row)
-            project_name = _clean(r.get("project_name"))
-            form_name = _clean(r.get("form_name"))
-            coverage = float(_as_dict(r.get("coverage")).get("coverage_score") or 0)
-            confidence = float(_as_dict(r.get("coverage")).get("confidence_score") or 0)
-            proc_rows = _lookup_rows(form_proc_rows, project_name, form_name)
-            input_values: set[str] = set()
-            output_values: set[str] = set()
-            for proc in proc_rows:
-                p = _as_dict(proc)
-                output_values.update(_clean(x) for x in _as_list(p.get("tables_touched")) if _clean(x))
-                output_values.update(_clean(x) for x in _as_list(p.get("data_mutations")) if _clean(x))
-                output_values.update(_clean(x) for x in _as_list(p.get("navigation_side_effects")) if _clean(x))
+    if discovered_forms:
+        lines.append("| Form | Display Name | Project | form_type | Status | Purpose | Inputs (data) | Outputs (effects) | ActiveX used | DB tables | Actions | Coverage | Confidence | Exclusion reason |")
+        lines.append("|---|---|---|---|---|---|---|---|---|---|---:|---:|---:|---|")
+        excluded_rows: list[dict[str, str]] = []
+        for form_ref in sorted(discovered_forms, key=lambda x: (_clean(x.get("project_name")), _clean(x.get("form_name")).lower()))[:900]:
+            project_name = _clean(form_ref.get("project_name"))
+            form_name = _clean(form_ref.get("form_name"))
+            form_key = _clean(form_ref.get("form_key")) or _form_key(project_name, form_name)
+            base_key = _base_only_key(form_name)
+            dossier = _as_dict(dossier_by_key.get(form_key) or dossier_by_key.get(base_key))
+            orphan_row = _as_dict(orphan_by_key.get(form_key) or orphan_by_key.get(base_key))
 
-            project_deps = project_dependencies_by_name.get(project_name, set())
-            form_controls = _as_list(r.get("controls"))
+            status = "mapped"
+            exclusion_reason = "none"
+            if not dossier:
+                if orphan_row:
+                    status = "orphan"
+                    exclusion_reason = _clean(orphan_row.get("recommendation")) or _clean(orphan_row.get("reason")) or "orphaned_form"
+                else:
+                    status = "excluded"
+                    exclusion_reason = "missing_from_form_dossier"
+
+            proc_rows = _lookup_rows(form_proc_rows, project_name, form_name)
+            sql_rows_for_form = _lookup_rows(form_sql_rows, project_name, form_name)
+            form_rules = _lookup_rows(form_rule_rows, project_name, form_name)
+            form_controls = _as_list(dossier.get("controls")) if dossier else []
+
+            db_tables_set = _lookup_set(form_db_tables, project_name, form_name)
+            if not db_tables_set:
+                db_tables_set = {
+                    _clean(t)
+                    for sql_row in sql_rows_for_form
+                    for t in _as_list(_as_dict(sql_row).get("tables"))
+                    if _clean(t)
+                }
+            db_tables = sorted(db_tables_set)
+
+            purpose = _clean(dossier.get("purpose"))
+            alias = _semantic_form_alias(
+                form_name=form_name or "n/a",
+                purpose=purpose,
+                db_tables=set(db_tables),
+                procedures=proc_rows,
+                rules=form_rules,
+                controls=form_controls,
+            )
+            if not purpose and alias:
+                purpose = f"{alias} workflow."
+            display_name = _display_form_name(form_name or "n/a", alias)
+
+            input_values: set[str] = set()
+            for ctl in form_controls:
+                ctl_name = _clean(ctl)
+                if not ctl_name:
+                    continue
+                control_id = _clean(ctl_name.split(":", 1)[-1])
+                if _is_data_input_control(control_id):
+                    input_values.add(_to_business_input(control_id))
+            for proc in proc_rows:
+                for item in _as_list(_as_dict(proc).get("inputs")):
+                    token = _clean(item)
+                    if _is_data_input_control(token):
+                        input_values.add(_to_business_input(token))
+
+            output_values: set[str] = set()
+            for sql_row in sql_rows_for_form:
+                s = _as_dict(sql_row)
+                op = _clean(s.get("operation")).lower()
+                tables = [_clean(t) for t in _as_list(s.get("tables")) if _clean(t)]
+                if not tables:
+                    continue
+                for table in tables:
+                    effect = _business_effect_from_sql(op, table)
+                    if effect:
+                        output_values.add(effect)
+            if not output_values:
+                for proc in proc_rows:
+                    for table in _as_list(_as_dict(proc).get("data_mutations")):
+                        if _clean(table):
+                            effect = _business_effect_from_sql("update", _clean(table))
+                            if effect:
+                                output_values.add(effect)
+                if not output_values:
+                    for effect in _fallback_business_effects(
+                        alias=alias,
+                        purpose=purpose,
+                        inputs=input_values,
+                        db_tables=db_tables,
+                        rules=form_rules,
+                    ):
+                        output_values.add(effect)
+
             form_activex: set[str] = set()
             for ctl in form_controls:
                 ctl_name = _clean(ctl)
                 if not ctl_name:
                     continue
-                control_id = _clean(ctl_name.split(":", 1)[-1]).lower()
-                if control_id.startswith(("txt", "cbo", "cmb", "dtp", "msk", "chk", "opt", "lst")):
-                    input_values.add(control_id)
                 prefix = ctl_name.split(":", 1)[0]
                 if prefix and not prefix.upper().startswith("VB"):
                     form_activex.add(prefix)
-            for dep in project_deps:
+            for dep in project_dependencies_by_name.get(project_name, set()):
                 dep_name = _clean(dep)
                 if dep_name.lower().endswith((".ocx", ".dll")) or "MSCOM" in dep_name.upper() or "MSFLEX" in dep_name.upper():
                     form_activex.add(dep_name)
 
-            db_tables = sorted(_lookup_set(form_db_tables, project_name, form_name))
             form_type = _infer_form_type(
                 form_name=form_name or "n/a",
-                purpose=_clean(r.get("purpose")),
+                purpose=purpose,
                 procedures=proc_rows,
                 controls=form_controls,
                 tables=set(db_tables),
             )
+            coverage = float(_as_dict(dossier.get("coverage")).get("coverage_score") or 0)
+            raw_conf = float(_as_dict(dossier.get("coverage")).get("confidence_score") or 0)
+            action_count = len(_as_list(dossier.get("actions"))) if dossier else len(proc_rows)
+            generic_purpose = _clean(purpose).lower() in {
+                "business workflow executed through event-driven ui controls.",
+                "business workflow executed through event-driven ui controls",
+                "potential orphan flow detected.",
+                "potential orphan flow detected",
+            }
+            coverage_clamped = max(0.0, min(1.0, coverage))
+            confidence = 0.22 + (0.45 * coverage_clamped)
+            confidence += min(0.14, 0.02 * action_count)
+            confidence += min(0.08, 0.015 * len(proc_rows))
+            confidence += min(0.08, 0.02 * len(db_tables))
+            confidence += 0.09 if sql_rows_for_form else -0.08
+            confidence += 0.08 if not generic_purpose else -0.12
+            if not input_values:
+                confidence -= 0.06
+            if action_count == 0:
+                confidence -= 0.16
+            if bool(re.fullmatch(r"(form\d+|frm\d+)", form_name.lower())) and not _clean(alias):
+                confidence -= 0.08
+            if 0 < raw_conf <= 1 and abs(raw_conf - 0.92) > 1e-4:
+                confidence = (confidence * 0.8) + (raw_conf * 0.2)
+            confidence = max(0.1, min(0.98, confidence))
+
+            if status != "mapped":
+                excluded_rows.append(
+                    {
+                        "form": _qualified_form_name(project_name, form_name),
+                        "reason": exclusion_reason,
+                        "source": _clean(form_ref.get("source")) or "detected",
+                    }
+                )
+
             lines.append(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2f} | {:.2f} |".format(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2f} | {:.2f} | {} |".format(
                     _escape_pipe(form_name or "n/a"),
+                    _escape_pipe(display_name or "n/a"),
                     _escape_pipe(_project_label(project_name, project_path_by_name)),
                     _escape_pipe(form_type),
-                    _escape_pipe(r.get("purpose") or ""),
-                    _escape_pipe(", ".join(sorted(input_values)[:6]) or "n/a"),
-                    _escape_pipe(", ".join(sorted(output_values)[:6]) or "n/a"),
+                    _escape_pipe(status),
+                    _escape_pipe(purpose or "n/a"),
+                    _escape_pipe(", ".join(sorted(input_values)[:8]) or "n/a"),
+                    _escape_pipe(", ".join(sorted(output_values)[:8]) or "n/a"),
                     _escape_pipe(", ".join(sorted(form_activex)[:6]) or "n/a"),
                     _escape_pipe(", ".join(db_tables[:8]) or "n/a"),
-                    len(_as_list(r.get("actions"))),
+                    action_count,
                     coverage,
                     confidence,
+                    _escape_pipe(exclusion_reason),
                 )
             )
+
+        summary_counts = _as_dict(_as_dict(raw_legacy.get("summary")).get("counts"))
+        expected_forms = int(summary_counts.get("forms_or_screens") or 0)
+        rendered_forms = len(discovered_forms)
+        if expected_forms > rendered_forms or orphan_unmapped_count > 0:
+            gap_text = (
+                f"expected_forms={expected_forms}, rendered_forms={rendered_forms}, "
+                f"unmapped_form_files={orphan_unmapped_count or max(0, expected_forms - rendered_forms)}"
+            )
+            lines.append("")
+            lines.append(f"- Coverage note: {gap_text}. Unmapped/placeholder forms are listed below.")
+
+        if excluded_rows or orphan_unmapped_count > 0:
+            lines.extend(["", "#### K1. Excluded/Unresolved Forms", "| Form | Reason | Source |", "|---|---|---|"])
+            for row in excluded_rows[:400]:
+                lines.append(
+                    "| {} | {} | {} |".format(
+                        _escape_pipe(row.get("form") or "n/a"),
+                        _escape_pipe(row.get("reason") or "excluded"),
+                        _escape_pipe(row.get("source") or "detected"),
+                    )
+                )
+            if orphan_unmapped_count > 0:
+                lines.append(
+                    "| (unmapped_form_files) | reconcile_project_membership ({} unresolved form files) | orphan_analysis |".format(
+                        orphan_unmapped_count
+                    )
+                )
     else:
         lines.append("- No form dossier rows available.")
 
@@ -1043,14 +1987,14 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             lines.extend(
                 [
                     f"#### {form_name} ({_project_label(project_name, project_path_by_name)})",
-                    "| Procedure | Event | ActiveX | SQL IDs | Tables | Trace status |",
-                    "|---|---|---|---|---|---|",
+                    "| Callable | Kind | Event | ActiveX | SQL IDs | Tables | Trace status |",
+                    "|---|---|---|---|---|---|---|",
                 ]
             )
 
             if not procedure_names:
                 lines.append(
-                    "| n/a | n/a | {} | n/a | {} | TRACE_GAP |".format(
+                    "| n/a | n/a | n/a | {} | n/a | {} | TRACE_GAP |".format(
                         "n/a",
                         _escape_pipe(", ".join(sorted(_lookup_set(form_db_tables, project_name, form_name))[:8]) or "n/a"),
                     )
@@ -1080,8 +2024,9 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     table_names.update(_clean(t) for t in _as_list(sql_row.get("tables")) if _clean(t))
                 trace_ok = bool(sql_ids) and bool(table_names)
                 lines.append(
-                    "| {} | {} | {} | {} | {} | {} |".format(
+                    "| {} | {} | {} | {} | {} | {} | {} |".format(
                         _escape_pipe(proc_name),
+                        _escape_pipe(_callable_kind(proc_name, form_name)),
                         _escape_pipe(", ".join(_clean(_as_dict(e.get("handler")).get("symbol")) for e in related_events[:3]) or "n/a"),
                         _escape_pipe(", ".join(sorted(set(activex_hits))[:5]) or "n/a"),
                         _escape_pipe(", ".join(sql_ids[:6]) or "n/a"),
@@ -1325,10 +2270,53 @@ def _repo_url_from_latest_pipeline_run() -> str:
     return ""
 
 
-def _resolve_repo_url(repo_arg: str) -> tuple[str, str]:
+def _repo_url_from_api_latest_run(base_url: str) -> str:
+    base = _clean(base_url).rstrip("/")
+    if not base:
+        return ""
+    try:
+        runs_data = _http_json("GET", f"{base}/api/runs", timeout=30)
+    except Exception:
+        return ""
+    runs = _as_list(runs_data.get("runs"))
+    if not runs:
+        return ""
+    for row in runs[:40]:
+        run_id = _clean(_as_dict(row).get("run_id"))
+        if not run_id:
+            continue
+        try:
+            detail = _http_json("GET", f"{base}/api/runs/{run_id}", timeout=30)
+        except Exception:
+            continue
+        run = _as_dict(detail.get("run"))
+        integration = _as_dict(run.get("integration_context"))
+        brownfield = _as_dict(integration.get("brownfield"))
+        discover_cache = _as_dict(integration.get("discover_cache"))
+        analyst_repo = _as_dict(discover_cache.get("analyst_repo"))
+        pipeline_state = _as_dict(run.get("pipeline_state"))
+        state_integration = _as_dict(pipeline_state.get("integration_context"))
+        state_brownfield = _as_dict(state_integration.get("brownfield"))
+        repo_url = _clean(
+            brownfield.get("repo_url")
+            or analyst_repo.get("url")
+            or state_brownfield.get("repo_url")
+            or pipeline_state.get("repo_url")
+            or _as_dict(pipeline_state.get("context_reference")).get("repo_url")
+        )
+        if repo_url:
+            return repo_url
+    return ""
+
+
+def _resolve_repo_url(repo_arg: str, *, base_url: str = "", prefer_api: bool = False) -> tuple[str, str]:
     explicit = _clean(repo_arg)
     if explicit and explicit.lower() not in {"auto", "ui", "web", "latest"}:
         return explicit, "cli"
+    if prefer_api:
+        from_api = _repo_url_from_api_latest_run(base_url)
+        if from_api:
+            return from_api, "latest_api_run"
     from_runs = _repo_url_from_latest_pipeline_run()
     if from_runs:
         return from_runs, "latest_pipeline_run"
@@ -1682,7 +2670,8 @@ def run_and_export_direct(args: argparse.Namespace) -> int:
 
 
 def run_and_export(args: argparse.Namespace) -> int:
-    resolved_repo, source = _resolve_repo_url(args.repo_url)
+    prefer_api = _clean(args.execution_mode).lower() == "api"
+    resolved_repo, source = _resolve_repo_url(args.repo_url, base_url=args.base_url, prefer_api=prefer_api)
     args.repo_url = resolved_repo
     print(f"[info] repo source={source} url={resolved_repo}")
     mode = _clean(args.execution_mode).lower() or "direct"
