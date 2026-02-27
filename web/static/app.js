@@ -438,6 +438,7 @@ const state = {
     data: null,
     requestKey: "",
     threadId: "",
+    requestToken: "",
   },
   domainPackCatalog: [],
   currentRunId: "",
@@ -5650,7 +5651,8 @@ function analystBriefRequestKey() {
 function renderDiscoverAnalystBrief() {
   if (!el.discoverAnalystBriefStatus || !el.discoverAnalystBriefPreview) return;
   const view = state.discoverAnalystBrief || {};
-  if (view.loading) {
+  const loadingData = (view.data && typeof view.data === "object") ? view.data : null;
+  if (view.loading && !loadingData) {
     el.discoverAnalystBriefStatus.textContent = "Analyst Agent is reading sampled source files and inferring functionality...";
     el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-slate-700";
     el.discoverAnalystBriefPreview.innerHTML = `<p class="text-slate-700">Running source-aware analysis...</p>`;
@@ -5662,7 +5664,7 @@ function renderDiscoverAnalystBrief() {
     el.discoverAnalystBriefPreview.innerHTML = `<p class="text-rose-700">${escapeHtml(view.error)}</p>`;
     return;
   }
-  const payload = (view.data && typeof view.data === "object") ? view.data : {};
+  const payload = loadingData || {};
   const brief = (payload.analyst_brief && typeof payload.analyst_brief === "object") ? payload.analyst_brief : {};
   const summary = (brief.summary && typeof brief.summary === "object") ? brief.summary : {};
   const aas = (payload.aas && typeof payload.aas === "object") ? payload.aas : {};
@@ -5711,8 +5713,11 @@ function renderDiscoverAnalystBrief() {
   }
 
   const list = (rows) => rows.map((row) => `<li>${escapeHtml(String(row || ""))}</li>`).join("");
-  el.discoverAnalystBriefStatus.textContent = `Analyst brief ready (${source}${repoLabel ? ` | ${repoLabel}` : ""})`;
-  el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-emerald-700";
+  const refreshing = !!view.loading;
+  el.discoverAnalystBriefStatus.textContent = refreshing
+    ? `Refreshing analyst brief (${source}${repoLabel ? ` | ${repoLabel}` : ""})...`
+    : `Analyst brief ready (${source}${repoLabel ? ` | ${repoLabel}` : ""})`;
+  el.discoverAnalystBriefStatus.className = refreshing ? "mt-1 text-[11px] text-slate-700" : "mt-1 text-[11px] text-emerald-700";
   el.discoverAnalystBriefPreview.innerHTML = `
     <p class="font-semibold text-slate-900">${overview}</p>
     ${Object.keys(legacySkillProfile).length ? `<p class="mt-1 text-[11px] text-slate-800"><strong>Selected legacy skill:</strong> ${escapeHtml(String(legacySkillProfile.selected_skill_name || "Generic Legacy Skill"))} (${escapeHtml(String(legacySkillProfile.selected_skill_id || "generic_legacy"))}), confidence=${escapeHtml(String(legacySkillProfile.confidence || "n/a"))}</p>` : ""}
@@ -5746,8 +5751,19 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
     renderDiscoverAnalystBrief();
     return;
   }
+  const previousData = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : null;
   const previousThreadId = String(state.discoverAnalystBrief?.threadId || state.discoverAnalystBrief?.data?.thread_id || "").trim();
-  state.discoverAnalystBrief = { loading: true, error: "", data: null, requestKey: reqKey, threadId: previousThreadId };
+  const requestToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  state.discoverAnalystBrief = {
+    loading: true,
+    error: "",
+    data: previousData,
+    requestKey: reqKey,
+    threadId: previousThreadId,
+    requestToken,
+  };
   renderDiscoverAnalystBrief();
   const integration = getIntegrationContext();
   try {
@@ -5812,20 +5828,28 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
       mergedData.thread_id = inferredThreadId;
     }
 
+    if (String(state.discoverAnalystBrief?.requestToken || "") !== requestToken) {
+      return;
+    }
     state.discoverAnalystBrief = {
       loading: false,
       error: "",
       data: mergedData,
       requestKey: reqKey,
       threadId: String(mergedData.thread_id || inferredThreadId),
+      requestToken: "",
     };
   } catch (err) {
+    if (String(state.discoverAnalystBrief?.requestToken || "") !== requestToken) {
+      return;
+    }
     state.discoverAnalystBrief = {
       loading: false,
       error: String(err?.message || err || "Failed to run analyst brief."),
-      data: null,
+      data: previousData,
       requestKey: reqKey,
       threadId: previousThreadId,
+      requestToken: "",
     };
   }
   renderDiscoverAnalystBrief();
@@ -6192,7 +6216,10 @@ function setDiscoverStep(step) {
     entry.panel?.classList.toggle("discover-panel-hidden", !isActive);
   });
   if (target === 3) {
-    loadDiscoverAnalystBrief({ force: false }).catch(() => {});
+    const hasAnalystData = !!(state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object" && Object.keys(state.discoverAnalystBrief.data).length);
+    if (!hasAnalystData && !state.discoverAnalystBrief?.loading) {
+      loadDiscoverAnalystBrief({ force: false }).catch(() => {});
+    }
   }
   renderDiscoverStepper();
 }
@@ -10184,9 +10211,8 @@ function bindEvents() {
       const previousStep = state.discoverStep;
       if (!validateDiscoverStep(state.discoverStep)) return;
       setDiscoverStep(state.discoverStep + 1);
-      if (previousStep === 2 && state.discoverStep === 3) {
-        await loadDiscoverAnalystBrief({ force: true }).catch(() => {});
-      }
+      // Stage transition 2 -> 3 triggers scan load in setDiscoverStep; avoid
+      // issuing a second concurrent brief request that can race and clear state.
       return;
     }
     const objectives = String(el.objectives.value || "").trim();
