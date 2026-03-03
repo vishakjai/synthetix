@@ -1013,6 +1013,79 @@ def _dependency_kind(name: str) -> str:
     return "other"
 
 
+def _extract_guid(reference: Any) -> str:
+    text = _clean(reference)
+    if not text:
+        return ""
+    m = re.search(r"\{[0-9A-Fa-f-]{36}\}", text)
+    return m.group(0) if m else ""
+
+
+def _parse_dependency_identity(value: Any) -> tuple[str, str]:
+    if isinstance(value, dict):
+        name = _clean(
+            value.get("name")
+            or value.get("dependency")
+            or value.get("binary")
+            or value.get("binary_ref")
+        )
+        reference = _clean(
+            value.get("reference")
+            or value.get("guid_reference")
+            or value.get("object_ref")
+            or value.get("raw_reference")
+        )
+        raw = _clean(value.get("raw") or value.get("line"))
+        if raw:
+            parsed_name, parsed_ref = _parse_dependency_identity(raw)
+            if not name:
+                name = parsed_name
+            if not reference:
+                reference = parsed_ref
+        if not reference and _extract_guid(name):
+            reference = _extract_guid(name)
+        return name, reference
+
+    text = _clean(value)
+    if not text:
+        return "", ""
+
+    name = text
+    reference = ""
+
+    obj_match = re.search(r'(?i)^\s*object\s*=\s*"([^"]+)"\s*;\s*"([^"]+)"\s*$', text)
+    if obj_match:
+        reference = _clean(obj_match.group(1))
+        name = _clean(obj_match.group(2))
+    else:
+        pair_match = re.search(r'"([^"]+)"\s*;\s*"([^"]+)"', text)
+        if pair_match:
+            reference = _clean(pair_match.group(1))
+            name = _clean(pair_match.group(2))
+
+    if not reference:
+        suffix_ref = re.search(r"\(([^)]*\{[0-9A-Fa-f-]{36}[^)]*)\)\s*$", name)
+        if suffix_ref:
+            reference = _clean(suffix_ref.group(1))
+            name = re.sub(r"\s*\([^)]*\{[0-9A-Fa-f-]{36}[^)]*\)\s*$", "", name).strip()
+
+    if not reference:
+        reference_line = re.search(r"(?i)^reference\s*=\s*(.+)$", text)
+        if reference_line:
+            reference = _clean(reference_line.group(1))
+
+    ext_match = re.search(r"([A-Za-z0-9_.-]+\.(?:ocx|dll|dcx|dca))", name, flags=re.IGNORECASE)
+    if not ext_match:
+        ext_match = re.search(r"([A-Za-z0-9_.-]+\.(?:ocx|dll|dcx|dca))", text, flags=re.IGNORECASE)
+    if ext_match:
+        name = _clean(ext_match.group(1))
+
+    name = name.strip().strip('"')
+    if not reference:
+        reference = _extract_guid(text)
+    return name, reference
+
+
 def _normalize_form_name_token(value: Any) -> str:
     text = _clean(value)
     if not text:
@@ -3283,35 +3356,55 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         *_as_list(legacy_inventory.get("dcx_dependencies")),
         *_as_list(legacy_inventory.get("dca_dependencies")),
         *_as_list(legacy_inventory.get("dependencies")),
+        *_as_list(legacy_inventory.get("dependency_references")),
+        *_as_list(vb6_analysis.get("dependency_references")),
+        *_as_list(_as_dict(vb6_analysis.get("com_surface_map")).get("references")),
     ]
     dep_seen: set[str] = set()
     dependencies: list[dict[str, Any]] = []
+    dep_index_by_key: dict[str, dict[str, Any]] = {}
     dep_idx = 1
     for dep in dep_candidates:
-        name = _clean(dep)
+        dep_source = "legacy_inventory_scan"
+        if isinstance(dep, dict):
+            dep_source = _clean(dep.get("source") or dep.get("project_file") or dep.get("project_name")) or dep_source
+        name, reference = _parse_dependency_identity(dep)
         if not name:
             continue
         key = name.lower()
         if key in dep_seen:
+            row = dep_index_by_key.get(key)
+            if row is not None:
+                if dep_source and not _clean(row.get("source")):
+                    row["source"] = dep_source
+                if reference and not _clean(row.get("reference")):
+                    row["reference"] = reference
+                    row["guid"] = _extract_guid(reference)
+                elif reference and _clean(row.get("reference")) and reference != _clean(row.get("reference")):
+                    existing_ref = _clean(row.get("reference"))
+                    row["reference"] = "; ".join([existing_ref, reference]) if reference not in existing_ref else existing_ref
+                    row["guid"] = _extract_guid(row["reference"])
             continue
         dep_seen.add(key)
-        dependencies.append(
-            {
-                "dependency_id": f"dep:{dep_idx}",
-                "name": name,
-                "kind": _dependency_kind(name),
-                "version": "",
-                "source": "legacy_inventory_scan",
-                "usage": {"used_by": [], "usage_sites": []},
-                "surface": {
-                    "prog_ids": [],
-                    "class_ids": [],
-                    "late_binding_sites": 0,
-                    "callbyname_sites": 0,
-                },
-                "risk": {"tier": "medium", "notes": "", "recommended_action": "Assess replacement/interop strategy."},
-            }
-        )
+        row = {
+            "dependency_id": f"dep:{dep_idx}",
+            "name": name,
+            "kind": _dependency_kind(name),
+            "version": "",
+            "source": dep_source,
+            "reference": reference,
+            "guid": _extract_guid(reference),
+            "usage": {"used_by": [], "usage_sites": []},
+            "surface": {
+                "prog_ids": [],
+                "class_ids": [],
+                "late_binding_sites": 0,
+                "callbyname_sites": 0,
+            },
+            "risk": {"tier": "medium", "notes": "", "recommended_action": "Assess replacement/interop strategy."},
+        }
+        dependencies.append(row)
+        dep_index_by_key[key] = row
         dep_idx += 1
 
     rule_rows = _as_list(legacy_inventory.get("business_rules_catalog")) or _as_list(safe.get("business_rules_catalog"))

@@ -188,4 +188,5 @@ curl -X POST http://127.0.0.1:8788/api/agents/analyst/analyze-requirement \
 - Optional for richer QA:
   - `pytest` for Python test execution
   - `node`/`npm` for Node test execution
+  - `playwright` for browser E2E (`cd e2e && npm install && npx playwright install chromium`)
   - `go` for Go test execution

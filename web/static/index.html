@@ -997,9 +997,14 @@
           <h2 class="text-lg font-semibold text-ink-950">Team planning workspace</h2>
           <p class="mt-1 text-xs text-slate-700">Use this page to create teams and manage ready-made or custom agent personas.</p>
         </div>
-        <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+        <div class="mb-3 flex flex-wrap gap-2">
+          <button data-plan-tab="team_creation" class="btn-dark rounded-md px-3 py-1.5 text-xs font-semibold">Team Creation</button>
+          <button data-plan-tab="agent_studio" class="btn-light rounded-md px-3 py-1.5 text-xs font-semibold">Agent Studio</button>
+        </div>
+
+        <div id="plan-panel-team-creation">
           <div>
-            <h2 class="text-lg font-semibold text-ink-950">Create Team</h2>
+            <h2 class="text-lg font-semibold text-ink-950">Team Creation</h2>
             <p class="mt-1 text-xs text-slate-700">Select one persona agent per stage and save as a reusable Synthetix planning team.</p>
             <div id="team-stage-selectors" class="mt-3 grid gap-3"></div>
             <div class="mt-4 grid gap-2 sm:grid-cols-2">
@@ -1013,29 +1018,59 @@
             </div>
             <div id="team-save-message" class="mt-2 text-xs text-slate-700"></div>
           </div>
+        </div>
 
-          <div class="rounded-xl border border-slate-300 bg-slate-50 p-3">
-            <h3 class="text-sm font-semibold text-ink-950">Clone & Modify Agent Persona</h3>
-            <div class="mt-2 grid gap-2">
-              <select id="clone-base-agent" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900"></select>
-              <input id="clone-agent-name" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="New agent display name" />
-              <textarea id="clone-agent-persona" rows="6" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="Persona override"></textarea>
-              <div class="rounded-lg border border-slate-300 bg-white p-2">
-                <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Requirements Pack Profile (Analyst only)</label>
-                <select id="clone-requirements-pack-profile" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
-                  <option value="">Inherit base agent profile</option>
-                  <option value="requirements-pack-v2-general">Requirements Pack v2 - General</option>
-                  <option value="requirements-pack-v2-banking">Requirements Pack v2 - Banking</option>
-                  <option value="custom-template">Custom template JSON</option>
-                </select>
-                <textarea id="clone-requirements-pack-template" rows="6" class="mono mt-2 hidden w-full rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-900" placeholder='{"project":{"domain_pack":{"id":"banking-core-v1"}},"requirements":{"non_functional":[]}}'></textarea>
+        <div id="plan-panel-agent-studio" class="hidden">
+          <section class="rounded-xl border border-slate-300 bg-slate-50 p-3">
+            <div class="grid gap-4 xl:grid-cols-[1fr_1fr]">
+              <div class="rounded-xl border border-slate-300 bg-white p-3">
+                <h3 class="text-sm font-semibold text-ink-950">Create / Clone Agent</h3>
+                <p class="mt-1 text-[11px] text-slate-700">Create a new agent persona that becomes available in Team Creation stage selectors.</p>
+                <div class="mt-2 grid gap-2">
+                  <select id="clone-base-agent" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900"></select>
+                  <input id="clone-agent-name" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="New agent display name" />
+                  <textarea id="clone-agent-persona" rows="6" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="Persona override"></textarea>
+                  <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+                    <label class="mb-1 block text-[11px] uppercase tracking-[0.12em] text-slate-600">Requirements Pack Profile (Analyst only)</label>
+                    <select id="clone-requirements-pack-profile" class="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                      <option value="">Inherit base agent profile</option>
+                      <option value="requirements-pack-v2-general">Requirements Pack v2 - General</option>
+                      <option value="requirements-pack-v2-banking">Requirements Pack v2 - Banking</option>
+                      <option value="custom-template">Custom template JSON</option>
+                    </select>
+                    <textarea id="clone-requirements-pack-template" rows="6" class="mono mt-2 hidden w-full rounded-md border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-900" placeholder='{"project":{"domain_pack":{"id":"banking-core-v1"}},"requirements":{"non_functional":[]}}'></textarea>
+                  </div>
+                  <button id="clone-agent-btn" class="btn-dark rounded-lg px-3 py-2 text-xs font-semibold">Create Agent</button>
+                </div>
+                <div id="clone-agent-message" class="mt-2 text-xs text-slate-700"></div>
               </div>
-              <button id="clone-agent-btn" class="btn-dark rounded-lg px-3 py-2 text-xs font-semibold">Clone Agent</button>
+
+              <div class="rounded-xl border border-slate-300 bg-white p-3">
+                <h4 class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">Ready-made & Custom Agents</h4>
+                <div id="team-agent-catalog" class="mt-2 max-h-[360px] overflow-auto rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs"></div>
+              </div>
             </div>
-            <div id="clone-agent-message" class="mt-2 text-xs text-slate-700"></div>
-            <h4 class="mt-4 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">Ready-made & Custom Agents</h4>
-            <div id="team-agent-catalog" class="mt-2 max-h-[360px] overflow-auto rounded-lg border border-slate-300 bg-white p-2 text-xs"></div>
-          </div>
+            <div class="mt-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 class="text-sm font-semibold text-ink-950">Agent Studio</h3>
+                  <p class="mt-1 text-xs text-slate-700">Configure persona behavior, brain wiring, tools, and memory from Plan UI.</p>
+                </div>
+                <select id="agent-studio-agent-select" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"></select>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button data-agent-studio-tab="persona" class="btn-dark rounded-md px-2.5 py-1 text-[11px] font-semibold">Persona</button>
+                <button data-agent-studio-tab="brain" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Brain</button>
+                <button data-agent-studio-tab="tools" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Tools</button>
+                <button data-agent-studio-tab="memory" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Memory</button>
+              </div>
+              <div id="agent-studio-panel" class="mt-2 rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-900"></div>
+              <div class="mt-2 flex items-center gap-2">
+                <button id="agent-studio-save" class="btn-dark rounded-md px-3 py-1.5 text-xs font-semibold">Save Agent Studio Config</button>
+                <span id="agent-studio-message" class="text-xs text-slate-700"></span>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -1330,6 +1365,41 @@
             <h3 class="text-sm font-semibold text-ink-950">Administration</h3>
             <p class="mt-1 text-xs text-slate-700">Role-based access, audit logging, and identity management.</p>
             <div class="mt-2 rounded-lg border border-slate-300 bg-white p-2">
+              <p class="text-xs font-semibold text-slate-900">Users & Session Context</p>
+              <div class="mt-2 grid gap-2 text-xs text-slate-900">
+                <label>Current Session User
+                  <select id="settings-current-user-select" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"></select>
+                </label>
+                <label>User Email
+                  <input id="settings-user-email" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="user@company.com" />
+                </label>
+                <label>Display Name
+                  <input id="settings-user-name" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Jane Doe" />
+                </label>
+                <label>Role
+                  <select id="settings-user-role" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="executive">Executive</option>
+                    <option value="delivery">Delivery</option>
+                    <option value="engineering">Engineering</option>
+                    <option value="security">Security</option>
+                  </select>
+                </label>
+                <label>Status
+                  <select id="settings-user-status" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </label>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button id="settings-user-save" class="btn-dark rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save User</button>
+                <button id="settings-user-use" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Use In Session</button>
+                <button id="settings-user-remove" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Remove User</button>
+              </div>
+              <p id="settings-user-message" class="mt-1 text-[11px] text-slate-700"></p>
+              <div id="settings-users-list" class="mt-2 max-h-32 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+            </div>
+            <div class="mt-2 rounded-lg border border-slate-300 bg-white p-2">
               <p class="text-xs font-semibold text-slate-900">Role Permissions</p>
               <label class="mt-1 block text-xs text-slate-900">Role
                 <select id="settings-rbac-role-select" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
@@ -1376,6 +1446,111 @@
               </div>
               <div id="settings-audit-log" class="mt-2 max-h-36 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
             </div>
+            <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2">
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-semibold text-slate-900">Knowledge Hub</p>
+                <span class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-700">Versioned + Auditable</span>
+              </div>
+              <p class="mt-1 text-[11px] text-slate-700">Configure agent knowledge sources and project intelligence bundles.</p>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button data-knowledge-hub-tab="sources" class="btn-dark rounded-md px-2.5 py-1 text-[11px] font-semibold">Sources</button>
+                <button data-knowledge-hub-tab="knowledge" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Knowledge</button>
+                <button data-knowledge-hub-tab="jobs" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Ingestion Jobs</button>
+                <button data-knowledge-hub-tab="evals" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Evaluations & Policies</button>
+              </div>
+
+              <div id="settings-knowledge-pane-sources" class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+                <p class="text-[11px] font-semibold text-slate-900">Knowledge Sources</p>
+                <div class="mt-1 grid gap-2 text-xs text-slate-900">
+                  <input id="settings-knowledge-source-name" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Client Security Policy" />
+                  <input id="settings-knowledge-source-location" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="URL / path / repo reference" />
+                  <select id="settings-knowledge-source-type" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="file">File</option>
+                    <option value="wiki">Wiki</option>
+                    <option value="repo">Repo</option>
+                    <option value="standards">Standards</option>
+                    <option value="issues">Issue System</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <select id="settings-knowledge-source-scope" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="global">Global</option>
+                    <option value="workspace">Workspace</option>
+                    <option value="client">Client</option>
+                    <option value="project" selected>Project</option>
+                  </select>
+                  <select id="settings-knowledge-source-classification" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="internal">Internal</option>
+                    <option value="public">Public</option>
+                    <option value="confidential">Confidential</option>
+                    <option value="regulated">Regulated</option>
+                  </select>
+                  <input id="settings-knowledge-source-tags" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="tags (comma separated)" />
+                </div>
+                <button id="settings-knowledge-source-save" class="btn-light mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Source</button>
+                <div id="settings-knowledge-sources-list" class="mt-2 max-h-24 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+              </div>
+
+              <div id="settings-knowledge-pane-knowledge" class="mt-2 hidden rounded border border-slate-300 bg-slate-50 p-2">
+                <p class="text-[11px] font-semibold text-slate-900">Knowledge Sets & Brain Wiring</p>
+                <div class="mt-1 grid gap-2 text-xs text-slate-900">
+                  <input id="settings-knowledge-set-name" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Banking Core Pack" />
+                  <input id="settings-knowledge-set-version" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="1.0.0" />
+                  <input id="settings-knowledge-set-source-ids" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="source ids (comma separated)" />
+                  <select id="settings-knowledge-set-state" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+                    <option value="draft">Draft</option>
+                    <option value="published">Published</option>
+                    <option value="deprecated">Deprecated</option>
+                  </select>
+                </div>
+                <button id="settings-knowledge-set-save" class="btn-light mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Set</button>
+                <div id="settings-knowledge-sets-list" class="mt-2 max-h-24 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+
+                <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+                  <p class="text-[11px] font-semibold text-slate-900">Agent Brain Binding</p>
+                  <div class="mt-1 grid gap-2 text-xs text-slate-900">
+                    <input id="settings-brain-agent-key" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="analyst_agent" />
+                    <input id="settings-brain-set-ids" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="knowledge set ids (comma separated)" />
+                    <input id="settings-brain-top-k" type="number" min="1" max="50" value="8" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+                    <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+                      <input id="settings-brain-citation-required" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" checked />
+                      Require citations
+                    </label>
+                  </div>
+                  <button id="settings-brain-save" class="btn-light mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Brain</button>
+                </div>
+
+                <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+                  <p class="text-[11px] font-semibold text-slate-900">Project Context Binding</p>
+                  <div class="mt-1 grid gap-2 text-xs text-slate-900">
+                    <input id="settings-binding-workspace" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="workspace id" />
+                    <input id="settings-binding-project" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="project id" />
+                    <input id="settings-binding-set-ids" class="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="knowledge set ids (comma separated)" />
+                  </div>
+                  <button id="settings-binding-save" class="btn-light mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Binding</button>
+                </div>
+                <div id="settings-knowledge-brains-list" class="mt-2 max-h-24 overflow-auto rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900"></div>
+              </div>
+
+              <div id="settings-knowledge-pane-jobs" class="mt-2 hidden rounded border border-slate-300 bg-slate-50 p-2">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-[11px] font-semibold text-slate-900">Ingestion Jobs</p>
+                  <button id="settings-knowledge-jobs-refresh" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Refresh Jobs</button>
+                </div>
+                <p class="mt-1 text-[11px] text-slate-700">Tracks source indexing status, refresh mode, and last update.</p>
+                <div id="settings-knowledge-jobs-list" class="mt-2 max-h-36 overflow-auto rounded border border-slate-300 bg-white p-2 text-[11px] text-slate-900"></div>
+              </div>
+
+              <div id="settings-knowledge-pane-evals" class="mt-2 hidden rounded border border-slate-300 bg-slate-50 p-2">
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-[11px] font-semibold text-slate-900">Evaluations & Policies</p>
+                  <button id="settings-knowledge-evals-refresh" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Refresh Eval</button>
+                </div>
+                <p class="mt-1 text-[11px] text-slate-700">Summarizes brain coverage, citation requirements, and policy mode signals.</p>
+                <div id="settings-knowledge-evals-list" class="mt-2 max-h-36 overflow-auto rounded border border-slate-300 bg-white p-2 text-[11px] text-slate-900"></div>
+              </div>
+
+              <p id="settings-knowledge-message" class="mt-2 text-[11px] text-slate-700"></p>
+            </div>
             <div class="mt-3 rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-800">
               <p class="font-semibold text-slate-900">Single sign-on</p>
               <p class="mt-1">Configure SAML/OIDC. Enable SSO to align access with enterprise identity controls.</p>
@@ -1395,6 +1570,14 @@
             <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
               <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Context bundle used</p>
               <p id="drawer-context-bundle" class="mono mt-1 text-[11px] text-slate-800">-</p>
+            </div>
+            <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Delivery constitution</p>
+              <p id="drawer-delivery-constitution" class="mt-1 text-[11px] text-slate-800">Not pinned</p>
+            </div>
+            <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
+              <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Specialist routing</p>
+              <p id="drawer-specialist-routing" class="mt-1 text-[11px] text-slate-800">No specialist routes selected</p>
             </div>
             <div class="rounded-lg border border-slate-300 bg-slate-50 p-2">
               <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-700">Policies applied</p>

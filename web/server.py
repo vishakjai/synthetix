@@ -69,7 +69,16 @@ from utils.run_store import PipelineRunStore  # noqa: E402
 from utils.settings_store import SettingsStore  # noqa: E402
 from utils.team_store import TeamStore  # noqa: E402
 from utils.work_item_store import WorkItemStore  # noqa: E402
-from utils.domain_packs import list_domain_packs  # noqa: E402
+from utils.domain_packs import (  # noqa: E402
+    get_domain_pack,
+    infer_data_classification,
+    infer_domain_pack_id,
+    infer_jurisdiction,
+    list_domain_packs,
+    map_to_capabilities,
+    normalize_requirement,
+    retrieve_gold_patterns,
+)
 from utils.persona_registry import PersonaRegistry  # noqa: E402
 from utils.knowledge_gateway import KnowledgeGateway  # noqa: E402
 from utils.tenant_memory import TenantMemoryStore  # noqa: E402
@@ -77,6 +86,10 @@ from utils.analyst_aas import AnalystAASService  # noqa: E402
 from utils.analyst_docx import build_business_docx_bytes  # noqa: E402
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
+from utils.delivery_constitution import (  # noqa: E402
+    build_delivery_constitution_v1,
+    delivery_constitution_to_markdown,
+)
 from utils.legacy_skills import (  # noqa: E402
     extract_vb6_signals as legacy_extract_vb6_signals,
     build_vb6_readiness_assessment,
@@ -107,6 +120,9 @@ CONTRACT_SCHEMA_DIR = ROOT / ".deliveryos" / "schemas"
 DRIFT_LOCK = threading.Lock()
 DRIFT_INTERVAL_SEC = max(0, int(os.getenv("SIL_DRIFT_INTERVAL_SEC", "900") or 900))
 DOCGEN_ROOT = ROOT / "synthetix-docgen"
+KNOWLEDGE_SOURCE_UPLOAD_ROOT = ROOT / "team_data" / "knowledge_sources"
+KNOWLEDGE_SOURCE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024
+RUN_CONTEXT_ARTIFACT_ROOT = ROOT / "run_artifacts"
 
 AGENT_CARDS = [
     {"stage": 1, "name": "Analyst Agent", "icon": "📋"},
@@ -542,6 +558,23 @@ class PipelineRunManager:
                 "team_name": team_meta.get("name", ""),
             },
         )
+        run_context_bundle = _build_run_context_bundle(
+            run_id=run_id,
+            objectives=objectives,
+            use_case=use_case,
+            integration_context=integration,
+            legacy_code=legacy_code,
+            stage_agent_ids=team_meta.get("stage_agent_ids", {}),
+        )
+        run_context_bundle = _persist_run_context_bundle_artifacts(run_context_bundle)
+        constitution = _as_dict_safe(run_context_bundle.get("delivery_constitution"))
+        routing = _as_dict_safe(run_context_bundle.get("specialist_routing"))
+        integration["run_context_snapshot"] = {
+            "bundle_id": _clean_text(run_context_bundle.get("bundle_id")),
+            "knowledge_snapshot_id": _clean_text(_as_dict_safe(run_context_bundle.get("knowledge_context")).get("snapshot_id")),
+            "delivery_constitution_id": _clean_text(constitution.get("constitution_id")),
+            "selected_specialist_ids": _as_list_safe(routing.get("selected_specialist_ids")),
+        }
 
         record = RunRecord(
             run_id=run_id,
@@ -593,6 +626,7 @@ class PipelineRunManager:
         record.pipeline_state["remediation_backlog"] = []
         record.pipeline_state["context_vault_ref"] = {}
         record.pipeline_state["sil_discovery"] = discover_repo_snapshot(ROOT)
+        record.pipeline_state["run_context_bundle"] = run_context_bundle
         record.pipeline_state["workflow_state"] = "DISCOVERING"
         record.pipeline_state["discover_review"] = {
             "overall_status": "PENDING",
@@ -606,6 +640,18 @@ class PipelineRunManager:
         self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
         self._append_log(record, f"👥 Team selected: {record.team_name or 'Ad-hoc Team'}")
         self._append_log(record, "🧠 System Intelligence Layer scheduled (SCM / CP / HA-RB)")
+        selected_specialists = _as_list_safe(routing.get("selected"))
+        if selected_specialists:
+            specialist_names = ", ".join(
+                [
+                    _clean_text(_as_dict_safe(row).get("name"))
+                    for row in selected_specialists[:6]
+                    if _clean_text(_as_dict_safe(row).get("name"))
+                ]
+            )
+            self._append_log(record, f"🧭 Specialist routing selected {len(selected_specialists)} profile(s): {specialist_names or 'see run context bundle'}")
+        else:
+            self._append_log(record, "🧭 Specialist routing selected 0 profiles for current run context.")
         self._append_log(record, "💬 Stage collaboration enabled (chat, directives, proposals, decisions)")
 
         with self._lock:
@@ -672,6 +718,33 @@ class PipelineRunManager:
                 },
                 model=record.config.get_model(),
             )
+            run_context_bundle = (
+                record.pipeline_state.get("run_context_bundle", {})
+                if isinstance(record.pipeline_state.get("run_context_bundle", {}), dict)
+                else {}
+            )
+            if isinstance(contract_suite.get("context_bundle", {}), dict):
+                bundle = dict(contract_suite.get("context_bundle", {}))
+                bundle["run_context_bundle_ref"] = {
+                    "bundle_id": _clean_text(run_context_bundle.get("bundle_id")),
+                    "knowledge_snapshot_id": _clean_text(
+                        _as_dict_safe(run_context_bundle.get("knowledge_context")).get("snapshot_id")
+                    ),
+                    "delivery_constitution_id": _clean_text(
+                        _as_dict_safe(_as_dict_safe(run_context_bundle.get("delivery_constitution"))).get("constitution_id")
+                    ),
+                    "workspace": _clean_text(run_context_bundle.get("workspace")),
+                    "project": _clean_text(run_context_bundle.get("project")),
+                }
+                bundle["knowledge_snapshot"] = {
+                    "source_version_ids": _as_dict_safe(
+                        _as_dict_safe(run_context_bundle.get("knowledge_context")).get("integrity")
+                    ).get("source_version_ids", []),
+                    "source_count": _as_dict_safe(
+                        _as_dict_safe(run_context_bundle.get("knowledge_context")).get("integrity")
+                    ).get("source_count", 0),
+                }
+                contract_suite["context_bundle"] = bundle
             contract_paths = persist_context_contract_suite(
                 contract_suite,
                 Path(str(vault_ref.get("vault_path", ""))).resolve() / "contract_bundle",
@@ -961,6 +1034,41 @@ class PipelineRunManager:
                 )
                 latest_result = updated_state.get("agent_results", [{}])[-1]
                 _, output_key = AGENT_SEQUENCE[stage_idx]
+                if stage_num == 1 and isinstance(latest_result, dict):
+                    stage_output = latest_result.get("output", {})
+                    if not isinstance(stage_output, dict):
+                        stage_output = {}
+                    enriched_output = _ensure_analyst_report_v2(stage_output)
+                    run_context_bundle = (
+                        updated_state.get("run_context_bundle", {})
+                        if isinstance(updated_state.get("run_context_bundle", {}), dict)
+                        else (
+                            record.pipeline_state.get("run_context_bundle", {})
+                            if isinstance(record.pipeline_state.get("run_context_bundle", {}), dict)
+                            else {}
+                        )
+                    )
+                    enriched_output, guardrails = _enforce_analyst_source_guardrails(
+                        enriched_output,
+                        run_context_bundle,
+                    )
+                    latest_result["output"] = enriched_output
+                    guardrail_status = _clean_text(_as_dict_safe(guardrails).get("status")).upper() or "PASS"
+                    if guardrail_status == "FAIL":
+                        reasons = _as_list_safe(guardrails.get("reasons"))
+                        reason_text = ", ".join([str(item) for item in reasons if str(item).strip()][:5]) or "guardrail violation"
+                        message = f"Analyst source guardrails failed: {reason_text}"
+                        latest_result["status"] = "error"
+                        latest_result["summary"] = message
+                        stage_logs = _as_list_safe(latest_result.get("logs"))
+                        stage_logs.append(message)
+                        latest_result["logs"] = stage_logs[-80:]
+                        updated_state["pipeline_status"] = "failed"
+                    updated_state[output_key] = enriched_output
+                    agent_results = updated_state.get("agent_results", [])
+                    if isinstance(agent_results, list) and agent_results:
+                        agent_results[-1] = latest_result
+                        updated_state["agent_results"] = agent_results
                 context_ref = self._context_reference_from_state(updated_state)
                 if stage_num >= 2 and not isinstance(latest_result.get("output"), dict):
                     self._fail(
@@ -1777,6 +1885,7 @@ class PipelineRunManager:
             "strict_security_mode": bool(pipeline_state.get("strict_security_mode", False)),
             "deployment_target": str(pipeline_state.get("deployment_target", "local")),
             "integration_context": pipeline_state.get("integration_context", {}) if isinstance(pipeline_state.get("integration_context"), dict) else {},
+            "run_context_bundle": pipeline_state.get("run_context_bundle", {}) if isinstance(pipeline_state.get("run_context_bundle"), dict) else {},
             "project_state_mode": str(pipeline_state.get("project_state_mode", "auto")),
             "project_state_detected": str(pipeline_state.get("project_state_detected", "")),
             "database_source": str(pipeline_state.get("database_source", "")),
@@ -1807,6 +1916,11 @@ class PipelineRunManager:
             "strict_security_mode": record.strict_security_mode,
             "deployment_target": record.deployment_target,
             "integration_context": copy.deepcopy(record.integration_context),
+            "run_context_bundle": (
+                copy.deepcopy(record.pipeline_state.get("run_context_bundle", {}))
+                if isinstance(record.pipeline_state, dict) and isinstance(record.pipeline_state.get("run_context_bundle", {}), dict)
+                else {}
+            ),
             "project_state_mode": record.project_state_mode,
             "project_state_detected": record.project_state_detected,
             "database_source": record.database_source,
@@ -2235,6 +2349,58 @@ def _framework_signals(text: str) -> list[str]:
 
 def _extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
     return legacy_extract_vb6_signals(path, text)
+
+
+def _parse_vbp_dependency_reference(reference_line: Any) -> dict[str, str] | None:
+    text = str(reference_line or "").strip()
+    if not text:
+        return None
+    name = ""
+    reference = text
+    pair_match = re.search(r'"([^"]+)"\s*;\s*"([^"]+)"', text)
+    if pair_match:
+        reference = str(pair_match.group(1) or "").strip()
+        name = str(pair_match.group(2) or "").strip()
+    if not name:
+        ext_match = re.search(r"([A-Za-z0-9_.-]+\.(?:ocx|dll|dcx|dca))", text, flags=re.IGNORECASE)
+        if ext_match:
+            name = str(ext_match.group(1) or "").strip()
+    if not name:
+        return None
+    guid_match = re.search(r"\{[0-9A-Fa-f-]{36}\}", reference or text)
+    guid = str(guid_match.group(0) or "").strip() if guid_match else ""
+    return {"name": name, "reference": reference, "guid": guid}
+
+
+def _extract_vbp_dependency_references(project_defs: list[dict[str, Any]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for project in project_defs:
+        if not isinstance(project, dict):
+            continue
+        project_name = str(project.get("project_name", "")).strip()
+        project_file = str(project.get("project_file", "")).strip()
+        refs = project.get("references", []) if isinstance(project.get("references", []), list) else []
+        for raw_ref in refs:
+            parsed = _parse_vbp_dependency_reference(raw_ref)
+            if not parsed:
+                continue
+            name = str(parsed.get("name", "")).strip()
+            reference = str(parsed.get("reference", "")).strip()
+            key = (project_file.lower(), name.lower(), reference.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "name": name,
+                    "reference": reference,
+                    "guid": str(parsed.get("guid", "")).strip(),
+                    "project_name": project_name,
+                    "project_file": project_file,
+                }
+            )
+    return rows[:480]
 
 
 def _analyze_source_bundle(
@@ -2820,6 +2986,8 @@ def _analyze_source_bundle(
     if vb6_forms and not vb6_events:
         unknowns.append("VB6 form files detected but event handler procedures were not extracted from sampled content.")
 
+    vb6_dependency_references = _extract_vbp_dependency_references(vb6_project_defs)
+
     return {
         "overview": overview,
         "likely_capabilities": capabilities,
@@ -2847,6 +3015,7 @@ def _analyze_source_bundle(
             "forms": sorted(vb6_forms)[:400],
             "controls": sorted(vb6_controls)[:800],
             "activex_dependencies": sorted(vb6_activex)[:400],
+            "dependency_references": vb6_dependency_references,
             "event_handlers": sorted(vb6_events)[:1200],
             "event_handler_keys": sorted(vb6_event_keys)[:2400],
             "event_handler_count_exact": vb6_event_handler_count_exact,
@@ -3585,11 +3754,473 @@ def _request_actor(request) -> str:
     actor = str(request.headers.get("x-user", "")).strip()
     if actor:
         return actor
-    return "local-user"
+    return "local-user@synthetix.local"
 
 
 async def api_get_settings(_request):
     return JSONResponse({"ok": True, "settings": SETTINGS_STORE.get_settings()})
+
+
+async def api_get_current_user(request):
+    actor = _request_actor(request)
+    profile = SETTINGS_STORE.resolve_user_access(actor)
+    return JSONResponse({"ok": True, "actor": actor, "user": profile})
+
+
+async def api_upsert_user(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.upsert_user(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "settings": settings, "users": settings.get("users", [])})
+
+
+async def api_set_user_status(request):
+    payload = _get_json(await request.body())
+    email = str(payload.get("email", "")).strip()
+    status = str(payload.get("status", "")).strip()
+    try:
+        settings = SETTINGS_STORE.set_user_status(email, status, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "settings": settings, "users": settings.get("users", [])})
+
+
+async def api_remove_user(request):
+    payload = _get_json(await request.body())
+    email = str(payload.get("email", "")).strip()
+    try:
+        settings = SETTINGS_STORE.remove_user(email, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "settings": settings, "users": settings.get("users", [])})
+
+
+async def api_upsert_knowledge_source(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.upsert_knowledge_source(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "sources": hub.get("sources", [])})
+
+
+async def api_upload_knowledge_source(request):
+    try:
+        form = await request.form()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Invalid multipart form data: {exc}"}, status_code=400)
+
+    upload = form.get("file")
+    if upload is None:
+        return JSONResponse({"ok": False, "error": "file is required"}, status_code=400)
+
+    filename = str(getattr(upload, "filename", "") or "").strip()
+    if not filename:
+        filename = "knowledge_source.bin"
+    try:
+        blob = await upload.read()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Failed to read uploaded file: {exc}"}, status_code=400)
+    if not blob:
+        return JSONResponse({"ok": False, "error": "Uploaded file is empty."}, status_code=400)
+    if len(blob) > KNOWLEDGE_SOURCE_UPLOAD_MAX_BYTES:
+        return JSONResponse(
+            {"ok": False, "error": f"Uploaded file too large (max {KNOWLEDGE_SOURCE_UPLOAD_MAX_BYTES // (1024 * 1024)}MB)."},
+            status_code=400,
+        )
+
+    source_id_raw = str(form.get("source_id", "")).strip() or f"src-{uuid.uuid4().hex[:10]}"
+    source_id = safe_name(source_id_raw) or f"src-{uuid.uuid4().hex[:10]}"
+    stem = safe_name(Path(filename).stem) or "knowledge_source"
+    suffix = Path(filename).suffix[:20]
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stored_name = f"{timestamp}_{stem}{suffix}"
+    target_dir = KNOWLEDGE_SOURCE_UPLOAD_ROOT / source_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / stored_name
+    target_path.write_bytes(blob)
+
+    name = str(form.get("name", "")).strip() or Path(filename).stem or source_id
+    location = str(form.get("location", "")).strip() or str(target_path.relative_to(ROOT))
+    tags_raw = str(form.get("tags", "")).strip()
+    tags = [part.strip() for part in tags_raw.split(",") if part.strip()] if tags_raw else []
+    payload = {
+        "source_id": source_id,
+        "name": name,
+        "type": str(form.get("type", "file")).strip().lower() or "file",
+        "scope": str(form.get("scope", "project")).strip().lower() or "project",
+        "data_classification": str(form.get("data_classification", "internal")).strip().lower() or "internal",
+        "description": str(form.get("description", "")).strip() or f"Uploaded file: {filename}",
+        "location": location,
+        "refresh_policy": str(form.get("refresh_policy", "manual")).strip() or "manual",
+        "retention_policy": str(form.get("retention_policy", "persist")).strip() or "persist",
+        "status": str(form.get("status", "active")).strip().lower() or "active",
+        "tags": tags,
+    }
+    try:
+        settings = SETTINGS_STORE.upsert_knowledge_source(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse(
+        {
+            "ok": True,
+            "settings": settings,
+            "sources": hub.get("sources", []),
+            "uploaded": {
+                "source_id": source_id,
+                "original_file_name": filename,
+                "stored_path": str(target_path.relative_to(ROOT)),
+                "bytes": len(blob),
+            },
+        }
+    )
+
+
+async def api_remove_knowledge_source(request):
+    payload = _get_json(await request.body())
+    source_id = str(payload.get("source_id", "")).strip()
+    try:
+        settings = SETTINGS_STORE.remove_knowledge_source(source_id, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "sources": hub.get("sources", [])})
+
+
+async def api_upsert_knowledge_set(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.upsert_knowledge_set(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "sets": hub.get("sets", [])})
+
+
+async def api_remove_knowledge_set(request):
+    payload = _get_json(await request.body())
+    set_id = str(payload.get("set_id", "")).strip()
+    try:
+        settings = SETTINGS_STORE.remove_knowledge_set(set_id, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "sets": hub.get("sets", [])})
+
+
+async def api_upsert_agent_brain(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.upsert_agent_brain(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "agent_brains": hub.get("agent_brains", [])})
+
+
+async def api_upsert_project_binding(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.upsert_project_binding(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "project_bindings": hub.get("project_bindings", [])})
+
+
+async def api_upsert_specialist(request):
+    payload = _get_json(await request.body())
+    try:
+        settings = SETTINGS_STORE.upsert_specialist(payload, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "specialists": hub.get("specialists", [])})
+
+
+async def api_remove_specialist(request):
+    payload = _get_json(await request.body())
+    specialist_id = str(payload.get("specialist_id", "")).strip()
+    try:
+        settings = SETTINGS_STORE.remove_specialist(specialist_id, actor=_request_actor(request))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    hub = settings.get("knowledge_hub", {})
+    return JSONResponse({"ok": True, "settings": settings, "specialists": hub.get("specialists", [])})
+
+
+def _brain_eval_workspace_project(payload: dict[str, Any]) -> tuple[str, str]:
+    brain_ctx = payload.get("brain_context", {})
+    brain_ctx = brain_ctx if isinstance(brain_ctx, dict) else {}
+    workspace = _clean_text(payload.get("workspace")) or _clean_text(brain_ctx.get("workspace")) or "default-workspace"
+    project = _clean_text(payload.get("project")) or _clean_text(brain_ctx.get("project")) or "default-project"
+    return workspace, project
+
+
+def _brain_eval_stage_agent_ids(payload: dict[str, Any]) -> dict[str, str]:
+    stage_map_raw = payload.get("stage_agent_ids", {})
+    stage_map = stage_map_raw if isinstance(stage_map_raw, dict) else {}
+    out: dict[str, str] = {}
+    for key, value in stage_map.items():
+        k = _clean_text(key)
+        v = _clean_text(value)
+        if not k or not v:
+            continue
+        out[k] = v
+    agent_key = _clean_text(payload.get("agent_key"))
+    stage_hint = int(payload.get("stage", 0) or 0)
+    if agent_key and stage_hint > 0:
+        out.setdefault(str(stage_hint), agent_key)
+    return out
+
+
+def _brain_eval_domain_pack(payload: dict[str, Any], query: str, objectives: str) -> tuple[str, dict[str, Any]]:
+    custom = payload.get("domain_pack", {})
+    if isinstance(custom, dict) and custom:
+        explicit_id = _clean_text(custom.get("id")) or _clean_text(payload.get("domain_pack_id")) or "custom"
+        return explicit_id, custom
+    explicit_id = _clean_text(payload.get("domain_pack_id"))
+    inferred = infer_domain_pack_id(" ".join([objectives, query]).strip(), explicit_pack_id=explicit_id)
+    return inferred, get_domain_pack(inferred)
+
+
+def _agent_policy_for_key(knowledge_context: dict[str, Any], agent_key: str) -> dict[str, Any]:
+    key = str(agent_key or "").strip().lower()
+    rows = _as_list_safe(_as_dict_safe(knowledge_context).get("agent_policies"))
+    for row in rows:
+        item = _as_dict_safe(row)
+        if str(item.get("agent_key", "")).strip().lower() == key:
+            return item
+    return {}
+
+
+async def api_find_relevant_context(request):
+    payload = _get_json(await request.body())
+    query = str(payload.get("query", "")).strip()
+    objectives = str(payload.get("objectives", "")).strip()
+    if not query and not objectives:
+        return JSONResponse({"ok": False, "error": "query or objectives is required"}, status_code=400)
+    query_text = query or objectives
+    agent_key = _clean_text(payload.get("agent_key"))
+
+    workspace, project = _brain_eval_workspace_project(payload)
+    stage_agent_ids = _brain_eval_stage_agent_ids(payload)
+    knowledge_context = SETTINGS_STORE.resolve_knowledge_run_context(
+        workspace=workspace,
+        project=project,
+        stage_agent_ids=stage_agent_ids,
+    )
+    agent_policy = _agent_policy_for_key(knowledge_context, agent_key)
+    top_k = max(
+        1,
+        min(
+            50,
+            int(payload.get("top_k", 0) or agent_policy.get("top_k", 8) or 8),
+        ),
+    )
+    citation_required = bool(payload.get("citation_required", agent_policy.get("citation_required", True)))
+
+    domain_pack_id, domain_pack = _brain_eval_domain_pack(payload, query_text, objectives)
+    normalized = normalize_requirement(query_text)
+    capability_map = map_to_capabilities(domain_pack, normalized)
+    primary_caps = capability_map.get("primary_capabilities", [])
+    capability_ids = [
+        str(row.get("id", "")).strip()
+        for row in primary_caps if isinstance(primary_caps, list) and isinstance(row, dict)
+        if str(row.get("id", "")).strip()
+    ]
+    jurisdiction = str(payload.get("jurisdiction", "")).strip() or infer_jurisdiction(query_text)
+    data_classes_raw = payload.get("data_classification", [])
+    data_classes = (
+        [str(x).strip() for x in data_classes_raw if str(x).strip()]
+        if isinstance(data_classes_raw, list)
+        else infer_data_classification(query_text)
+    )
+
+    vector_hits = KNOWLEDGE_GATEWAY.query_vector_context(
+        query=query_text,
+        domain_pack=domain_pack,
+        top_k=top_k,
+    )
+    graph_edges = KNOWLEDGE_GATEWAY.query_capability_dependencies(
+        domain_pack=domain_pack,
+        capability_ids=capability_ids,
+    )
+    compliance = KNOWLEDGE_GATEWAY.query_regulatory_constraints(
+        domain_pack=domain_pack,
+        capability_ids=capability_ids,
+        jurisdiction=jurisdiction,
+        data_classes=data_classes,
+    )
+    gold_patterns = retrieve_gold_patterns(domain_pack, capability_ids)
+
+    vector_index = {
+        str(row.get("id", "")).strip().lower(): row
+        for row in vector_hits
+        if isinstance(row, dict) and str(row.get("id", "")).strip()
+    }
+    constraint_citations: list[dict[str, Any]] = []
+    missing_constraint_citations: list[str] = []
+    for row in compliance:
+        item = _as_dict_safe(row)
+        cid = str(item.get("id", "")).strip()
+        if not cid:
+            continue
+        hits: list[dict[str, Any]] = []
+        maybe_hit = vector_index.get(cid.lower())
+        if isinstance(maybe_hit, dict):
+            hits.append(
+                {
+                    "citation_id": f"vector:{_clean_text(maybe_hit.get('id'))}",
+                    "title": str(maybe_hit.get("title", "")).strip(),
+                    "source_class": str(maybe_hit.get("source_class", "domain_pack")).strip() or "domain_pack",
+                    "score": float(maybe_hit.get("score", 0.0) or 0.0),
+                }
+            )
+        if not hits:
+            # Domain-pack regulations count as deterministic citations when vector recall misses.
+            hits.append(
+                {
+                    "citation_id": f"domain_pack:{cid}",
+                    "title": str(item.get("name", "")).strip() or cid,
+                    "source_class": "domain_pack",
+                    "score": 1.0,
+                }
+            )
+        if not hits:
+            missing_constraint_citations.append(cid)
+        constraint_citations.append(
+            {
+                "constraint_id": cid,
+                "constraint_name": str(item.get("name", "")).strip(),
+                "citations": hits,
+            }
+        )
+
+    assumption_blocker = bool(citation_required and missing_constraint_citations)
+    guardrail_status = "pass" if not assumption_blocker else "fail"
+    source_versions = _as_list_safe(_as_dict_safe(knowledge_context.get("integrity")).get("source_version_ids"))
+    source_catalog = [
+        {
+            "source_id": str(row.get("source_id", "")).strip(),
+            "version_id": str(row.get("version_id", "")).strip(),
+            "name": str(row.get("name", "")).strip(),
+            "classification": str(row.get("data_classification", "")).strip(),
+            "scope": str(row.get("scope", "")).strip(),
+        }
+        for row in _as_list_safe(knowledge_context.get("sources"))
+        if isinstance(row, dict)
+    ]
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "query": query_text,
+            "agent_key": agent_key,
+            "domain_pack_id": domain_pack_id,
+            "retrieval": {
+                "top_k": top_k,
+                "capability_mapping": capability_map,
+                "graph_edges": graph_edges,
+                "vector_hits": vector_hits,
+                "compliance_constraints": compliance,
+                "gold_patterns": gold_patterns,
+                "source_catalog": source_catalog,
+            },
+            "guardrails": {
+                "citation_required": citation_required,
+                "constraint_citations": constraint_citations,
+                "missing_constraint_citations": missing_constraint_citations,
+                "assumption_blocker": assumption_blocker,
+                "status": guardrail_status,
+                "qa_required": bool(source_versions),
+            },
+            "context_snapshot": {
+                "workspace": workspace,
+                "project": project,
+                "knowledge_snapshot_id": _clean_text(knowledge_context.get("snapshot_id")),
+                "knowledge_snapshot_hash": _clean_text(_as_dict_safe(knowledge_context.get("integrity")).get("snapshot_hash")),
+                "source_version_ids": source_versions,
+            },
+        }
+    )
+
+
+async def api_suggest_agent(request):
+    payload = _get_json(await request.body())
+    task = str(payload.get("task", "")).strip()
+    objectives = str(payload.get("objectives", "")).strip()
+    legacy_code = str(payload.get("legacy_code", "")).strip()
+    if not task and not objectives and not legacy_code:
+        return JSONResponse({"ok": False, "error": "task, objectives, or legacy_code is required"}, status_code=400)
+    use_case = str(payload.get("use_case", "business_objectives")).strip().lower() or "business_objectives"
+    stage_agent_ids = _brain_eval_stage_agent_ids(payload)
+    integration_context = payload.get("integration_context", {})
+    integration_context = integration_context if isinstance(integration_context, dict) else {}
+    routing = _route_specialists_for_run(
+        objectives=" ".join([objectives, task]).strip(),
+        use_case=use_case,
+        integration_context=integration_context,
+        legacy_code=legacy_code,
+        stage_agent_ids=stage_agent_ids,
+    )
+    selected = _as_list_safe(_as_dict_safe(routing).get("selected"))
+    dispatchable = [row for row in selected if isinstance(row, dict) and bool(row.get("dispatchable"))]
+    target_weights: dict[str, int] = {}
+    for row in dispatchable:
+        target = str(row.get("route_target_agent_key", "")).strip()
+        if not target:
+            continue
+        target_weights[target] = int(target_weights.get(target, 0)) + int(row.get("score", 0) or 0)
+
+    agents_payload = TEAM_STORE.list_agents()
+    all_agents = [row for row in _as_list_safe(agents_payload.get("all")) if isinstance(row, dict)]
+    agent_index = {
+        str(row.get("id", "")).strip(): row
+        for row in all_agents
+        if str(row.get("id", "")).strip()
+    }
+
+    ranked_targets = sorted(target_weights.items(), key=lambda item: (-item[1], item[0]))
+    primary_target = ranked_targets[0][0] if ranked_targets else _clean_text(payload.get("agent_key"))
+    primary_agent = _as_dict_safe(agent_index.get(primary_target))
+
+    alternatives: list[dict[str, Any]] = []
+    for target, score in ranked_targets[1:6]:
+        row = _as_dict_safe(agent_index.get(target))
+        if not row:
+            continue
+        alternatives.append(
+            {
+                "agent_key": target,
+                "display_name": str(row.get("display_name", row.get("role", target))).strip(),
+                "stage": int(row.get("stage", 0) or 0),
+                "score": score,
+            }
+        )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "task": task or objectives,
+            "suggestion": {
+                "primary_agent": {
+                    "agent_key": str(primary_agent.get("id", primary_target)).strip(),
+                    "display_name": str(primary_agent.get("display_name", primary_agent.get("role", primary_target))).strip(),
+                    "stage": int(primary_agent.get("stage", 0) or 0),
+                }
+                if primary_target
+                else {},
+                "alternatives": alternatives,
+                "specialist_matches": selected[:12],
+            },
+            "routing": routing,
+        }
+    )
 
 
 async def api_connect_integration(request):
@@ -5165,6 +5796,602 @@ def _ensure_analyst_report_v2(output: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
     return enriched
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _as_dict_safe(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list_safe(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _run_context_workspace_project(integration_context: dict[str, Any]) -> tuple[str, str]:
+    integration = integration_context if isinstance(integration_context, dict) else {}
+    brain_ctx = integration.get("brain_context", {})
+    brain_ctx = brain_ctx if isinstance(brain_ctx, dict) else {}
+    workspace = _clean_text(brain_ctx.get("workspace")) or "default-workspace"
+    project = _clean_text(brain_ctx.get("project")) or "default-project"
+    return workspace, project
+
+
+def _routing_text_blob(
+    *,
+    objectives: str,
+    use_case: str,
+    integration_context: dict[str, Any],
+    legacy_code: str,
+) -> tuple[str, list[str], set[str]]:
+    integration = integration_context if isinstance(integration_context, dict) else {}
+    brownfield = _as_dict_safe(integration.get("brownfield"))
+    greenfield = _as_dict_safe(integration.get("greenfield"))
+    scan_scope = _as_dict_safe(integration.get("scan_scope"))
+    discover_cache = _as_dict_safe(integration.get("discover_cache"))
+    analyst_summary = _as_dict_safe(discover_cache.get("analyst_summary"))
+
+    evidence_files = _as_list_safe(analyst_summary.get("evidence_files"))
+    include_paths = _as_list_safe(scan_scope.get("include_paths"))
+    exclude_paths = _as_list_safe(scan_scope.get("exclude_paths"))
+    file_like = [
+        _clean_text(item).lower()
+        for item in [*evidence_files, *include_paths, *exclude_paths]
+        if _clean_text(item)
+    ]
+    artifact_signals: set[str] = set()
+    if _clean_text(analyst_summary.get("overview")):
+        artifact_signals.add("analyst_summary")
+    for key in (
+        "likely_capabilities",
+        "key_components",
+        "domain_functions",
+        "data_entities",
+        "input_output_contracts",
+        "vb6_analysis",
+        "legacy_skill_profile",
+    ):
+        val = analyst_summary.get(key)
+        if isinstance(val, dict) and val:
+            artifact_signals.add(key.lower())
+        elif isinstance(val, list) and val:
+            artifact_signals.add(key.lower())
+        elif _clean_text(val):
+            artifact_signals.add(key.lower())
+    if file_like:
+        artifact_signals.add("evidence_files")
+    if _clean_text(brownfield.get("repo_url")):
+        artifact_signals.add("repo_scan")
+
+    parts = [
+        _clean_text(objectives),
+        _clean_text(use_case),
+        _clean_text(integration.get("project_state_detected")),
+        _clean_text(brownfield.get("repo_provider")),
+        _clean_text(brownfield.get("repo_url")),
+        _clean_text(greenfield.get("repo_destination")),
+        _clean_text(greenfield.get("repo_target")),
+        _clean_text(analyst_summary.get("overview")),
+        " ".join([_clean_text(x) for x in _as_list_safe(analyst_summary.get("key_components"))[:24] if _clean_text(x)]),
+        " ".join(file_like[:120]),
+        _clean_text(legacy_code)[:120000],
+    ]
+    text_blob = " ".join([part for part in parts if part]).lower()
+    return text_blob, file_like, artifact_signals
+
+
+def _normalize_file_pattern(pattern: str) -> str:
+    token = _clean_text(pattern).lower()
+    if token.startswith("*."):
+        return token[1:]
+    return token.replace("*", "")
+
+
+def _route_specialists_for_run(
+    *,
+    objectives: str,
+    use_case: str,
+    integration_context: dict[str, Any],
+    legacy_code: str,
+    stage_agent_ids: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    settings = SETTINGS_STORE.get_settings()
+    hub = _as_dict_safe(settings.get("knowledge_hub"))
+    specialists = _as_list_safe(hub.get("specialists"))
+    stage_map = stage_agent_ids if isinstance(stage_agent_ids, dict) else {}
+    stage_agent_values = {str(v).strip() for v in stage_map.values() if str(v).strip()}
+    text_blob, file_like, artifact_signals = _routing_text_blob(
+        objectives=objectives,
+        use_case=use_case,
+        integration_context=integration_context if isinstance(integration_context, dict) else {},
+        legacy_code=legacy_code,
+    )
+    candidates: list[dict[str, Any]] = []
+    for row in specialists:
+        spec = _as_dict_safe(row)
+        if not spec or not bool(spec.get("enabled", True)) or not bool(spec.get("auto_route", True)):
+            continue
+        specialist_id = _clean_text(spec.get("specialist_id"))
+        name = _clean_text(spec.get("name")) or specialist_id or "specialist"
+        linked_agent_key = _clean_text(spec.get("linked_agent_key"))
+        stage_hint = int(spec.get("stage_hint", 0) or 0)
+        route_target = ""
+        if linked_agent_key and linked_agent_key in stage_agent_values:
+            route_target = linked_agent_key
+        elif stage_hint > 0:
+            route_target = _clean_text(stage_map.get(str(stage_hint)))
+
+        intent_keywords = [
+            _clean_text(item).lower()
+            for item in _as_list_safe(spec.get("intent_keywords"))
+            if _clean_text(item)
+        ]
+        file_patterns = [
+            _normalize_file_pattern(str(item))
+            for item in _as_list_safe(spec.get("file_patterns"))
+            if _normalize_file_pattern(str(item))
+        ]
+        artifact_triggers = [
+            _clean_text(item).lower()
+            for item in _as_list_safe(spec.get("artifact_triggers"))
+            if _clean_text(item)
+        ]
+        matched_intents = [kw for kw in intent_keywords if kw and kw in text_blob][:6]
+        matched_files = [
+            pattern
+            for pattern in file_patterns
+            if pattern and (
+                pattern in text_blob
+                or any(pattern in path for path in file_like)
+            )
+        ][:6]
+        matched_artifacts = [sig for sig in artifact_triggers if sig in artifact_signals][:6]
+        score = (len(matched_intents) * 2) + len(matched_files) + len(matched_artifacts)
+        threshold = max(1, min(10, int(spec.get("min_match_score", 1) or 1)))
+        selected = score >= threshold
+        candidates.append(
+            {
+                "specialist_id": specialist_id,
+                "name": name,
+                "domain": _clean_text(spec.get("domain")),
+                "linked_agent_key": linked_agent_key,
+                "route_target_agent_key": route_target,
+                "tool_mode": _clean_text(spec.get("tool_mode")) or "read_only",
+                "depth_tier": _clean_text(spec.get("depth_tier")) or "standard",
+                "threshold": threshold,
+                "score": score,
+                "selected": selected,
+                "dispatchable": bool(route_target),
+                "matched_intents": matched_intents,
+                "matched_files": matched_files,
+                "matched_artifacts": matched_artifacts,
+            }
+        )
+    candidates.sort(
+        key=lambda row: (
+            -int(row.get("score", 0) or 0),
+            0 if bool(row.get("dispatchable")) else 1,
+            str(row.get("name", "")).lower(),
+        )
+    )
+    selected = [row for row in candidates if bool(row.get("selected"))]
+    selected_ids = [str(row.get("specialist_id", "")).strip() for row in selected if str(row.get("specialist_id", "")).strip()]
+    return {
+        "evaluated_at": _utc_now(),
+        "input_summary": {
+            "candidate_count": len(candidates),
+            "artifact_signals": sorted(list(artifact_signals))[:40],
+            "stage_agent_count": len(stage_agent_values),
+        },
+        "selected": selected[:16],
+        "selected_specialist_ids": selected_ids[:32],
+        "selected_count": len(selected),
+        "dispatchable_count": len([row for row in selected if bool(row.get("dispatchable"))]),
+        "candidates": candidates[:80],
+    }
+
+
+def _build_run_context_bundle(
+    *,
+    run_id: str,
+    objectives: str,
+    use_case: str,
+    integration_context: dict[str, Any],
+    legacy_code: str = "",
+    stage_agent_ids: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    integration = copy.deepcopy(integration_context if isinstance(integration_context, dict) else {})
+    stage_map = stage_agent_ids if isinstance(stage_agent_ids, dict) else {}
+    workspace, project = _run_context_workspace_project(integration)
+    knowledge_context = SETTINGS_STORE.resolve_knowledge_run_context(
+        workspace=workspace,
+        project=project,
+        stage_agent_ids=stage_map,
+    )
+    actor = integration.get("actor_context", {})
+    actor = actor if isinstance(actor, dict) else {}
+    actor_payload = {
+        "email": _clean_text(actor.get("email")).lower(),
+        "role": _clean_text(actor.get("role")).lower(),
+        "display_name": _clean_text(actor.get("display_name")),
+    }
+    stage_agent_map = {str(k): _clean_text(v) for k, v in stage_map.items() if _clean_text(v)}
+    digest_material = {
+        "run_id": _clean_text(run_id),
+        "workspace": workspace,
+        "project": project,
+        "actor": actor_payload,
+        "stage_agent_ids": stage_agent_map,
+        "knowledge_snapshot_id": _clean_text(knowledge_context.get("snapshot_id")),
+        "knowledge_snapshot_hash": _clean_text(_as_dict_safe(knowledge_context.get("integrity")).get("snapshot_hash")),
+    }
+    bundle_hash = hashlib.sha256(
+        json.dumps(digest_material, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    specialist_routing = _route_specialists_for_run(
+        objectives=objectives,
+        use_case=use_case,
+        integration_context=integration,
+        legacy_code=legacy_code,
+        stage_agent_ids=stage_map,
+    )
+    constitution = build_delivery_constitution_v1(
+        run_id=run_id,
+        workspace=workspace,
+        project=project,
+        objectives=objectives,
+        use_case=use_case,
+        integration_context=integration,
+        knowledge_context=knowledge_context,
+        stage_agent_ids=stage_map,
+    )
+    constitution_id = _clean_text(_as_dict_safe(constitution).get("constitution_id"))
+    return {
+        "bundle_id": f"runctx-{bundle_hash[:16]}",
+        "created_at": _utc_now(),
+        "run_id": _clean_text(run_id),
+        "workspace": workspace,
+        "project": project,
+        "actor": actor_payload,
+        "stage_agent_ids": stage_agent_map,
+        "knowledge_context": knowledge_context,
+        "specialist_routing": specialist_routing,
+        "delivery_constitution": constitution,
+        "constraints": {
+            "snapshot_pinned": True,
+            "immutable_snapshot": True,
+            "disallow_latest_drift": True,
+        },
+        "integrity": {
+            "bundle_hash": bundle_hash,
+            "knowledge_snapshot_id": _clean_text(knowledge_context.get("snapshot_id")),
+            "source_version_ids": _as_dict_safe(knowledge_context.get("integrity")).get("source_version_ids", []),
+            "delivery_constitution_id": constitution_id,
+            "selected_specialist_ids": _as_list_safe(_as_dict_safe(specialist_routing).get("selected_specialist_ids")),
+        },
+    }
+
+
+def _persist_run_context_bundle_artifacts(run_context_bundle: dict[str, Any]) -> dict[str, Any]:
+    bundle = dict(run_context_bundle) if isinstance(run_context_bundle, dict) else {}
+    run_id = _clean_text(bundle.get("run_id")) or "run"
+    constitution = _as_dict_safe(bundle.get("delivery_constitution"))
+    if not constitution:
+        return bundle
+    out_dir = RUN_CONTEXT_ARTIFACT_ROOT / safe_name(run_id) / "context"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = out_dir / "delivery_constitution_v1.json"
+    md_path = out_dir / "delivery_constitution_v1.md"
+    _write_json_file(json_path, constitution)
+    md_path.write_text(delivery_constitution_to_markdown(constitution))
+
+    artifact_paths = _as_dict_safe(bundle.get("artifact_paths"))
+    artifact_paths["delivery_constitution_json"] = str(json_path.relative_to(ROOT))
+    artifact_paths["delivery_constitution_md"] = str(md_path.relative_to(ROOT))
+    bundle["artifact_paths"] = artifact_paths
+    return bundle
+
+
+def _append_gate_row(output: dict[str, Any], gate: dict[str, Any]) -> None:
+    if not isinstance(output, dict):
+        return
+    gate_name = _clean_text(gate.get("name"))
+    gate_row = {
+        "name": gate_name or f"gate_{uuid.uuid4().hex[:8]}",
+        "status": _clean_text(gate.get("status")).upper() or "WARN",
+        "message": _clean_text(gate.get("message")) or "Guardrail check executed.",
+        "details": _as_dict_safe(gate.get("details")),
+    }
+    quality = _as_list_safe(output.get("quality_gates"))
+    replaced = False
+    for idx, existing in enumerate(quality):
+        if not isinstance(existing, dict):
+            continue
+        if _clean_text(existing.get("name")).lower() == gate_row["name"].lower():
+            quality[idx] = gate_row
+            replaced = True
+            break
+    if not replaced:
+        quality.append(gate_row)
+    output["quality_gates"] = quality
+
+    req_pack = _as_dict_safe(output.get("requirements_pack"))
+    if req_pack:
+        req_gates = _as_list_safe(req_pack.get("quality_gates"))
+        repack = False
+        for idx, existing in enumerate(req_gates):
+            if not isinstance(existing, dict):
+                continue
+            if _clean_text(existing.get("name")).lower() == gate_row["name"].lower():
+                req_gates[idx] = gate_row
+                repack = True
+                break
+        if not repack:
+            req_gates.append(gate_row)
+        req_pack["quality_gates"] = req_gates
+        output["requirements_pack"] = req_pack
+
+
+def _attach_run_context_to_analyst_output(output: dict[str, Any], run_context_bundle: dict[str, Any]) -> dict[str, Any]:
+    out = dict(output) if isinstance(output, dict) else {}
+    run_ctx = run_context_bundle if isinstance(run_context_bundle, dict) else {}
+    knowledge_ctx = _as_dict_safe(run_ctx.get("knowledge_context"))
+    constitution = _as_dict_safe(run_ctx.get("delivery_constitution"))
+    specialist_routing = _as_dict_safe(run_ctx.get("specialist_routing"))
+    source_versions = _as_dict_safe(knowledge_ctx.get("integrity")).get("source_version_ids", [])
+    if not isinstance(source_versions, list):
+        source_versions = []
+    snapshot_id = _clean_text(knowledge_ctx.get("snapshot_id"))
+    bundle_id = _clean_text(run_ctx.get("bundle_id"))
+    constitution_id = _clean_text(constitution.get("constitution_id"))
+    out["run_context_bundle_ref"] = {
+        "bundle_id": bundle_id,
+        "knowledge_snapshot_id": snapshot_id,
+        "delivery_constitution_id": constitution_id,
+        "workspace": _clean_text(run_ctx.get("workspace")),
+        "project": _clean_text(run_ctx.get("project")),
+        "source_version_ids": [str(item).strip() for item in source_versions if str(item).strip()],
+        "selected_specialist_ids": _as_list_safe(specialist_routing.get("selected_specialist_ids")),
+    }
+
+    req_pack = _as_dict_safe(out.get("requirements_pack"))
+    if req_pack:
+        ctx_ref = _as_dict_safe(req_pack.get("context_reference"))
+        ctx_ref["knowledge_snapshot_id"] = snapshot_id
+        ctx_ref["run_context_bundle_id"] = bundle_id
+        ctx_ref["source_version_ids"] = [str(item).strip() for item in source_versions if str(item).strip()]
+        req_pack["context_reference"] = ctx_ref
+        out["requirements_pack"] = req_pack
+
+    report = _as_dict_safe(out.get("analyst_report_v2"))
+    if report:
+        appendix = _as_dict_safe(report.get("appendix"))
+        refs = _as_dict_safe(appendix.get("artifact_refs"))
+        if snapshot_id and bundle_id:
+            refs["knowledge_snapshot_ref"] = f"runctx://{bundle_id}/{snapshot_id}"
+        if constitution_id and bundle_id:
+            refs["run_delivery_constitution_ref"] = f"runctx://{bundle_id}/delivery_constitution/{constitution_id}"
+        appendix["artifact_refs"] = refs
+        report["appendix"] = appendix
+        report["run_context_bundle_ref"] = out.get("run_context_bundle_ref", {})
+        out["analyst_report_v2"] = report
+    return out
+
+
+def _evaluate_compliance_citation_gate(output: dict[str, Any], run_context_bundle: dict[str, Any]) -> dict[str, Any]:
+    run_ctx = run_context_bundle if isinstance(run_context_bundle, dict) else {}
+    knowledge_ctx = _as_dict_safe(run_ctx.get("knowledge_context"))
+    stage_agents = _as_dict_safe(run_ctx.get("stage_agent_ids"))
+    analyst_key = _clean_text(stage_agents.get("1"))
+    policies = _as_list_safe(knowledge_ctx.get("agent_policies"))
+    source_count = int(_as_dict_safe(knowledge_ctx.get("integrity")).get("source_count", 0) or 0)
+    set_count = int(_as_dict_safe(knowledge_ctx.get("integrity")).get("set_count", 0) or 0)
+    citation_required = source_count > 0
+    for row in policies:
+        if not isinstance(row, dict):
+            continue
+        if _clean_text(row.get("agent_key")).lower() != analyst_key.lower():
+            continue
+        citation_required = bool(row.get("citation_required", False))
+        break
+    req_pack = _as_dict_safe(output.get("requirements_pack"))
+    compliance = _as_dict_safe(req_pack.get("compliance"))
+    controls = _as_list_safe(compliance.get("controls_triggered"))
+    missing: list[str] = []
+    if citation_required:
+        for row in controls:
+            if not isinstance(row, dict):
+                continue
+            cid = _clean_text(row.get("id")) or _clean_text(row.get("name")) or "control"
+            sources = _as_list_safe(row.get("sources"))
+            has_valid = False
+            for src in sources:
+                if not isinstance(src, dict):
+                    continue
+                if _clean_text(src.get("doc")) or _clean_text(src.get("section")) or _clean_text(src.get("url_or_ref")):
+                    has_valid = True
+                    break
+            if not has_valid:
+                missing.append(cid)
+    enforce = bool(citation_required and (source_count > 0 or set_count > 0))
+    blocked = bool(enforce and (source_count <= 0 or missing))
+    assumptions_added: list[str] = []
+    if blocked:
+        assumptions = _as_list_safe(output.get("assumptions"))
+        assumption = (
+            "Compliance citation evidence is incomplete for one or more constraints. "
+            "Treat compliance output as assumption until sources are attached and cited."
+        )
+        if assumption not in assumptions:
+            assumptions.append(assumption)
+            assumptions_added.append(assumption)
+        output["assumptions"] = assumptions
+
+        open_questions = _as_list_safe(req_pack.get("open_questions"))
+        q_id = f"Q-CIT-{len(open_questions) + 1:03d}"
+        detail = (
+            f"Missing source citation(s) for controls: {', '.join(missing[:8])}."
+            if missing
+            else "No active knowledge sources found for compliance citation policy."
+        )
+        open_questions.append(
+            {
+                "id": q_id,
+                "question": "Attach at least one citation source per compliance constraint before downstream planning.",
+                "owner": "Compliance Lead",
+                "severity": "blocker",
+                "context": detail,
+            }
+        )
+        req_pack["open_questions"] = open_questions
+        output["requirements_pack"] = req_pack
+    return {
+        "blocked": blocked,
+        "citation_required": citation_required,
+        "enforce": enforce,
+        "source_count": source_count,
+        "set_count": set_count,
+        "controls_count": len(controls),
+        "missing_citations": missing,
+        "assumptions_added": assumptions_added,
+    }
+
+
+def _evaluate_source_influenced_qa_gate(output: dict[str, Any], run_context_bundle: dict[str, Any]) -> dict[str, Any]:
+    run_ctx = run_context_bundle if isinstance(run_context_bundle, dict) else {}
+    knowledge_ctx = _as_dict_safe(run_ctx.get("knowledge_context"))
+    source_count = int(_as_dict_safe(knowledge_ctx.get("integrity")).get("source_count", 0) or 0)
+    set_count = int(_as_dict_safe(knowledge_ctx.get("integrity")).get("set_count", 0) or 0)
+    source_influenced = source_count > 0 or set_count > 0
+    if not source_influenced:
+        return {
+            "blocked": False,
+            "source_influenced": False,
+            "reason": "No active knowledge sources in run context snapshot.",
+        }
+    qa = _as_dict_safe(output.get("qa_report_v1"))
+    if not qa:
+        qa = _as_dict_safe(_as_dict_safe(output.get("analyst_report_v2")).get("qa_report_v1"))
+    if not qa:
+        return {
+            "blocked": True,
+            "source_influenced": True,
+            "reason": "qa_report_v1 missing while source-influenced mode is active.",
+        }
+    structural = _as_dict_safe(qa.get("structural"))
+    structural_status = _clean_text(structural.get("status")).upper() or "WARN"
+    checks = _as_list_safe(structural.get("checks"))
+    check_ids = {
+        _clean_text(_as_dict_safe(row).get("check_id") or _as_dict_safe(row).get("id")).lower()
+        for row in checks
+        if isinstance(row, dict)
+    }
+    required_checks = {
+        "cross_event_handler_reconciliation",
+        "render_form_count_fidelity",
+        "render_artifact_refs_present",
+    }
+    missing_checks = sorted([cid for cid in required_checks if cid not in check_ids])
+    failing_required: list[str] = []
+    for row in checks:
+        if not isinstance(row, dict):
+            continue
+        cid = _clean_text(row.get("check_id") or row.get("id")).lower()
+        if cid not in required_checks:
+            continue
+        if _clean_text(row.get("result")).lower() == "fail":
+            failing_required.append(cid)
+    blocked = bool(
+        structural_status == "FAIL"
+        or missing_checks
+        or failing_required
+    )
+    reason_parts: list[str] = []
+    if structural_status == "FAIL":
+        reason_parts.append("QA structural status is FAIL.")
+    if missing_checks:
+        reason_parts.append(f"Required QA checks missing: {', '.join(missing_checks)}.")
+    if failing_required:
+        reason_parts.append(f"Required QA checks failed: {', '.join(sorted(set(failing_required)))}.")
+    if not reason_parts:
+        reason_parts.append("Source-influenced QA checks passed.")
+    return {
+        "blocked": blocked,
+        "source_influenced": True,
+        "source_count": source_count,
+        "set_count": set_count,
+        "structural_status": structural_status,
+        "missing_checks": missing_checks,
+        "failing_required_checks": sorted(set(failing_required)),
+        "reason": " ".join(reason_parts),
+    }
+
+
+def _enforce_analyst_source_guardrails(output: dict[str, Any], run_context_bundle: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    out = _attach_run_context_to_analyst_output(output, run_context_bundle)
+    run_ctx = run_context_bundle if isinstance(run_context_bundle, dict) else {}
+    knowledge_ctx = _as_dict_safe(run_ctx.get("knowledge_context"))
+    snapshot_id = _clean_text(knowledge_ctx.get("snapshot_id"))
+    source_count = int(_as_dict_safe(knowledge_ctx.get("integrity")).get("source_count", 0) or 0)
+
+    citation_eval = _evaluate_compliance_citation_gate(out, run_ctx)
+    qa_eval = _evaluate_source_influenced_qa_gate(out, run_ctx)
+
+    _append_gate_row(
+        out,
+        {
+            "name": "knowledge_snapshot_pinned",
+            "status": "PASS" if snapshot_id else "FAIL",
+            "message": "Run is pinned to immutable knowledge source snapshots.",
+            "details": {
+                "snapshot_id": snapshot_id,
+                "source_count": source_count,
+            },
+        },
+    )
+    _append_gate_row(
+        out,
+        {
+            "name": "compliance_citation_grounding",
+            "status": "FAIL" if citation_eval.get("blocked") else "PASS",
+            "message": (
+                "Compliance controls have required citations."
+                if not citation_eval.get("blocked")
+                else "Compliance controls are missing required citations or sources."
+            ),
+            "details": citation_eval,
+        },
+    )
+    _append_gate_row(
+        out,
+        {
+            "name": "source_influenced_qa_mandatory",
+            "status": "FAIL" if qa_eval.get("blocked") else "PASS",
+            "message": qa_eval.get("reason", ""),
+            "details": qa_eval,
+        },
+    )
+
+    blocked_reasons: list[str] = []
+    if not snapshot_id:
+        blocked_reasons.append("knowledge snapshot is missing")
+    if citation_eval.get("blocked"):
+        blocked_reasons.append("compliance citation gate failed")
+    if qa_eval.get("blocked"):
+        blocked_reasons.append("source-influenced QA gate failed")
+    guardrail_report = {
+        "status": "FAIL" if blocked_reasons else "PASS",
+        "blocked": bool(blocked_reasons),
+        "reasons": blocked_reasons,
+        "knowledge_snapshot_id": snapshot_id,
+        "citation_gate": citation_eval,
+        "qa_gate": qa_eval,
+        "evaluated_at": _utc_now(),
+    }
+    out["source_guardrails"] = guardrail_report
+    return out, guardrail_report
 
 
 def _merge_analyst_output_into_state(
@@ -8244,11 +9471,20 @@ async def api_context_bundle(request):
     bundle = artifacts.get("context_bundle", {})
     if not bundle:
         return JSONResponse({"ok": False, "error": "context_bundle not found for selected reference"}, status_code=404)
+    run_bundle: dict[str, Any] = {}
+    run_id = _clean_text(ref.get("run_id"))
+    if run_id:
+        run = MANAGER.get_run(run_id)
+        if isinstance(run, dict):
+            pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+            run_bundle = _as_dict_safe(pipeline_state.get("run_context_bundle"))
+
     return JSONResponse(
         {
             "ok": True,
             "context_reference": ref,
             "context_bundle": bundle,
+            "run_context_bundle": run_bundle,
             "validation_report": artifacts.get("contract_validation_report", {}),
             "artifact_paths": {
                 "vault_path": ref.get("vault_path", ""),
@@ -9142,6 +10378,21 @@ routes = [
     Route("/api/memory/review-queue/{candidate_id:str}/resolve", api_memory_review_resolve, methods=["POST"]),
     Route("/api/memory/audit", api_memory_audit, methods=["GET"]),
     Route("/api/settings", api_get_settings, methods=["GET"]),
+    Route("/api/settings/me", api_get_current_user, methods=["GET"]),
+    Route("/api/settings/users", api_upsert_user, methods=["POST"]),
+    Route("/api/settings/users/status", api_set_user_status, methods=["POST"]),
+    Route("/api/settings/users/remove", api_remove_user, methods=["POST"]),
+    Route("/api/settings/knowledge/sources", api_upsert_knowledge_source, methods=["POST"]),
+    Route("/api/settings/knowledge/sources/upload", api_upload_knowledge_source, methods=["POST"]),
+    Route("/api/settings/knowledge/sources/remove", api_remove_knowledge_source, methods=["POST"]),
+    Route("/api/settings/knowledge/sets", api_upsert_knowledge_set, methods=["POST"]),
+    Route("/api/settings/knowledge/sets/remove", api_remove_knowledge_set, methods=["POST"]),
+    Route("/api/settings/knowledge/brains", api_upsert_agent_brain, methods=["POST"]),
+    Route("/api/settings/knowledge/project-bindings", api_upsert_project_binding, methods=["POST"]),
+    Route("/api/settings/knowledge/specialists", api_upsert_specialist, methods=["POST"]),
+    Route("/api/settings/knowledge/specialists/remove", api_remove_specialist, methods=["POST"]),
+    Route("/api/agent-studio/find-relevant-context", api_find_relevant_context, methods=["POST"]),
+    Route("/api/agent-studio/suggest-agent", api_suggest_agent, methods=["POST"]),
     Route("/api/settings/integrations/{provider:str}/connect", api_connect_integration, methods=["POST"]),
     Route("/api/settings/integrations/{provider:str}/test", api_test_integration, methods=["POST"]),
     Route("/api/settings/integrations/{provider:str}/disconnect", api_disconnect_integration, methods=["POST"]),

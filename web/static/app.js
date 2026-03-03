@@ -19,6 +19,7 @@ const MODES = {
   VERIFY: "verify",
   SETTINGS: "settings",
 };
+const ACTIVE_USER_STORAGE_KEY = "synthetix.active_user_email";
 
 const el = {
   navHome: document.getElementById("nav-home"),
@@ -36,8 +37,12 @@ const el = {
   homeScreen: document.getElementById("home-screen"),
   workScreen: document.getElementById("work-screen"),
   teamScreen: document.getElementById("team-screen"),
+  planPanelTeamCreation: document.getElementById("plan-panel-team-creation"),
+  planPanelAgentStudio: document.getElementById("plan-panel-agent-studio"),
   historyScreen: document.getElementById("history-screen"),
   settingsScreen: document.getElementById("settings-screen"),
+  workspaceSelector: document.getElementById("workspace-selector"),
+  projectSelector: document.getElementById("project-selector"),
   globalSearch: document.getElementById("global-search"),
   globalSearchStatus: document.getElementById("global-search-status"),
   notificationsBtn: document.getElementById("notifications-btn"),
@@ -130,12 +135,58 @@ const el = {
   settingsRbacAssignments: document.getElementById("settings-rbac-assignments"),
   settingsAuditRefresh: document.getElementById("settings-audit-refresh"),
   settingsAuditLog: document.getElementById("settings-audit-log"),
+  settingsCurrentUserSelect: document.getElementById("settings-current-user-select"),
+  settingsUserEmail: document.getElementById("settings-user-email"),
+  settingsUserName: document.getElementById("settings-user-name"),
+  settingsUserRole: document.getElementById("settings-user-role"),
+  settingsUserStatus: document.getElementById("settings-user-status"),
+  settingsUserSave: document.getElementById("settings-user-save"),
+  settingsUserUse: document.getElementById("settings-user-use"),
+  settingsUserRemove: document.getElementById("settings-user-remove"),
+  settingsUserMessage: document.getElementById("settings-user-message"),
+  settingsUsersList: document.getElementById("settings-users-list"),
+  settingsKnowledgeSourceName: document.getElementById("settings-knowledge-source-name"),
+  settingsKnowledgeSourceLocation: document.getElementById("settings-knowledge-source-location"),
+  settingsKnowledgeSourceType: document.getElementById("settings-knowledge-source-type"),
+  settingsKnowledgeSourceScope: document.getElementById("settings-knowledge-source-scope"),
+  settingsKnowledgeSourceClassification: document.getElementById("settings-knowledge-source-classification"),
+  settingsKnowledgeSourceTags: document.getElementById("settings-knowledge-source-tags"),
+  settingsKnowledgeSourceSave: document.getElementById("settings-knowledge-source-save"),
+  settingsKnowledgeSetName: document.getElementById("settings-knowledge-set-name"),
+  settingsKnowledgeSetVersion: document.getElementById("settings-knowledge-set-version"),
+  settingsKnowledgeSetSourceIds: document.getElementById("settings-knowledge-set-source-ids"),
+  settingsKnowledgeSetState: document.getElementById("settings-knowledge-set-state"),
+  settingsKnowledgeSetSave: document.getElementById("settings-knowledge-set-save"),
+  settingsBrainAgentKey: document.getElementById("settings-brain-agent-key"),
+  settingsBrainSetIds: document.getElementById("settings-brain-set-ids"),
+  settingsBrainTopK: document.getElementById("settings-brain-top-k"),
+  settingsBrainCitationRequired: document.getElementById("settings-brain-citation-required"),
+  settingsBrainSave: document.getElementById("settings-brain-save"),
+  settingsBindingWorkspace: document.getElementById("settings-binding-workspace"),
+  settingsBindingProject: document.getElementById("settings-binding-project"),
+  settingsBindingSetIds: document.getElementById("settings-binding-set-ids"),
+  settingsBindingSave: document.getElementById("settings-binding-save"),
+  settingsKnowledgeMessage: document.getElementById("settings-knowledge-message"),
+  settingsKnowledgeSourcesList: document.getElementById("settings-knowledge-sources-list"),
+  settingsKnowledgeSetsList: document.getElementById("settings-knowledge-sets-list"),
+  settingsKnowledgeBrainsList: document.getElementById("settings-knowledge-brains-list"),
+  settingsKnowledgePaneSources: document.getElementById("settings-knowledge-pane-sources"),
+  settingsKnowledgePaneKnowledge: document.getElementById("settings-knowledge-pane-knowledge"),
+  settingsKnowledgePaneJobs: document.getElementById("settings-knowledge-pane-jobs"),
+  settingsKnowledgePaneEvals: document.getElementById("settings-knowledge-pane-evals"),
+  settingsKnowledgeJobsRefresh: document.getElementById("settings-knowledge-jobs-refresh"),
+  settingsKnowledgeJobsList: document.getElementById("settings-knowledge-jobs-list"),
+  settingsKnowledgeEvalsRefresh: document.getElementById("settings-knowledge-evals-refresh"),
+  settingsKnowledgeEvalsList: document.getElementById("settings-knowledge-evals-list"),
 
   perspectiveSwitcher: document.getElementById("perspective-switcher"),
+  userMenuBtn: document.getElementById("user-menu-btn"),
   contextDrawerToggle: document.getElementById("context-drawer-toggle"),
   contextDrawer: document.getElementById("context-drawer"),
   shellGrid: document.getElementById("shell-grid"),
   drawerContextBundle: document.getElementById("drawer-context-bundle"),
+  drawerDeliveryConstitution: document.getElementById("drawer-delivery-constitution"),
+  drawerSpecialistRouting: document.getElementById("drawer-specialist-routing"),
   drawerPolicies: document.getElementById("drawer-policies"),
   drawerLinkedSystems: document.getElementById("drawer-linked-systems"),
   drawerEvidenceStatus: document.getElementById("drawer-evidence-status"),
@@ -252,6 +303,10 @@ const el = {
   cloneAgentPersona: document.getElementById("clone-agent-persona"),
   cloneRequirementsPackProfile: document.getElementById("clone-requirements-pack-profile"),
   cloneRequirementsPackTemplate: document.getElementById("clone-requirements-pack-template"),
+  agentStudioAgentSelect: document.getElementById("agent-studio-agent-select"),
+  agentStudioPanel: document.getElementById("agent-studio-panel"),
+  agentStudioSave: document.getElementById("agent-studio-save"),
+  agentStudioMessage: document.getElementById("agent-studio-message"),
   cloneAgentBtn: document.getElementById("clone-agent-btn"),
   cloneAgentMessage: document.getElementById("clone-agent-message"),
   teamAgentCatalog: document.getElementById("team-agent-catalog"),
@@ -474,6 +529,17 @@ const state = {
     reason: "",
   },
   settings: null,
+  activeUserEmail: "",
+  activeUserRole: "engineering",
+  activeUserName: "",
+  settingsKnowledgeTab: "sources",
+  planTab: "team_creation",
+  agentStudio: {
+    selectedAgentKey: "",
+    tab: "persona",
+    draftByAgent: {},
+    evalByAgent: {},
+  },
   teamBuilder: {
     stageAgentIds: {},
   },
@@ -501,12 +567,32 @@ const state = {
 let mermaidInitialized = false;
 
 async function api(path, payload, method = "POST") {
+  const headers = {};
+  if (payload) headers["Content-Type"] = "application/json";
+  const actorEmail = String(state.activeUserEmail || "").trim().toLowerCase();
+  if (actorEmail) headers["x-user-email"] = actorEmail;
   const options = {
     method: payload ? method : "GET",
-    headers: payload ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: payload ? JSON.stringify(payload) : undefined,
   };
   const res = await fetch(path, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function apiMultipart(path, formData, method = "POST") {
+  const headers = {};
+  const actorEmail = String(state.activeUserEmail || "").trim().toLowerCase();
+  if (actorEmail) headers["x-user-email"] = actorEmail;
+  const res = await fetch(path, {
+    method,
+    headers: Object.keys(headers).length ? headers : undefined,
+    body: formData,
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${res.status}`);
@@ -4724,6 +4810,207 @@ function renderRbacAssignments() {
   });
 }
 
+function settingsUsers() {
+  const rows = Array.isArray(state.settings?.users) ? state.settings.users : [];
+  return rows
+    .filter((row) => row && typeof row === "object" && String(row.email || "").includes("@"))
+    .sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
+}
+
+function setUserMessage(text, isError = false) {
+  if (!el.settingsUserMessage) return;
+  el.settingsUserMessage.textContent = String(text || "");
+  el.settingsUserMessage.className = `mt-1 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
+}
+
+function setKnowledgeMessage(text, isError = false) {
+  if (!el.settingsKnowledgeMessage) return;
+  el.settingsKnowledgeMessage.textContent = String(text || "");
+  el.settingsKnowledgeMessage.className = `mt-2 text-[11px] ${isError ? "text-rose-700" : "text-slate-700"}`;
+}
+
+function renderCurrentUserIdentity() {
+  const email = String(state.activeUserEmail || "").trim().toLowerCase();
+  const name = String(state.activeUserName || "").trim();
+  const role = String(state.activeUserRole || "").trim().toUpperCase();
+  const label = name ? `${name} (${role || "USER"})` : (email || "User");
+  if (el.userMenuBtn) {
+    el.userMenuBtn.textContent = label;
+    el.userMenuBtn.title = email ? `Signed in as ${email}` : "No active user selected";
+  }
+}
+
+function applyUserFormFromRow(row) {
+  if (!row || typeof row !== "object") return;
+  if (el.settingsUserEmail) el.settingsUserEmail.value = String(row.email || "");
+  if (el.settingsUserName) el.settingsUserName.value = String(row.display_name || "");
+  if (el.settingsUserRole) el.settingsUserRole.value = String(row.role || "engineering");
+  if (el.settingsUserStatus) el.settingsUserStatus.value = String(row.status || "active");
+}
+
+function renderUsersPanel() {
+  const users = settingsUsers();
+  const activeFallback = users.find((row) => String(row.status || "").toLowerCase() === "active") || users[0] || null;
+  if (!state.activeUserEmail && activeFallback) {
+    state.activeUserEmail = String(activeFallback.email || "").toLowerCase();
+  }
+  if (!state.activeUserEmail) {
+    state.activeUserEmail = "local-user@synthetix.local";
+  }
+  if (el.settingsCurrentUserSelect) {
+    const options = users.map((row) => {
+      const email = escapeHtml(String(row.email || ""));
+      const name = escapeHtml(String(row.display_name || row.email || ""));
+      const role = escapeHtml(String(row.role || "").toUpperCase());
+      const status = escapeHtml(String(row.status || "active"));
+      return `<option value="${email}">${name} | ${role} | ${status}</option>`;
+    }).join("");
+    el.settingsCurrentUserSelect.innerHTML = options || `<option value="local-user@synthetix.local">Local User</option>`;
+    const exists = users.some((row) => String(row.email || "").toLowerCase() === String(state.activeUserEmail || "").toLowerCase());
+    if (!exists && users.length) {
+      state.activeUserEmail = String(users[0].email || "").toLowerCase();
+    }
+    el.settingsCurrentUserSelect.value = String(state.activeUserEmail || "local-user@synthetix.local").toLowerCase();
+  }
+  if (el.settingsUsersList) {
+    if (!users.length) {
+      el.settingsUsersList.innerHTML = `<p class="text-[11px] text-slate-700">No users configured yet.</p>`;
+    } else {
+      el.settingsUsersList.innerHTML = users.map((row) => {
+        const email = escapeHtml(row.email || "");
+        const name = escapeHtml(row.display_name || "-");
+        const role = escapeHtml(String(row.role || "").toUpperCase());
+        const status = escapeHtml(String(row.status || "").toUpperCase());
+        const active = String(row.email || "").toLowerCase() === String(state.activeUserEmail || "").toLowerCase();
+        return `<p class="mb-1 text-[11px] ${active ? "font-semibold text-slate-900" : "text-slate-800"}">${name} | ${email} | ${role} | ${status}</p>`;
+      }).join("");
+    }
+  }
+  const selected = users.find((row) => String(row.email || "").toLowerCase() === String(state.activeUserEmail || "").toLowerCase());
+  if (selected) {
+    state.activeUserRole = String(selected.role || "engineering").toLowerCase();
+    state.activeUserName = String(selected.display_name || "");
+    applyUserFormFromRow(selected);
+  }
+  renderCurrentUserIdentity();
+}
+
+function setKnowledgeHubTab(tabName) {
+  const tab = String(tabName || "sources").toLowerCase();
+  const safe = ["sources", "knowledge", "jobs", "evals"].includes(tab) ? tab : "sources";
+  state.settingsKnowledgeTab = safe;
+  const panes = {
+    sources: el.settingsKnowledgePaneSources,
+    knowledge: el.settingsKnowledgePaneKnowledge,
+    jobs: el.settingsKnowledgePaneJobs,
+    evals: el.settingsKnowledgePaneEvals,
+  };
+  Object.entries(panes).forEach(([key, node]) => {
+    if (!node) return;
+    node.classList.toggle("hidden", key !== safe);
+  });
+  document.querySelectorAll("[data-knowledge-hub-tab]").forEach((btn) => {
+    if (!(btn instanceof HTMLElement)) return;
+    const active = String(btn.getAttribute("data-knowledge-hub-tab") || "") === safe;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
+}
+
+function renderKnowledgeHub() {
+  const hub = (state.settings?.knowledge_hub && typeof state.settings.knowledge_hub === "object") ? state.settings.knowledge_hub : {};
+  const sources = Array.isArray(hub.sources) ? hub.sources : [];
+  const sets = Array.isArray(hub.sets) ? hub.sets : [];
+  const brains = Array.isArray(hub.agent_brains) ? hub.agent_brains : [];
+  const specialists = Array.isArray(hub.specialists) ? hub.specialists : [];
+  const policies = (state.settings?.policies && typeof state.settings.policies === "object") ? state.settings.policies : {};
+
+  setKnowledgeHubTab(state.settingsKnowledgeTab || "sources");
+
+  if (el.settingsKnowledgeSourcesList) {
+    if (!sources.length) {
+      el.settingsKnowledgeSourcesList.innerHTML = `<p class="text-[11px] text-slate-700">No knowledge sources yet.</p>`;
+    } else {
+      el.settingsKnowledgeSourcesList.innerHTML = sources.slice(0, 80).map((row) => {
+        const id = escapeHtml(row.source_id || "");
+        const name = escapeHtml(row.name || "");
+        const scope = escapeHtml(String(row.scope || "").toUpperCase());
+        const typ = escapeHtml(String(row.type || "").toUpperCase());
+        return `<p class="mb-1 text-[11px] text-slate-800">${id} | ${name} | ${typ} | ${scope}</p>`;
+      }).join("");
+    }
+  }
+
+  if (el.settingsKnowledgeSetsList) {
+    if (!sets.length) {
+      el.settingsKnowledgeSetsList.innerHTML = `<p class="text-[11px] text-slate-700">No knowledge sets yet.</p>`;
+    } else {
+      el.settingsKnowledgeSetsList.innerHTML = sets.slice(0, 80).map((row) => {
+        const id = escapeHtml(row.set_id || "");
+        const name = escapeHtml(row.name || "");
+        const version = escapeHtml(row.version || "1.0.0");
+        const stateLabel = escapeHtml(String(row.publish_state || "draft").toUpperCase());
+        const sourceIds = Array.isArray(row.source_ids) ? row.source_ids : [];
+        return `<p class="mb-1 text-[11px] text-slate-800">${id} | ${name} v${version} | ${stateLabel} | sources=${sourceIds.length}</p>`;
+      }).join("");
+    }
+  }
+
+  if (el.settingsKnowledgeBrainsList) {
+    if (!brains.length) {
+      el.settingsKnowledgeBrainsList.innerHTML = `<p class="text-[11px] text-slate-700">No agent brain bindings yet.</p>`;
+    } else {
+      el.settingsKnowledgeBrainsList.innerHTML = brains.slice(0, 80).map((row) => {
+        const agentKey = escapeHtml(row.agent_key || "");
+        const topK = escapeHtml(String(row.top_k || 8));
+        const citation = row.citation_required ? "cite" : "no-cite";
+        const setsCount = Array.isArray(row.knowledge_set_ids) ? row.knowledge_set_ids.length : 0;
+        const toolsCount = Array.isArray(row.allowed_tools) ? row.allowed_tools.length : 0;
+        return `<p class="mb-1 text-[11px] text-slate-800">${agentKey} | sets=${setsCount} | topK=${topK} | ${citation} | tools=${toolsCount}</p>`;
+      }).join("");
+    }
+    if (specialists.length) {
+      const preview = specialists.slice(0, 6).map((row) => {
+        const name = escapeHtml(String(row.name || row.specialist_id || "specialist"));
+        const linked = escapeHtml(String(row.linked_agent_key || "unbound"));
+        const mode = escapeHtml(String(row.tool_mode || "read_only"));
+        const depth = escapeHtml(String(row.depth_tier || "standard"));
+        return `<p class="mb-1 text-[11px] text-slate-700">spec ${name} -> ${linked} | ${mode} | ${depth}</p>`;
+      }).join("");
+      el.settingsKnowledgeBrainsList.innerHTML += `<div class="mt-2 border-t border-slate-300 pt-2"><p class="mb-1 text-[11px] font-semibold text-slate-900">Specialists (${specialists.length})</p>${preview}</div>`;
+    }
+  }
+
+  if (el.settingsKnowledgeJobsList) {
+    if (!sources.length) {
+      el.settingsKnowledgeJobsList.innerHTML = `<p class="text-[11px] text-slate-700">No ingestion jobs yet. Add a source first.</p>`;
+    } else {
+      el.settingsKnowledgeJobsList.innerHTML = sources.slice(0, 100).map((row) => {
+        const name = escapeHtml(row.name || row.source_id || "-");
+        const sourceId = escapeHtml(row.source_id || "-");
+        const refresh = escapeHtml(row.refresh_policy || "manual");
+        const status = escapeHtml(String(row.status || "active").toUpperCase());
+        const updated = escapeHtml(String(row.updated_at || row.created_at || "").slice(0, 19).replace("T", " "));
+        return `<p class="mb-1 text-[11px] text-slate-800">${name} (${sourceId}) | refresh=${refresh} | status=${status} | updated=${updated || "-"}</p>`;
+      }).join("");
+    }
+  }
+
+  if (el.settingsKnowledgeEvalsList) {
+    const publishedSets = sets.filter((row) => String(row.publish_state || "").toLowerCase() === "published").length;
+    const citationBrains = brains.filter((row) => !!row?.citation_required).length;
+    const evalLines = [
+      `Coverage: ${sources.length} source(s), ${sets.length} set(s), ${brains.length} brain binding(s), ${specialists.length} specialist profile(s).`,
+      `Published sets: ${publishedSets}; citation-required brains: ${citationBrains}.`,
+      `Policy pack: ${String(policies.policy_pack || "standard").toUpperCase()}; security gate required: ${policies.require_security_gate ? "yes" : "no"}.`,
+      `Quality gate min pass rate: ${String(policies.quality_gate_min_pass_rate ?? 0.85)}.`,
+    ];
+    el.settingsKnowledgeEvalsList.innerHTML = evalLines
+      .map((line) => `<p class="mb-1 text-[11px] text-slate-800">${escapeHtml(line)}</p>`)
+      .join("");
+  }
+}
+
 function renderSettingsAuditLog() {
   const audit = Array.isArray(state.settings?.audit_log) ? state.settings.audit_log : [];
   if (!el.settingsAuditLog) return;
@@ -4782,6 +5069,8 @@ function renderSettings() {
   renderPolicyExceptions();
   renderRbacRolePermissions();
   renderRbacAssignments();
+  renderUsersPanel();
+  renderKnowledgeHub();
   renderSettingsAuditLog();
   renderContextDrawer();
   applySettingsToWorkbench();
@@ -4791,6 +5080,7 @@ async function loadSettings(showToast = false) {
   const data = await api("/api/settings", null);
   state.settings = data.settings || {};
   renderSettings();
+  await refreshCurrentUserProfile().catch(() => renderCurrentUserIdentity());
   if (showToast) setSettingsMessage("Settings loaded.");
   return state.settings;
 }
@@ -4928,6 +5218,126 @@ async function removeRbacAssignment(email) {
   state.settings = data.settings || state.settings;
   renderSettings();
   setSettingsMessage(`Removed assignment for ${email}.`);
+}
+
+async function refreshCurrentUserProfile() {
+  const data = await api("/api/settings/me", null, "GET");
+  const profile = (data && typeof data.user === "object") ? data.user : {};
+  state.activeUserEmail = String(profile.email || state.activeUserEmail || "").toLowerCase();
+  state.activeUserRole = String(profile.role || state.activeUserRole || "engineering").toLowerCase();
+  state.activeUserName = String(profile.display_name || state.activeUserName || "");
+  if (el.perspectiveSwitcher && ["executive", "delivery", "engineering", "security"].includes(state.activeUserRole)) {
+    el.perspectiveSwitcher.value = state.activeUserRole;
+  }
+  renderCurrentUserIdentity();
+  renderPerspectiveDashboard();
+}
+
+function selectActiveUser(email, showMessage = false) {
+  const userEmail = String(email || "").trim().toLowerCase();
+  if (!userEmail) return;
+  state.activeUserEmail = userEmail;
+  localStorage.setItem(ACTIVE_USER_STORAGE_KEY, userEmail);
+  renderUsersPanel();
+  refreshCurrentUserProfile().catch(() => renderCurrentUserIdentity());
+  if (showMessage) setUserMessage(`Session user set to ${userEmail}.`);
+}
+
+async function saveUser() {
+  const payload = {
+    email: String(el.settingsUserEmail?.value || "").trim().toLowerCase(),
+    display_name: String(el.settingsUserName?.value || "").trim(),
+    role: String(el.settingsUserRole?.value || "engineering").toLowerCase(),
+    status: String(el.settingsUserStatus?.value || "active").toLowerCase(),
+  };
+  const data = await api("/api/settings/users", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setUserMessage(`Saved user ${payload.email}.`);
+}
+
+async function useSelectedUser() {
+  const selected = String(el.settingsCurrentUserSelect?.value || "").trim().toLowerCase();
+  if (!selected) {
+    setUserMessage("Select a user first.", true);
+    return;
+  }
+  selectActiveUser(selected, true);
+}
+
+async function removeUser() {
+  const email = String(el.settingsUserEmail?.value || "").trim().toLowerCase();
+  if (!email) {
+    setUserMessage("Enter a user email to remove.", true);
+    return;
+  }
+  const data = await api("/api/settings/users/remove", { email }, "POST");
+  state.settings = data.settings || state.settings;
+  if (String(state.activeUserEmail || "").toLowerCase() === email) {
+    const firstActive = settingsUsers().find((row) => String(row.status || "").toLowerCase() === "active");
+    state.activeUserEmail = String(firstActive?.email || "local-user@synthetix.local").toLowerCase();
+    localStorage.setItem(ACTIVE_USER_STORAGE_KEY, state.activeUserEmail);
+    await refreshCurrentUserProfile().catch(() => {});
+  }
+  renderSettings();
+  setUserMessage(`Removed user ${email}.`);
+}
+
+async function saveKnowledgeSource() {
+  const payload = {
+    name: String(el.settingsKnowledgeSourceName?.value || "").trim(),
+    location: String(el.settingsKnowledgeSourceLocation?.value || "").trim(),
+    type: String(el.settingsKnowledgeSourceType?.value || "file").toLowerCase(),
+    scope: String(el.settingsKnowledgeSourceScope?.value || "project").toLowerCase(),
+    data_classification: String(el.settingsKnowledgeSourceClassification?.value || "internal").toLowerCase(),
+    tags: parseCommaValues(el.settingsKnowledgeSourceTags?.value || ""),
+  };
+  const data = await api("/api/settings/knowledge/sources", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setKnowledgeMessage(`Saved knowledge source '${payload.name}'.`);
+}
+
+async function saveKnowledgeSet() {
+  const payload = {
+    name: String(el.settingsKnowledgeSetName?.value || "").trim(),
+    version: String(el.settingsKnowledgeSetVersion?.value || "1.0.0").trim(),
+    publish_state: String(el.settingsKnowledgeSetState?.value || "draft").toLowerCase(),
+    source_ids: parseCommaValues(el.settingsKnowledgeSetSourceIds?.value || ""),
+  };
+  const data = await api("/api/settings/knowledge/sets", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setKnowledgeMessage(`Saved knowledge set '${payload.name}'.`);
+}
+
+async function saveAgentBrain() {
+  const payload = {
+    agent_key: String(el.settingsBrainAgentKey?.value || "").trim(),
+    knowledge_set_ids: parseCommaValues(el.settingsBrainSetIds?.value || ""),
+    top_k: Number(el.settingsBrainTopK?.value || 8),
+    citation_required: !!el.settingsBrainCitationRequired?.checked,
+    fallback_behavior: "ask_clarification",
+    allowed_tools: ["repo_read", "doc_export"],
+    memory_scope: "project",
+    memory_enabled: true,
+  };
+  const data = await api("/api/settings/knowledge/brains", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setKnowledgeMessage(`Saved brain binding for '${payload.agent_key}'.`);
+}
+
+async function saveProjectBinding() {
+  const payload = {
+    workspace: String(el.settingsBindingWorkspace?.value || "").trim() || "default-workspace",
+    project: String(el.settingsBindingProject?.value || "").trim() || "default-project",
+    knowledge_set_ids: parseCommaValues(el.settingsBindingSetIds?.value || ""),
+  };
+  const data = await api("/api/settings/knowledge/project-bindings", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  setKnowledgeMessage(`Saved project binding for ${payload.workspace}/${payload.project}.`);
 }
 
 function activeContextReferencePayload() {
@@ -6018,6 +6428,16 @@ function getIntegrationContext() {
     ? analystData.aas
     : {};
   const domainPack = currentDomainPackConfig();
+  const knowledgeHub = (state.settings?.knowledge_hub && typeof state.settings.knowledge_hub === "object")
+    ? state.settings.knowledge_hub
+    : {};
+  const bindings = Array.isArray(knowledgeHub.project_bindings) ? knowledgeHub.project_bindings : [];
+  const workspace = String(el.workspaceSelector?.value || "default-workspace").trim() || "default-workspace";
+  const project = String(el.projectSelector?.value || "default-project").trim() || "default-project";
+  const projectBinding = bindings.find((row) => {
+    if (!row || typeof row !== "object") return false;
+    return String(row.workspace || "").trim() === workspace && String(row.project || "").trim() === project;
+  }) || null;
   return {
     project_state_mode: String(el.projectStateMode?.value || "auto"),
     project_state_detected: String(state.projectState.detected || ""),
@@ -6073,6 +6493,18 @@ function getIntegrationContext() {
           : {},
       } : {},
       analyst_requirements_pack: analystReqPack ? analystReqPack : null,
+    },
+    actor_context: {
+      email: String(state.activeUserEmail || "").trim().toLowerCase(),
+      role: String(state.activeUserRole || "").trim().toLowerCase(),
+      display_name: String(state.activeUserName || "").trim(),
+    },
+    brain_context: {
+      workspace,
+      project,
+      project_binding: projectBinding || {},
+      knowledge_sets: Array.isArray(knowledgeHub.sets) ? knowledgeHub.sets : [],
+      agent_brains: Array.isArray(knowledgeHub.agent_brains) ? knowledgeHub.agent_brains : [],
     },
     cloud_promotion_enabled: !!el.enableCloudPromotion?.checked,
   };
@@ -6546,6 +6978,728 @@ function renderAgentCatalog() {
   refreshCloneRequirementsPackFields();
 }
 
+function findAgentBrainConfig(agentKey) {
+  const brains = Array.isArray(state.settings?.knowledge_hub?.agent_brains) ? state.settings.knowledge_hub.agent_brains : [];
+  return brains.find((row) => String(row?.agent_key || "") === String(agentKey || "")) || null;
+}
+
+function getAgentStudioDraft(agentKey) {
+  const key = String(agentKey || "").trim();
+  if (!key) return null;
+  if (!state.agentStudio.draftByAgent[key]) {
+    const brain = findAgentBrainConfig(key) || {};
+    state.agentStudio.draftByAgent[key] = {
+      knowledge_set_ids: Array.isArray(brain.knowledge_set_ids) ? [...brain.knowledge_set_ids] : [],
+      top_k: Number(brain.top_k || 8),
+      citation_required: brain.citation_required !== false,
+      fallback_behavior: String(brain.fallback_behavior || "ask_clarification"),
+      allowed_tools: Array.isArray(brain.allowed_tools) ? [...brain.allowed_tools] : ["repo_read", "doc_export"],
+      memory_scope: String(brain.memory_scope || "project"),
+      memory_enabled: brain.memory_enabled !== false,
+    };
+  }
+  return state.agentStudio.draftByAgent[key];
+}
+
+function renderAgentStudioPanel() {
+  if (!el.agentStudioPanel) return;
+  const allAgents = Array.isArray(state.agents?.all) ? state.agents.all : [];
+  if (!allAgents.length) {
+    el.agentStudioPanel.innerHTML = `<p class="text-xs text-slate-700">No agents available.</p>`;
+    return;
+  }
+  if (!state.agentStudio.selectedAgentKey) {
+    state.agentStudio.selectedAgentKey = String(allAgents[0]?.id || "");
+  }
+  const agentKey = state.agentStudio.selectedAgentKey;
+  const selected = allAgents.find((agent) => String(agent.id || "") === agentKey) || allAgents[0];
+  const draft = getAgentStudioDraft(String(selected?.id || "")) || {};
+  const tab = String(state.agentStudio.tab || "persona");
+
+  if (tab === "persona") {
+    el.agentStudioPanel.innerHTML = `
+      <p class="text-xs text-slate-700">Stage ${escapeHtml(selected.stage)} | ${escapeHtml(selected.display_name || selected.id || "Agent")}</p>
+      <p class="mt-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Persona</p>
+      <textarea class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-2 py-2 text-xs text-slate-900" rows="8" readonly>${escapeHtml(selected.persona || "No persona text available.")}</textarea>
+      <p class="mt-2 text-[11px] text-slate-700">This tab is read-only. Update persona via Clone & Modify Agent Persona above.</p>
+    `;
+    return;
+  }
+
+  if (tab === "brain") {
+    const setIds = Array.isArray(draft.knowledge_set_ids) ? draft.knowledge_set_ids.join(", ") : "";
+    const fallback = String(draft.fallback_behavior || "ask_clarification");
+    const hub = (state.settings?.knowledge_hub && typeof state.settings.knowledge_hub === "object") ? state.settings.knowledge_hub : {};
+    const sources = Array.isArray(hub.sources) ? hub.sources : [];
+    const sets = Array.isArray(hub.sets) ? hub.sets : [];
+    const specialists = Array.isArray(hub.specialists) ? hub.specialists : [];
+    const sourceOptions = sources.map((row) => {
+      const id = String(row?.source_id || "").trim();
+      const label = `${id} | ${String(row?.name || "").trim() || "Unnamed source"}`;
+      return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+    }).join("");
+    const setOptions = sets.map((row) => {
+      const id = String(row?.set_id || "").trim();
+      const version = String(row?.version || "1.0.0").trim();
+      const label = `${id} | ${String(row?.name || "").trim() || "Unnamed set"} v${version}`;
+      return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+    }).join("");
+    const specialistRowsForAgent = specialists
+      .filter((row) => String(row?.linked_agent_key || "").trim() === String(selected?.id || "").trim())
+      .slice(0, 40);
+    const specialistRowsForAgentHtml = specialistRowsForAgent.length
+      ? specialistRowsForAgent.map((row) => {
+        const specialistId = String(row?.specialist_id || "").trim();
+        const name = String(row?.name || "Unnamed specialist").trim();
+        const domain = String(row?.domain || "").trim();
+        const mode = String(row?.tool_mode || "read_only").trim();
+        const depth = String(row?.depth_tier || "standard").trim();
+        const score = String(row?.min_match_score || 1).trim();
+        const enabled = row?.enabled ? "enabled" : "disabled";
+        const auto = row?.auto_route ? "auto-route" : "manual";
+        return `<div class="rounded border border-slate-300 bg-white px-2 py-1.5">
+          <div class="flex items-center justify-between gap-2">
+            <div class="text-[11px] text-slate-900">${escapeHtml(name)} (${escapeHtml(specialistId)})</div>
+            <button data-specialist-remove="${escapeHtml(specialistId)}" class="btn-light rounded px-2 py-0.5 text-[10px] font-semibold">Remove</button>
+          </div>
+          <div class="mt-1 text-[10px] text-slate-700">domain=${escapeHtml(domain || "n/a")} | ${escapeHtml(mode)} | ${escapeHtml(depth)} | minScore=${escapeHtml(score)} | ${escapeHtml(enabled)} | ${escapeHtml(auto)}</div>
+        </div>`;
+      }).join("")
+      : `<p class="text-[11px] text-slate-700">No specialist routing profiles linked to this agent yet.</p>`;
+    const evalState = (state.agentStudio?.evalByAgent && typeof state.agentStudio.evalByAgent === "object")
+      ? state.agentStudio.evalByAgent[String(selected?.id || "")]
+      : null;
+    const evalOutput = evalState && typeof evalState === "object"
+      ? String(evalState.output || "").trim()
+      : "";
+    const evalSummary = evalState && typeof evalState === "object"
+      ? String(evalState.summary || "").trim()
+      : "";
+    const evalTask = evalState && typeof evalState === "object"
+      ? String(evalState.task || "").trim()
+      : "";
+    el.agentStudioPanel.innerHTML = `
+      <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Knowledge Set IDs</label>
+      <input id="agent-studio-set-ids" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" value="${escapeHtml(setIds)}" />
+      <div class="mt-2 grid gap-2 sm:grid-cols-2">
+        <label class="text-xs text-slate-900">Top K
+          <input id="agent-studio-top-k" type="number" min="1" max="50" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" value="${escapeHtml(String(draft.top_k || 8))}" />
+        </label>
+        <label class="text-xs text-slate-900">Fallback
+          <select id="agent-studio-fallback" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+            <option value="ask_clarification" ${fallback === "ask_clarification" ? "selected" : ""}>Ask clarification</option>
+            <option value="block_with_assumption" ${fallback === "block_with_assumption" ? "selected" : ""}>Block with assumption</option>
+            <option value="proceed_with_warning" ${fallback === "proceed_with_warning" ? "selected" : ""}>Proceed with warning</option>
+          </select>
+        </label>
+      </div>
+      <label class="mt-2 inline-flex items-center gap-2 text-xs text-slate-900">
+        <input id="agent-studio-citation-required" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" ${draft.citation_required ? "checked" : ""} />
+        Require citations for grounded outputs
+      </label>
+
+      <div class="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Create / Upload Knowledge Source</p>
+        <div class="mt-2 grid gap-2 sm:grid-cols-2">
+          <label class="text-xs text-slate-900">Source name
+            <input id="agent-studio-source-name" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Client policy pack" />
+          </label>
+          <label class="text-xs text-slate-900">Source type
+            <select id="agent-studio-source-type" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+              <option value="file">File</option>
+              <option value="wiki">Wiki</option>
+              <option value="repo">Repository</option>
+              <option value="standards">Standards</option>
+              <option value="issues">Issue tracker</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+        </div>
+        <div class="mt-2 grid gap-2 sm:grid-cols-2">
+          <label class="text-xs text-slate-900">Scope
+            <select id="agent-studio-source-scope" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+              <option value="project">Project</option>
+              <option value="client">Client</option>
+              <option value="workspace">Workspace</option>
+              <option value="global">Global</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-900">Classification
+            <select id="agent-studio-source-classification" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+              <option value="internal">Internal</option>
+              <option value="public">Public</option>
+              <option value="confidential">Confidential</option>
+              <option value="regulated">Regulated</option>
+            </select>
+          </label>
+        </div>
+        <label class="mt-2 block text-xs text-slate-900">Upload file (optional)
+          <input id="agent-studio-source-file" type="file" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+        </label>
+        <label class="mt-2 block text-xs text-slate-900">Or source location URL/path
+          <input id="agent-studio-source-location" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="https://confluence/... or /repo/docs/..." />
+        </label>
+        <label class="mt-2 block text-xs text-slate-900">Tags (comma-separated)
+          <input id="agent-studio-source-tags" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="banking, compliance, client-x" />
+        </label>
+        <button id="agent-studio-create-source" class="btn-dark mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Source</button>
+      </div>
+
+      <div class="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Create Knowledge Set</p>
+        <div class="mt-2 grid gap-2 sm:grid-cols-3">
+          <label class="text-xs text-slate-900">Set name
+            <input id="agent-studio-new-set-name" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Client X Pack" />
+          </label>
+          <label class="text-xs text-slate-900">Version
+            <input id="agent-studio-new-set-version" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" value="1.0.0" />
+          </label>
+          <label class="text-xs text-slate-900">State
+            <select id="agent-studio-new-set-state" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+              <option value="draft">Draft</option>
+              <option value="published">Published</option>
+              <option value="deprecated">Deprecated</option>
+            </select>
+          </label>
+        </div>
+        <label class="mt-2 block text-xs text-slate-900">Pick sources (optional, multi-select)</label>
+        <select id="agent-studio-source-picker" multiple size="4" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">${sourceOptions}</select>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button id="agent-studio-fill-source-ids" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Use Selected Sources</button>
+          <input id="agent-studio-new-set-source-ids" class="min-w-[280px] flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="src-123, src-456" />
+        </div>
+        <button id="agent-studio-create-set" class="btn-dark mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Knowledge Set</button>
+      </div>
+
+      <div class="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Attach Existing Set to Agent Brain</p>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <select id="agent-studio-existing-set" class="min-w-[260px] rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+            <option value="">Select a set</option>
+            ${setOptions}
+          </select>
+          <button id="agent-studio-attach-set" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Attach To This Agent</button>
+        </div>
+      </div>
+
+      <div class="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Specialist Router Profile</p>
+        <p class="mt-1 text-[11px] text-slate-700">Define trigger-based specialist routing for this agent.</p>
+        <div class="mt-2 grid gap-2 sm:grid-cols-3">
+          <label class="text-xs text-slate-900">Name
+            <input id="agent-studio-specialist-name" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="VB6 UI/Forms Specialist" />
+          </label>
+          <label class="text-xs text-slate-900">Domain
+            <input id="agent-studio-specialist-domain" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="vb6-modernization" />
+          </label>
+          <label class="text-xs text-slate-900">Stage Hint
+            <input id="agent-studio-specialist-stage" type="number" min="0" max="8" value="${escapeHtml(String(selected?.stage || 0))}" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+          </label>
+        </div>
+        <label class="mt-2 block text-xs text-slate-900">Description
+          <input id="agent-studio-specialist-description" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="Specialized handling for VB6 forms/events and parity." />
+        </label>
+        <div class="mt-2 grid gap-2 sm:grid-cols-3">
+          <label class="text-xs text-slate-900">Intent keywords
+            <input id="agent-studio-specialist-intents" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="vb6, form, control array, event map" />
+          </label>
+          <label class="text-xs text-slate-900">File patterns
+            <input id="agent-studio-specialist-files" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="*.frm, *.frx, *.bas" />
+          </label>
+          <label class="text-xs text-slate-900">Artifact triggers
+            <input id="agent-studio-specialist-artifacts" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" placeholder="vb6_analysis, evidence_files" />
+          </label>
+        </div>
+        <div class="mt-2 grid gap-2 sm:grid-cols-4">
+          <label class="text-xs text-slate-900">Min match score
+            <input id="agent-studio-specialist-min-score" type="number" min="1" max="10" value="1" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+          </label>
+          <label class="text-xs text-slate-900">Tool mode
+            <select id="agent-studio-specialist-tool-mode" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+              <option value="read_only">read_only</option>
+              <option value="read_write">read_write</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-900">Depth tier
+            <select id="agent-studio-specialist-depth" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+              <option value="shallow">shallow</option>
+              <option value="standard" selected>standard</option>
+              <option value="deep">deep</option>
+            </select>
+          </label>
+          <div class="text-xs text-slate-900">
+            <label class="mt-6 inline-flex items-center gap-2">
+              <input id="agent-studio-specialist-enabled" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" checked />
+              enabled
+            </label>
+            <label class="mt-1 inline-flex items-center gap-2">
+              <input id="agent-studio-specialist-auto-route" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" checked />
+              auto_route
+            </label>
+          </div>
+        </div>
+        <button id="agent-studio-save-specialist" class="btn-dark mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Save Specialist Profile</button>
+        <div class="mt-2 space-y-1">${specialistRowsForAgentHtml}</div>
+      </div>
+
+      <div class="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-2">
+        <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Brain Evaluation</p>
+        <p class="mt-1 text-[11px] text-slate-700">Run retrieval + routing checks for this agent using current workspace/project context.</p>
+        <label class="mt-2 block text-xs text-slate-900">Task / Prompt
+          <textarea id="agent-studio-brain-task" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" rows="3" placeholder="Analyze VB6 forms and SQL flows for parity migration.">${escapeHtml(evalTask)}</textarea>
+        </label>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button id="agent-studio-find-context" class="btn-dark rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Find Relevant Context</button>
+          <button id="agent-studio-suggest-agent" class="btn-light rounded-md px-2.5 py-1.5 text-[11px] font-semibold">Suggest Agent</button>
+        </div>
+        <div id="agent-studio-brain-eval-summary" class="mt-2 rounded border border-slate-200 bg-white p-2 text-[11px] text-slate-800">${escapeHtml(evalSummary || "No explanation yet.")}</div>
+        <pre id="agent-studio-brain-eval-output" class="mt-2 max-h-56 overflow-auto rounded border border-slate-300 bg-slate-950 p-2 text-[11px] text-emerald-200">${escapeHtml(evalOutput || "No evaluation run yet.")}</pre>
+      </div>
+    `;
+    return;
+  }
+
+  if (tab === "tools") {
+    const allowed = Array.isArray(draft.allowed_tools) ? draft.allowed_tools : [];
+    const toolCatalog = [
+      { key: "repo_read", label: "Read repository" },
+      { key: "repo_write", label: "Write repository" },
+      { key: "issue_read", label: "Read issue trackers" },
+      { key: "issue_write", label: "Write issue trackers" },
+      { key: "doc_export", label: "Export documents" },
+      { key: "run_pipeline", label: "Run pipeline actions" },
+    ];
+    el.agentStudioPanel.innerHTML = `
+      <p class="text-[11px] text-slate-700">Select which tools this agent is allowed to use.</p>
+      <div class="mt-2 grid gap-1">
+        ${toolCatalog.map((item) => `
+          <label class="inline-flex items-center gap-2 text-xs text-slate-900">
+            <input data-agent-studio-tool="${escapeHtml(item.key)}" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" ${allowed.includes(item.key) ? "checked" : ""} />
+            ${escapeHtml(item.label)}
+          </label>
+        `).join("")}
+      </div>
+    `;
+    return;
+  }
+
+  const memoryScope = String(draft.memory_scope || "project");
+  el.agentStudioPanel.innerHTML = `
+    <p class="text-[11px] text-slate-700">Configure memory policy for learned corrections.</p>
+    <label class="mt-2 block text-xs text-slate-900">Memory Scope
+      <select id="agent-studio-memory-scope" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900">
+        <option value="project" ${memoryScope === "project" ? "selected" : ""}>Project</option>
+        <option value="client" ${memoryScope === "client" ? "selected" : ""}>Client</option>
+        <option value="workspace" ${memoryScope === "workspace" ? "selected" : ""}>Workspace</option>
+        <option value="global" ${memoryScope === "global" ? "selected" : ""}>Global</option>
+      </select>
+    </label>
+    <label class="mt-2 inline-flex items-center gap-2 text-xs text-slate-900">
+      <input id="agent-studio-memory-enabled" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" ${draft.memory_enabled ? "checked" : ""} />
+      Allow this agent to write structured memory rules
+    </label>
+  `;
+}
+
+function renderAgentStudio() {
+  if (!el.agentStudioAgentSelect) return;
+  const all = Array.isArray(state.agents?.all) ? state.agents.all : [];
+  if (!all.length) {
+    el.agentStudioAgentSelect.innerHTML = `<option value="">No agents</option>`;
+    if (el.agentStudioPanel) el.agentStudioPanel.innerHTML = `<p class="text-xs text-slate-700">No agents available.</p>`;
+    return;
+  }
+  el.agentStudioAgentSelect.innerHTML = all.map((agent) => {
+    const label = `S${agent.stage} | ${agent.display_name || agent.role || agent.id}`;
+    return `<option value="${escapeHtml(agent.id)}">${escapeHtml(label)}</option>`;
+  }).join("");
+  const exists = all.some((agent) => String(agent.id || "") === String(state.agentStudio.selectedAgentKey || ""));
+  if (!exists) {
+    state.agentStudio.selectedAgentKey = String(all[0].id || "");
+  }
+  el.agentStudioAgentSelect.value = String(state.agentStudio.selectedAgentKey || "");
+  setAgentStudioTab(state.agentStudio.tab || "persona");
+}
+
+function setAgentStudioTab(tabName) {
+  const tab = String(tabName || "persona").toLowerCase();
+  state.agentStudio.tab = ["persona", "brain", "tools", "memory"].includes(tab) ? tab : "persona";
+  document.querySelectorAll("[data-agent-studio-tab]").forEach((btn) => {
+    if (!(btn instanceof HTMLElement)) return;
+    const active = String(btn.getAttribute("data-agent-studio-tab") || "") === state.agentStudio.tab;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
+  renderAgentStudioPanel();
+}
+
+function collectAgentStudioDraftFromPanel() {
+  const agentKey = String(state.agentStudio.selectedAgentKey || "");
+  if (!agentKey) return null;
+  const draft = getAgentStudioDraft(agentKey);
+  if (!draft) return null;
+  if (state.agentStudio.tab === "brain") {
+    draft.knowledge_set_ids = parseCommaValues(document.getElementById("agent-studio-set-ids")?.value || "");
+    draft.top_k = Number(document.getElementById("agent-studio-top-k")?.value || 8);
+    draft.fallback_behavior = String(document.getElementById("agent-studio-fallback")?.value || "ask_clarification");
+    draft.citation_required = !!document.getElementById("agent-studio-citation-required")?.checked;
+  } else if (state.agentStudio.tab === "tools") {
+    const tools = [];
+    document.querySelectorAll("[data-agent-studio-tool]").forEach((node) => {
+      if (!(node instanceof HTMLInputElement)) return;
+      if (!node.checked) return;
+      const key = String(node.getAttribute("data-agent-studio-tool") || "").trim();
+      if (key) tools.push(key);
+    });
+    draft.allowed_tools = tools;
+  } else if (state.agentStudio.tab === "memory") {
+    draft.memory_scope = String(document.getElementById("agent-studio-memory-scope")?.value || "project");
+    draft.memory_enabled = !!document.getElementById("agent-studio-memory-enabled")?.checked;
+  }
+  return draft;
+}
+
+async function saveAgentStudioConfig() {
+  const agentKey = String(state.agentStudio.selectedAgentKey || "").trim();
+  if (!agentKey) {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Select an agent first.";
+    return;
+  }
+  const draft = collectAgentStudioDraftFromPanel() || getAgentStudioDraft(agentKey) || {};
+  const payload = {
+    agent_key: agentKey,
+    knowledge_set_ids: Array.isArray(draft.knowledge_set_ids) ? draft.knowledge_set_ids : [],
+    top_k: Number(draft.top_k || 8),
+    citation_required: draft.citation_required !== false,
+    fallback_behavior: String(draft.fallback_behavior || "ask_clarification"),
+    allowed_tools: Array.isArray(draft.allowed_tools) ? draft.allowed_tools : [],
+    memory_scope: String(draft.memory_scope || "project"),
+    memory_enabled: draft.memory_enabled !== false,
+  };
+  const data = await api("/api/settings/knowledge/brains", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  renderAgentStudio();
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = `Saved Agent Studio config for ${agentKey}.`;
+}
+
+function selectedOptionValues(selectId) {
+  const node = document.getElementById(selectId);
+  if (!(node instanceof HTMLSelectElement)) return [];
+  return [...node.selectedOptions].map((opt) => String(opt.value || "").trim()).filter(Boolean);
+}
+
+async function createAgentStudioKnowledgeSource() {
+  const name = String(document.getElementById("agent-studio-source-name")?.value || "").trim();
+  const sourceType = String(document.getElementById("agent-studio-source-type")?.value || "file").trim().toLowerCase();
+  const scope = String(document.getElementById("agent-studio-source-scope")?.value || "project").trim().toLowerCase();
+  const dataClassification = String(document.getElementById("agent-studio-source-classification")?.value || "internal").trim().toLowerCase();
+  const location = String(document.getElementById("agent-studio-source-location")?.value || "").trim();
+  const tags = parseCommaValues(String(document.getElementById("agent-studio-source-tags")?.value || ""));
+  const fileInput = document.getElementById("agent-studio-source-file");
+  const file = (fileInput instanceof HTMLInputElement && fileInput.files && fileInput.files.length) ? fileInput.files[0] : null;
+
+  if (!name && !file) {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Provide a source name or choose a file.";
+    return;
+  }
+
+  if (file) {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("name", name || String(file.name || "Uploaded Source"));
+    form.append("type", sourceType || "file");
+    form.append("scope", scope || "project");
+    form.append("data_classification", dataClassification || "internal");
+    form.append("location", location);
+    form.append("tags", tags.join(", "));
+    const data = await apiMultipart("/api/settings/knowledge/sources/upload", form, "POST");
+    state.settings = data.settings || state.settings;
+  } else {
+    const payload = {
+      name,
+      type: sourceType || "file",
+      scope: scope || "project",
+      data_classification: dataClassification || "internal",
+      location,
+      tags,
+    };
+    const data = await api("/api/settings/knowledge/sources", payload, "POST");
+    state.settings = data.settings || state.settings;
+  }
+
+  renderSettings();
+  renderAgentStudio();
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Knowledge source saved.";
+}
+
+async function createAgentStudioKnowledgeSet() {
+  const name = String(document.getElementById("agent-studio-new-set-name")?.value || "").trim();
+  if (!name) {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Set name is required.";
+    return;
+  }
+  const version = String(document.getElementById("agent-studio-new-set-version")?.value || "1.0.0").trim() || "1.0.0";
+  const publishState = String(document.getElementById("agent-studio-new-set-state")?.value || "draft").trim().toLowerCase() || "draft";
+  const sourceIds = parseCommaValues(String(document.getElementById("agent-studio-new-set-source-ids")?.value || ""));
+  const payload = {
+    name,
+    version,
+    publish_state: publishState,
+    source_ids: sourceIds,
+  };
+  const data = await api("/api/settings/knowledge/sets", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  renderAgentStudio();
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = `Knowledge set '${name}' saved.`;
+}
+
+async function saveAgentStudioSpecialistProfile() {
+  const linkedAgentKey = String(state.agentStudio.selectedAgentKey || "").trim();
+  if (!linkedAgentKey) {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Select an agent first.";
+    return;
+  }
+  const name = String(document.getElementById("agent-studio-specialist-name")?.value || "").trim();
+  if (!name) {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Specialist name is required.";
+    return;
+  }
+  const payload = {
+    name,
+    description: String(document.getElementById("agent-studio-specialist-description")?.value || "").trim(),
+    domain: String(document.getElementById("agent-studio-specialist-domain")?.value || "").trim().toLowerCase(),
+    linked_agent_key: linkedAgentKey,
+    stage_hint: Number(document.getElementById("agent-studio-specialist-stage")?.value || 0),
+    intent_keywords: parseCommaValues(String(document.getElementById("agent-studio-specialist-intents")?.value || "")),
+    file_patterns: parseCommaValues(String(document.getElementById("agent-studio-specialist-files")?.value || "")),
+    artifact_triggers: parseCommaValues(String(document.getElementById("agent-studio-specialist-artifacts")?.value || "")),
+    min_match_score: Number(document.getElementById("agent-studio-specialist-min-score")?.value || 1),
+    tool_mode: String(document.getElementById("agent-studio-specialist-tool-mode")?.value || "read_only"),
+    depth_tier: String(document.getElementById("agent-studio-specialist-depth")?.value || "standard"),
+    enabled: !!document.getElementById("agent-studio-specialist-enabled")?.checked,
+    auto_route: !!document.getElementById("agent-studio-specialist-auto-route")?.checked,
+  };
+  const data = await api("/api/settings/knowledge/specialists", payload, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  renderAgentStudio();
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = `Specialist profile '${name}' saved.`;
+}
+
+async function removeAgentStudioSpecialistProfile(specialistId) {
+  const specialist_id = String(specialistId || "").trim();
+  if (!specialist_id) return;
+  const data = await api("/api/settings/knowledge/specialists/remove", { specialist_id }, "POST");
+  state.settings = data.settings || state.settings;
+  renderSettings();
+  renderAgentStudio();
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = `Removed specialist profile ${specialist_id}.`;
+}
+
+function attachSetToSelectedAgentBrain() {
+  const selectedSet = String(document.getElementById("agent-studio-existing-set")?.value || "").trim();
+  if (!selectedSet) {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Select a knowledge set first.";
+    return;
+  }
+  const input = document.getElementById("agent-studio-set-ids");
+  if (!(input instanceof HTMLInputElement)) return;
+  const current = parseCommaValues(String(input.value || ""));
+  if (!current.includes(selectedSet)) current.push(selectedSet);
+  input.value = current.join(", ");
+  const draft = collectAgentStudioDraftFromPanel();
+  if (draft && Array.isArray(draft.knowledge_set_ids)) {
+    draft.knowledge_set_ids = current;
+  }
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = `Attached set ${selectedSet}. Save Agent Studio config to persist.`;
+}
+
+function setAgentStudioEvalOutput(agentKey, task, outputText, summaryText = "") {
+  const key = String(agentKey || "").trim();
+  if (!key) return;
+  if (!state.agentStudio.evalByAgent || typeof state.agentStudio.evalByAgent !== "object") {
+    state.agentStudio.evalByAgent = {};
+  }
+  state.agentStudio.evalByAgent[key] = {
+    task: String(task || "").trim(),
+    output: String(outputText || "").trim(),
+    summary: String(summaryText || "").trim(),
+    updatedAt: new Date().toISOString(),
+  };
+  const outputNode = document.getElementById("agent-studio-brain-eval-output");
+  if (outputNode) outputNode.textContent = state.agentStudio.evalByAgent[key].output || "No evaluation run yet.";
+  const summaryNode = document.getElementById("agent-studio-brain-eval-summary");
+  if (summaryNode) summaryNode.textContent = state.agentStudio.evalByAgent[key].summary || "No explanation yet.";
+}
+
+function buildFindContextSummary(data) {
+  const retrieval = (data && typeof data === "object" && data.retrieval && typeof data.retrieval === "object")
+    ? data.retrieval
+    : {};
+  const guardrails = (data && typeof data === "object" && data.guardrails && typeof data.guardrails === "object")
+    ? data.guardrails
+    : {};
+  const snapshot = (data && typeof data === "object" && data.context_snapshot && typeof data.context_snapshot === "object")
+    ? data.context_snapshot
+    : {};
+  const vectorHits = Array.isArray(retrieval.vector_hits) ? retrieval.vector_hits.length : 0;
+  const complianceCount = Array.isArray(retrieval.compliance_constraints) ? retrieval.compliance_constraints.length : 0;
+  const capRows = retrieval.capability_mapping && Array.isArray(retrieval.capability_mapping.primary_capabilities)
+    ? retrieval.capability_mapping.primary_capabilities
+    : [];
+  const topCaps = capRows.slice(0, 2).map((row) => String(row?.service_domain || row?.id || "").trim()).filter(Boolean);
+  const blocker = !!guardrails.assumption_blocker;
+  const status = blocker ? "BLOCKED" : "PASS";
+  const sourceVersions = Array.isArray(snapshot.source_version_ids) ? snapshot.source_version_ids.length : 0;
+  return [
+    `Status: ${status}`,
+    `Top capabilities: ${topCaps.length ? topCaps.join(", ") : "none inferred"}`,
+    `Retrieved ${vectorHits} context hits and ${complianceCount} compliance constraints.`,
+    `Snapshot: ${String(snapshot.knowledge_snapshot_id || "n/a")} (${sourceVersions} source version(s)).`,
+    blocker ? "Reason: required compliance citation missing." : "Guardrails satisfied for this query.",
+  ].join(" ");
+}
+
+function buildSuggestAgentSummary(data) {
+  const suggestion = (data && typeof data === "object" && data.suggestion && typeof data.suggestion === "object")
+    ? data.suggestion
+    : {};
+  const routing = (data && typeof data === "object" && data.routing && typeof data.routing === "object")
+    ? data.routing
+    : {};
+  const primary = (suggestion.primary_agent && typeof suggestion.primary_agent === "object")
+    ? suggestion.primary_agent
+    : {};
+  const primaryLabel = String(primary.display_name || primary.agent_key || "n/a").trim();
+  const stage = Number(primary.stage || 0);
+  const specialistMatches = Array.isArray(suggestion.specialist_matches) ? suggestion.specialist_matches : [];
+  const topReasons = specialistMatches.slice(0, 2).map((row) => {
+    const name = String(row?.name || row?.specialist_id || "specialist").trim();
+    const score = Number(row?.score || 0);
+    const intent = Array.isArray(row?.matched_intents) ? row.matched_intents.slice(0, 2).join(", ") : "";
+    return `${name} (score ${score}${intent ? `; intents: ${intent}` : ""})`;
+  });
+  return [
+    `Primary agent: ${primaryLabel}${stage > 0 ? ` (Stage ${stage})` : ""}.`,
+    `Matched specialists: ${specialistMatches.length}.`,
+    topReasons.length ? `Top reasons: ${topReasons.join(" | ")}.` : "No specialist triggers fired.",
+    `Routing selected ${Number(routing.selected_count || 0)} specialist profile(s).`,
+  ].join(" ");
+}
+
+function agentStudioBrainEvalPayload(taskText) {
+  const agentKey = String(state.agentStudio.selectedAgentKey || "").trim();
+  const all = Array.isArray(state.agents?.all) ? state.agents.all : [];
+  const selected = all.find((row) => String(row?.id || "") === agentKey) || {};
+  const integration = getIntegrationContext();
+  const draft = collectAgentStudioDraftFromPanel() || getAgentStudioDraft(agentKey) || {};
+  return {
+    agent_key: agentKey,
+    stage: Number(selected?.stage || 0),
+    task: String(taskText || "").trim(),
+    query: String(taskText || "").trim(),
+    objectives: String(taskText || "").trim(),
+    use_case: String(el.useCase?.value || "business_objectives").trim().toLowerCase(),
+    top_k: Number(draft.top_k || 8),
+    citation_required: draft.citation_required !== false,
+    workspace: String(integration?.brain_context?.workspace || "default-workspace"),
+    project: String(integration?.brain_context?.project || "default-project"),
+    brain_context: (integration && typeof integration.brain_context === "object") ? integration.brain_context : {},
+    integration_context: integration && typeof integration === "object" ? integration : {},
+    domain_pack_id: String(integration?.domain_pack_id || ""),
+    domain_pack: (integration && integration.custom_domain_pack && typeof integration.custom_domain_pack === "object")
+      ? integration.custom_domain_pack
+      : undefined,
+    jurisdiction: String(integration?.jurisdiction || ""),
+    data_classification: Array.isArray(integration?.data_classification) ? integration.data_classification : [],
+    stage_agent_ids: (state.teamBuilder?.stageAgentIds && typeof state.teamBuilder.stageAgentIds === "object")
+      ? state.teamBuilder.stageAgentIds
+      : {},
+  };
+}
+
+async function runAgentStudioFindRelevantContext() {
+  const agentKey = String(state.agentStudio.selectedAgentKey || "").trim();
+  if (!agentKey) throw new Error("Select an agent first.");
+  const task = String(document.getElementById("agent-studio-brain-task")?.value || "").trim();
+  if (!task) throw new Error("Enter a task/prompt first.");
+  setAgentStudioEvalOutput(agentKey, task, "Running find_relevant_context...", "Evaluating knowledge sources and constraints...");
+  const payload = agentStudioBrainEvalPayload(task);
+  const data = await api("/api/agent-studio/find-relevant-context", payload, "POST");
+  setAgentStudioEvalOutput(agentKey, task, JSON.stringify(data, null, 2), buildFindContextSummary(data));
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Brain context retrieval completed.";
+}
+
+async function runAgentStudioSuggestAgent() {
+  const agentKey = String(state.agentStudio.selectedAgentKey || "").trim();
+  if (!agentKey) throw new Error("Select an agent first.");
+  const task = String(document.getElementById("agent-studio-brain-task")?.value || "").trim();
+  if (!task) throw new Error("Enter a task/prompt first.");
+  setAgentStudioEvalOutput(agentKey, task, "Running suggest_agent...", "Evaluating specialist routing and agent fit...");
+  const payload = agentStudioBrainEvalPayload(task);
+  const data = await api("/api/agent-studio/suggest-agent", payload, "POST");
+  setAgentStudioEvalOutput(agentKey, task, JSON.stringify(data, null, 2), buildSuggestAgentSummary(data));
+  if (el.agentStudioMessage) el.agentStudioMessage.textContent = "Agent suggestion completed.";
+}
+
+function handleAgentStudioPanelClick(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const button = target.closest("button");
+  if (!(button instanceof HTMLButtonElement)) return;
+  const id = String(button.id || "");
+  if (!id) return;
+
+  if (id === "agent-studio-fill-source-ids") {
+    const selected = selectedOptionValues("agent-studio-source-picker");
+    const input = document.getElementById("agent-studio-new-set-source-ids");
+    if (input instanceof HTMLInputElement) input.value = selected.join(", ");
+    return;
+  }
+  if (id === "agent-studio-attach-set") {
+    attachSetToSelectedAgentBrain();
+    return;
+  }
+  if (id === "agent-studio-create-source") {
+    createAgentStudioKnowledgeSource().catch((err) => {
+      if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to save knowledge source.");
+    });
+    return;
+  }
+  if (id === "agent-studio-create-set") {
+    createAgentStudioKnowledgeSet().catch((err) => {
+      if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to save knowledge set.");
+    });
+    return;
+  }
+  if (id === "agent-studio-save-specialist") {
+    saveAgentStudioSpecialistProfile().catch((err) => {
+      if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to save specialist profile.");
+    });
+    return;
+  }
+  if (id === "agent-studio-find-context") {
+    runAgentStudioFindRelevantContext().catch((err) => {
+      if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to find relevant context.");
+    });
+    return;
+  }
+  if (id === "agent-studio-suggest-agent") {
+    runAgentStudioSuggestAgent().catch((err) => {
+      if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to suggest agent.");
+    });
+    return;
+  }
+  const removeId = String(button.getAttribute("data-specialist-remove") || "").trim();
+  if (removeId) {
+    removeAgentStudioSpecialistProfile(removeId).catch((err) => {
+      if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to remove specialist profile.");
+    });
+  }
+}
+
 function renderTeamsDropdown() {
   const teams = state.teams || [];
   if (!teams.length) {
@@ -6570,6 +7724,20 @@ function toModeButtonState(mode) {
   map[mode]?.classList.add("mode-btn-active");
 }
 
+function setPlanTab(tabName) {
+  const tab = String(tabName || "team_creation").toLowerCase();
+  const safe = ["team_creation", "agent_studio"].includes(tab) ? tab : "team_creation";
+  state.planTab = safe;
+  if (el.planPanelTeamCreation) el.planPanelTeamCreation.classList.toggle("hidden", safe !== "team_creation");
+  if (el.planPanelAgentStudio) el.planPanelAgentStudio.classList.toggle("hidden", safe !== "agent_studio");
+  document.querySelectorAll("[data-plan-tab]").forEach((btn) => {
+    if (!(btn instanceof HTMLElement)) return;
+    const active = String(btn.getAttribute("data-plan-tab") || "") === safe;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
+}
+
 function setMode(mode) {
   state.mode = mode;
   el.homeScreen.classList.toggle("hidden", mode !== MODES.DASHBOARDS);
@@ -6580,6 +7748,7 @@ function setMode(mode) {
   toModeButtonState(mode);
   if (mode === MODES.DISCOVER) setWizardStep(1);
   if (mode === MODES.BUILD) setWizardStep(2);
+  if (mode === MODES.PLAN) setPlanTab(state.planTab || "team_creation");
   if (mode === MODES.VERIFY || mode === MODES.PLAN) refreshTasks().catch(() => {});
   if (mode === MODES.VERIFY) renderVerifyPanels();
   if (mode === MODES.SETTINGS) loadSettings().catch((err) => setSettingsMessage(`Settings load failed: ${err.message}`, true));
@@ -6610,6 +7779,7 @@ async function loadAgentsAndTeams() {
       : defaultBuilderMap();
   }
   renderTeamBuilderSelectors();
+  renderAgentStudio();
 }
 
 async function applySelectedTeamFromDropdown() {
@@ -7763,6 +8933,13 @@ function renderContextDrawer() {
   const run = state.currentRun;
   const p = run?.pipeline_state || {};
   const ref = (p.context_vault_ref && typeof p.context_vault_ref === "object") ? p.context_vault_ref : {};
+  const runContextBundle = (p.run_context_bundle && typeof p.run_context_bundle === "object") ? p.run_context_bundle : {};
+  const runConstitution = (runContextBundle.delivery_constitution && typeof runContextBundle.delivery_constitution === "object")
+    ? runContextBundle.delivery_constitution
+    : {};
+  const specialistRouting = (runContextBundle.specialist_routing && typeof runContextBundle.specialist_routing === "object")
+    ? runContextBundle.specialist_routing
+    : {};
   const version = String(ref.version_id || "-");
   const commit = String(ref.commit_sha || "-").slice(0, 12) || "-";
   const savedPack = String(state.settings?.policies?.policy_pack || "standard").trim().toLowerCase();
@@ -7806,6 +8983,37 @@ function renderContextDrawer() {
   ];
 
   el.drawerContextBundle.textContent = `${version} @ ${commit}`;
+  if (el.drawerDeliveryConstitution) {
+    const constitutionId = String(runConstitution.constitution_id || "").trim();
+    const objective = String(runConstitution.modernization_objective || "").trim();
+    const nonNegotiables = Array.isArray(runConstitution.non_negotiables) ? runConstitution.non_negotiables : [];
+    const snapshotId = String(runConstitution?.knowledge_snapshot?.snapshot_id || "").trim();
+    if (constitutionId) {
+      const preview = objective.length > 120 ? `${objective.slice(0, 117)}...` : objective;
+      const parts = [
+        constitutionId,
+        snapshotId ? `snapshot=${snapshotId}` : "",
+        `rules=${nonNegotiables.length}`,
+        preview || "",
+      ].filter(Boolean);
+      el.drawerDeliveryConstitution.textContent = parts.join(" | ");
+    } else {
+      el.drawerDeliveryConstitution.textContent = "Not pinned";
+    }
+  }
+  if (el.drawerSpecialistRouting) {
+    const selected = Array.isArray(specialistRouting.selected) ? specialistRouting.selected : [];
+    if (selected.length) {
+      const names = selected
+        .slice(0, 3)
+        .map((row) => String(row?.name || row?.specialist_id || "").trim())
+        .filter(Boolean);
+      const dispatchable = Number(specialistRouting.dispatchable_count || 0);
+      el.drawerSpecialistRouting.textContent = `${selected.length} selected (${dispatchable} dispatchable)${names.length ? ` | ${names.join(", ")}` : ""}`;
+    } else {
+      el.drawerSpecialistRouting.textContent = "No specialist routes selected";
+    }
+  }
   if (el.drawerPolicies) el.drawerPolicies.textContent = policy;
   if (el.drawerLinkedSystems) {
     const linked = linkedFromRun.length ? linkedFromRun.join(" | ") : linkedFromSettings.join(" | ");
@@ -7823,10 +9031,17 @@ function renderContextDrawer() {
       const cp = (p.convention_profile && typeof p.convention_profile === "object") ? p.convention_profile : {};
       const rules = Array.isArray(cp.rules) ? cp.rules.length : 0;
       const findings = Array.isArray(p.remediation_backlog) ? p.remediation_backlog.length : 0;
+      const runContextBundle = (p.run_context_bundle && typeof p.run_context_bundle === "object") ? p.run_context_bundle : {};
+      const runConstitution = (runContextBundle.delivery_constitution && typeof runContextBundle.delivery_constitution === "object")
+        ? runContextBundle.delivery_constitution
+        : {};
+      const constitutionId = String(runConstitution.constitution_id || "").trim();
+      const constitutionRules = Array.isArray(runConstitution.non_negotiables) ? runConstitution.non_negotiables.length : 0;
       const statusText = String(p.context_layer_status || (p.sil_ready ? "ready" : "pending")).toUpperCase();
       el.contextOpsOutput.textContent = [
         `SIL status: ${statusText}`,
         `Context bundle: ${version} @ ${commit}`,
+        `Delivery constitution: ${constitutionId || "not pinned"} | rules: ${constitutionRules}`,
         `Graph nodes: ${nodes} | edges: ${edges} | CP rules: ${rules} | backlog: ${findings}`,
         "Use Impact Forecast or Drift Scan to generate deeper analysis output here.",
       ].join("\n");
@@ -9919,6 +11134,7 @@ function bindEvents() {
     renderNotifications("approvals");
     el.notificationsDialog?.showModal();
   });
+  el.userMenuBtn?.addEventListener("click", () => setMode(MODES.SETTINGS));
   el.notificationsClose?.addEventListener("click", () => {
     if (el.notificationsDialog?.open) el.notificationsDialog.close();
   });
@@ -10015,6 +11231,23 @@ function bindEvents() {
   el.settingsRbacRoleSelect?.addEventListener("change", renderRbacRolePermissions);
   el.settingsRbacSaveRole?.addEventListener("click", () => saveRbacRole().catch((err) => setSettingsMessage(err.message, true)));
   el.settingsRbacAssign?.addEventListener("click", () => upsertRbacAssignment().catch((err) => setSettingsMessage(err.message, true)));
+  el.settingsCurrentUserSelect?.addEventListener("change", () => {
+    const email = String(el.settingsCurrentUserSelect?.value || "").trim().toLowerCase();
+    const row = settingsUsers().find((user) => String(user.email || "").toLowerCase() === email);
+    if (row) applyUserFormFromRow(row);
+  });
+  el.settingsUserSave?.addEventListener("click", () => saveUser().catch((err) => setUserMessage(err.message, true)));
+  el.settingsUserUse?.addEventListener("click", () => useSelectedUser().catch((err) => setUserMessage(err.message, true)));
+  el.settingsUserRemove?.addEventListener("click", () => removeUser().catch((err) => setUserMessage(err.message, true)));
+  el.settingsKnowledgeSourceSave?.addEventListener("click", () => saveKnowledgeSource().catch((err) => setKnowledgeMessage(err.message, true)));
+  el.settingsKnowledgeSetSave?.addEventListener("click", () => saveKnowledgeSet().catch((err) => setKnowledgeMessage(err.message, true)));
+  el.settingsBrainSave?.addEventListener("click", () => saveAgentBrain().catch((err) => setKnowledgeMessage(err.message, true)));
+  el.settingsBindingSave?.addEventListener("click", () => saveProjectBinding().catch((err) => setKnowledgeMessage(err.message, true)));
+  document.querySelectorAll("[data-knowledge-hub-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => setKnowledgeHubTab(String(btn.getAttribute("data-knowledge-hub-tab") || "sources")));
+  });
+  el.settingsKnowledgeJobsRefresh?.addEventListener("click", () => renderKnowledgeHub());
+  el.settingsKnowledgeEvalsRefresh?.addEventListener("click", () => renderKnowledgeHub());
   el.settingsAuditRefresh?.addEventListener("click", () => loadSettings(true).catch((err) => setSettingsMessage(err.message, true)));
 
   el.discoverStepConnect?.addEventListener("click", () => setDiscoverStep(1));
@@ -10289,9 +11522,23 @@ function bindEvents() {
   el.teamSaveBtn.addEventListener("click", () => saveTeamFromBuilder().catch((err) => alert(err.message)));
   el.teamUseInWorkBtn.addEventListener("click", useBuilderTeamInWork);
   el.teamRefreshBtn.addEventListener("click", () => loadAgentsAndTeams().catch((err) => alert(err.message)));
+  document.querySelectorAll("[data-plan-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => setPlanTab(String(btn.getAttribute("data-plan-tab") || "team_creation")));
+  });
   el.cloneAgentBtn.addEventListener("click", () => cloneAgentFromBuilder().catch((err) => alert(err.message)));
   el.cloneBaseAgent?.addEventListener("change", refreshCloneRequirementsPackFields);
   el.cloneRequirementsPackProfile?.addEventListener("change", refreshCloneRequirementsPackFields);
+  el.agentStudioAgentSelect?.addEventListener("change", () => {
+    state.agentStudio.selectedAgentKey = String(el.agentStudioAgentSelect?.value || "").trim();
+    renderAgentStudioPanel();
+  });
+  document.querySelectorAll("[data-agent-studio-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => setAgentStudioTab(String(btn.getAttribute("data-agent-studio-tab") || "persona")));
+  });
+  el.agentStudioSave?.addEventListener("click", () => saveAgentStudioConfig().catch((err) => {
+    if (el.agentStudioMessage) el.agentStudioMessage.textContent = String(err?.message || err || "Failed to save Agent Studio config.");
+  }));
+  el.agentStudioPanel?.addEventListener("click", handleAgentStudioPanelClick);
 
   el.tasksRefresh.addEventListener("click", () => refreshTasks().catch((err) => alert(err.message)));
   el.verifyRefresh?.addEventListener("click", async () => {
@@ -10465,6 +11712,12 @@ function bindEvents() {
 }
 
 async function init() {
+  state.activeUserEmail = String(localStorage.getItem(ACTIVE_USER_STORAGE_KEY) || "").trim().toLowerCase();
+  if (!state.activeUserEmail) {
+    state.activeUserEmail = "local-user@synthetix.local";
+    localStorage.setItem(ACTIVE_USER_STORAGE_KEY, state.activeUserEmail);
+  }
+  renderCurrentUserIdentity();
   [el.brandLogoSidebar, el.brandLogoHero].forEach((imgNode) => {
     if (!imgNode) return;
     imgNode.addEventListener("error", () => {

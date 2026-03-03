@@ -87,6 +87,22 @@ def _escape_pipe(value: Any) -> str:
     return _clean(value).replace("|", "\\|")
 
 
+def _dependency_name(value: Any) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    quoted_pair = re.search(r'"([^"]+)"\s*;\s*"([^"]+)"', text)
+    if quoted_pair:
+        return _clean(quoted_pair.group(2))
+    ext_match = re.search(r"([A-Za-z0-9_.-]+\.(?:ocx|dll|dcx|dca))", text, flags=re.IGNORECASE)
+    if ext_match:
+        return _clean(ext_match.group(1))
+    suffix_guid = re.search(r"\(([^)]*\{[0-9A-Fa-f-]{36}[^)]*)\)\s*$", text)
+    if suffix_guid:
+        return _clean(re.sub(r"\s*\([^)]*\{[0-9A-Fa-f-]{36}[^)]*\)\s*$", "", text))
+    return text
+
+
 def _normalize_open_question(row: Any, idx: int) -> dict[str, str]:
     if isinstance(row, str):
         return {
@@ -789,7 +805,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         path = _clean(r.get("path"))
         left = raw_id.split("|", 1)[0] if "|" in raw_id else raw_id
         names = [left, _clean(r.get("name")), raw_id]
-        deps = set(_as_list(r.get("dependencies")))
+        deps = {_dependency_name(x) for x in _as_list(r.get("dependencies")) if _dependency_name(x)}
         tables = set(_clean(t) for t in _as_list(r.get("db_touchpoints")) if _clean(t))
         for name in names:
             key = _clean(name)
@@ -1055,7 +1071,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             if ctl_type and not ctl_type.upper().startswith("VB"):
                 deps.add(ctl_type)
         for dep in deps:
-            dep_name = _clean(dep)
+            dep_name = _dependency_name(dep)
             if not dep_name:
                 continue
             dependency_to_forms.setdefault(dep_name.lower(), set()).add(qualified)
@@ -1196,16 +1212,23 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
 
     lines.extend(["", "### B. Dependency Inventory"])
     if dep_rows:
-        lines.append("| Name | Kind | Risk | Recommended action | Forms mapped |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| Name | Kind | GUID / Reference | Risk | Recommended action | Forms mapped |")
+        lines.append("|---|---|---|---|---|---|")
         for dep in dep_rows[:500]:
             d = _as_dict(dep)
             risk = _clean(_as_dict(d.get("risk")).get("tier") or d.get("tier") or "unknown")
             action = _clean(_as_dict(d.get("risk")).get("recommended_action") or d.get("recommended_action")) or "n/a"
-            dep_name = _clean(d.get("name") or dep)
+            dep_name = _dependency_name(d.get("name") or dep)
+            guid_ref = _clean(
+                d.get("reference")
+                or d.get("guid")
+                or d.get("guid_reference")
+                or d.get("clsid")
+                or d.get("progid")
+            ) or "n/a"
             mapped_forms = sorted(dependency_to_forms.get(dep_name.lower(), set()))
             lines.append(
-                f"| {_escape_pipe(dep_name)} | {_escape_pipe(d.get('kind'))} | {_escape_pipe(risk)} | {_escape_pipe(action)} | {_escape_pipe(', '.join(mapped_forms[:6]) or 'n/a')} |"
+                f"| {_escape_pipe(dep_name)} | {_escape_pipe(d.get('kind'))} | {_escape_pipe(guid_ref)} | {_escape_pipe(risk)} | {_escape_pipe(action)} | {_escape_pipe(', '.join(mapped_forms[:6]) or 'n/a')} |"
             )
     else:
         lines.append("- No dependency rows available.")
@@ -2471,7 +2494,7 @@ def _build_legacy_bundle_from_repo(repo_dir: Path, max_text_chars: int = 40000) 
         row = {"path": rel, "extension": ext, "size_bytes": size, "is_text": ext in VB6_TEXT_EXTENSIONS}
         file_rows.append(row)
 
-        header = f"===== FILE: {rel} ====="
+        header = f"### FILE: {rel}"
         if ext in VB6_TEXT_EXTENSIONS:
             text = path.read_text(encoding="utf-8", errors="replace")
             if len(text) > max_text_chars:
@@ -2562,16 +2585,58 @@ def _write_outputs(
     run_id_hint: str,
 ) -> tuple[Path, Path]:
     markdown = build_full_markdown(analyst_output, mode=mode)
-    out_dir = Path(output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     safe_run_id = _clean(run_id_hint) or f"local-{stamp}"
-    md_path = out_dir / f"analyst-tech-req-{mode}-{safe_run_id}-{stamp}.md"
-    json_path = out_dir / f"analyst-output-{safe_run_id}-{stamp}.json"
+    out_root = Path(output_dir).expanduser().resolve()
+    run_dir = out_root / f"bundle-{safe_run_id}-{stamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    md_path = run_dir / f"analyst-tech-req-{mode}-{safe_run_id}-{stamp}.md"
+    json_path = run_dir / f"analyst-output-{safe_run_id}-{stamp}.json"
 
     md_path.write_text(markdown, encoding="utf-8")
     json_path.write_text(json.dumps(analyst_output, indent=2, ensure_ascii=True, default=str), encoding="utf-8")
     return md_path, json_path
+
+
+def _generate_docx_bundle(md_path: Path, out_dir: Path) -> tuple[Path, Path, Path] | None:
+    docgen_dir = ROOT / "synthetix-docgen"
+    index_js = docgen_dir / "index.js"
+    if not index_js.exists():
+        print(f"[warn] synthetix-docgen not found at {docgen_dir}; skipping doc generation")
+        return None
+
+    cmd = [
+        "node",
+        str(index_js),
+        "--md",
+        str(md_path),
+        "--out",
+        str(out_dir),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(docgen_dir),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=300,
+        )
+        if proc.stdout.strip():
+            print(proc.stdout.strip())
+        if proc.stderr.strip():
+            print(proc.stderr.strip())
+    except Exception as exc:
+        print(f"[warn] doc generation failed: {exc}")
+        return None
+
+    data_json = out_dir / "data.json"
+    ba_doc = out_dir / "ba_brief.docx"
+    tech_doc = out_dir / "tech_workbook.docx"
+    if not (data_json.exists() and ba_doc.exists() and tech_doc.exists()):
+        print("[warn] doc generation completed but expected outputs not found")
+        return None
+    return data_json, ba_doc, tech_doc
 
 
 def run_and_export_api(args: argparse.Namespace) -> int:
@@ -2707,6 +2772,13 @@ def run_and_export_api(args: argparse.Namespace) -> int:
 
     print(f"[ok] markdown: {md_path}")
     print(f"[ok] analyst output json: {json_path}")
+    if not args.skip_docgen:
+        generated = _generate_docx_bundle(md_path, md_path.parent)
+        if generated:
+            data_json, ba_doc, tech_doc = generated
+            print(f"[ok] docgen data: {data_json}")
+            print(f"[ok] BA Brief: {ba_doc}")
+            print(f"[ok] Tech Workbook: {tech_doc}")
     return 0
 
 
@@ -2770,6 +2842,13 @@ def run_and_export_direct(args: argparse.Namespace) -> int:
         )
         print(f"[ok] markdown: {md_path}")
         print(f"[ok] analyst output json: {json_path}")
+        if not args.skip_docgen:
+            generated = _generate_docx_bundle(md_path, md_path.parent)
+            if generated:
+                data_json, ba_doc, tech_doc = generated
+                print(f"[ok] docgen data: {data_json}")
+                print(f"[ok] BA Brief: {ba_doc}")
+                print(f"[ok] Tech Workbook: {tech_doc}")
         return 0
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
@@ -2809,6 +2888,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--target-language", default="C#", help="Target modernization language")
     parser.add_argument("--mode", default="full", choices=["summary", "full"], help="Markdown detail level")
     parser.add_argument("--output-dir", default=str(ROOT / "run_artifacts" / "manual_exports"), help="Output directory")
+    parser.add_argument(
+        "--skip-docgen",
+        action="store_true",
+        help="Skip BA Brief/Tech Workbook doc generation (enabled by default).",
+    )
     parser.add_argument("--max-text-chars", type=int, default=40000, help="Per-file text cap when building local legacy bundle")
     parser.add_argument("--timeout-seconds", type=int, default=1200, help="Max wait time for stage output")
     parser.add_argument("--poll-seconds", type=int, default=5, help="Polling interval")

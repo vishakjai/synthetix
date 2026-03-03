@@ -502,7 +502,7 @@ OUTPUT REQUIREMENTS:
         if not text:
             return []
         # Prefer file-aware chunking if code bundle contains FILE markers.
-        parts = re.split(r"(?im)(?=^### FILE:\s+)", text)
+        parts = re.split(r"(?im)(?=^(?:### FILE:\s+|===== FILE:\s+))", text)
         segments = [p.strip() for p in parts if p and p.strip()]
         if len(segments) <= 1:
             return [text[i : i + self.LEGACY_CHUNK_MAX_CHARS] for i in range(0, len(text), self.LEGACY_CHUNK_MAX_CHARS)][
@@ -545,7 +545,12 @@ OUTPUT REQUIREMENTS:
     def _parse_legacy_bundle_files(self, text: str) -> dict[str, str]:
         raw = str(text or "")
         files: dict[str, str] = {}
-        markers = list(re.finditer(r"(?im)^### FILE:\s+(.+)$", raw))
+        markers = list(
+            re.finditer(
+                r"(?im)^(?:### FILE:\s+|===== FILE:\s+)(.+?)(?:\s*=====\s*)?$",
+                raw,
+            )
+        )
         if not markers:
             return files
         for idx, marker in enumerate(markers):
@@ -738,6 +743,60 @@ OUTPUT REQUIREMENTS:
         if not workflows and procedures:
             workflows.append("Core procedural workflow: " + ", ".join(procedures[:6]))
         return workflows[:12]
+
+    def _parse_vbp_dependency_reference(self, reference_line: Any) -> dict[str, str] | None:
+        text = str(reference_line or "").strip()
+        if not text:
+            return None
+        name = ""
+        reference = text
+        pair_match = re.search(r'"([^"]+)"\s*;\s*"([^"]+)"', text)
+        if pair_match:
+            reference = str(pair_match.group(1) or "").strip()
+            name = str(pair_match.group(2) or "").strip()
+        if not name:
+            ext_match = re.search(r"([A-Za-z0-9_.-]+\.(?:ocx|dll|dcx|dca))", text, flags=re.IGNORECASE)
+            if ext_match:
+                name = str(ext_match.group(1) or "").strip()
+        if not name:
+            return None
+        guid_match = re.search(r"\{[0-9A-Fa-f-]{36}\}", reference or text)
+        guid = str(guid_match.group(0) or "").strip() if guid_match else ""
+        return {
+            "name": name,
+            "reference": reference,
+            "guid": guid,
+        }
+
+    def _extract_vbp_dependency_references(self, project_defs: list[dict[str, Any]]) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for project in project_defs:
+            if not isinstance(project, dict):
+                continue
+            project_name = str(project.get("project_name", "")).strip()
+            project_file = str(project.get("project_file", "")).strip()
+            refs = project.get("references", []) if isinstance(project.get("references", []), list) else []
+            for raw_ref in refs:
+                parsed = self._parse_vbp_dependency_reference(raw_ref)
+                if not parsed:
+                    continue
+                name = str(parsed.get("name", "")).strip()
+                reference = str(parsed.get("reference", "")).strip()
+                key = (project_file.lower(), name.lower(), reference.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(
+                    {
+                        "name": name,
+                        "reference": reference,
+                        "guid": str(parsed.get("guid", "")).strip(),
+                        "project_name": project_name,
+                        "project_file": project_file,
+                    }
+                )
+        return rows[: self.LEGACY_MAX_DEPENDENCIES * 4]
 
     def _extract_business_rules_catalog(
         self,
@@ -1967,6 +2026,7 @@ Analyze this code chunk and extract behavior compactly.
             source_target_profile=source_target_profile,
             global_readiness=modernization_readiness,
         )
+        dependency_reference_rows = self._extract_vbp_dependency_references(project_definitions)
 
         legacy_inventory = {
             "summary": (
@@ -1987,6 +2047,7 @@ Analyze this code chunk and extract behavior compactly.
             "activex_controls": sorted(activex_set)[: self.LEGACY_MAX_DEPENDENCIES],
             "dll_dependencies": sorted(dll_set)[: self.LEGACY_MAX_DEPENDENCIES],
             "ocx_dependencies": sorted(ocx_set)[: self.LEGACY_MAX_DEPENDENCIES],
+            "dependency_references": dependency_reference_rows,
             "event_handlers": sorted(event_handlers_set)[: self.LEGACY_MAX_CONTROLS],
             "event_handler_keys": sorted(event_handler_keys_set)[: self.LEGACY_MAX_CONTROLS * 3],
             "event_handler_count_exact": event_handler_count_exact,
@@ -2084,6 +2145,7 @@ Analyze this code chunk and extract behavior compactly.
                 "form_count_unmapped_files": unmapped_form_file_count,
                 "controls": sorted(controls_set)[: self.LEGACY_MAX_CONTROLS],
                 "activex_dependencies": sorted(activex_set)[: self.LEGACY_MAX_DEPENDENCIES],
+                "dependency_references": dependency_reference_rows,
                 "event_handlers": sorted(event_handlers_set)[: self.LEGACY_MAX_CONTROLS],
                 "event_handler_keys": sorted(event_handler_keys_set)[: self.LEGACY_MAX_CONTROLS * 3],
                 "event_handler_count_exact": event_handler_count_exact,
@@ -2415,6 +2477,7 @@ Analyze this code chunk and extract behavior compactly.
             "forms": forms_details,
             "form_coverage": form_coverage,
             "activex_controls": vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [],
+            "dependency_references": vb6.get("dependency_references", []) if isinstance(vb6.get("dependency_references", []), list) else [],
             "dll_dependencies": [str(x) for x in vb6.get("activex_dependencies", []) if str(x).upper().endswith(".DLL")] if isinstance(vb6.get("activex_dependencies", []), list) else [],
             "ocx_dependencies": [str(x) for x in vb6.get("activex_dependencies", []) if str(x).upper().endswith(".OCX")] if isinstance(vb6.get("activex_dependencies", []), list) else [],
             "event_handlers": vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [],
@@ -2447,6 +2510,7 @@ Analyze this code chunk and extract behavior compactly.
                 "form_count_unmapped_files": unmapped_form_file_count,
                 "controls": vb6.get("controls", []) if isinstance(vb6.get("controls", []), list) else [],
                 "activex_dependencies": vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [],
+                "dependency_references": vb6.get("dependency_references", []) if isinstance(vb6.get("dependency_references", []), list) else [],
                 "event_handlers": vb6.get("event_handlers", []) if isinstance(vb6.get("event_handlers", []), list) else [],
                 "event_handler_keys": vb6.get("event_handler_keys", []) if isinstance(vb6.get("event_handler_keys", []), list) else [],
                 "event_handler_count_exact": event_handler_count_exact,

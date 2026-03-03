@@ -58,6 +58,7 @@ node index.js --md /path/to/analyst-output.md --out ./output
 
 Output directory will contain:
 - `data.json` — parsed structured data
+- `code_literal_scan.json` — BA-facing prose scanner report (PASS/WARN/FAIL + findings)
 - `ba_brief.docx` — Business Analyst Brief
 - `tech_workbook.docx` — Technical Workbook
 
@@ -67,10 +68,13 @@ Output directory will contain:
 # 1. Parse MD → data.json
 node scripts/parse-md.js --md analyst-output.md --out data.json
 
-# 2. Generate BA Brief
+# 2. Optional: run code literal scan on parsed data
+node scripts/run-code-literal-scan.js --data data.json --out code_literal_scan.json
+
+# 3. Generate BA Brief
 node generators/ba-brief.js --data data.json --out ba_brief.docx
 
-# 3. Generate Technical Workbook
+# 4. Generate Technical Workbook
 node generators/tech-workbook.js --data data.json --out tech_workbook.docx
 ```
 
@@ -79,7 +83,7 @@ node generators/tech-workbook.js --data data.json --out tech_workbook.docx
 ```javascript
 const { generate } = require('./synthetix-docgen');
 
-const { baPath, techPath, dataPath } = await generate({
+const { baPath, techPath, dataPath, literalScanPath } = await generate({
   mdPath:  '/path/to/analyst-output.md',
   outDir:  '/path/to/output',
   meta: {
@@ -91,6 +95,17 @@ const { baPath, techPath, dataPath } = await generate({
 
 console.log(baPath);   // /path/to/output/ba_brief.docx
 console.log(techPath); // /path/to/output/tech_workbook.docx
+console.log(literalScanPath); // /path/to/output/code_literal_scan.json
+```
+
+### Standalone literal scan
+
+```bash
+# scan from parsed JSON
+node scripts/run-code-literal-scan.js --data ./output/data.json --out ./output/code_literal_scan.json
+
+# or scan directly from MD (internally parses first)
+node scripts/run-code-literal-scan.js --md analyst-output.md --out ./output/code_literal_scan.json
 ```
 
 ### Parse-only (for use with your own renderer or LLM-based data extraction)

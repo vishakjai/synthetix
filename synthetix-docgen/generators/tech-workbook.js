@@ -34,6 +34,19 @@ const W   = 10440;
 const MG  = { top: 80, bottom: 80, left: 120, right: 120 };
 const SMG = { top: 60, bottom: 60, left: 80,  right: 80  };
 
+function displayProjectLabel(value) {
+  const v = String(value || '').trim();
+  if (!v) return '(unmapped)';
+  if (/^inferred:\(root\)$/i.test(v)) return '(Project Unresolved)';
+  return v.replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+}
+
+function displayFormLabel(value) {
+  const v = String(value || '').trim();
+  if (!v) return '—';
+  return v.replace(/Inferred:\(root\)::/ig, '').replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+}
+
 // ── Borders ────────────────────────────────────────────────────────────────
 const bdr  = (c = 'CCCCCC') => ({ style: BorderStyle.SINGLE, size: 1, color: c });
 const allB = (c = 'CCCCCC') => ({ top: bdr(c), bottom: bdr(c), left: bdr(c), right: bdr(c) });
@@ -159,6 +172,22 @@ const para = (t, o = {}) => new Paragraph({
 const sp   = () => new Paragraph({ children: [new TextRun('')], spacing: { before: 60, after: 60 } });
 const pb   = () => new Paragraph({ children: [new PageBreak()] });
 
+function buildQaAlerts(data) {
+  const qa = (data && typeof data === 'object' && data.qa && typeof data.qa === 'object') ? data.qa : {};
+  const checks = (qa.checks && typeof qa.checks === 'object') ? qa.checks : {};
+  const out = [];
+  const compliance = checks.compliance_constraints_applied;
+  if (compliance && String(compliance.status || '').toUpperCase() === 'FAIL') {
+    const detail = String(compliance.detail || '').trim();
+    out.push(
+      detail
+        ? `Compliance gate failed: ${detail}`
+        : 'Compliance gate failed: compliance constraints are missing for detected security/privacy risks.'
+    );
+  }
+  return out;
+}
+
 // ── Header / Footer ────────────────────────────────────────────────────────
 const mkHeader = (title) => new Header({
   children: [new Paragraph({
@@ -235,7 +264,7 @@ function buildProjectInventory(data) {
         hCell('Shared Tables', 1800, C.SLATE),
       ]}),
       ...(data.projects || []).map(p => new TableRow({ children: [
-        cell(p.project, 3000, { bold: true }),
+        cell(displayProjectLabel(p.project_display || p.project), 3000, { bold: true }),
         cell(p.type, 1200, { fill: C.GREY, align: AlignmentType.CENTER }),
         codeCell(p.startup, 1000),
         cell(p.members, 1000, { align: AlignmentType.CENTER }),
@@ -249,41 +278,44 @@ function buildProjectInventory(data) {
 
 // ── Section 2: K-Tech Form Technical Profile ──────────────────────────────
 function buildKTech(data) {
-  const byProj = {};
+  const forms = [];
+  const seen = new Set();
   for (const f of (data.mapped_forms || [])) {
-    const p = (f.project || '').split(' [')[0];
-    if (!byProj[p]) byProj[p] = [];
-    byProj[p].push(f);
+    const form = String(f?.form || '').trim();
+    if (!form || form.startsWith('[')) continue;
+    const project = String(f?.project_display || f?.project || '').trim();
+    const status = String(f?.status || '').trim().toLowerCase();
+    const key = `${form}||${project}||${status || 'mapped'}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    forms.push({ ...f, _project_label: displayProjectLabel((project.split(' [')[0] || '(unmapped)').trim()) });
   }
+  forms.sort((a, b) => {
+    const pa = String(a._project_label || '');
+    const pb = String(b._project_label || '');
+    if (pa !== pb) return pa.localeCompare(pb);
+    const fa = String(a.display_name || a.form || '');
+    const fb = String(b.display_name || b.form || '');
+    return fa.localeCompare(fb);
+  });
 
   const ktRows = [];
-  for (const [proj, forms] of Object.entries(byProj)) {
-    ktRows.push(new TableRow({ children: [new TableCell({
-      columnSpan: 7, width: { size: W, type: WidthType.DXA },
-      borders: allB(C.SLATE),
-      shading: { fill: 'E2E8F0', type: ShadingType.CLEAR },
-      margins: MG,
-      children: [new Paragraph({
-        children: [new TextRun({ text: proj, font: 'Arial', size: 18, bold: true, color: C.SLATE })],
-      })],
-    })]}));
-
-    for (const f of forms) {
-      const shortForm = (f.form || '').split('::').pop() || f.form;
-      ktRows.push(new TableRow({ children: [
-        cell(shortForm, 1600, { bold: true }),
-        cell(f.form_type, 1000, {
-          fill:  f.form_type === 'MDI_Host' ? C.LTEAL : C.GREY,
-          color: f.form_type === 'MDI_Host' ? C.TEAL  : C.DGREY,
-          bold: true, align: AlignmentType.CENTER, sz: 16,
-        }),
-        cell(f.activex || 'n/a', 1600, { sz: 15, color: (f.activex && f.activex !== 'n/a') ? C.AMBR : C.DGREY }),
-        cell(f.db_tables || 'n/a', 1800, { sz: 15 }),
-        cell(f.actions || 'n/a', 1400, { sz: 15, color: C.DGREY }),
-        cell(f.coverage || '—', 600, { align: AlignmentType.CENTER, sz: 16 }),
-        cell(f.confidence || '—', 1440, { align: AlignmentType.CENTER, sz: 16, color: C.DGREY }),
-      ]}));
-    }
+  for (const f of forms) {
+    const shortForm = displayFormLabel((f.form || '').split('::').pop() || f.form);
+    const formLabel = `${shortForm} (${f._project_label})`;
+    ktRows.push(new TableRow({ children: [
+      cell(formLabel, 1600, { bold: true }),
+      cell(f.form_type, 1000, {
+        fill:  f.form_type === 'MDI_Host' ? C.LTEAL : C.GREY,
+        color: f.form_type === 'MDI_Host' ? C.TEAL  : C.DGREY,
+        bold: true, align: AlignmentType.CENTER, sz: 16,
+      }),
+      cell(f.activex || 'n/a', 1600, { sz: 15, color: (f.activex && f.activex !== 'n/a') ? C.AMBR : C.DGREY }),
+      cell(f.db_tables || 'n/a', 1800, { sz: 15 }),
+      cell(f.actions || 'n/a', 1400, { sz: 15, color: C.DGREY }),
+      cell(f.coverage || '—', 600, { align: AlignmentType.CENTER, sz: 16 }),
+      cell(f.confidence || '—', 1440, { align: AlignmentType.CENTER, sz: 16, color: C.DGREY }),
+    ]}));
   }
 
   return new Table({
@@ -320,7 +352,7 @@ function buildDependencies(data) {
           cell(d.name, 2400, { bold: true }),
           cell(d.type, 1000, { fill: C.GREY, align: AlignmentType.CENTER }),
           codeCell(d.guid, 2200),
-          cell(d.forms, 1800, { sz: 15, color: C.DGREY }),
+          cell(displayFormLabel(d.forms), 1800, { sz: 15, color: C.DGREY }),
           cell(d.risk, 1200, { fill, color, sz: 15 }),
           cell(d.action, 1840, { sz: 15 }),
         ]});
@@ -431,7 +463,8 @@ function buildFlowTraces(data) {
 // ── Section 6: Dependency Map ──────────────────────────────────────────────
 function buildDepMap(data) {
   const depMap       = data.dep_map || [];
-  const navDeps      = depMap.filter(d => d.type === 'mdi_navigation');
+  const navTypes     = new Set(['mdi_navigation', 'mdi_navigation_excluded', 'mdi_navigation_unresolved', 'report_navigation']);
+  const navDeps      = depMap.filter(d => navTypes.has(d.type));
   const sharedDeps   = depMap.filter(d => d.type === 'shared_module_call');
   const conflictDeps = depMap.filter(d => d.type === 'cross_variant_schema_conflict');
 
@@ -446,9 +479,26 @@ function buildDepMap(data) {
 
   const navTable = mkDepTable(
     navDeps.map(d => new TableRow({ children: [
-      codeCell(d.from, 2800), codeCell(d.to, 1800),
-      cell((d.type || '').replace(/_/g, ' '), 1600, { fill: C.LTEAL, color: C.TEAL, sz: 15, align: AlignmentType.CENTER }),
-      codeCell(d.evidence, 3000, C.GREY),
+          codeCell(displayFormLabel(d.from), 2800), codeCell(displayFormLabel(d.to), 1800),
+      (() => {
+        const t = String(d.type || '').toLowerCase();
+        let label = t.replace(/_/g, ' ');
+        let fill = C.LTEAL;
+        let color = C.TEAL;
+        if (t === 'report_navigation') label = 'report navigation';
+        if (t === 'mdi_navigation_excluded') {
+          label = 'mdi nav (excluded)';
+          fill = C.LAMB;
+          color = C.AMBR;
+        }
+        if (t === 'mdi_navigation_unresolved') {
+          label = 'mdi nav (unresolved)';
+          fill = C.LRED;
+          color = C.RED;
+        }
+        return cell(label, 1600, { fill, color, sz: 15, align: AlignmentType.CENTER });
+      })(),
+          codeCell(displayFormLabel(d.evidence), 3000, C.GREY),
       cell(d.blocks || '—', 1240, { sz: 15, color: C.DGREY }),
     ]})),
     [2800, 1800, 1600, 3000, 1240],
@@ -457,9 +507,9 @@ function buildDepMap(data) {
 
   const sharedTable = mkDepTable(
     sharedDeps.map(d => new TableRow({ children: [
-      codeCell(d.from, 2800), codeCell(d.to, 1800),
+          codeCell(displayFormLabel(d.from), 2800), codeCell(displayFormLabel(d.to), 1800),
       cell('shared module call', 1600, { fill: C.LAMB, color: C.AMBR, sz: 15, align: AlignmentType.CENTER }),
-      codeCell(d.evidence, 3000, C.GREY),
+          codeCell(displayFormLabel(d.evidence), 3000, C.GREY),
       cell(d.blocks || '—', 1240, { sz: 15, color: C.DGREY }),
     ]})),
     [2800, 1800, 1600, 3000, 1240],
@@ -468,7 +518,7 @@ function buildDepMap(data) {
 
   const conflictTable = mkDepTable(
     conflictDeps.map(d => new TableRow({ children: [
-      cell(d.from, 2200, { bold: true }), cell(d.to, 2200, { bold: true }),
+          cell(displayFormLabel(d.from), 2200, { bold: true }), cell(displayFormLabel(d.to), 2200, { bold: true }),
       cell('schema conflict', 1600, { fill: C.LRED, color: C.RED, bold: true, sz: 15, align: AlignmentType.CENTER }),
       cell(d.evidence, 4440, { sz: 15 }),
     ]})),
@@ -514,7 +564,7 @@ function buildRiskRegister(data) {
         return new TableRow({ children: [
           cell(r.id, 900, { fill, color, bold: true }),
           sevCell(r.severity, 1000),
-          codeCell(r.form, 1800),
+          codeCell(displayFormLabel(r.form_display || r.form), 1800),
           cell(r.description, 4240, { sz: 16 }),
           cell(r.action, 2500, { sz: 16 }),
         ]});
@@ -541,7 +591,7 @@ function buildFindings(data) {
       ...findings.map(f => new TableRow({ children: [
         cell(f.id, 900, { fill: C.LAMB, bold: true, color: C.AMBR }),
         cell(f.category, 2000),
-        codeCell(f.form, 1800),
+        codeCell(displayFormLabel(f.form_display || f.form), 1800),
         cell(f.description, 3640, { sz: 16 }),
         cell(f.action, 2100, { sz: 16 }),
       ]})),
@@ -560,6 +610,7 @@ async function generateTechWb(data, outputPath) {
   const { navTable, sharedTable, conflictTable } = buildDepMap(data);
   const riskTable    = buildRiskRegister(data);
   const findingsContent = buildFindings(data);
+  const qaAlerts = buildQaAlerts(data);
 
   const doc = new Document({
     styles: {
@@ -614,6 +665,7 @@ async function generateTechWb(data, outputPath) {
         h2('Cross-Variant Schema Conflicts'), sp(), conflictTable, pb(),
 
         h1('7. Risk Register — Technical Detail'),
+        ...(qaAlerts.length ? qaAlerts.map((msg) => para(msg, { color: C.RED, bold: true })) : []),
         para('All risks flagged during analysis. Engineering team to review and confirm remediation approach for each. High severity items are hard blockers for production go-live.'),
         sp(), riskTable, pb(),
 

@@ -5,6 +5,7 @@ Persistent settings store for integrations, policy packs, and RBAC.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ RBAC_PERMISSIONS = {
     "manage_rbac",
     "view_engineering_logs",
 }
+USER_STATUSES = {"active", "inactive"}
 INTEGRATION_SECRET_KEYS = {
     "github": "token",
     "jira": "api_token",
@@ -36,6 +38,12 @@ LLM_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-20250514",
     "openai": "gpt-4o",
 }
+KNOWLEDGE_SOURCE_TYPES = {"file", "wiki", "repo", "standards", "issues", "other"}
+KNOWLEDGE_SCOPES = {"global", "workspace", "client", "project"}
+DATA_CLASSIFICATIONS = {"public", "internal", "confidential", "regulated"}
+KNOWLEDGE_SET_STATES = {"draft", "published", "deprecated"}
+SPECIALIST_TOOL_MODES = {"read_only", "read_write"}
+SPECIALIST_DEPTH_TIERS = {"shallow", "standard", "deep"}
 
 
 def _utc_now() -> str:
@@ -56,6 +64,17 @@ def _safe_json_write(path: Path, payload: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=True))
     tmp.replace(path)
+
+
+def _stable_json(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    except Exception:
+        return str(value)
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()
 
 
 def _mask_secret(secret: str) -> str:
@@ -96,9 +115,10 @@ def _default_role_permissions() -> dict[str, list[str]]:
 
 
 def _default_settings() -> dict[str, Any]:
+    now = _utc_now()
     return {
         "version": 1,
-        "updated_at": _utc_now(),
+        "updated_at": now,
         "integrations": {
             "github": {
                 "base_url": "https://api.github.com",
@@ -176,6 +196,25 @@ def _default_settings() -> dict[str, Any]:
             "assignments": [],
             "sso": {"enabled": False, "provider": ""},
         },
+        "users": [
+            {
+                "id": "usr-local",
+                "email": "local-user@synthetix.local",
+                "display_name": "Local User",
+                "status": "active",
+                "role": "engineering",
+                "created_at": now,
+                "updated_at": now,
+                "last_seen_at": "",
+            }
+        ],
+        "knowledge_hub": {
+            "sources": [],
+            "sets": [],
+            "agent_brains": [],
+            "project_bindings": [],
+            "specialists": [],
+        },
         "audit_log": [],
     }
 
@@ -251,6 +290,119 @@ class SettingsStore:
             if not isinstance(current, list):
                 data["rbac"]["roles"][role] = list(perms)
 
+        users = data.get("users", [])
+        if not isinstance(users, list):
+            users = []
+        normalized_users: list[dict[str, Any]] = []
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            email = str(user.get("email", "")).strip().lower()
+            if "@" not in email:
+                continue
+            status = str(user.get("status", "active")).strip().lower()
+            role = str(user.get("role", "engineering")).strip().lower()
+            normalized_users.append(
+                {
+                    "id": str(user.get("id", "")).strip() or f"usr-{uuid.uuid4().hex[:10]}",
+                    "email": email,
+                    "display_name": str(user.get("display_name", "")).strip() or email.split("@", 1)[0],
+                    "status": status if status in USER_STATUSES else "active",
+                    "role": role if role in RBAC_ROLES else "engineering",
+                    "created_at": str(user.get("created_at", "")).strip() or _utc_now(),
+                    "updated_at": str(user.get("updated_at", "")).strip() or _utc_now(),
+                    "last_seen_at": str(user.get("last_seen_at", "")).strip(),
+                }
+            )
+        if not normalized_users:
+            normalized_users = copy.deepcopy(_default_settings().get("users", []))
+        data["users"] = sorted(normalized_users, key=lambda row: str(row.get("email", "")))
+
+        knowledge_hub = data.get("knowledge_hub", {})
+        if not isinstance(knowledge_hub, dict):
+            knowledge_hub = {}
+        for key in ("sources", "sets", "agent_brains", "project_bindings", "specialists"):
+            bucket = knowledge_hub.get(key, [])
+            if not isinstance(bucket, list):
+                bucket = []
+            knowledge_hub[key] = bucket
+        normalized_brains: list[dict[str, Any]] = []
+        for brain in knowledge_hub.get("agent_brains", []):
+            if not isinstance(brain, dict):
+                continue
+            tools = brain.get("allowed_tools", [])
+            if not isinstance(tools, list):
+                tools = []
+            scope = str(brain.get("memory_scope", "project")).strip().lower()
+            if scope not in {"project", "client", "workspace", "global"}:
+                scope = "project"
+            normalized_brains.append(
+                {
+                    "brain_id": str(brain.get("brain_id", "")).strip() or f"brain-{uuid.uuid4().hex[:10]}",
+                    "agent_key": str(brain.get("agent_key", "")).strip(),
+                    "knowledge_set_ids": [str(item).strip() for item in brain.get("knowledge_set_ids", []) if str(item).strip()] if isinstance(brain.get("knowledge_set_ids", []), list) else [],
+                    "top_k": max(1, min(50, int(brain.get("top_k", 8) or 8))),
+                    "citation_required": bool(brain.get("citation_required", True)),
+                    "fallback_behavior": str(brain.get("fallback_behavior", "ask_clarification")).strip() or "ask_clarification",
+                    "allowed_tools": sorted({str(item).strip() for item in tools if str(item).strip()}),
+                    "memory_scope": scope,
+                    "memory_enabled": bool(brain.get("memory_enabled", True)),
+                    "created_at": str(brain.get("created_at", "")).strip() or _utc_now(),
+                    "updated_at": str(brain.get("updated_at", "")).strip() or _utc_now(),
+                }
+            )
+        knowledge_hub["agent_brains"] = normalized_brains
+        normalized_specialists: list[dict[str, Any]] = []
+        for specialist in knowledge_hub.get("specialists", []):
+            if not isinstance(specialist, dict):
+                continue
+            try:
+                stage_hint = max(0, int(specialist.get("stage_hint", 0) or 0))
+            except (TypeError, ValueError):
+                stage_hint = 0
+            try:
+                min_match_score = max(1, min(10, int(specialist.get("min_match_score", 1) or 1)))
+            except (TypeError, ValueError):
+                min_match_score = 1
+            intent_keywords = specialist.get("intent_keywords", [])
+            if not isinstance(intent_keywords, list):
+                intent_keywords = []
+            file_patterns = specialist.get("file_patterns", [])
+            if not isinstance(file_patterns, list):
+                file_patterns = []
+            artifact_triggers = specialist.get("artifact_triggers", [])
+            if not isinstance(artifact_triggers, list):
+                artifact_triggers = []
+            tool_mode = str(specialist.get("tool_mode", "read_only")).strip().lower()
+            if tool_mode not in SPECIALIST_TOOL_MODES:
+                tool_mode = "read_only"
+            depth_tier = str(specialist.get("depth_tier", "standard")).strip().lower()
+            if depth_tier not in SPECIALIST_DEPTH_TIERS:
+                depth_tier = "standard"
+            normalized_specialists.append(
+                {
+                    "specialist_id": str(specialist.get("specialist_id", "")).strip() or f"spec-{uuid.uuid4().hex[:10]}",
+                    "name": str(specialist.get("name", "")).strip() or "Unnamed Specialist",
+                    "description": str(specialist.get("description", "")).strip(),
+                    "domain": str(specialist.get("domain", "")).strip().lower(),
+                    "linked_agent_key": str(specialist.get("linked_agent_key", "")).strip(),
+                    "stage_hint": stage_hint,
+                    "intent_keywords": sorted({str(item).strip().lower() for item in intent_keywords if str(item).strip()}),
+                    "file_patterns": sorted({str(item).strip().lower() for item in file_patterns if str(item).strip()}),
+                    "artifact_triggers": sorted({str(item).strip().lower() for item in artifact_triggers if str(item).strip()}),
+                    "min_match_score": min_match_score,
+                    "tool_mode": tool_mode,
+                    "depth_tier": depth_tier,
+                    "auto_route": bool(specialist.get("auto_route", True)),
+                    "enabled": bool(specialist.get("enabled", True)),
+                    "created_at": str(specialist.get("created_at", "")).strip() or _utc_now(),
+                    "updated_at": str(specialist.get("updated_at", "")).strip() or _utc_now(),
+                }
+            )
+        normalized_specialists.sort(key=lambda row: (str(row.get("name", "")).lower(), str(row.get("specialist_id", ""))))
+        knowledge_hub["specialists"] = normalized_specialists
+        data["knowledge_hub"] = knowledge_hub
+
         data.setdefault("audit_log", [])
         if not isinstance(data["audit_log"], list):
             data["audit_log"] = []
@@ -291,6 +443,13 @@ class SettingsStore:
             "policy_packs": sorted(POLICY_PACKS),
             "rbac_roles": sorted(RBAC_ROLES),
             "rbac_permissions": sorted(RBAC_PERMISSIONS),
+            "knowledge_source_types": sorted(KNOWLEDGE_SOURCE_TYPES),
+            "knowledge_scopes": sorted(KNOWLEDGE_SCOPES),
+            "data_classifications": sorted(DATA_CLASSIFICATIONS),
+            "knowledge_set_states": sorted(KNOWLEDGE_SET_STATES),
+            "specialist_tool_modes": sorted(SPECIALIST_TOOL_MODES),
+            "specialist_depth_tiers": sorted(SPECIALIST_DEPTH_TIERS),
+            "user_statuses": sorted(USER_STATUSES),
         }
         return payload
 
@@ -899,3 +1058,923 @@ class SettingsStore:
         )
         self._save(data)
         return self._sanitize(data)
+
+    @staticmethod
+    def _normalize_email(email: str) -> str:
+        return str(email or "").strip().lower()
+
+    @staticmethod
+    def _normalize_role(role: str, default: str = "engineering") -> str:
+        role_key = str(role or "").strip().lower()
+        return role_key if role_key in RBAC_ROLES else default
+
+    @staticmethod
+    def _normalize_status(status: str, default: str = "active") -> str:
+        status_key = str(status or "").strip().lower()
+        return status_key if status_key in USER_STATUSES else default
+
+    def resolve_user_access(self, email: str) -> dict[str, Any]:
+        user_email = self._normalize_email(email)
+        data = self._load()
+        users = data.get("users", [])
+        assignments = data.get("rbac", {}).get("assignments", [])
+        roles = data.get("rbac", {}).get("roles", {})
+        if not isinstance(users, list):
+            users = []
+        if not isinstance(assignments, list):
+            assignments = []
+        if not isinstance(roles, dict):
+            roles = {}
+
+        profile: dict[str, Any] = {}
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            if self._normalize_email(user.get("email", "")) != user_email:
+                continue
+            profile = copy.deepcopy(user)
+            break
+
+        assigned_role = ""
+        for item in assignments:
+            if not isinstance(item, dict):
+                continue
+            if self._normalize_email(item.get("email", "")) != user_email:
+                continue
+            assigned_role = self._normalize_role(str(item.get("role", "")), default="")
+            break
+
+        fallback_name = user_email.split("@", 1)[0] if "@" in user_email else "Local User"
+        role = assigned_role or self._normalize_role(str(profile.get("role", "")))
+        permissions = roles.get(role, [])
+        if not isinstance(permissions, list):
+            permissions = []
+        resolved_profile = {
+            "id": str(profile.get("id", "")).strip() or f"usr-{fallback_name}",
+            "email": user_email or "local-user@synthetix.local",
+            "display_name": str(profile.get("display_name", "")).strip() or fallback_name,
+            "status": self._normalize_status(str(profile.get("status", "active"))),
+            "role": role,
+            "permissions": sorted({str(item).strip() for item in permissions if str(item).strip()}),
+            "known_user": bool(profile),
+        }
+        return resolved_profile
+
+    def upsert_user(self, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        incoming = payload if isinstance(payload, dict) else {}
+        user_email = self._normalize_email(str(incoming.get("email", "")))
+        if "@" not in user_email:
+            raise ValueError("valid email is required")
+        display_name = str(incoming.get("display_name", "")).strip() or user_email.split("@", 1)[0]
+        role_key = self._normalize_role(str(incoming.get("role", "engineering")))
+        status_key = self._normalize_status(str(incoming.get("status", "active")))
+
+        data = self._load()
+        users = data.get("users", [])
+        if not isinstance(users, list):
+            users = []
+
+        now = _utc_now()
+        updated = False
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            if self._normalize_email(user.get("email", "")) != user_email:
+                continue
+            user["display_name"] = display_name
+            user["role"] = role_key
+            user["status"] = status_key
+            user["updated_at"] = now
+            updated = True
+            break
+        if not updated:
+            users.append(
+                {
+                    "id": f"usr-{uuid.uuid4().hex[:10]}",
+                    "email": user_email,
+                    "display_name": display_name,
+                    "status": status_key,
+                    "role": role_key,
+                    "created_at": now,
+                    "updated_at": now,
+                    "last_seen_at": "",
+                }
+            )
+        users.sort(key=lambda row: str(row.get("email", "")))
+        data["users"] = users
+
+        # Keep RBAC assignment aligned with explicit user role.
+        rbac = data.get("rbac", {})
+        if not isinstance(rbac, dict):
+            rbac = {}
+        assignments = rbac.get("assignments", [])
+        if not isinstance(assignments, list):
+            assignments = []
+        assignment_found = False
+        for item in assignments:
+            if not isinstance(item, dict):
+                continue
+            if self._normalize_email(item.get("email", "")) != user_email:
+                continue
+            item["role"] = role_key
+            item["updated_at"] = now
+            assignment_found = True
+            break
+        if not assignment_found:
+            assignments.append({"email": user_email, "role": role_key, "created_at": now})
+        assignments.sort(key=lambda row: str(row.get("email", "")))
+        rbac["assignments"] = assignments
+        data["rbac"] = rbac
+
+        self._append_audit(
+            data,
+            action="user_upserted",
+            target=user_email,
+            actor=actor,
+            details={"role": role_key, "status": status_key},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def set_user_status(self, email: str, status: str, actor: str = "local-user") -> dict[str, Any]:
+        user_email = self._normalize_email(email)
+        if "@" not in user_email:
+            raise ValueError("valid email is required")
+        status_key = self._normalize_status(status)
+        data = self._load()
+        users = data.get("users", [])
+        if not isinstance(users, list):
+            users = []
+        found = False
+        for user in users:
+            if not isinstance(user, dict):
+                continue
+            if self._normalize_email(user.get("email", "")) != user_email:
+                continue
+            user["status"] = status_key
+            user["updated_at"] = _utc_now()
+            found = True
+            break
+        if not found:
+            raise ValueError("user not found")
+        data["users"] = users
+        self._append_audit(
+            data,
+            action="user_status_updated",
+            target=user_email,
+            actor=actor,
+            details={"status": status_key},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def remove_user(self, email: str, actor: str = "local-user") -> dict[str, Any]:
+        user_email = self._normalize_email(email)
+        if not user_email:
+            raise ValueError("email is required")
+        data = self._load()
+        users = data.get("users", [])
+        if not isinstance(users, list):
+            users = []
+        next_users = [row for row in users if self._normalize_email(row.get("email", "")) != user_email]
+        if len(next_users) == len(users):
+            raise ValueError("user not found")
+        data["users"] = next_users
+
+        # Also remove RBAC assignment when user is removed.
+        rbac = data.get("rbac", {})
+        if not isinstance(rbac, dict):
+            rbac = {}
+        assignments = rbac.get("assignments", [])
+        if not isinstance(assignments, list):
+            assignments = []
+        rbac["assignments"] = [row for row in assignments if self._normalize_email(row.get("email", "")) != user_email]
+        data["rbac"] = rbac
+
+        self._append_audit(data, action="user_removed", target=user_email, actor=actor, details={})
+        self._save(data)
+        return self._sanitize(data)
+
+    @staticmethod
+    def _normalize_source_type(source_type: str) -> str:
+        value = str(source_type or "").strip().lower()
+        return value if value in KNOWLEDGE_SOURCE_TYPES else "other"
+
+    @staticmethod
+    def _normalize_scope(scope: str) -> str:
+        value = str(scope or "").strip().lower()
+        return value if value in KNOWLEDGE_SCOPES else "project"
+
+    @staticmethod
+    def _normalize_data_classification(classification: str) -> str:
+        value = str(classification or "").strip().lower()
+        return value if value in DATA_CLASSIFICATIONS else "internal"
+
+    @staticmethod
+    def _normalize_set_state(state: str) -> str:
+        value = str(state or "").strip().lower()
+        return value if value in KNOWLEDGE_SET_STATES else "draft"
+
+    def upsert_knowledge_source(self, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        incoming = payload if isinstance(payload, dict) else {}
+        name = str(incoming.get("name", "")).strip()
+        if not name:
+            raise ValueError("name is required")
+        source_id = str(incoming.get("source_id", "")).strip() or f"src-{uuid.uuid4().hex[:10]}"
+        source_type = self._normalize_source_type(str(incoming.get("type", "")))
+        scope = self._normalize_scope(str(incoming.get("scope", "")))
+        classification = self._normalize_data_classification(str(incoming.get("data_classification", "")))
+        status = str(incoming.get("status", "active")).strip().lower() or "active"
+        tags = incoming.get("tags", [])
+        if not isinstance(tags, list):
+            tags = [str(part).strip() for part in str(tags).split(",")]
+        clean_tags = sorted({str(tag).strip() for tag in tags if str(tag).strip()})
+        now = _utc_now()
+
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        sources = hub.get("sources", [])
+        if not isinstance(sources, list):
+            sources = []
+
+        updated = False
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            if str(source.get("source_id", "")).strip() != source_id:
+                continue
+            source.update(
+                {
+                    "name": name,
+                    "type": source_type,
+                    "scope": scope,
+                    "data_classification": classification,
+                    "status": status,
+                    "description": str(incoming.get("description", "")).strip(),
+                    "location": str(incoming.get("location", "")).strip(),
+                    "refresh_policy": str(incoming.get("refresh_policy", "manual")).strip() or "manual",
+                    "retention_policy": str(incoming.get("retention_policy", "persist")).strip() or "persist",
+                    "tags": clean_tags,
+                    "updated_at": now,
+                }
+            )
+            updated = True
+            break
+        if not updated:
+            sources.append(
+                {
+                    "source_id": source_id,
+                    "name": name,
+                    "type": source_type,
+                    "scope": scope,
+                    "data_classification": classification,
+                    "status": status,
+                    "description": str(incoming.get("description", "")).strip(),
+                    "location": str(incoming.get("location", "")).strip(),
+                    "refresh_policy": str(incoming.get("refresh_policy", "manual")).strip() or "manual",
+                    "retention_policy": str(incoming.get("retention_policy", "persist")).strip() or "persist",
+                    "tags": clean_tags,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        sources.sort(key=lambda row: str(row.get("name", "")).lower())
+        hub["sources"] = sources
+        data["knowledge_hub"] = hub
+        self._append_audit(
+            data,
+            action="knowledge_source_upserted",
+            target=source_id,
+            actor=actor,
+            details={"name": name, "scope": scope},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def remove_knowledge_source(self, source_id: str, actor: str = "local-user") -> dict[str, Any]:
+        target_id = str(source_id or "").strip()
+        if not target_id:
+            raise ValueError("source_id is required")
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        sources = hub.get("sources", [])
+        if not isinstance(sources, list):
+            sources = []
+        next_sources = [row for row in sources if str(row.get("source_id", "")).strip() != target_id]
+        if len(next_sources) == len(sources):
+            raise ValueError("knowledge source not found")
+        hub["sources"] = next_sources
+
+        # Remove references from sets.
+        sets = hub.get("sets", [])
+        if not isinstance(sets, list):
+            sets = []
+        for set_row in sets:
+            if not isinstance(set_row, dict):
+                continue
+            source_ids = set_row.get("source_ids", [])
+            if not isinstance(source_ids, list):
+                source_ids = []
+            set_row["source_ids"] = [sid for sid in source_ids if str(sid).strip() != target_id]
+            set_row["updated_at"] = _utc_now()
+        hub["sets"] = sets
+        data["knowledge_hub"] = hub
+
+        self._append_audit(data, action="knowledge_source_removed", target=target_id, actor=actor, details={})
+        self._save(data)
+        return self._sanitize(data)
+
+    def upsert_knowledge_set(self, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        incoming = payload if isinstance(payload, dict) else {}
+        name = str(incoming.get("name", "")).strip()
+        if not name:
+            raise ValueError("name is required")
+        set_id = str(incoming.get("set_id", "")).strip() or f"set-{uuid.uuid4().hex[:10]}"
+        version = str(incoming.get("version", "1.0.0")).strip() or "1.0.0"
+        publish_state = self._normalize_set_state(str(incoming.get("publish_state", "draft")))
+        scope = self._normalize_scope(str(incoming.get("scope", "")))
+        source_ids = incoming.get("source_ids", [])
+        if not isinstance(source_ids, list):
+            source_ids = [part.strip() for part in str(source_ids).split(",")]
+        clean_source_ids = sorted({str(item).strip() for item in source_ids if str(item).strip()})
+        tags = incoming.get("tags", [])
+        if not isinstance(tags, list):
+            tags = [part.strip() for part in str(tags).split(",")]
+        clean_tags = sorted({str(item).strip() for item in tags if str(item).strip()})
+        now = _utc_now()
+
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        sets = hub.get("sets", [])
+        if not isinstance(sets, list):
+            sets = []
+        updated = False
+        for set_row in sets:
+            if not isinstance(set_row, dict):
+                continue
+            if str(set_row.get("set_id", "")).strip() != set_id:
+                continue
+            set_row.update(
+                {
+                    "name": name,
+                    "version": version,
+                    "publish_state": publish_state,
+                    "scope": scope,
+                    "source_ids": clean_source_ids,
+                    "description": str(incoming.get("description", "")).strip(),
+                    "tags": clean_tags,
+                    "updated_at": now,
+                }
+            )
+            updated = True
+            break
+        if not updated:
+            sets.append(
+                {
+                    "set_id": set_id,
+                    "name": name,
+                    "version": version,
+                    "publish_state": publish_state,
+                    "scope": scope,
+                    "source_ids": clean_source_ids,
+                    "description": str(incoming.get("description", "")).strip(),
+                    "tags": clean_tags,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        sets.sort(key=lambda row: str(row.get("name", "")).lower())
+        hub["sets"] = sets
+        data["knowledge_hub"] = hub
+        self._append_audit(
+            data,
+            action="knowledge_set_upserted",
+            target=set_id,
+            actor=actor,
+            details={"name": name, "version": version},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def remove_knowledge_set(self, set_id: str, actor: str = "local-user") -> dict[str, Any]:
+        target_id = str(set_id or "").strip()
+        if not target_id:
+            raise ValueError("set_id is required")
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        sets = hub.get("sets", [])
+        if not isinstance(sets, list):
+            sets = []
+        next_sets = [row for row in sets if str(row.get("set_id", "")).strip() != target_id]
+        if len(next_sets) == len(sets):
+            raise ValueError("knowledge set not found")
+        hub["sets"] = next_sets
+
+        brains = hub.get("agent_brains", [])
+        if not isinstance(brains, list):
+            brains = []
+        for brain in brains:
+            if not isinstance(brain, dict):
+                continue
+            set_ids = brain.get("knowledge_set_ids", [])
+            if not isinstance(set_ids, list):
+                set_ids = []
+            brain["knowledge_set_ids"] = [sid for sid in set_ids if str(sid).strip() != target_id]
+            brain["updated_at"] = _utc_now()
+        hub["agent_brains"] = brains
+
+        bindings = hub.get("project_bindings", [])
+        if not isinstance(bindings, list):
+            bindings = []
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            set_ids = binding.get("knowledge_set_ids", [])
+            if not isinstance(set_ids, list):
+                set_ids = []
+            binding["knowledge_set_ids"] = [sid for sid in set_ids if str(sid).strip() != target_id]
+            binding["updated_at"] = _utc_now()
+        hub["project_bindings"] = bindings
+        data["knowledge_hub"] = hub
+
+        self._append_audit(data, action="knowledge_set_removed", target=target_id, actor=actor, details={})
+        self._save(data)
+        return self._sanitize(data)
+
+    def upsert_agent_brain(self, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        incoming = payload if isinstance(payload, dict) else {}
+        agent_key = str(incoming.get("agent_key", "")).strip()
+        if not agent_key:
+            raise ValueError("agent_key is required")
+        set_ids = incoming.get("knowledge_set_ids", [])
+        if not isinstance(set_ids, list):
+            set_ids = [part.strip() for part in str(set_ids).split(",")]
+        clean_set_ids = sorted({str(item).strip() for item in set_ids if str(item).strip()})
+        top_k = max(1, min(50, int(incoming.get("top_k", 8) or 8)))
+        citation_required = bool(incoming.get("citation_required", True))
+        fallback = str(incoming.get("fallback_behavior", "ask_clarification")).strip() or "ask_clarification"
+        allowed_tools = incoming.get("allowed_tools", [])
+        if not isinstance(allowed_tools, list):
+            allowed_tools = [part.strip() for part in str(allowed_tools).split(",")]
+        clean_tools = sorted({str(item).strip() for item in allowed_tools if str(item).strip()})
+        memory_scope = str(incoming.get("memory_scope", "project")).strip().lower() or "project"
+        if memory_scope not in {"project", "client", "workspace", "global"}:
+            memory_scope = "project"
+        memory_enabled = bool(incoming.get("memory_enabled", True))
+        now = _utc_now()
+
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        brains = hub.get("agent_brains", [])
+        if not isinstance(brains, list):
+            brains = []
+        updated = False
+        for brain in brains:
+            if not isinstance(brain, dict):
+                continue
+            if str(brain.get("agent_key", "")).strip().lower() != agent_key.lower():
+                continue
+            brain.update(
+                {
+                    "agent_key": agent_key,
+                    "knowledge_set_ids": clean_set_ids,
+                    "top_k": top_k,
+                    "citation_required": citation_required,
+                    "fallback_behavior": fallback,
+                    "allowed_tools": clean_tools,
+                    "memory_scope": memory_scope,
+                    "memory_enabled": memory_enabled,
+                    "updated_at": now,
+                }
+            )
+            updated = True
+            break
+        if not updated:
+            brains.append(
+                {
+                    "brain_id": f"brain-{uuid.uuid4().hex[:10]}",
+                    "agent_key": agent_key,
+                    "knowledge_set_ids": clean_set_ids,
+                    "top_k": top_k,
+                    "citation_required": citation_required,
+                    "fallback_behavior": fallback,
+                    "allowed_tools": clean_tools,
+                    "memory_scope": memory_scope,
+                    "memory_enabled": memory_enabled,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        brains.sort(key=lambda row: str(row.get("agent_key", "")).lower())
+        hub["agent_brains"] = brains
+        data["knowledge_hub"] = hub
+        self._append_audit(
+            data,
+            action="agent_brain_upserted",
+            target=agent_key,
+            actor=actor,
+            details={"knowledge_set_ids": clean_set_ids, "top_k": top_k, "allowed_tools": clean_tools, "memory_scope": memory_scope},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def upsert_specialist(self, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        incoming = payload if isinstance(payload, dict) else {}
+        name = str(incoming.get("name", "")).strip()
+        if not name:
+            raise ValueError("name is required")
+        specialist_id = str(incoming.get("specialist_id", "")).strip() or f"spec-{uuid.uuid4().hex[:10]}"
+        domain = str(incoming.get("domain", "")).strip().lower()
+        linked_agent_key = str(incoming.get("linked_agent_key", "")).strip()
+        stage_hint = max(0, int(incoming.get("stage_hint", 0) or 0))
+        min_match_score = max(1, min(10, int(incoming.get("min_match_score", 1) or 1)))
+        tool_mode = str(incoming.get("tool_mode", "read_only")).strip().lower()
+        if tool_mode not in SPECIALIST_TOOL_MODES:
+            tool_mode = "read_only"
+        depth_tier = str(incoming.get("depth_tier", "standard")).strip().lower()
+        if depth_tier not in SPECIALIST_DEPTH_TIERS:
+            depth_tier = "standard"
+
+        def _clean_list(value: Any) -> list[str]:
+            if isinstance(value, list):
+                rows = value
+            else:
+                rows = [part.strip() for part in str(value or "").split(",")]
+            return sorted({str(item).strip().lower() for item in rows if str(item).strip()})
+
+        intent_keywords = _clean_list(incoming.get("intent_keywords", []))
+        file_patterns = _clean_list(incoming.get("file_patterns", []))
+        artifact_triggers = _clean_list(incoming.get("artifact_triggers", []))
+        now = _utc_now()
+
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        specialists = hub.get("specialists", [])
+        if not isinstance(specialists, list):
+            specialists = []
+        updated = False
+        for row in specialists:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("specialist_id", "")).strip() != specialist_id:
+                continue
+            row.update(
+                {
+                    "name": name,
+                    "description": str(incoming.get("description", "")).strip(),
+                    "domain": domain,
+                    "linked_agent_key": linked_agent_key,
+                    "stage_hint": stage_hint,
+                    "intent_keywords": intent_keywords,
+                    "file_patterns": file_patterns,
+                    "artifact_triggers": artifact_triggers,
+                    "min_match_score": min_match_score,
+                    "tool_mode": tool_mode,
+                    "depth_tier": depth_tier,
+                    "auto_route": bool(incoming.get("auto_route", True)),
+                    "enabled": bool(incoming.get("enabled", True)),
+                    "updated_at": now,
+                }
+            )
+            updated = True
+            break
+        if not updated:
+            specialists.append(
+                {
+                    "specialist_id": specialist_id,
+                    "name": name,
+                    "description": str(incoming.get("description", "")).strip(),
+                    "domain": domain,
+                    "linked_agent_key": linked_agent_key,
+                    "stage_hint": stage_hint,
+                    "intent_keywords": intent_keywords,
+                    "file_patterns": file_patterns,
+                    "artifact_triggers": artifact_triggers,
+                    "min_match_score": min_match_score,
+                    "tool_mode": tool_mode,
+                    "depth_tier": depth_tier,
+                    "auto_route": bool(incoming.get("auto_route", True)),
+                    "enabled": bool(incoming.get("enabled", True)),
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        specialists.sort(key=lambda row: (str(row.get("name", "")).lower(), str(row.get("specialist_id", ""))))
+        hub["specialists"] = specialists
+        data["knowledge_hub"] = hub
+        self._append_audit(
+            data,
+            action="specialist_upserted",
+            target=specialist_id,
+            actor=actor,
+            details={
+                "name": name,
+                "domain": domain,
+                "linked_agent_key": linked_agent_key,
+                "auto_route": bool(incoming.get("auto_route", True)),
+            },
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    def remove_specialist(self, specialist_id: str, actor: str = "local-user") -> dict[str, Any]:
+        target_id = str(specialist_id or "").strip()
+        if not target_id:
+            raise ValueError("specialist_id is required")
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        specialists = hub.get("specialists", [])
+        if not isinstance(specialists, list):
+            specialists = []
+        next_rows = [
+            row
+            for row in specialists
+            if str((row if isinstance(row, dict) else {}).get("specialist_id", "")).strip() != target_id
+        ]
+        if len(next_rows) == len(specialists):
+            raise ValueError("specialist not found")
+        hub["specialists"] = next_rows
+        data["knowledge_hub"] = hub
+        self._append_audit(data, action="specialist_removed", target=target_id, actor=actor, details={})
+        self._save(data)
+        return self._sanitize(data)
+
+    def upsert_project_binding(self, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
+        incoming = payload if isinstance(payload, dict) else {}
+        workspace = str(incoming.get("workspace", "")).strip() or "default-workspace"
+        project = str(incoming.get("project", "")).strip() or "default-project"
+        set_ids = incoming.get("knowledge_set_ids", [])
+        if not isinstance(set_ids, list):
+            set_ids = [part.strip() for part in str(set_ids).split(",")]
+        clean_set_ids = sorted({str(item).strip() for item in set_ids if str(item).strip()})
+        policy_mode = str(incoming.get("policy_mode", "balanced")).strip().lower() or "balanced"
+        now = _utc_now()
+
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        bindings = hub.get("project_bindings", [])
+        if not isinstance(bindings, list):
+            bindings = []
+        updated = False
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            if str(binding.get("workspace", "")).strip() != workspace:
+                continue
+            if str(binding.get("project", "")).strip() != project:
+                continue
+            binding.update(
+                {
+                    "knowledge_set_ids": clean_set_ids,
+                    "policy_mode": policy_mode,
+                    "updated_at": now,
+                }
+            )
+            updated = True
+            break
+        if not updated:
+            bindings.append(
+                {
+                    "binding_id": f"bind-{uuid.uuid4().hex[:10]}",
+                    "workspace": workspace,
+                    "project": project,
+                    "knowledge_set_ids": clean_set_ids,
+                    "policy_mode": policy_mode,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        bindings.sort(key=lambda row: (str(row.get("workspace", "")), str(row.get("project", ""))))
+        hub["project_bindings"] = bindings
+        data["knowledge_hub"] = hub
+        self._append_audit(
+            data,
+            action="project_binding_upserted",
+            target=f"{workspace}/{project}",
+            actor=actor,
+            details={"knowledge_set_ids": clean_set_ids, "policy_mode": policy_mode},
+        )
+        self._save(data)
+        return self._sanitize(data)
+
+    @staticmethod
+    def _source_snapshot(source: dict[str, Any]) -> dict[str, Any]:
+        normalized = {
+            "source_id": str(source.get("source_id", "")).strip(),
+            "name": str(source.get("name", "")).strip(),
+            "type": str(source.get("type", "")).strip().lower(),
+            "scope": str(source.get("scope", "")).strip().lower(),
+            "data_classification": str(source.get("data_classification", "")).strip().lower(),
+            "status": str(source.get("status", "")).strip().lower(),
+            "location": str(source.get("location", "")).strip(),
+            "description": str(source.get("description", "")).strip(),
+            "refresh_policy": str(source.get("refresh_policy", "")).strip(),
+            "retention_policy": str(source.get("retention_policy", "")).strip(),
+            "tags": sorted([str(item).strip() for item in source.get("tags", []) if str(item).strip()])
+            if isinstance(source.get("tags", []), list)
+            else [],
+            "updated_at": str(source.get("updated_at", "")).strip(),
+        }
+        digest = _digest(normalized)
+        version_id = f"srcver-{digest[:12]}"
+        return {
+            **normalized,
+            "version_id": version_id,
+            "snapshot_hash": digest,
+        }
+
+    @staticmethod
+    def _set_snapshot(knowledge_set: dict[str, Any]) -> dict[str, Any]:
+        normalized = {
+            "set_id": str(knowledge_set.get("set_id", "")).strip(),
+            "name": str(knowledge_set.get("name", "")).strip(),
+            "version": str(knowledge_set.get("version", "")).strip() or "1.0.0",
+            "publish_state": str(knowledge_set.get("publish_state", "")).strip().lower(),
+            "scope": str(knowledge_set.get("scope", "")).strip().lower(),
+            "description": str(knowledge_set.get("description", "")).strip(),
+            "source_ids": sorted(
+                [str(item).strip() for item in knowledge_set.get("source_ids", []) if str(item).strip()]
+            )
+            if isinstance(knowledge_set.get("source_ids", []), list)
+            else [],
+            "tags": sorted([str(item).strip() for item in knowledge_set.get("tags", []) if str(item).strip()])
+            if isinstance(knowledge_set.get("tags", []), list)
+            else [],
+            "updated_at": str(knowledge_set.get("updated_at", "")).strip(),
+        }
+        digest = _digest(normalized)
+        return {
+            **normalized,
+            "snapshot_hash": digest,
+        }
+
+    def resolve_knowledge_run_context(
+        self,
+        *,
+        workspace: str,
+        project: str,
+        stage_agent_ids: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ws = str(workspace or "").strip() or "default-workspace"
+        proj = str(project or "").strip() or "default-project"
+        stage_map = stage_agent_ids if isinstance(stage_agent_ids, dict) else {}
+        stage_agent_keys = sorted(
+            {
+                str(value).strip()
+                for value in stage_map.values()
+                if str(value).strip()
+            }
+        )
+
+        data = self._load()
+        hub = data.get("knowledge_hub", {})
+        if not isinstance(hub, dict):
+            hub = {}
+        sources = hub.get("sources", [])
+        if not isinstance(sources, list):
+            sources = []
+        sets = hub.get("sets", [])
+        if not isinstance(sets, list):
+            sets = []
+        brains = hub.get("agent_brains", [])
+        if not isinstance(brains, list):
+            brains = []
+        bindings = hub.get("project_bindings", [])
+        if not isinstance(bindings, list):
+            bindings = []
+
+        source_index = {
+            str(row.get("source_id", "")).strip(): row
+            for row in sources
+            if isinstance(row, dict) and str(row.get("source_id", "")).strip()
+        }
+        set_index = {
+            str(row.get("set_id", "")).strip(): row
+            for row in sets
+            if isinstance(row, dict) and str(row.get("set_id", "")).strip()
+        }
+        brain_index = {
+            str(row.get("agent_key", "")).strip().lower(): row
+            for row in brains
+            if isinstance(row, dict) and str(row.get("agent_key", "")).strip()
+        }
+
+        binding: dict[str, Any] | None = None
+        for row in bindings:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("workspace", "")).strip() != ws:
+                continue
+            if str(row.get("project", "")).strip() != proj:
+                continue
+            binding = row
+            break
+        binding = binding or {}
+        binding_set_ids = sorted(
+            {
+                str(item).strip()
+                for item in binding.get("knowledge_set_ids", [])
+                if str(item).strip()
+            }
+        ) if isinstance(binding.get("knowledge_set_ids", []), list) else []
+
+        agent_policies: list[dict[str, Any]] = []
+        active_set_ids: set[str] = set(binding_set_ids)
+        required_citation_agents: list[str] = []
+        for agent_key in stage_agent_keys:
+            brain = brain_index.get(agent_key.lower(), {})
+            if not isinstance(brain, dict):
+                brain = {}
+            brain_set_ids = sorted(
+                {
+                    str(item).strip()
+                    for item in brain.get("knowledge_set_ids", [])
+                    if str(item).strip()
+                }
+            ) if isinstance(brain.get("knowledge_set_ids", []), list) else []
+            citation_required = bool(brain.get("citation_required", True))
+            if citation_required:
+                required_citation_agents.append(agent_key)
+            active_set_ids.update(brain_set_ids)
+            agent_policies.append(
+                {
+                    "agent_key": agent_key,
+                    "brain_id": str(brain.get("brain_id", "")).strip(),
+                    "knowledge_set_ids": brain_set_ids,
+                    "top_k": int(brain.get("top_k", 8) or 8),
+                    "citation_required": citation_required,
+                    "fallback_behavior": str(brain.get("fallback_behavior", "ask_clarification")).strip()
+                    or "ask_clarification",
+                    "memory_scope": str(brain.get("memory_scope", "project")).strip() or "project",
+                }
+            )
+
+        active_set_rows: list[dict[str, Any]] = []
+        active_source_ids: set[str] = set()
+        for set_id in sorted(active_set_ids):
+            row = set_index.get(set_id)
+            if not isinstance(row, dict):
+                continue
+            snap = self._set_snapshot(row)
+            active_set_rows.append(snap)
+            for source_id in snap.get("source_ids", []):
+                sid = str(source_id).strip()
+                if sid:
+                    active_source_ids.add(sid)
+
+        source_rows: list[dict[str, Any]] = []
+        for source_id in sorted(active_source_ids):
+            row = source_index.get(source_id)
+            if not isinstance(row, dict):
+                continue
+            source_rows.append(self._source_snapshot(row))
+
+        integrity_material = {
+            "workspace": ws,
+            "project": proj,
+            "binding_set_ids": binding_set_ids,
+            "stage_agent_keys": stage_agent_keys,
+            "required_citation_agents": sorted(required_citation_agents),
+            "set_hashes": [str(row.get("snapshot_hash", "")) for row in active_set_rows],
+            "source_versions": [str(row.get("version_id", "")) for row in source_rows],
+        }
+        snapshot_hash = _digest(integrity_material)
+        snapshot_id = f"kctx-{snapshot_hash[:16]}"
+        return {
+            "snapshot_id": snapshot_id,
+            "captured_at": _utc_now(),
+            "workspace": ws,
+            "project": proj,
+            "binding": {
+                "binding_id": str(binding.get("binding_id", "")).strip(),
+                "policy_mode": str(binding.get("policy_mode", "balanced")).strip().lower() or "balanced",
+                "knowledge_set_ids": binding_set_ids,
+            },
+            "stage_agent_keys": stage_agent_keys,
+            "agent_policies": agent_policies,
+            "required_citation_agents": sorted(required_citation_agents),
+            "sets": active_set_rows,
+            "sources": source_rows,
+            "integrity": {
+                "snapshot_hash": snapshot_hash,
+                "set_count": len(active_set_rows),
+                "source_count": len(source_rows),
+                "source_version_ids": [str(row.get("version_id", "")) for row in source_rows],
+            },
+        }

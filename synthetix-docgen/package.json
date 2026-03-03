@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "parse":     "node scripts/parse-md.js",
+    "scan:literals": "node scripts/run-code-literal-scan.js",
     "ba-brief":  "node generators/ba-brief.js",
     "tech-wb":   "node generators/tech-workbook.js",
     "generate":  "node index.js"

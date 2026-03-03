@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/delivery_constitution_v1.schema.json",
+  "title": "Delivery Constitution v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "constitution_id",
+    "created_at",
+    "project_identity",
+    "non_negotiables"
+  ],
+  "properties": {
+    "artifact_type": {
+      "type": "string",
+      "const": "delivery_constitution_v1"
+    },
+    "artifact_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "constitution_id": {
+      "type": "string",
+      "pattern": "^const-[a-z0-9]{12}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "project_identity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["run_id", "workspace", "project", "use_case"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "workspace": { "type": "string" },
+        "project": { "type": "string" },
+        "project_state": { "type": "string" },
+        "use_case": { "type": "string" },
+        "repo_ref": { "type": "string" },
+        "domain_pack_id": { "type": "string" }
+      }
+    },
+    "modernization_objective": {
+      "type": "string"
+    },
+    "non_negotiables": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "orchestration_hints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "when": { "type": "string" },
+          "route_to": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "checklists": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pre_change": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "post_change": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "known_failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "pattern": { "type": "string" },
+          "mitigation": { "type": "string" }
+        }
+      }
+    },
+    "linked_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "name": { "type": "string" },
+          "ref": { "type": "string" }
+        }
+      }
+    },
+    "knowledge_snapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "snapshot_id": { "type": "string" },
+        "source_version_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source_count": { "type": "integer" },
+        "set_count": { "type": "integer" }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["constitution_hash"],
+      "properties": {
+        "constitution_hash": { "type": "string" },
+        "knowledge_snapshot_id": { "type": "string" },
+        "source_version_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

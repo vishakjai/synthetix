@@ -1,0 +1,17 @@
+{
+  "name": "synthetix-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright E2E tests for Synthetix UI",
+  "scripts": {
+    "test": "playwright test",
+    "test:smoke": "playwright test --grep-invert @doc --workers=1",
+    "test:docs": "playwright test --grep @doc",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.54.2"
+  }
+}

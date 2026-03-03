@@ -23,12 +23,38 @@ const path = require('path');
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseTableSection(text) {
-  const lines = text.split('\n').filter(l => l.includes('|') && !l.includes('---'));
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('|') && l.includes('|'));
   if (lines.length < 2) return { headers: [], rows: [] };
-  const headers = lines[0].split('|').map(c => c.trim()).filter(Boolean);
-  const rows = lines.slice(1).map(l =>
-    l.split('|').map(c => c.trim()).filter(Boolean)
-  ).filter(r => r.length >= 2);
+
+  const parseLine = (line) => {
+    let raw = String(line || '').trim();
+    if (raw.startsWith('|')) raw = raw.slice(1);
+    if (raw.endsWith('|')) raw = raw.slice(0, -1);
+    return raw.split('|').map((c) => c.trim());
+  };
+
+  const isDivider = (line) => {
+    const cells = parseLine(line).filter((c) => c.length);
+    return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c));
+  };
+
+  const firstDataLine = lines.find((l) => !isDivider(l));
+  if (!firstDataLine) return { headers: [], rows: [] };
+  const headers = parseLine(firstDataLine);
+  const rows = lines
+    .slice(lines.indexOf(firstDataLine) + 1)
+    .filter((l) => !isDivider(l))
+    .map((l) => {
+      const parsed = parseLine(l);
+      if (parsed.length < headers.length) {
+        return [...parsed, ...new Array(headers.length - parsed.length).fill('')];
+      }
+      return parsed;
+    })
+    .filter((r) => r.length >= 2 && r.some((c) => c.length));
   return { headers, rows };
 }
 
@@ -40,6 +66,190 @@ function getSection(content, name, nextName) {
 }
 
 function gc(row, i) { return (row && row[i]) ? row[i] : ''; }
+function normHeader(v) { return String(v || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function headerMap(headers) {
+  const out = {};
+  for (let i = 0; i < headers.length; i += 1) {
+    const key = normHeader(headers[i]);
+    if (key && out[key] == null) out[key] = i;
+  }
+  return out;
+}
+function idxFirst(hm, keys, fallback = -1) {
+  for (const key of keys) {
+    const n = normHeader(key);
+    if (hm[n] != null) return hm[n];
+  }
+  return fallback;
+}
+
+function prettyProjectLabel(value) {
+  const v = String(value || '').trim();
+  if (!v) return '(unmapped)';
+  if (/^inferred:\(root\)$/i.test(v)) return '(Project Unresolved)';
+  return v.replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+}
+
+function canonicalProjectKey(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return '__unmapped__';
+  if (v === 'n/a' || v === '(unmapped)' || v === 'unknown') return '__unmapped__';
+  if (v === 'inferred:(root)' || v === '(project unresolved)') return '__unmapped__';
+  return v;
+}
+
+function shortFormName(value) {
+  let v = String(value || '').trim();
+  if (!v || v === 'n/a') return '';
+  v = v.replace(/\s*\[[^\]]+\]\s*$/g, '');
+  v = v.replace(/\s+\(.*\)\s*$/g, '');
+  if (v.includes('::')) v = v.split('::').pop();
+  return v.trim();
+}
+
+function canonFormKey(value) {
+  return shortFormName(value).toLowerCase();
+}
+
+function splitCsv(value) {
+  return String(value || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+function extractSqlIds(value) {
+  return (String(value || '').match(/\bsql:\d+\b/ig) || []).map((m) => m.toLowerCase());
+}
+
+function humanizeToken(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function humanizeControlToken(token) {
+  const raw = String(token || '').trim();
+  if (!raw) return '';
+  let core = raw.replace(/^(txt|cbo|cmb|lst|msk|opt|chk|dtp|dtpicker)/i, '');
+  if (!core) core = raw;
+  const words = core
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return words || raw.toLowerCase();
+}
+
+function extractInputCandidates(value) {
+  const text = String(value || '');
+  const matches = text.match(/\b(?:txt|cbo|cmb|lst|msk|opt|chk|dtp|dtpicker)[A-Za-z0-9_]*\b/g) || [];
+  const out = [];
+  for (const m of matches) {
+    const normalized = humanizeControlToken(m);
+    if (!normalized || normalized === 'ctrl') continue;
+    out.push(normalized);
+  }
+  return out;
+}
+
+function isLikelySqlQuery(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (!lower) return false;
+  if (lower.includes('msgbox')) return false;
+  if (/please\s+select|nothing\s+to\s+delete|saved\s+and\s+updated|end\s+select/.test(lower)) return false;
+  if (/^select\.\.\.$/.test(lower)) return false;
+  return /(select\s+.+\s+from|insert\s+into|update\s+\S+\s+set|delete\s+from)/i.test(text);
+}
+
+function deriveColumnsFromSql(query, op) {
+  const text = String(query || '').trim();
+  if (!text) return '';
+  const kind = String(op || '').trim().toLowerCase();
+  const out = [];
+  const pushParts = (raw) => {
+    for (const part of String(raw || '').split(',')) {
+      const p = part.trim();
+      if (!p) continue;
+      const noAlias = p.replace(/\s+as\s+.+$/i, '').trim();
+      const cleaned = noAlias.replace(/^[\[\(]+|[\]\)]+$/g, '').trim();
+      if (!cleaned) continue;
+      out.push(cleaned);
+    }
+  };
+
+  if (kind === 'insert' || /insert\s+into/i.test(text)) {
+    const m = text.match(/insert\s+into\s+[^\(]+\(([^)]+)\)/i);
+    if (m) pushParts(m[1]);
+  } else if (kind === 'update' || /update\s+\S+\s+set/i.test(text)) {
+    const m = text.match(/update\s+\S+\s+set\s+(.+?)(?:\s+where|\s*$)/i);
+    if (m) {
+      for (const part of m[1].split(',')) {
+        const lhs = part.split('=')[0].trim();
+        if (lhs) out.push(lhs);
+      }
+    }
+  } else if (kind === 'select' || /select\s+.+\s+from/i.test(text)) {
+    const m = text.match(/select\s+(.+?)\s+from/i);
+    if (m) pushParts(m[1]);
+  }
+
+  const uniq = [...new Set(out.map((v) => v.trim()).filter(Boolean))];
+  return uniq.slice(0, 12).join(', ');
+}
+
+function normalizeSqlSnippet(value) {
+  let text = String(value || '').trim();
+  if (!text) return '';
+  text = text.replace(/^\(+|\)+$/g, '').trim();
+  text = text.replace(/^"+|"+$/g, '').trim();
+  text = text.replace(/^'+|'+$/g, '').trim();
+  // Strip trailing ADO objects/flags after the SQL text.
+  text = text.replace(/,\s*(con|cnbank|cn|rs\w*|adopen\w+|adlock\w+|adcmd\w+)\b[\s\S]*$/i, '').trim();
+  // Remove VB string concatenation glue that can leak into extracted text.
+  text = text.replace(/["']\s*&\s*["']/g, '').trim();
+  return text;
+}
+
+function inferSqlOperation(op, handler) {
+  const raw = String(op || '').trim().toLowerCase();
+  if (raw && raw !== 'unknown') return raw;
+  const text = normalizeSqlSnippet(handler).toLowerCase();
+  if (!text) return raw || 'unknown';
+  if (text.startsWith('select ')) return 'select';
+  if (text.startsWith('insert ')) return 'insert';
+  if (text.startsWith('update ')) return 'update';
+  if (text.startsWith('delete ')) return 'delete';
+  if (/^(create|alter|drop|truncate)\s+/.test(text)) return 'ddl';
+  return raw || 'unknown';
+}
+
+function deriveDependencyReference(name, kind) {
+  const raw = String(name || '').trim();
+  if (!raw) return 'n/a';
+  const lower = raw.toLowerCase();
+  const known = {
+    'mscomctl.ocx': 'MSCOMCTL.OCX',
+    'mscomct2.ocx': 'MSCOMCT2.OCX',
+    'msmask32.ocx': 'MSMASK32.OCX',
+    'msflxgrd.ocx': 'MSFLXGRD.OCX',
+    'mscomctllib.toolbar': 'ProgID: MSComctlLib.Toolbar',
+    'mscomctllib.listview': 'ProgID: MSComctlLib.ListView',
+    'mscomctllib.progressbar': 'ProgID: MSComctlLib.ProgressBar',
+    'mscomctl2.dtpicker': 'ProgID: MSComCtl2.DTPicker',
+    'msflexgridlib.msflexgrid': 'ProgID: MSFlexGridLib.MSFlexGrid',
+    'msmask.maskedbox': 'ProgID: MSMask.MaskEdBox',
+  };
+  if (known[lower]) return known[lower];
+  if (/\{[0-9a-f-]{8,}\}/i.test(raw)) return raw;
+  if (/\.(ocx|dll)$/i.test(raw)) return raw.toUpperCase();
+  const k = String(kind || '').toLowerCase();
+  if (k === 'com_typelib' || k === 'other') return `ProgID: ${raw}`;
+  return 'n/a';
+}
 
 // ── Section parsers ───────────────────────────────────────────────────────────
 
@@ -57,11 +267,30 @@ function parseA(content) {
 }
 
 function parseB(content) {
-  const { rows } = parseTableSection(getSection(content, 'B.', 'C.'));
-  return rows.map(r => ({
-    name:   gc(r,0), type:   gc(r,1), guid:   gc(r,2),
-    forms:  gc(r,3), risk:   gc(r,4), action: gc(r,5),
-  }));
+  const { headers, rows } = parseTableSection(getSection(content, 'B.', 'C.'));
+  const hm = headerMap(headers);
+  const iName = idxFirst(hm, ['name', 'component'], 0);
+  const iType = idxFirst(hm, ['kind', 'type'], 1);
+  const iGuid = idxFirst(hm, ['guid', 'reference', 'guidreference', 'clsid', 'progid'], -1);
+  const iForms = idxFirst(hm, ['usedbyforms', 'formsmapped', 'forms', 'usage', 'usedby'], 3);
+  const iRisk = idxFirst(hm, ['risk', 'severity'], 4);
+  const iAction = idxFirst(hm, ['recommendedaction', 'action', 'migrationaction'], 5);
+  return rows.map(r => {
+    const name = gc(r, iName);
+    const type = gc(r, iType);
+    const rawGuid = iGuid >= 0 ? gc(r, iGuid) : '';
+    const guid = (!rawGuid || rawGuid.toLowerCase() === 'n/a' || rawGuid === '-' || rawGuid === '—')
+      ? deriveDependencyReference(name, type)
+      : rawGuid;
+    return {
+      name,
+      type,
+      guid,
+      forms:  gc(r, iForms),
+      risk:   gc(r, iRisk),
+      action: gc(r, iAction),
+    };
+  });
 }
 
 function parseC(content) {
@@ -73,14 +302,74 @@ function parseC(content) {
 }
 
 function parseD(content) {
-  const { rows } = parseTableSection(getSection(content, 'D.', 'E.'));
-  return rows.map(r => ({
-    id:      gc(r,0), form:    gc(r,1), handler: gc(r,2),
-    op:      gc(r,3), tables:  gc(r,4), columns: gc(r,5),
-  }));
+  const { headers, rows } = parseTableSection(getSection(content, 'D.', 'E.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['sqlid', 'id'], 0);
+  const iForm = idxFirst(hm, ['form', 'scope'], -1);
+  const iHandler = idxFirst(hm, ['handler', 'callable', 'entrypoint', 'query', 'sql'], -1);
+  const iOp = idxFirst(hm, ['operation', 'op', 'kind'], 1);
+  const iTables = idxFirst(hm, ['tables', 'tablestouched'], 2);
+  const iCols = idxFirst(hm, ['columns', 'fields'], -1);
+  const sqlOps = /^(select|insert|update|delete|merge|create|alter|drop|truncate|ddl|unknown)$/i;
+  return rows
+    .map((r) => {
+      const handler = iHandler >= 0 ? gc(r, iHandler) : '';
+      const normalizedHandler = normalizeSqlSnippet(handler) || handler;
+      const inferredOp = inferSqlOperation(gc(r, iOp), normalizedHandler);
+      return {
+        id: gc(r, iId),
+        form: iForm >= 0 ? gc(r, iForm) : 'n/a',
+        handler: normalizedHandler,
+        op: inferredOp,
+        tables: gc(r, iTables),
+        columns: iCols >= 0 ? gc(r, iCols) : '',
+      };
+    })
+    .map((r) => {
+      const cols = String(r.columns || '').trim();
+      if (!cols || cols === '-' || cols === '—') {
+        r.columns = deriveColumnsFromSql(r.handler, r.op);
+      }
+      return r;
+    })
+    .filter((r) => {
+      const op = String(r.op || '').trim().toLowerCase();
+      if (!sqlOps.test(op) && op) {
+        r.op = 'unknown';
+      }
+      const tables = String(r.tables || '').trim().toLowerCase();
+      const handler = String(r.handler || '').trim().toLowerCase();
+      const hasTableSignal = !!tables && tables !== 'n/a' && tables !== 'unknown' && tables !== '-';
+      const likelySql = isLikelySqlQuery(r.handler);
+      if (op === 'unknown') return likelySql || hasTableSignal;
+      return likelySql || hasTableSignal || !!String(r.id || '').trim();
+    });
 }
 
 function parseE(content) {
+  const toBusinessMeaning = (value) => {
+    const text = String(value || '').trim();
+    const lower = text.toLowerCase();
+    if (!text) return text;
+    if ((/key(ascii|value)\s*>=\s*48/i.test(text) && /key(ascii|value)\s*<=\s*57/i.test(text))
+      || /case\s+key(ascii|value)/i.test(text)) {
+      return 'Input is restricted to numeric digits only.';
+    }
+    if (/recordcount\s*(<>|>|>=)\s*0/i.test(text)) {
+      return 'The action proceeds only when matching records are found.';
+    }
+    if (/recordcount\s*(=|<|<=)\s*0/i.test(text) || /recordcount\s*<\s*1/i.test(text)) {
+      return 'The action proceeds only when the dataset is empty.';
+    }
+    if (/rs\.state\s*=\s*1/i.test(text) || lower.includes('recordset') && lower.includes('active')) {
+      return 'The action proceeds only when the recordset/connection is active.';
+    }
+    if (/progressbar/i.test(text) && /(=\s*1\b|=\s*100\b|value\s*\+)/i.test(text)) {
+      return 'Loading sequence gates the workflow at progress start and completion.';
+    }
+    return text;
+  };
+
   // Only extract proper BR- rows; skip cross-ref blocks
   const text = getSection(content, 'E.', 'F.');
   const rules = [];
@@ -93,7 +382,7 @@ function parseE(content) {
       form:      gc(cols,1),
       layer:     gc(cols,2),
       category:  gc(cols,3),
-      meaning:   gc(cols,4),
+      meaning:   toBusinessMeaning(gc(cols,4)),
       evidence:  gc(cols,5),
       risk:      gc(cols,6),
     });
@@ -125,27 +414,49 @@ function parseE2(content) {
 }
 
 function parseF(content) {
-  const { rows } = parseTableSection(getSection(content, 'F.', 'G.'));
-  return rows.map(r => ({
-    id: gc(r,0), category: gc(r,1), form: gc(r,2),
-    description: gc(r,3), action: gc(r,4),
+  const { headers, rows } = parseTableSection(getSection(content, 'F.', 'G.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['detector', 'id'], 0);
+  const iCategory = idxFirst(hm, ['severity', 'category'], 1);
+  const iCount = idxFirst(hm, ['count', 'occurrences'], 2);
+  const iSummary = idxFirst(hm, ['summary', 'description'], 3);
+  const iAction = idxFirst(hm, ['requiredactions', 'recommendedaction', 'action'], 4);
+  const iForm = idxFirst(hm, ['form', 'path', 'scope'], -1);
+  const deriveForm = (summary) => {
+    const text = String(summary || '').trim();
+    const colon = text.match(/^([^:]{2,120}):\s+/);
+    return colon ? colon[1].trim() : 'n/a';
+  };
+  return rows.map((r) => ({
+    id: gc(r, iId),
+    category: gc(r, iCategory),
+    count: gc(r, iCount),
+    form: iForm >= 0 ? gc(r, iForm) : deriveForm(gc(r, iSummary)),
+    description: gc(r, iSummary),
+    action: gc(r, iAction),
   }));
 }
 
 function parseK(content) {
   const { rows } = parseTableSection(getSection(content, 'K.', 'L.'));
   const mapped = [], excluded = [];
+  const seen = new Set();
   for (const r of rows) {
     if (r.length < 5) continue;
+    const status = String(gc(r,4) || '').trim().toLowerCase();
+    if (status !== 'mapped' && status !== 'excluded') continue;
     const obj = {
       form:             gc(r,0), display_name:    gc(r,1),
       project:          gc(r,2), form_type:       gc(r,3),
-      status:           gc(r,4), purpose:         gc(r,5),
+      status:           status, purpose:          gc(r,5),
       inputs:           gc(r,6), outputs:         gc(r,7),
       activex:          gc(r,8), db_tables:       gc(r,9),
       actions:          gc(r,10), coverage:        gc(r,11),
       confidence:       gc(r,12), exclusion_reason:gc(r,13),
     };
+    const dedupeKey = [obj.form, canonicalProjectKey(obj.project), obj.status].join('||').toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
     (obj.status === 'mapped' ? mapped : excluded).push(obj);
   }
 
@@ -166,11 +477,503 @@ function parseK(content) {
 }
 
 function parseL(content) {
-  const { rows } = parseTableSection(getSection(content, 'L.', 'M.'));
+  const { headers, rows } = parseTableSection(getSection(content, 'L.', 'M.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['riskid', 'id'], 0);
+  const iSeverity = idxFirst(hm, ['severity', 'risk'], 1);
+  const iForm = idxFirst(hm, ['form', 'path', 'scope'], -1);
+  const iDescription = idxFirst(hm, ['description', 'technicaldescription', 'riskdescription'], 2);
+  const iAction = idxFirst(hm, ['recommendedaction', 'action', 'mitigation'], 3);
+  const deriveForm = (desc) => {
+    const text = String(desc || '').trim();
+    if (!text) return 'n/a';
+    const sqlMatch = text.match(/\b(sql:\d+)\b/i);
+    if (sqlMatch) return sqlMatch[1];
+    const colon = text.match(/^([^:]{2,80}):\s+/);
+    if (colon) return colon[1].trim();
+    return 'n/a';
+  };
   return rows.map(r => ({
-    id: gc(r,0), severity: gc(r,1), form: gc(r,2),
-    description: gc(r,3), action: gc(r,4),
+    id: gc(r, iId),
+    severity: gc(r, iSeverity),
+    form: iForm >= 0 ? gc(r, iForm) : deriveForm(gc(r, iDescription)),
+    description: gc(r, iDescription),
+    action: gc(r, iAction),
   }));
+}
+
+function parseH(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'H.', 'I.'));
+  const hm = headerMap(headers);
+  const iForm = idxFirst(hm, ['form'], 0);
+  const iProcedure = idxFirst(hm, ['procedure', 'handler'], 1);
+  const iTables = idxFirst(hm, ['tables'], 3);
+  const iSql = idxFirst(hm, ['sqlids', 'sqlid', 'sql'], -1);
+  return rows.map((r) => ({
+    form: gc(r, iForm),
+    procedure: gc(r, iProcedure),
+    tables: gc(r, iTables),
+    sql_ids: iSql >= 0 ? gc(r, iSql) : '',
+  }));
+}
+
+function mergeSqlEntriesWithMap(sqlEntries, sqlMapRows) {
+  const out = Array.isArray(sqlEntries) ? [...sqlEntries] : [];
+  const seenIds = new Set(
+    out
+      .map((row) => String(row?.id || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  for (const row of (sqlMapRows || [])) {
+    const mapRow = row && typeof row === 'object' ? row : {};
+    const ids = extractSqlIds(mapRow.sql_ids);
+    if (!ids.length) continue;
+    for (const id of ids) {
+      if (seenIds.has(id)) continue;
+      const handler = normalizeSqlSnippet(mapRow.procedure || '');
+      const op = inferSqlOperation('', handler);
+      const tables = String(mapRow.tables || 'n/a').trim() || 'n/a';
+      out.push({
+        id,
+        form: String(mapRow.form || 'n/a').trim() || 'n/a',
+        handler: handler || String(mapRow.procedure || '').trim(),
+        op: op || 'unknown',
+        tables,
+        columns: deriveColumnsFromSql(handler, op),
+      });
+      seenIds.add(id);
+    }
+  }
+  return out;
+}
+
+function ensureSqlCoverage(sqlEntries, mdContent, procedureSummaries = [], sqlMapRows = []) {
+  const out = Array.isArray(sqlEntries) ? [...sqlEntries] : [];
+  const allIds = [...new Set((String(mdContent || '').match(/\bsql:\d+\b/ig) || []).map((x) => x.toLowerCase()))];
+  if (!allIds.length) return out;
+
+  const seen = new Set(out.map((row) => String(row?.id || '').trim().toLowerCase()).filter(Boolean));
+  const formById = new Map();
+  const tablesById = new Map();
+  const handlerById = new Map();
+
+  for (const row of (procedureSummaries || [])) {
+    const item = row && typeof row === 'object' ? row : {};
+    const form = String(item.form || 'n/a').trim() || 'n/a';
+    const callable = String(item.callable || '').trim();
+    for (const id of extractSqlIds(item.sql_ids)) {
+      if (!formById.has(id)) formById.set(id, form);
+      if (callable && !handlerById.has(id)) handlerById.set(id, callable);
+    }
+  }
+  for (const row of (sqlMapRows || [])) {
+    const item = row && typeof row === 'object' ? row : {};
+    const form = String(item.form || 'n/a').trim() || 'n/a';
+    const tables = String(item.tables || 'n/a').trim() || 'n/a';
+    const proc = String(item.procedure || '').trim();
+    for (const id of extractSqlIds(item.sql_ids)) {
+      if (!formById.has(id)) formById.set(id, form);
+      if (!tablesById.has(id) && tables !== 'n/a') tablesById.set(id, tables);
+      if (proc && !handlerById.has(id)) handlerById.set(id, proc);
+    }
+  }
+
+  for (const id of allIds) {
+    if (seen.has(id)) continue;
+    const handler = handlerById.get(id) || 'unmapped_sql_reference';
+    const op = inferSqlOperation('', handler) || 'unknown';
+    const tables = tablesById.get(id) || 'n/a';
+    out.push({
+      id,
+      form: formById.get(id) || 'Project-wide / unattributed SQL',
+      handler,
+      op,
+      tables,
+      columns: deriveColumnsFromSql(handler, op),
+    });
+    seen.add(id);
+  }
+
+  out.sort((a, b) => {
+    const ai = parseInt(String(a?.id || '').split(':')[1] || '0', 10) || 0;
+    const bi = parseInt(String(b?.id || '').split(':')[1] || '0', 10) || 0;
+    return ai - bi;
+  });
+  return out;
+}
+
+function parseI(content) {
+  // Many outputs skip J; section I usually precedes K directly.
+  const text = getSection(content, 'I.', 'K.');
+  const { headers, rows } = parseTableSection(text);
+  const hm = headerMap(headers);
+  const iCallable = idxFirst(hm, ['callable', 'procedure', 'handler'], 0);
+  const iKind = idxFirst(hm, ['kind'], 1);
+  const iForm = idxFirst(hm, ['form', 'container'], 2);
+  const iSql = idxFirst(hm, ['sqlids', 'sqlid', 'sql'], 3);
+  return rows.map((r) => ({
+    callable: gc(r, iCallable),
+    kind: gc(r, iKind),
+    form: gc(r, iForm),
+    sql_ids: gc(r, iSql),
+  }));
+}
+
+function buildFormDisplayIndex(mappedForms, excludedForms = []) {
+  const index = new Map();
+  for (const f of (mappedForms || [])) {
+    const key = canonFormKey(f.form);
+    if (!key) continue;
+    const label = String(f.display_name || f.form || '').trim();
+    if (label && !index.has(key)) index.set(key, label);
+    const displayKey = canonFormKey(f.display_name);
+    if (displayKey && label && !index.has(displayKey)) index.set(displayKey, label);
+  }
+  for (const f of (excludedForms || [])) {
+    const raw = String(f.form || '').trim();
+    if (!raw) continue;
+    const short = shortFormName(raw);
+    const key = canonFormKey(short || raw);
+    if (!key || index.has(key)) continue;
+    index.set(key, `${short || raw} [Excluded]`);
+  }
+  return index;
+}
+
+function buildTableFormIndex(formTraces, sqlMapRows) {
+  const tableToForms = new Map();
+  const add = (table, form) => {
+    const t = String(table || '').trim().toLowerCase();
+    const f = shortFormName(form);
+    if (!t || t === 'n/a' || !f) return;
+    if (!tableToForms.has(t)) tableToForms.set(t, new Set());
+    tableToForms.get(t).add(f);
+  };
+  for (const [group, rows] of Object.entries(formTraces || {})) {
+    for (const row of (rows || [])) {
+      for (const table of splitCsv(row.tables)) add(table, group);
+    }
+  }
+  for (const row of (sqlMapRows || [])) {
+    for (const table of splitCsv(row.tables)) add(table, row.form);
+  }
+  return tableToForms;
+}
+
+function sqlSignature(value) {
+  let text = String(value || '').toLowerCase();
+  if (!text) return '';
+  text = text.replace(/:expr\b/g, '?');
+  text = text.replace(/["']/g, '');
+  text = text.replace(/\b(adopen\w+|adlock\w+|cnbank|rs\w+)\b/g, '');
+  text = text.replace(/\s+/g, ' ').trim();
+  text = text.replace(/\?+/g, '?');
+  text = text.replace(/=\s*\?/g, '=');
+  return text;
+}
+
+function buildSqlFormIndex(formTraces, procedureSummaries, sqlEntries, sqlMapRows) {
+  const sqlToForm = new Map();
+  for (const [group, rows] of Object.entries(formTraces || {})) {
+    const formLabel = shortFormName(group);
+    if (!formLabel) continue;
+    for (const row of (rows || [])) {
+      const ids = extractSqlIds(row.sql_ids);
+      for (const id of ids) {
+        if (!sqlToForm.has(id)) sqlToForm.set(id, formLabel);
+      }
+    }
+  }
+  for (const row of (procedureSummaries || [])) {
+    const formLabel = shortFormName(row.form);
+    if (!formLabel) continue;
+    for (const id of extractSqlIds(row.sql_ids)) {
+      if (!sqlToForm.has(id)) sqlToForm.set(id, formLabel);
+    }
+  }
+  const tableToForms = buildTableFormIndex(formTraces, sqlMapRows);
+  for (const entry of (sqlEntries || [])) {
+    const id = String(entry.id || '').toLowerCase();
+    if (!id || sqlToForm.has(id)) continue;
+    const tables = splitCsv(entry.tables).map((t) => t.toLowerCase()).filter(Boolean);
+    if (!tables.length) continue;
+    const candidates = new Set();
+    for (const t of tables) {
+      const forms = tableToForms.get(t);
+      if (!forms) continue;
+      for (const f of forms) candidates.add(f);
+    }
+    if (candidates.size === 1) {
+      sqlToForm.set(id, Array.from(candidates)[0]);
+    }
+  }
+
+  // Query-shape fallback: infer by matching normalized SQL signature
+  const sigToForms = new Map();
+  for (const entry of (sqlEntries || [])) {
+    const id = String(entry.id || '').toLowerCase();
+    if (!id || !sqlToForm.has(id)) continue;
+    const sig = sqlSignature(entry.handler);
+    if (!sig) continue;
+    if (!sigToForms.has(sig)) sigToForms.set(sig, new Map());
+    const form = sqlToForm.get(id);
+    const bucket = sigToForms.get(sig);
+    bucket.set(form, (bucket.get(form) || 0) + 1);
+  }
+  for (const entry of (sqlEntries || [])) {
+    const id = String(entry.id || '').toLowerCase();
+    if (!id || sqlToForm.has(id)) continue;
+    const sig = sqlSignature(entry.handler);
+    if (!sig || !sigToForms.has(sig)) continue;
+    const bucket = sigToForms.get(sig);
+    const best = Array.from(bucket.entries()).sort((a, b) => b[1] - a[1])[0];
+    if (best && best[0]) sqlToForm.set(id, best[0]);
+  }
+  return sqlToForm;
+}
+
+function resolveDisplayByFormToken(token, formDisplayIndex) {
+  const raw = String(token || '').trim();
+  if (!raw) return '';
+  const basename = raw.split('/').pop().split('\\').pop();
+  const stripped = basename.replace(/\.(frm|frx|bas|vb|cls|ctl|ctx|res)$/i, '');
+  const key = canonFormKey(stripped || raw);
+  if (key && formDisplayIndex.has(key)) return formDisplayIndex.get(key);
+
+  // Fuzzy fallback for suffix/prefix variants (e.g., frmlogin -> frmlogin1)
+  for (const [k, v] of formDisplayIndex.entries()) {
+    if (!k || !v) continue;
+    if (k.startsWith(key) || key.startsWith(k)) return v;
+  }
+  return '';
+}
+
+function normalizeDetectorRiskLanguage(risks) {
+  const normDesc = (desc) => {
+    const text = String(desc || '').trim();
+    const lower = text.toLowerCase();
+    if (lower.includes('default instance references')) {
+      return 'Legacy code uses default object/form instances, which can change behavior during migration.';
+    }
+    if (lower.includes('control array index markers')) {
+      return 'Legacy UI relies on control-array index patterns that require explicit replacement in the target UI.';
+    }
+    if (lower.includes('on error resume next')) {
+      return 'Legacy error handling suppresses runtime exceptions, reducing reliability and observability.';
+    }
+    return text.replace(/^[^:]{2,120}:\s+/, '');
+  };
+  const normAction = (action, desc) => {
+    const raw = String(action || '').trim().toLowerCase();
+    if (raw === 'default_instance_refactor_plan') {
+      return 'Refactor default-instance references to explicit object instances and update call sites.';
+    }
+    if (raw === 'ui_migration_strategy') {
+      return 'Define a control-array replacement strategy and validate event parity with focused tests.';
+    }
+    if (raw === 'error_model_plan') {
+      return 'Replace broad error suppression with structured error handling and centralized logging.';
+    }
+    if (/^[a-z0-9_]+$/.test(raw) && raw.endsWith('_plan')) {
+      return `${humanizeToken(raw.replace(/_plan$/, ''))} plan.`;
+    }
+    const lowerDesc = String(desc || '').toLowerCase();
+    if (lowerDesc.includes('default instance references')) {
+      return 'Refactor default-instance references to explicit object instances and update call sites.';
+    }
+    if (lowerDesc.includes('control array index markers')) {
+      return 'Define a control-array replacement strategy and validate event parity with focused tests.';
+    }
+    if (lowerDesc.includes('on error resume next')) {
+      return 'Replace broad error suppression with structured error handling and centralized logging.';
+    }
+    return action;
+  };
+
+  for (const risk of (risks || [])) {
+    const desc = String(risk.description || '');
+    const action = String(risk.action || '');
+    const looksDetector = /_plan\b/i.test(action) || /default instance references|control array index markers|on error resume next/i.test(desc);
+    if (!looksDetector) continue;
+    risk.description = normDesc(desc);
+    risk.action = normAction(action, desc);
+  }
+}
+
+function normalizeRiskForms(risks, formDisplayIndex, sqlFormIndex) {
+  for (const risk of (risks || [])) {
+    const rawForm = String(risk.form || '').trim();
+    const desc = String(risk.description || '').trim();
+    let resolved = rawForm;
+    const sql = (rawForm.match(/\bsql:\d+\b/i) || desc.match(/\bsql:\d+\b/i) || [])[0];
+    if (sql) {
+      const formFromSql = sqlFormIndex.get(sql.toLowerCase());
+      if (formFromSql) resolved = formFromSql;
+      else resolved = 'Project-wide / unattributed SQL';
+    } else if (/\binline_legacy\.[a-z0-9]+\b/i.test(rawForm || desc)) {
+      resolved = 'Project-wide / shared module';
+    } else if (/\.(frm|frx|vb|bas|cls|ctl|ctx|res)$/i.test(rawForm || desc)) {
+      const token = rawForm || desc;
+      const mapped = resolveDisplayByFormToken(token, formDisplayIndex);
+      if (mapped) resolved = mapped;
+      else if (/\.(vb|bas)$/i.test(token)) resolved = 'Project-wide / shared module';
+      else if (/\.(frm|frx)$/i.test(token)) resolved = `${shortFormName(token) || token} [Excluded]`;
+      else resolved = shortFormName(token) || 'Project-wide';
+    } else if (/\.(vb|bas)$/i.test(rawForm || desc)) {
+      resolved = 'Project-wide / shared module';
+    } else if (!resolved || resolved.toLowerCase() === 'n/a') {
+      resolved = 'Project-wide';
+    }
+    if (/shared module/i.test(resolved)) resolved = 'Project-wide / shared module';
+    if (/^sql:\d+$/i.test(resolved) || /^sql catalog\s*\(/i.test(resolved)) {
+      resolved = 'Project-wide / unattributed SQL';
+    }
+    const key = canonFormKey(resolved);
+    risk.form_display = formDisplayIndex.get(key) || resolved;
+  }
+}
+
+function normalizeFindingForms(findings, formDisplayIndex) {
+  for (const finding of (findings || [])) {
+    const mapped = resolveDisplayByFormToken(finding.form || finding.description, formDisplayIndex);
+    if (mapped) {
+      finding.form_display = mapped;
+      continue;
+    }
+    const raw = String(finding.form || '').trim();
+    if (!raw || /^\d+$/.test(raw) || raw.toLowerCase() === 'n/a') {
+      finding.form_display = 'Project-wide';
+    } else {
+      finding.form_display = raw;
+    }
+  }
+}
+
+function normalizeFindingLanguage(findings) {
+  const normDesc = (desc) => {
+    const text = String(desc || '').trim();
+    const lower = text.toLowerCase();
+    if (lower.includes('default instance references')) {
+      return 'Legacy code uses default object/form instances, which can change behavior during migration.';
+    }
+    if (lower.includes('control array index markers')) {
+      return 'Legacy UI relies on control-array index patterns that require explicit replacement in the target UI.';
+    }
+    if (lower.includes('on error resume next')) {
+      return 'Legacy error handling suppresses runtime exceptions, reducing reliability and observability.';
+    }
+    return text.replace(/^[^:]{2,120}:\s+/, '');
+  };
+  const normAction = (action, desc) => {
+    const raw = String(action || '').trim().toLowerCase();
+    if (!raw) return action;
+    if (raw === 'default_instance_refactor_plan') {
+      return 'Refactor default-instance references to explicit object instances and update call sites.';
+    }
+    if (raw === 'ui_migration_strategy') {
+      return 'Define a control-array replacement strategy and validate event parity with focused tests.';
+    }
+    if (raw === 'error_model_plan') {
+      return 'Replace broad error suppression with structured error handling and centralized logging.';
+    }
+    if (/^[a-z0-9_]+$/.test(raw) && raw.endsWith('_plan')) {
+      return `${humanizeToken(raw.replace(/_plan$/, ''))} plan.`;
+    }
+    const lowerDesc = String(desc || '').toLowerCase();
+    if (lowerDesc.includes('default instance references')) {
+      return 'Refactor default-instance references to explicit object instances and update call sites.';
+    }
+    if (lowerDesc.includes('control array index markers')) {
+      return 'Define a control-array replacement strategy and validate event parity with focused tests.';
+    }
+    if (lowerDesc.includes('on error resume next')) {
+      return 'Replace broad error suppression with structured error handling and centralized logging.';
+    }
+    return action;
+  };
+  for (const finding of (findings || [])) {
+    const desc = String(finding.description || '');
+    finding.description = normDesc(desc);
+    finding.action = normAction(finding.action, desc);
+  }
+}
+
+function deSaturateMappedInputs(mappedForms, events) {
+  const values = (mappedForms || [])
+    .map((f) => String(f.inputs || '').trim())
+    .filter((v) => v && v.toLowerCase() !== 'n/a');
+  if (!values.length) return;
+  const freq = new Map();
+  for (const v of values) freq.set(v, (freq.get(v) || 0) + 1);
+  const common = Array.from(freq.entries()).sort((a, b) => b[1] - a[1])[0];
+  if (!common) return;
+  const [commonInput, commonCount] = common;
+  if (commonCount < Math.ceil(mappedForms.length * 0.65)) return;
+
+  const inferred = new Map();
+  for (const e of (events || [])) {
+    const eventForm = shortFormName(e.handler || e.form);
+    if (!eventForm) continue;
+    const key = eventForm.toLowerCase();
+    if (!inferred.has(key)) inferred.set(key, new Set());
+    for (const tok of extractInputCandidates(e.calls)) inferred.get(key).add(tok);
+  }
+
+  for (const f of (mappedForms || [])) {
+    const input = String(f.inputs || '').trim();
+    if (input !== commonInput) continue;
+    const key = canonFormKey(f.form);
+    const inferredForForm = Array.from(inferred.get(key) || []);
+    if (inferredForForm.length) {
+      f.inputs = inferredForForm.slice(0, 8).join(', ');
+      continue;
+    }
+    const actionCount = parseInt(String(f.actions || '0'), 10) || 0;
+    if (actionCount === 0) {
+      f.inputs = 'n/a';
+      continue;
+    }
+    if (String(f.form_type || '').toLowerCase() === 'splash') {
+      f.inputs = 'n/a';
+    }
+  }
+}
+
+function deSaturateMappedActiveX(mappedForms, dependencies) {
+  const values = (mappedForms || [])
+    .map((f) => String(f.activex || '').trim())
+    .filter((v) => v && v.toLowerCase() !== 'n/a');
+  if (!values.length) return;
+  const freq = new Map();
+  for (const v of values) freq.set(v, (freq.get(v) || 0) + 1);
+  const common = Array.from(freq.entries()).sort((a, b) => b[1] - a[1])[0];
+  if (!common) return;
+  const [commonDeps, commonCount] = common;
+  if (commonCount < Math.ceil(mappedForms.length * 0.65)) return;
+
+  const byForm = new Map();
+  for (const d of (dependencies || [])) {
+    const depName = String(d.name || '').trim();
+    if (!depName) continue;
+    for (const formRef of splitCsv(d.forms)) {
+      const key = canonFormKey(formRef);
+      if (!key) continue;
+      if (!byForm.has(key)) byForm.set(key, new Set());
+      byForm.get(key).add(depName);
+    }
+  }
+
+  for (const f of (mappedForms || [])) {
+    const deps = String(f.activex || '').trim();
+    if (deps !== commonDeps) continue;
+    const key = canonFormKey(f.form);
+    const resolved = Array.from(byForm.get(key) || []);
+    if (resolved.length) {
+      f.activex = resolved.join(', ');
+      continue;
+    }
+    f.activex = 'n/a';
+  }
 }
 
 function parseO(content) {
@@ -217,6 +1020,54 @@ function parseQ(content) {
     }));
 }
 
+function inferSqlAliasesForForm(formName) {
+  const short = shortFormName(formName).toLowerCase();
+  if (!short) return [];
+  const map = {
+    frmacctypes: ['accounttype'],
+    frmcustomers: ['customer', 'tblcustomers'],
+    frmdeposits: ['deposit'],
+    frmwithdrawal: ['withdrawal'],
+    frmtransaction: ['transactions', 'transctions', 'tbltransactions'],
+    frmtransactions: ['transactions', 'transctions', 'tbltransactions'],
+    frmsearch: ['customer', 'tblcustomers', 'transactions', 'tbltransactions'],
+    main: ['logi', 'login'],
+  };
+  if (map[short]) return map[short];
+  if (/^frm/.test(short)) {
+    const stem = short.replace(/^frm/, '');
+    if (stem) return [stem, `tbl${stem}`];
+  }
+  return [short];
+}
+
+function normalizeTraceabilitySqlCoverage(qData, sqlEntries) {
+  const touchedTables = new Set();
+  for (const s of (sqlEntries || [])) {
+    for (const t of splitCsv(s.tables)) {
+      const n = String(t || '').trim().toLowerCase();
+      if (n && n !== 'n/a' && n !== 'unknown') touchedTables.add(n);
+    }
+  }
+  const yesNo = (v) => String(v || '').toLowerCase() === 'yes';
+  for (const q of (qData || [])) {
+    if (yesNo(q.has_sql_map)) continue;
+    const aliases = inferSqlAliasesForForm(q.form);
+    const hasInferredSql = aliases.some((a) => touchedTables.has(a.toLowerCase()));
+    if (!hasInferredSql) continue;
+    q.has_sql_map = 'yes';
+
+    const missing = splitCsv(q.missing_links).map((m) => m.toLowerCase());
+    q.missing_links = missing.filter((m) => m !== 'sql_map').join(', ') || 'none';
+
+    const score = (yesNo(q.has_event_map) ? 25 : 0)
+      + (yesNo(q.has_sql_map) ? 25 : 0)
+      + (yesNo(q.has_business_rules) ? 25 : 0)
+      + (yesNo(q.has_risk_entry) ? 25 : 0);
+    q.score = score;
+  }
+}
+
 function parseR(content) {
   const { rows } = parseTableSection(getSection(content, 'R.'));
   return rows
@@ -226,6 +1077,112 @@ function parseR(content) {
       depends_on: gc(r,2), shared:      gc(r,3),
       rationale:  gc(r,4),
     }));
+}
+
+function sprintBlockLabel(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('sprint 0')) return 'Sprint 0';
+  if (text.includes('sprint 2')) return 'Sprint 2';
+  return 'Sprint 1';
+}
+
+function inferMdiNavigationDeps(depMap, events, mappedForms, excludedForms, sprints) {
+  const existing = Array.isArray(depMap) ? [...depMap] : [];
+  if (existing.some((d) => String(d.type || '').toLowerCase() === 'mdi_navigation')) return existing;
+
+  const mappedByShort = new Map();
+  for (const f of (mappedForms || [])) {
+    const short = canonFormKey(f.form);
+    if (!short) continue;
+    if (!mappedByShort.has(short)) mappedByShort.set(short, []);
+    mappedByShort.get(short).push(f);
+  }
+  const excludedByShort = new Map();
+  for (const f of (excludedForms || [])) {
+    const short = canonFormKey(f.form || f.name);
+    if (!short || excludedByShort.has(short)) continue;
+    excludedByShort.set(short, shortFormName(f.form || f.name) || short);
+  }
+
+  const sprintByShort = new Map();
+  for (const s of (sprints || [])) {
+    const short = canonFormKey(s.form);
+    if (!short || sprintByShort.has(short)) continue;
+    sprintByShort.set(short, sprintBlockLabel(s.sprint));
+  }
+
+  const skipTokens = new Set([
+    'n/a', 'msgbox', 'exit', 'unload', 'cancel', 'ctrl', 'true', 'false',
+    'checkdatabasestatus', 'validnumeric', 'validnonnumeric', 'connectdatabase',
+    'disconnectdatabase',
+  ]);
+  const isNavSource = (name) => /(menu|mdi|main)/i.test(String(name || ''));
+  const isNavTarget = (name) => /^(frm|form|mdi|main|menu|rpt)/i.test(String(name || ''));
+  const isReportTarget = (name) => /^(rpt|report|datareport)/i.test(String(name || ''));
+  const pickCandidate = (short, sourceProjectKey) => {
+    const options = mappedByShort.get(short) || [];
+    if (!options.length) return null;
+    if (sourceProjectKey) {
+      const matched = options.find((o) => canonicalProjectKey(o.project) === sourceProjectKey);
+      if (matched) return matched;
+    }
+    return options[0];
+  };
+
+  const out = [];
+  const seen = new Set(
+    existing.map((d) => `${String(d.from || '').toLowerCase()}||${String(d.to || '').toLowerCase()}||${String(d.type || '').toLowerCase()}`),
+  );
+
+  for (const e of (events || [])) {
+    const rawForm = String(e.form || '').trim();
+    if (!rawForm) continue;
+    const source = rawForm.includes(':') ? rawForm.split(':').slice(0, -1).join(':') : rawForm;
+    const sourceShort = shortFormName(source);
+    if (!isNavSource(sourceShort)) continue;
+    const sourceProjectKey = canonicalProjectKey(source.includes('::') ? source.split('::')[0] : '');
+
+    for (const token of splitCsv(e.calls)) {
+      const cleaned = shortFormName(token);
+      const low = cleaned.toLowerCase();
+      if (!cleaned || skipTokens.has(low) || !isNavTarget(cleaned)) continue;
+      const target = pickCandidate(low, sourceProjectKey);
+      let to = target ? String(target.form || '').trim() : cleaned;
+      if (!to) continue;
+      if (shortFormName(to).toLowerCase() === sourceShort.toLowerCase()) continue;
+      let linkType = 'mdi_navigation';
+      if (isReportTarget(cleaned)) {
+        linkType = 'report_navigation';
+        to = cleaned;
+      } else if (!target) {
+        if (excludedByShort.has(low)) {
+          linkType = 'mdi_navigation_excluded';
+          to = `${excludedByShort.get(low)} [Excluded]`;
+        } else {
+          linkType = 'mdi_navigation_unresolved';
+          to = `${cleaned} [Unresolved]`;
+        }
+      }
+
+      const key = `${source.toLowerCase()}||${to.toLowerCase()}||${linkType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const block = linkType === 'mdi_navigation_unresolved'
+        ? 'n/a (unresolved)'
+        : linkType === 'report_navigation'
+          ? 'Sprint 2'
+          : (sprintByShort.get(canonFormKey(to)) || 'Sprint 1');
+      out.push({
+        from: source,
+        to,
+        type: linkType,
+        evidence: `${source}:${String(e.event || 'event').trim() || 'event'}`,
+        blocks: block,
+      });
+    }
+  }
+
+  return [...existing, ...out];
 }
 
 function parseDecisions(preamble) {
@@ -271,6 +1228,57 @@ function parseDecisionBrief(preamble) {
   return brief;
 }
 
+function addCoverageDecisions(decisions, qData, mappedForms) {
+  const out = Array.isArray(decisions) ? [...decisions] : [];
+  const hasId = new Set(out.map((d) => String(d.id || '').trim().toUpperCase()));
+  const byShort = new Map();
+  for (const q of (qData || [])) {
+    const short = canonFormKey(q.form);
+    if (!short || byShort.has(short)) continue;
+    byShort.set(short, q);
+  }
+
+  const flagged = [];
+  for (const f of (mappedForms || [])) {
+    const projectKey = canonicalProjectKey(f.project);
+    if (projectKey === '__unmapped__') continue;
+    const short = canonFormKey(f.form);
+    const q = byShort.get(short);
+    if (!q) continue;
+    const hasEvents = String(q.has_event_map || '').toLowerCase() === 'yes';
+    const score = Number(q.score || 0);
+    if (hasEvents || score > 0) continue;
+    flagged.push(shortFormName(f.display_name || f.form) || short);
+  }
+
+  if (!flagged.length) return out;
+  const id = 'DEC-EVENTMAP-001';
+  if (hasId.has(id)) return out;
+  const list = [...new Set(flagged)].sort();
+  out.push({
+    id,
+    description: `${list.join(', ')} have zero extracted UI events with rich form profiles. Confirm whether these are stub forms or rerun extraction before sprint planning.`,
+  });
+  return out;
+}
+
+function addQaDecisions(decisions, qa) {
+  const out = Array.isArray(decisions) ? [...decisions] : [];
+  const hasId = new Set(out.map((d) => String(d.id || '').trim().toUpperCase()));
+  const checks = (qa && typeof qa === 'object' && qa.checks && typeof qa.checks === 'object')
+    ? qa.checks
+    : {};
+
+  const compliance = checks.compliance_constraints_applied || null;
+  if (compliance && String(compliance.status || '').toUpperCase() === 'FAIL' && !hasId.has('DEC-COMPLIANCE-001')) {
+    out.push({
+      id: 'DEC-COMPLIANCE-001',
+      description: `Compliance constraints are not linked to detected security/privacy risks. ${String(compliance.detail || '').trim()}`.trim(),
+    });
+  }
+  return out;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -294,33 +1302,112 @@ function parseMd(mdContent, meta = {}) {
     generated_at: meta.generatedAt  || genAtMatch?.[1]?.trim()  || new Date().toISOString().slice(0,10),
   };
 
+  const qaBlock = parseQaBlock(preamble);
+  const parsedDecisions = parseDecisions(preamble);
+
+  const projects = parseA(mdContent);
+  const dependencies = parseB(mdContent);
+  const events = parseC(mdContent);
+  let sqlEntries = parseD(mdContent);
+  const rules = parseE(mdContent);
+  const ruleConsolidation = parseE2(mdContent);
+  const findings = parseF(mdContent);
   const kData = parseK(mdContent);
+  const risks = parseL(mdContent);
+  const sqlMapRows = parseH(mdContent);
+  const procedureSummaries = parseI(mdContent);
+  let depMap = parseO(mdContent);
+  const formTraces = parseP(mdContent);
   const qData = parseQ(mdContent);
-  const rData = parseR(mdContent);
+  const rRaw = parseR(mdContent);
+
+  normalizeTraceabilitySqlCoverage(qData, sqlEntries);
+
+  deSaturateMappedInputs(kData.mapped, events);
+  deSaturateMappedActiveX(kData.mapped, dependencies);
+
+  for (const p of projects) p.project_display = prettyProjectLabel(p.project);
+  for (const f of kData.mapped) f.project_display = prettyProjectLabel(f.project);
+  for (const f of kData.excluded) f.project_display = prettyProjectLabel(f.project);
+  for (const q of qData) q.project_display = prettyProjectLabel(q.project);
+  const sprintByForm = new Map();
+  for (const row of rRaw) {
+    const key = String(row.form || '').trim();
+    if (!key || key.endsWith('.frm')) continue;
+    sprintByForm.set(key, { ...row });
+  }
+  for (const q of qData) {
+    const qKey = String(q.form || '').trim();
+    if (!qKey) continue;
+    const qProject = String(q.project_display || q.project || '').trim();
+    const score = Number(q.score || 0);
+    const hasRules = String(q.has_business_rules || '').toLowerCase() === 'yes';
+    const hasRisk = String(q.has_risk_entry || '').toLowerCase() === 'yes';
+    const computed = score < 40
+      ? 'Sprint 0 (Discovery closure)'
+      : ((!hasRules || hasRisk) ? 'Sprint 1 (Risk-first modernization)' : 'Sprint 2 (Parity hardening)');
+    const missing = String(q.missing_links || '').trim();
+    if (!sprintByForm.has(qKey)) {
+      sprintByForm.set(qKey, {
+        form: qKey,
+        project: qProject,
+        sprint: computed,
+        depends_on: missing ? `Q.${missing.split(',')[0].trim()}` : 'none',
+        shared: 'none',
+        rationale: score < 40
+          ? 'Close traceability gaps before modernization changes.'
+          : 'Generated fallback sprint mapping from traceability coverage.',
+      });
+      continue;
+    }
+    const current = sprintByForm.get(qKey);
+    if (!current.project) current.project = qProject;
+    const existingSprint = String(current?.sprint || '').toLowerCase();
+    if (existingSprint.includes('sprint 2') && computed !== 'Sprint 2 (Parity hardening)') {
+      current.sprint = computed;
+      current.rationale = current.rationale || 'Adjusted from Q coverage: rule/risk prerequisites unresolved.';
+      sprintByForm.set(qKey, current);
+    }
+  }
+  const rData = Array.from(sprintByForm.values());
+  depMap = inferMdiNavigationDeps(depMap, events, kData.mapped, kData.excluded_unique || kData.excluded, rData);
+
+  const formDisplayIndex = buildFormDisplayIndex(kData.mapped, kData.excluded);
+  const sqlFormIndex = buildSqlFormIndex(formTraces, procedureSummaries, sqlEntries, sqlMapRows);
+  normalizeRiskForms(risks, formDisplayIndex, sqlFormIndex);
+  normalizeDetectorRiskLanguage(risks);
+  normalizeFindingForms(findings, formDisplayIndex);
+  normalizeFindingLanguage(findings);
+
+  sqlEntries = mergeSqlEntriesWithMap(sqlEntries, sqlMapRows);
+  sqlEntries = ensureSqlCoverage(sqlEntries, mdContent, procedureSummaries, sqlMapRows);
+  const decisions = addQaDecisions(addCoverageDecisions(parsedDecisions, qData, kData.mapped), qaBlock);
 
   return {
     meta:            headerMeta,
-    qa:              parseQaBlock(preamble),
+    qa:              qaBlock,
     decision_brief:  parseDecisionBrief(preamble),
-    decisions:       parseDecisions(preamble),
+    decisions:       decisions,
     backlog:         parseBacklog(preamble),
 
     // Section tables
-    projects:        parseA(mdContent),
-    dependencies:    parseB(mdContent),
-    events:          parseC(mdContent),
-    sql_entries:     parseD(mdContent),
-    rules:           parseE(mdContent),
-    rule_consolidation: parseE2(mdContent),
-    findings:        parseF(mdContent),
+    projects:        projects,
+    dependencies:    dependencies,
+    events:          events,
+    sql_entries:     sqlEntries,
+    rules:           rules,
+    rule_consolidation: ruleConsolidation,
+    findings:        findings,
+    sql_map_rows:    sqlMapRows,
+    procedure_summaries: procedureSummaries,
 
     mapped_forms:    kData.mapped,
     excluded_forms:  kData.excluded,
     excluded_unique: kData.excluded_unique,
 
-    risks:           parseL(mdContent),
-    dep_map:         parseO(mdContent),
-    form_traces:     parseP(mdContent),
+    risks:           risks,
+    dep_map:         depMap,
+    form_traces:     formTraces,
     traceability:    qData,
     active_q:        qData,          // alias used by generators
     sprints:         rData,

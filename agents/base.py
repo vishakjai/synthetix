@@ -105,11 +105,99 @@ class BaseAgent(ABC):
             "If your output supports metadata, include a `context_reference` object that echoes these versions."
         )
 
+    def _delivery_constitution_instruction(self, state: dict[str, Any]) -> str:
+        """
+        Inject the always-on Delivery Constitution from run context.
+        """
+        run_ctx = state.get("run_context_bundle", {})
+        if not isinstance(run_ctx, dict):
+            return ""
+        constitution = run_ctx.get("delivery_constitution", {})
+        if not isinstance(constitution, dict):
+            return ""
+        constitution_id = str(constitution.get("constitution_id", "")).strip()
+        non_negotiables = constitution.get("non_negotiables", [])
+        if not isinstance(non_negotiables, list):
+            non_negotiables = []
+        objective = str(constitution.get("modernization_objective", "")).strip()
+        knowledge_snapshot = constitution.get("knowledge_snapshot", {})
+        if not isinstance(knowledge_snapshot, dict):
+            knowledge_snapshot = {}
+        snapshot_id = str(knowledge_snapshot.get("snapshot_id", "")).strip()
+        hints = constitution.get("orchestration_hints", [])
+        if not isinstance(hints, list):
+            hints = []
+        routing = run_ctx.get("specialist_routing", {})
+        if not isinstance(routing, dict):
+            routing = {}
+        selected_specialists = routing.get("selected", [])
+        if not isinstance(selected_specialists, list):
+            selected_specialists = []
+        pre_change = constitution.get("checklists", {})
+        if not isinstance(pre_change, dict):
+            pre_change = {}
+        pre_steps = pre_change.get("pre_change", [])
+        if not isinstance(pre_steps, list):
+            pre_steps = []
+
+        rule_lines = [f"- {str(item).strip()}" for item in non_negotiables[:8] if str(item).strip()]
+        hint_lines = []
+        for row in hints[:4]:
+            if not isinstance(row, dict):
+                continue
+            when = str(row.get("when", "")).strip()
+            route_to = str(row.get("route_to", "")).strip()
+            reason = str(row.get("reason", "")).strip()
+            if when or route_to or reason:
+                hint_lines.append(f"- When={when or 'n/a'} | Route={route_to or 'n/a'} | Why={reason or 'n/a'}")
+        route_lines = []
+        for row in selected_specialists[:4]:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name", "")).strip()
+            agent_key = str(row.get("route_target_agent_key", "")).strip() or str(row.get("linked_agent_key", "")).strip()
+            reason = []
+            intents = row.get("matched_intents", [])
+            if isinstance(intents, list) and intents:
+                reason.append(f"intent={','.join([str(x) for x in intents[:2]])}")
+            files = row.get("matched_files", [])
+            if isinstance(files, list) and files:
+                reason.append(f"file={','.join([str(x) for x in files[:2]])}")
+            arts = row.get("matched_artifacts", [])
+            if isinstance(arts, list) and arts:
+                reason.append(f"artifact={','.join([str(x) for x in arts[:2]])}")
+            score = str(row.get("score", "")).strip()
+            if name or agent_key:
+                route_lines.append(
+                    f"- {name or 'specialist'} -> {agent_key or 'unbound'}"
+                    + (f" | score={score}" if score else "")
+                    + (f" | {'; '.join(reason)}" if reason else "")
+                )
+        pre_lines = [f"- {str(item).strip()}" for item in pre_steps[:4] if str(item).strip()]
+        if not rule_lines and not hint_lines and not pre_lines and not route_lines and not objective:
+            return ""
+
+        return (
+            "DELIVERY CONSTITUTION (ALWAYS-ON):\n"
+            f"- Constitution ID: {constitution_id or 'n/a'}\n"
+            f"- Knowledge snapshot: {snapshot_id or 'n/a'}\n"
+            f"- Objective: {objective or 'n/a'}\n"
+            "Non-negotiables:\n"
+            + ("\n".join(rule_lines) if rule_lines else "- n/a")
+            + "\nRouting hints:\n"
+            + ("\n".join(hint_lines) if hint_lines else "- n/a")
+            + "\nSpecialist routes selected for this run:\n"
+            + ("\n".join(route_lines) if route_lines else "- none")
+            + "\nPre-change checklist:\n"
+            + ("\n".join(pre_lines) if pre_lines else "- n/a")
+        )
+
     def effective_system_prompt(self, state: dict[str, Any], base_prompt: str | None = None) -> str:
         prompt = base_prompt if isinstance(base_prompt, str) else self.system_prompt
         persona = self._persona_instruction(state)
         context_contract = self._context_contract_instruction(state)
-        additions = [x for x in [persona, context_contract] if x]
+        constitution = self._delivery_constitution_instruction(state)
+        additions = [x for x in [persona, constitution, context_contract] if x]
         if not additions:
             return prompt
         return f"{prompt}\n\n" + "\n\n".join(additions)
