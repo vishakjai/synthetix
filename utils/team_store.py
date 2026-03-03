@@ -186,6 +186,25 @@ DEFAULT_TEAMS: list[dict[str, Any]] = [
 ]
 
 
+STAGE_KEYS: tuple[str, ...] = ("1", "2", "3", "4", "5", "6", "7", "8")
+
+
+def _normalize_stage_agent_ids(
+    stage_agent_ids: dict[str, Any],
+    get_agent_fn,
+) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    if not isinstance(stage_agent_ids, dict):
+        return normalized
+    for stage in STAGE_KEYS:
+        candidate = str(stage_agent_ids.get(stage, "")).strip()
+        if not candidate:
+            continue
+        if get_agent_fn(candidate):
+            normalized[stage] = candidate
+    return normalized
+
+
 def _safe_json_load(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
@@ -283,15 +302,17 @@ class TeamStore:
         description: str = "",
         team_id: str = "",
     ) -> dict[str, Any]:
-        normalized_stage_ids: dict[str, str] = {}
-        for stage in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            candidate = str(stage_agent_ids.get(stage, "")).strip()
-            if not candidate or not self.get_agent(candidate):
-                candidate = DEFAULT_STAGE_AGENT_IDS_BALANCED[stage]
-            normalized_stage_ids[stage] = candidate
+        normalized_stage_ids = _normalize_stage_agent_ids(stage_agent_ids, self.get_agent)
+        if not normalized_stage_ids:
+            raise ValueError("team must include at least one valid stage agent")
+
+        system_team_ids = {str(row.get("id", "")).strip() for row in DEFAULT_TEAMS if str(row.get("id", "")).strip()}
+        requested_team_id = team_id.strip()
+        if requested_team_id and requested_team_id in system_team_ids:
+            raise ValueError("cannot edit a system team; clone it into a custom team")
 
         payload = {
-            "id": team_id.strip() or f"custom-team-{uuid.uuid4().hex[:10]}",
+            "id": requested_team_id or f"custom-team-{uuid.uuid4().hex[:10]}",
             "name": name.strip() or "Untitled Team",
             "description": description.strip(),
             "stage_agent_ids": normalized_stage_ids,
@@ -307,6 +328,61 @@ class TeamStore:
             custom_teams.append(payload)
         _safe_json_write(self.custom_teams_path, custom_teams)
         return payload
+
+    def duplicate_team(
+        self,
+        source_team_id: str,
+        name: str = "",
+    ) -> dict[str, Any]:
+        source = self.get_team(source_team_id)
+        if not source:
+            raise ValueError("team not found")
+
+        source_stage_ids = source.get("stage_agent_ids", {})
+        normalized_stage_ids = _normalize_stage_agent_ids(
+            source_stage_ids if isinstance(source_stage_ids, dict) else {},
+            self.get_agent,
+        )
+        if not normalized_stage_ids:
+            raise ValueError("source team has no valid stage agents")
+
+        source_name = str(source.get("name", "Untitled Team")).strip() or "Untitled Team"
+        source_desc = str(source.get("description", "")).strip()
+        payload = {
+            "id": f"custom-team-{uuid.uuid4().hex[:10]}",
+            "name": name.strip() or f"{source_name} (Copy)",
+            "description": source_desc,
+            "stage_agent_ids": normalized_stage_ids,
+            "is_custom": True,
+        }
+
+        existing = _safe_json_load(self.custom_teams_path, [])
+        custom_teams = existing if isinstance(existing, list) else []
+        custom_teams.append(payload)
+        _safe_json_write(self.custom_teams_path, custom_teams)
+        return payload
+
+    def delete_team(self, team_id: str) -> dict[str, Any]:
+        target = str(team_id).strip()
+        if not target:
+            raise ValueError("team_id is required")
+
+        system_team_ids = {
+            str(row.get("id", "")).strip()
+            for row in DEFAULT_TEAMS
+            if str(row.get("id", "")).strip()
+        }
+        if target in system_team_ids:
+            raise ValueError("cannot delete a system team")
+
+        existing = _safe_json_load(self.custom_teams_path, [])
+        custom_teams = existing if isinstance(existing, list) else []
+        idx = next((i for i, t in enumerate(custom_teams) if str(t.get("id", "")).strip() == target), -1)
+        if idx < 0:
+            raise ValueError("team not found")
+        deleted = custom_teams.pop(idx)
+        _safe_json_write(self.custom_teams_path, custom_teams)
+        return deleted
 
     def suggest_team(self, challenge_text: str) -> dict[str, Any]:
         text = str(challenge_text or "").lower()
@@ -343,18 +419,22 @@ class TeamStore:
                 team_meta = team
                 source_map = team.get("stage_agent_ids", {})
                 if isinstance(source_map, dict):
-                    for k, v in source_map.items():
-                        selected[str(k)] = str(v)
+                    selected.update(_normalize_stage_agent_ids(source_map, self.get_agent))
 
         if isinstance(stage_agent_ids, dict):
-            for k, v in stage_agent_ids.items():
-                if str(v).strip():
-                    selected[str(k)] = str(v).strip()
+            selected.update(_normalize_stage_agent_ids(stage_agent_ids, self.get_agent))
+
+        if not selected:
+            selected = dict(DEFAULT_STAGE_AGENT_IDS_BALANCED)
 
         personas: dict[str, dict[str, str]] = {}
-        for stage in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            agent_id = selected.get(stage, DEFAULT_STAGE_AGENT_IDS_BALANCED[stage])
+        for stage in STAGE_KEYS:
+            agent_id = selected.get(stage, "")
+            if not agent_id:
+                continue
             agent = self.get_agent(agent_id) or self.get_agent(DEFAULT_STAGE_AGENT_IDS_BALANCED[stage])
+            if not agent:
+                continue
             personas[stage] = {
                 "agent_id": str(agent.get("id", "")) if agent else "",
                 "display_name": str(agent.get("display_name", "")) if agent else "",
@@ -366,7 +446,7 @@ class TeamStore:
                     else {}
                 ) if agent else {},
             }
-            selected[stage] = personas[stage]["agent_id"]
+            selected[stage] = str(personas[stage]["agent_id"])
 
         if not team_meta:
             team_meta = {
@@ -376,4 +456,7 @@ class TeamStore:
                 "stage_agent_ids": selected,
                 "is_custom": True,
             }
+        else:
+            team_meta = dict(team_meta)
+            team_meta["stage_agent_ids"] = dict(selected)
         return personas, team_meta

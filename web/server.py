@@ -158,6 +158,41 @@ DISCOVER_ANALYST_BRIEF_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 DISCOVER_ANALYST_BRIEF_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
+def _active_stage_indices_from_stage_map(stage_agent_ids: Any) -> list[int]:
+    indices: list[int] = []
+    if isinstance(stage_agent_ids, dict):
+        for stage_raw, agent_id in stage_agent_ids.items():
+            stage_str = str(stage_raw).strip()
+            if not stage_str.isdigit():
+                continue
+            if not str(agent_id or "").strip():
+                continue
+            stage_num = int(stage_str)
+            idx = stage_num - 1
+            if 0 <= idx < len(AGENT_SEQUENCE):
+                indices.append(idx)
+    unique_sorted = sorted(set(indices))
+    return unique_sorted if unique_sorted else list(range(len(AGENT_SEQUENCE)))
+
+
+def _active_stage_indices_from_state(state: Any) -> list[int]:
+    if isinstance(state, dict):
+        return _active_stage_indices_from_stage_map(state.get("stage_agent_ids", {}))
+    return list(range(len(AGENT_SEQUENCE)))
+
+
+def _active_stage_numbers_from_state(state: Any) -> list[int]:
+    return [idx + 1 for idx in _active_stage_indices_from_state(state)]
+
+
+def _next_active_stage_idx(active_stage_indices: list[int], start_idx: int) -> int:
+    target = max(0, int(start_idx or 0))
+    for idx in active_stage_indices:
+        if idx >= target:
+            return idx
+    return len(AGENT_SEQUENCE)
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -599,6 +634,13 @@ class PipelineRunManager:
             agent_personas=agent_personas,
             pipeline_state=make_initial_state(objectives),
         )
+        active_stage_indices = _active_stage_indices_from_stage_map(team_meta.get("stage_agent_ids", {}))
+        active_stage_numbers = [idx + 1 for idx in active_stage_indices]
+        record.stage_status = {
+            stage_num: ("pending" if (stage_num - 1) in active_stage_indices else "skipped_team")
+            for stage_num in range(1, TOTAL_STAGES + 1)
+        }
+        record.next_stage_idx = _next_active_stage_idx(active_stage_indices, 0)
         record.pipeline_state["run_id"] = run_id
         record.pipeline_state["use_case"] = use_case
         record.pipeline_state["legacy_code"] = legacy_code
@@ -618,6 +660,7 @@ class PipelineRunManager:
         record.pipeline_state["team_name"] = str(team_meta.get("name", ""))
         record.pipeline_state["stage_agent_ids"] = dict(team_meta.get("stage_agent_ids", {}))
         record.pipeline_state["agent_personas"] = agent_personas
+        record.pipeline_state["active_stage_numbers"] = list(active_stage_numbers)
         record.pipeline_state["sil_ready"] = False
         record.pipeline_state["context_layer_status"] = "pending"
         record.pipeline_state["system_context_model"] = {}
@@ -639,6 +682,7 @@ class PipelineRunManager:
         }
         self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
         self._append_log(record, f"👥 Team selected: {record.team_name or 'Ad-hoc Team'}")
+        self._append_log(record, f"🧩 Active build stages: {', '.join([str(x) for x in active_stage_numbers])}")
         self._append_log(record, "🧠 System Intelligence Layer scheduled (SCM / CP / HA-RB)")
         selected_specialists = _as_list_safe(routing.get("selected"))
         if selected_specialists:
@@ -910,13 +954,17 @@ class PipelineRunManager:
                 if not self._run_context_layer(record):
                     return
 
-            stage_idx = int(record.next_stage_idx)
+            active_stage_indices = _active_stage_indices_from_state(record.pipeline_state or {})
+            stage_idx = _next_active_stage_idx(active_stage_indices, int(record.next_stage_idx))
+            record.next_stage_idx = stage_idx
             if stage_idx >= len(AGENT_SEQUENCE):
                 record.status = "completed"
                 record.updated_at = _utc_now()
                 if record.pipeline_state is not None:
                     record.pipeline_state["pipeline_status"] = "completed"
-                    record.pipeline_state["workflow_state"] = "DEPLOYED"
+                    record.pipeline_state["workflow_state"] = (
+                        "DEPLOYED" if DEPLOYMENT_STAGE_INDEX in active_stage_indices else "COMPLETED"
+                    )
                 self._append_log(record, "🏁 Pipeline completed successfully")
                 self._attempt_github_export(record, final=True)
                 self._persist(record)
@@ -1198,6 +1246,12 @@ class PipelineRunManager:
                     tester_output = latest_result.get("output", {})
                     gate = tester_output.get("overall_results", {}).get("quality_gate", "pass")
                     if gate == "fail" and record.retry_count < record.config.max_retries:
+                        if DEVELOPER_STAGE_INDEX not in active_stage_indices:
+                            self._fail(
+                                record,
+                                "Quality gate failed but Developer stage is not part of the selected team; cannot execute retry loop.",
+                            )
+                            return
                         record.retry_count += 1
                         diagnosis: dict[str, Any] = {}
                         diagnosis_tokens = 0
@@ -1263,9 +1317,15 @@ class PipelineRunManager:
                         record.pipeline_state["total_latency_ms"] = record.pipeline_state.get("total_latency_ms", 0) + diagnosis_latency_ms
                         record.pipeline_state["tester_feedback"] = tester_output
                         record.stage_status[DEVELOPER_STAGE_NUM] = "running"
-                        record.stage_status[DATABASE_STAGE_NUM] = "pending"
-                        record.stage_status[SECURITY_STAGE_NUM] = "pending"
-                        record.stage_status[TESTER_STAGE_NUM] = "pending"
+                        record.stage_status[DATABASE_STAGE_NUM] = (
+                            "pending" if (DATABASE_STAGE_NUM - 1) in active_stage_indices else "skipped_team"
+                        )
+                        record.stage_status[SECURITY_STAGE_NUM] = (
+                            "pending" if (SECURITY_STAGE_NUM - 1) in active_stage_indices else "skipped_team"
+                        )
+                        record.stage_status[TESTER_STAGE_NUM] = (
+                            "pending" if (TESTER_STAGE_NUM - 1) in active_stage_indices else "skipped_team"
+                        )
                         self._append_log(
                             record,
                             "🔄 Quality gate FAILED — sending feedback to Developer "
@@ -1292,21 +1352,23 @@ class PipelineRunManager:
                     if "tester_feedback" in record.pipeline_state:
                         del record.pipeline_state["tester_feedback"]
 
-                record.next_stage_idx = stage_idx + 1
+                next_active_idx = _next_active_stage_idx(active_stage_indices, stage_idx + 1)
+                record.next_stage_idx = next_active_idx
 
                 # Human approval gate after each completed stage
-                if record.human_approval and record.next_stage_idx < len(AGENT_SEQUENCE):
+                if record.human_approval and next_active_idx < len(AGENT_SEQUENCE):
+                    next_stage_num = next_active_idx + 1
                     record.pending_approval = {
                         "type": "stage_gate",
                         "stage": stage_num,
-                        "next_stage": record.next_stage_idx + 1,
-                        "message": f"Approve transition from Stage {stage_num} to Stage {record.next_stage_idx + 1}",
+                        "next_stage": next_stage_num,
+                        "message": f"Approve transition from Stage {stage_num} to Stage {next_stage_num}",
                     }
                     record.status = "waiting_approval"
                     record.stage_status[stage_num] = latest_result.get("status", "success")
                     self._append_log(
                         record,
-                        f"🛑 Human approval required before Stage {record.next_stage_idx + 1}",
+                        f"🛑 Human approval required before Stage {next_stage_num}",
                     )
                     self._persist(record)
                     return
@@ -1780,6 +1842,10 @@ class PipelineRunManager:
             return {"ok": False, "error": "run not found"}
         if record.status == "running":
             return {"ok": False, "error": "run is currently running; pause or wait before rerun"}
+        active_stage_numbers = set(_active_stage_numbers_from_state(record.pipeline_state or {}))
+        if stage not in active_stage_numbers:
+            active_str = ", ".join([str(x) for x in sorted(active_stage_numbers)])
+            return {"ok": False, "error": f"stage {stage} is not active for this team. Active stages: {active_str}"}
 
         prior_stage = stage - 1
         stage_snapshot = self.store.load_stage_snapshot(run_id, prior_stage)
@@ -1814,13 +1880,18 @@ class PipelineRunManager:
             base_state = make_initial_state(record.objectives)
 
         trimmed_stage_status = {k: v for k, v in base_stage_status.items() if k < stage}
-        for idx in range(stage, TOTAL_STAGES + 1):
-            trimmed_stage_status[idx] = "pending"
+        for idx in range(1, TOTAL_STAGES + 1):
+            if idx in active_stage_numbers:
+                if idx >= stage:
+                    trimmed_stage_status[idx] = "pending"
+            else:
+                trimmed_stage_status[idx] = "skipped_team"
 
         base_state["pipeline_status"] = "running"
         base_state["workflow_state"] = _workflow_state_for_stage(max(0, stage - 1))
         base_state["pending_approval"] = None
         base_state["next_stage_idx"] = stage - 1
+        base_state["active_stage_numbers"] = sorted(active_stage_numbers)
         if stage <= 1:
             base_state["discover_review"] = {
                 "overall_status": "PENDING",
@@ -5247,14 +5318,43 @@ async def api_save_team(request):
     team_id = str(payload.get("team_id", "")).strip()
     if not isinstance(stage_agent_ids, dict):
         return JSONResponse({"ok": False, "error": "stage_agent_ids must be an object"}, status_code=400)
-    team = TEAM_STORE.save_team(
-        name=name,
-        description=description,
-        stage_agent_ids=stage_agent_ids,
-        team_id=team_id,
-    )
+    try:
+        team = TEAM_STORE.save_team(
+            name=name,
+            description=description,
+            stage_agent_ids=stage_agent_ids,
+            team_id=team_id,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     personas, resolved_team = TEAM_STORE.resolve_personas(team_id=team.get("id", ""))
     return JSONResponse({"ok": True, "team": resolved_team, "agent_personas": personas})
+
+
+async def api_duplicate_team(request):
+    payload = _get_json(await request.body())
+    source_team_id = str(payload.get("team_id", "")).strip()
+    name = str(payload.get("name", "")).strip()
+    if not source_team_id:
+        return JSONResponse({"ok": False, "error": "team_id is required"}, status_code=400)
+    try:
+        team = TEAM_STORE.duplicate_team(source_team_id=source_team_id, name=name)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    personas, resolved_team = TEAM_STORE.resolve_personas(team_id=team.get("id", ""))
+    return JSONResponse({"ok": True, "team": resolved_team, "agent_personas": personas})
+
+
+async def api_delete_team(request):
+    payload = _get_json(await request.body())
+    team_id = str(payload.get("team_id", "")).strip()
+    if not team_id:
+        return JSONResponse({"ok": False, "error": "team_id is required"}, status_code=400)
+    try:
+        deleted = TEAM_STORE.delete_team(team_id=team_id)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "deleted_team": deleted, "teams": TEAM_STORE.list_teams()})
 
 
 async def api_suggest_team(request):
@@ -10423,6 +10523,8 @@ routes = [
     Route("/api/agents/clone", api_clone_agent, methods=["POST"]),
     Route("/api/teams", api_list_teams, methods=["GET"]),
     Route("/api/teams", api_save_team, methods=["POST"]),
+    Route("/api/teams/duplicate", api_duplicate_team, methods=["POST"]),
+    Route("/api/teams/delete", api_delete_team, methods=["POST"]),
     Route("/api/teams/suggest", api_suggest_team, methods=["POST"]),
     Route("/api/teams/{team_id:str}", api_get_team, methods=["GET"]),
     Route("/api/tasks", api_list_tasks, methods=["GET"]),

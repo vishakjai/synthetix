@@ -292,9 +292,16 @@ const el = {
   workOpenHistory: document.getElementById("work-open-history"),
 
   teamStageSelectors: document.getElementById("team-stage-selectors"),
+  planTeamSelect: document.getElementById("plan-team-select"),
+  planTeamLoadBtn: document.getElementById("plan-team-load-btn"),
+  planTeamNewBtn: document.getElementById("plan-team-new-btn"),
+  planTeamDuplicateBtn: document.getElementById("plan-team-duplicate-btn"),
+  planTeamDeleteBtn: document.getElementById("plan-team-delete-btn"),
+  teamAddAgentBtn: document.getElementById("team-add-agent-btn"),
   teamName: document.getElementById("team-name"),
   teamDescription: document.getElementById("team-description"),
   teamSaveBtn: document.getElementById("team-save-btn"),
+  teamLoadSelectedBtn: document.getElementById("team-load-selected-btn"),
   teamUseInWorkBtn: document.getElementById("team-use-in-work-btn"),
   teamRefreshBtn: document.getElementById("team-refresh-btn"),
   teamSaveMessage: document.getElementById("team-save-message"),
@@ -527,6 +534,7 @@ const state = {
     stageAgentIds: {},
     agentPersonas: {},
     reason: "",
+    isCustom: false,
   },
   settings: null,
   activeUserEmail: "",
@@ -542,6 +550,9 @@ const state = {
   },
   teamBuilder: {
     stageAgentIds: {},
+    enabledStages: {},
+    editingTeamId: "",
+    editingIsCustom: false,
   },
   collaboration: {
     selectedTab: "chat",
@@ -6855,10 +6866,33 @@ function stageAgentLookup(stage, agentId) {
   return options.find((a) => String(a.id) === String(agentId)) || null;
 }
 
+function normalizeStageAgentIds(stageAgentIds) {
+  const normalized = {};
+  if (!stageAgentIds || typeof stageAgentIds !== "object") return normalized;
+  STAGES.forEach((stage) => {
+    const candidate = String(stageAgentIds[stage] || "").trim();
+    if (!candidate) return;
+    const resolved = stageAgentLookup(stage, candidate);
+    if (resolved?.id) normalized[stage] = String(resolved.id);
+  });
+  return normalized;
+}
+
+function activeStageIdsFromStageMap(stageAgentIds) {
+  const normalized = normalizeStageAgentIds(stageAgentIds);
+  const active = STAGES.filter((stage) => !!normalized[stage]);
+  return active.length ? active : [...STAGES];
+}
+
+function teamBuilderEffectiveStageAgentIds() {
+  return normalizeStageAgentIds(state.teamBuilder?.stageAgentIds || {});
+}
+
 function derivePersonasFromStageMap(stageAgentIds) {
+  const normalized = normalizeStageAgentIds(stageAgentIds);
   const personas = {};
   STAGES.forEach((stage) => {
-    const agent = stageAgentLookup(stage, stageAgentIds?.[stage] || "");
+    const agent = stageAgentLookup(stage, normalized?.[stage] || "");
     personas[stage] = {
       agent_id: agent?.id || "",
       display_name: agent?.display_name || "",
@@ -6873,7 +6907,8 @@ function derivePersonasFromStageMap(stageAgentIds) {
 }
 
 function applyTeamSelection(team, personas, reason = "") {
-  const stageAgentIds = (team?.stage_agent_ids && typeof team.stage_agent_ids === "object") ? team.stage_agent_ids : {};
+  const stageAgentIds = normalizeStageAgentIds((team?.stage_agent_ids && typeof team.stage_agent_ids === "object") ? team.stage_agent_ids : {});
+  const isCustom = !!team?.is_custom;
   state.teamSelection = {
     teamId: String(team?.id || ""),
     teamName: String(team?.name || "Ad-hoc Team"),
@@ -6881,20 +6916,67 @@ function applyTeamSelection(team, personas, reason = "") {
     stageAgentIds,
     agentPersonas: personas && typeof personas === "object" ? personas : derivePersonasFromStageMap(stageAgentIds),
     reason: String(reason || ""),
+    isCustom,
   };
   state.teamBuilder.stageAgentIds = { ...stageAgentIds };
+  state.teamBuilder.editingTeamId = isCustom ? String(team?.id || "").trim() : "";
+  state.teamBuilder.editingIsCustom = isCustom;
+  if (el.teamName) el.teamName.value = String(team?.name || "").trim();
+  if (el.teamDescription) el.teamDescription.value = String(team?.description || "").trim();
+  if (el.planTeamSelect && state.teamSelection.teamId) {
+    const exists = [...el.planTeamSelect.options].some((opt) => String(opt.value || "") === state.teamSelection.teamId);
+    if (exists) el.planTeamSelect.value = state.teamSelection.teamId;
+  }
+  if (!isActiveRunStatus(state.currentRun?.status)) {
+    const activeStages = activeStageIdsFromStageMap(stageAgentIds);
+    const firstStage = Number(activeStages[0] || 1);
+    state.selectedStage = Number.isFinite(firstStage) ? firstStage : 1;
+  }
   renderWorkTeamSelection();
   renderTeamBuilderSelectors();
   renderTaskSummary();
+  if (state.mode === MODES.BUILD) {
+    renderRun();
+  }
 }
 
 function defaultBuilderMap() {
   const out = {};
   STAGES.forEach((stage) => {
     const options = state.agents.by_stage?.[stage] || [];
-    out[stage] = options[0]?.id || "";
+    if (options[0]?.id) out[stage] = options[0].id;
   });
   return out;
+}
+
+function defaultAgentForStage(stage) {
+  const options = state.agents.by_stage?.[String(stage)] || [];
+  return String(options[0]?.id || "").trim();
+}
+
+function teamBuilderUnusedStages() {
+  const normalized = normalizeStageAgentIds(state.teamBuilder?.stageAgentIds || {});
+  return STAGES.filter((stage) => !normalized[stage] && (state.agents.by_stage?.[stage] || []).length > 0);
+}
+
+function resetBuilderForNewTeam() {
+  state.teamBuilder.stageAgentIds = {};
+  state.teamBuilder.editingTeamId = "";
+  state.teamBuilder.editingIsCustom = false;
+  if (el.teamName) el.teamName.value = "";
+  if (el.teamDescription) el.teamDescription.value = "";
+  const firstStage = teamBuilderUnusedStages()[0];
+  if (firstStage) {
+    const agentId = defaultAgentForStage(firstStage);
+    if (agentId) state.teamBuilder.stageAgentIds[firstStage] = agentId;
+  }
+  if (el.planTeamSelect) el.planTeamSelect.value = "";
+  if (el.teamSaveMessage) el.teamSaveMessage.textContent = "Creating a new custom team.";
+  renderTeamBuilderSelectors();
+}
+
+function stageDisplayName(stage) {
+  return AGENTS.find((a) => Number(a.stage) === Number(stage))?.name || `Stage ${stage}`;
 }
 
 function renderWorkTeamSelection() {
@@ -6905,7 +6987,8 @@ function renderWorkTeamSelection() {
   }
   el.workTeamReason.textContent = s.reason ? `Suggested rationale: ${s.reason}` : `Active team: ${s.teamName || "(none)"}`;
 
-  el.workTeamRoster.innerHTML = STAGES.map((stage) => {
+  const activeStages = activeStageIdsFromStageMap(s.stageAgentIds || {});
+  el.workTeamRoster.innerHTML = activeStages.map((stage) => {
     const persona = s.agentPersonas?.[stage] || {};
     const stageName = AGENTS.find((a) => a.stage === Number(stage))?.name || `Stage ${stage}`;
     const reqPack = Number(stage) === 1
@@ -6922,38 +7005,105 @@ function renderWorkTeamSelection() {
   }).join("");
 }
 
-function stageSelectorHtml(stage, selectedId) {
-  const stageInfo = AGENTS.find((a) => a.stage === Number(stage));
-  const options = state.agents.by_stage?.[String(stage)] || [];
-  const selectOptions = options
-    .map((a) => `<option value="${escapeHtml(a.id)}" ${String(a.id) === String(selectedId) ? "selected" : ""}>${escapeHtml(a.display_name)}${a.is_custom ? " (custom)" : ""}</option>`)
+function teamBuilderRowHtml(stage, selectedId, usedStageSet) {
+  const currentStage = String(stage);
+  const options = state.agents.by_stage?.[currentStage] || [];
+  const preferred = String(selectedId || "").trim();
+  const resolvedSelected = options.some((a) => String(a.id) === preferred)
+    ? preferred
+    : String(options[0]?.id || "").trim();
+  const stageOptions = STAGES
+    .filter((candidate) => candidate === currentStage || !usedStageSet.has(candidate))
+    .map((candidate) => `<option value="${candidate}" ${candidate === currentStage ? "selected" : ""}>Stage ${candidate}: ${escapeHtml(stageDisplayName(candidate))}</option>`)
     .join("");
-  const current = options.find((o) => String(o.id) === String(selectedId)) || options[0] || {};
-  const reqPack = Number(stage) === 1 ? String(current.requirements_pack_profile || "").trim() : "";
+  const agentOptions = options.length
+    ? options
+      .map((a) => `<option value="${escapeHtml(a.id)}" ${String(a.id) === resolvedSelected ? "selected" : ""}>${escapeHtml(a.display_name)}${a.is_custom ? " (custom)" : ""}</option>`)
+      .join("")
+    : `<option value="">No available agents for this stage</option>`;
+  const current = options.find((o) => String(o.id) === resolvedSelected) || {};
+  const reqPack = Number(currentStage) === 1 ? String(current.requirements_pack_profile || "").trim() : "";
   return `
-    <div class="rounded-lg border border-slate-300 bg-slate-50 p-3" data-stage="${stage}">
-      <label class="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Stage ${stage}: ${escapeHtml(stageInfo?.name || "")}</label>
-      <select data-team-stage="${stage}" class="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900">${selectOptions}</select>
-      <p class="mt-2 text-xs text-slate-700" data-team-persona="${stage}">${escapeHtml(current.persona || "")}</p>
+    <div class="rounded-lg border border-slate-300 bg-slate-50 p-3" data-team-row="${escapeHtml(currentStage)}">
+      <div class="mb-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <select data-team-row-stage="${escapeHtml(currentStage)}" class="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900">${stageOptions}</select>
+        <select data-team-row-agent="${escapeHtml(currentStage)}" class="w-full rounded-md border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" ${options.length ? "" : "disabled"}>${agentOptions}</select>
+        <button data-team-row-remove="${escapeHtml(currentStage)}" class="btn-light rounded-md px-3 py-2 text-xs font-semibold">Remove</button>
+      </div>
+      <p class="text-xs text-slate-700">${escapeHtml(current.persona || "No persona configured for selected agent.")}</p>
       ${reqPack ? `<p class="mt-1 text-[11px] text-sky-800"><strong>Requirements Pack:</strong> ${escapeHtml(reqPack)}</p>` : ""}
     </div>
   `;
 }
 
 function renderTeamBuilderSelectors() {
-  if (!state.teamBuilder.stageAgentIds || !Object.keys(state.teamBuilder.stageAgentIds).length) {
-    state.teamBuilder.stageAgentIds = defaultBuilderMap();
+  const normalized = normalizeStageAgentIds(state.teamBuilder?.stageAgentIds || {});
+  state.teamBuilder.stageAgentIds = { ...normalized };
+  const selectedStages = Object.keys(normalized).sort((a, b) => Number(a) - Number(b));
+  const usedStageSet = new Set(selectedStages);
+  if (!selectedStages.length) {
+    el.teamStageSelectors.innerHTML = `
+      <div class="rounded-lg border border-slate-300 bg-slate-50 p-3 text-xs text-slate-700">
+        No agents added yet. Click <strong>Add Agent</strong> to include stages in this team.
+      </div>
+    `;
+  } else {
+    el.teamStageSelectors.innerHTML = selectedStages
+      .map((stage) => teamBuilderRowHtml(stage, normalized[stage], usedStageSet))
+      .join("");
   }
-  el.teamStageSelectors.innerHTML = STAGES.map((stage) => stageSelectorHtml(stage, state.teamBuilder.stageAgentIds[stage])).join("");
-  el.teamStageSelectors.querySelectorAll("[data-team-stage]").forEach((node) => {
+  const hasAnyAvailableStage = teamBuilderUnusedStages().length > 0;
+  if (el.teamAddAgentBtn) {
+    el.teamAddAgentBtn.disabled = !hasAnyAvailableStage;
+    el.teamAddAgentBtn.classList.toggle("opacity-60", !hasAnyAvailableStage);
+    el.teamAddAgentBtn.classList.toggle("cursor-not-allowed", !hasAnyAvailableStage);
+  }
+  el.teamStageSelectors.querySelectorAll("[data-team-row-stage]").forEach((node) => {
     node.addEventListener("change", () => {
-      const stage = String(node.getAttribute("data-team-stage"));
-      state.teamBuilder.stageAgentIds[stage] = node.value;
-      const selected = stageAgentLookup(stage, node.value);
-      const personaBox = el.teamStageSelectors.querySelector(`[data-team-persona=\"${stage}\"]`);
-      if (personaBox) personaBox.textContent = selected?.persona || "";
+      const oldStage = String(node.getAttribute("data-team-row-stage") || "").trim();
+      const newStage = String(node.value || "").trim();
+      if (!oldStage || !newStage || oldStage === newStage) return;
+      if (state.teamBuilder.stageAgentIds[newStage]) {
+        alert("That stage is already added. Choose a different stage.");
+        node.value = oldStage;
+        return;
+      }
+      const priorAgentId = String(state.teamBuilder.stageAgentIds[oldStage] || "").trim();
+      delete state.teamBuilder.stageAgentIds[oldStage];
+      const nextOptions = state.agents.by_stage?.[newStage] || [];
+      const nextAgentId = nextOptions.some((a) => String(a.id) === priorAgentId)
+        ? priorAgentId
+        : String(nextOptions[0]?.id || "").trim();
+      if (!nextAgentId) {
+        alert("No available agents for the selected stage.");
+        state.teamBuilder.stageAgentIds[oldStage] = priorAgentId;
+      } else {
+        state.teamBuilder.stageAgentIds[newStage] = nextAgentId;
+      }
+      renderTeamBuilderSelectors();
     });
   });
+  el.teamStageSelectors.querySelectorAll("[data-team-row-agent]").forEach((node) => {
+    node.addEventListener("change", () => {
+      const stage = String(node.getAttribute("data-team-row-agent") || "").trim();
+      if (!stage) return;
+      const value = String(node.value || "").trim();
+      const resolved = stageAgentLookup(stage, value);
+      if (!resolved?.id) return;
+      state.teamBuilder.stageAgentIds[stage] = String(resolved.id);
+      renderTeamBuilderSelectors();
+    });
+  });
+  el.teamStageSelectors.querySelectorAll("[data-team-row-remove]").forEach((node) => {
+    node.addEventListener("click", () => {
+      const stage = String(node.getAttribute("data-team-row-remove") || "").trim();
+      if (!stage) return;
+      delete state.teamBuilder.stageAgentIds[stage];
+      renderTeamBuilderSelectors();
+    });
+  });
+  const editingCustom = !!state.teamBuilder.editingTeamId && !!state.teamBuilder.editingIsCustom;
+  if (el.teamSaveBtn) el.teamSaveBtn.textContent = editingCustom ? "Update Team" : "Save Team";
 }
 
 function renderAgentCatalog() {
@@ -7702,13 +7852,19 @@ function handleAgentStudioPanelClick(event) {
 
 function renderTeamsDropdown() {
   const teams = state.teams || [];
+  const optionRows = teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}${team.is_custom ? " (custom)" : ""}</option>`).join("");
   if (!teams.length) {
     el.workTeamSelect.innerHTML = `<option value="">No teams available</option>`;
+    if (el.planTeamSelect) el.planTeamSelect.innerHTML = `<option value="">No teams available</option>`;
     return;
   }
-  el.workTeamSelect.innerHTML = teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}${team.is_custom ? " (custom)" : ""}</option>`).join("");
+  el.workTeamSelect.innerHTML = optionRows;
+  if (el.planTeamSelect) {
+    el.planTeamSelect.innerHTML = `<option value="">Select team…</option>${optionRows}`;
+  }
   const selected = state.teamSelection.teamId || teams[0].id;
   el.workTeamSelect.value = selected;
+  if (el.planTeamSelect && selected) el.planTeamSelect.value = selected;
 }
 
 function toModeButtonState(mode) {
@@ -7774,9 +7930,13 @@ async function loadAgentsAndTeams() {
   }
 
   if (!state.teamBuilder.stageAgentIds || !Object.keys(state.teamBuilder.stageAgentIds).length) {
-    state.teamBuilder.stageAgentIds = state.teamSelection.stageAgentIds && Object.keys(state.teamSelection.stageAgentIds).length
-      ? { ...state.teamSelection.stageAgentIds }
-      : defaultBuilderMap();
+    if (state.teamSelection.stageAgentIds && Object.keys(state.teamSelection.stageAgentIds).length) {
+      state.teamBuilder.stageAgentIds = { ...state.teamSelection.stageAgentIds };
+    } else {
+      const defaults = defaultBuilderMap();
+      const firstStage = Object.keys(defaults).sort((a, b) => Number(a) - Number(b))[0] || "";
+      state.teamBuilder.stageAgentIds = firstStage ? { [firstStage]: defaults[firstStage] } : {};
+    }
   }
   renderTeamBuilderSelectors();
   renderAgentStudio();
@@ -7806,14 +7966,112 @@ async function saveTeamFromBuilder() {
     alert("Team name is required.");
     return;
   }
+  const stageAgentIds = teamBuilderEffectiveStageAgentIds();
+  if (!Object.keys(stageAgentIds).length) {
+    alert("Select at least one agent/stage in Team Creation.");
+    return;
+  }
+  const editingTeamId = String(state.teamBuilder.editingTeamId || "").trim();
   const data = await api("/api/teams", {
     name,
     description: String(el.teamDescription.value || "").trim(),
-    stage_agent_ids: { ...state.teamBuilder.stageAgentIds },
+    stage_agent_ids: stageAgentIds,
+    team_id: editingTeamId,
   });
-  el.teamSaveMessage.textContent = `Saved team: ${data.team?.name || "(unnamed)"}`;
-  applyTeamSelection(data.team || {}, data.agent_personas || {}, "Saved from team builder");
+  const verb = editingTeamId ? "Updated" : "Saved";
+  el.teamSaveMessage.textContent = `${verb} team: ${data.team?.name || "(unnamed)"}`;
+  applyTeamSelection(data.team || {}, data.agent_personas || {}, `${verb} from Team Builder`);
   await loadAgentsAndTeams();
+}
+
+async function loadSelectedTeamIntoBuilder() {
+  const selectedPlanTeamId = String(el.planTeamSelect?.value || "").trim();
+  const selectedWorkTeamId = String(el.workTeamSelect?.value || "").trim();
+  const teamId = selectedPlanTeamId || selectedWorkTeamId || String(state.teamSelection?.teamId || "").trim();
+  if (!teamId) {
+    alert("Select a team first.");
+    return;
+  }
+  const data = await api(`/api/teams/${encodeURIComponent(teamId)}`, null);
+  applyTeamSelection(data.team || {}, data.agent_personas || {}, "Loaded for editing");
+  state.teamBuilder.stageAgentIds = normalizeStageAgentIds(state.teamSelection.stageAgentIds || {});
+  state.teamBuilder.editingTeamId = state.teamSelection.isCustom ? teamId : "";
+  state.teamBuilder.editingIsCustom = !!state.teamSelection.isCustom;
+  if (el.teamName) el.teamName.value = String(state.teamSelection.teamName || "").trim();
+  if (el.teamDescription) el.teamDescription.value = String(state.teamSelection.description || "").trim();
+  renderTeamBuilderSelectors();
+  el.teamSaveMessage.textContent = state.teamBuilder.editingTeamId
+    ? "Loaded custom team for editing."
+    : "Loaded system team. Saving will create a new custom team.";
+}
+
+function selectedPlanTeamId() {
+  const selectedPlanTeamId = String(el.planTeamSelect?.value || "").trim();
+  const selectedWorkTeamId = String(el.workTeamSelect?.value || "").trim();
+  return selectedPlanTeamId || selectedWorkTeamId || String(state.teamSelection?.teamId || "").trim();
+}
+
+async function duplicateSelectedTeamInPlan() {
+  const teamId = selectedPlanTeamId();
+  if (!teamId) {
+    alert("Select a team first.");
+    return;
+  }
+  const sourceTeam = (state.teams || []).find((t) => String(t?.id || "") === teamId) || null;
+  const suggestedName = `${String(sourceTeam?.name || "Team").trim() || "Team"} (Copy)`;
+  const input = window.prompt("Name for duplicated team:", suggestedName);
+  if (input == null) return;
+  const name = String(input || "").trim();
+  if (!name) {
+    alert("Team name is required.");
+    return;
+  }
+  const data = await api("/api/teams/duplicate", { team_id: teamId, name }, "POST");
+  applyTeamSelection(data.team || {}, data.agent_personas || {}, "Duplicated team");
+  await loadAgentsAndTeams();
+  if (el.planTeamSelect && data.team?.id) el.planTeamSelect.value = data.team.id;
+  if (el.workTeamSelect && data.team?.id) el.workTeamSelect.value = data.team.id;
+  if (el.teamSaveMessage) el.teamSaveMessage.textContent = `Duplicated team as ${data.team?.name || name}.`;
+}
+
+async function deleteSelectedTeamInPlan() {
+  const teamId = selectedPlanTeamId();
+  if (!teamId) {
+    alert("Select a team first.");
+    return;
+  }
+  const sourceTeam = (state.teams || []).find((t) => String(t?.id || "") === teamId) || null;
+  const sourceName = String(sourceTeam?.name || teamId).trim() || teamId;
+  const confirmDelete = window.confirm(`Delete team '${sourceName}'? This cannot be undone.`);
+  if (!confirmDelete) return;
+  await api("/api/teams/delete", { team_id: teamId }, "POST");
+  const wasSelected = String(state.teamSelection?.teamId || "").trim() === teamId;
+  if (wasSelected) {
+    state.teamSelection.teamId = "";
+    state.teamSelection.teamName = "";
+    state.teamSelection.description = "";
+    state.teamSelection.stageAgentIds = {};
+    state.teamSelection.agentPersonas = {};
+    state.teamSelection.reason = "";
+    state.teamSelection.isCustom = false;
+  }
+  await loadAgentsAndTeams();
+  if (el.teamSaveMessage) el.teamSaveMessage.textContent = `Deleted team: ${sourceName}.`;
+}
+
+function addAgentRowToBuilder() {
+  const nextStage = teamBuilderUnusedStages()[0];
+  if (!nextStage) {
+    alert("All stages are already added or have no available agents.");
+    return;
+  }
+  const agentId = defaultAgentForStage(nextStage);
+  if (!agentId) {
+    alert("No available agents for the selected stage.");
+    return;
+  }
+  state.teamBuilder.stageAgentIds[nextStage] = agentId;
+  renderTeamBuilderSelectors();
 }
 
 function refreshCloneRequirementsPackFields() {
@@ -7876,9 +8134,19 @@ async function cloneAgentFromBuilder() {
 }
 
 function useBuilderTeamInWork() {
-  const stageAgentIds = { ...state.teamBuilder.stageAgentIds };
+  const stageAgentIds = teamBuilderEffectiveStageAgentIds();
+  if (!Object.keys(stageAgentIds).length) {
+    alert("Select at least one agent/stage in Team Creation before using this team.");
+    return;
+  }
   applyTeamSelection(
-    { id: "", name: String(el.teamName.value || "Ad-hoc Team").trim() || "Ad-hoc Team", description: String(el.teamDescription.value || "").trim(), stage_agent_ids: stageAgentIds },
+    {
+      id: "",
+      name: String(el.teamName.value || "Ad-hoc Team").trim() || "Ad-hoc Team",
+      description: String(el.teamDescription.value || "").trim(),
+      stage_agent_ids: stageAgentIds,
+      is_custom: true,
+    },
     derivePersonasFromStageMap(stageAgentIds),
     "Using ad-hoc team from Team Builder"
   );
@@ -8861,7 +9129,10 @@ function renderStatusChips() {
   const run = state.currentRun;
   const status = run?.status || "idle";
   const runId = run?.run_id || "-";
-  const stage = run?.current_stage || 0;
+  const stage = Number(run?.current_stage || 0);
+  const activeStages = activeAgentsForRun(run).map((agent) => Number(agent.stage)).sort((a, b) => a - b);
+  const activeCount = activeStages.length || AGENTS.length;
+  const stageOrdinal = activeStages.includes(stage) ? (activeStages.indexOf(stage) + 1) : Math.min(activeCount, stage);
   const retries = run?.retry_count || 0;
   const teamName = run?.team_name || run?.pipeline_state?.team_name || state.teamSelection.teamName || "-";
 
@@ -8871,7 +9142,7 @@ function renderStatusChips() {
       <p class="mt-1 mono text-[10px]">status</p>
     </div>
     <div class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-700">
-      <div class="flex items-center justify-between gap-2"><span>Stage</span><span>${stage}/${AGENTS.length}</span></div>
+      <div class="flex items-center justify-between gap-2"><span>Step</span><span>${stageOrdinal}/${activeCount}</span></div>
       <p class="mt-1 mono text-[10px]">progress</p>
     </div>
     <div class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-700">
@@ -9133,6 +9404,7 @@ function statusLabel(status) {
   if (status === "warning") return "WARNING";
   if (status === "running") return "RUNNING";
   if (status === "waiting_approval") return "WAITING APPROVAL";
+  if (status === "skipped_team") return "NOT IN TEAM";
   if (status === "error") return "ERROR";
   return "PENDING";
 }
@@ -9142,27 +9414,74 @@ function statusTone(status) {
   if (status === "warning") return "bg-amber-100 text-amber-900 border-amber-300";
   if (status === "running") return "bg-sky-100 text-sky-900 border-sky-300";
   if (status === "waiting_approval") return "bg-amber-100 text-amber-900 border-amber-300";
+  if (status === "skipped_team") return "bg-slate-100 text-slate-500 border-slate-300";
   if (status === "error") return "bg-rose-100 text-rose-900 border-rose-300";
   return "bg-slate-100 text-slate-700 border-slate-300";
 }
 
+function isActiveRunStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return ["running", "pending", "waiting_approval", "paused"].includes(normalized);
+}
+
+function activeAgentsForRun(run) {
+  const runStageMap = normalizeStageAgentIds(
+    run?.stage_agent_ids
+    || run?.pipeline_state?.stage_agent_ids
+    || {}
+  );
+  const selectedStageMap = normalizeStageAgentIds(state.teamSelection?.stageAgentIds || {});
+  const effectiveMap = (run?.run_id && isActiveRunStatus(run?.status))
+    ? (Object.keys(runStageMap).length ? runStageMap : selectedStageMap)
+    : (Object.keys(selectedStageMap).length ? selectedStageMap : runStageMap);
+  const stageMap = effectiveMap;
+  const activeStages = activeStageIdsFromStageMap(stageMap);
+  return AGENTS.filter((agent) => activeStages.includes(String(agent.stage)));
+}
+
+function stageDisplayIndex(run, stage) {
+  const active = activeAgentsForRun(run);
+  const idx = active.findIndex((agent) => Number(agent.stage) === Number(stage));
+  return idx >= 0 ? idx + 1 : 0;
+}
+
+function stageDisplayLabel(run, stage) {
+  const idx = stageDisplayIndex(run, stage);
+  return idx > 0 ? `Step ${idx}` : `Step ${Number(stage || 0)}`;
+}
+
+function stageForDisplayStep(run, stepNumber) {
+  const step = Number(stepNumber || 0);
+  const active = activeAgentsForRun(run);
+  if (!Number.isFinite(step) || step < 1 || step > active.length) return 0;
+  return Number(active[step - 1]?.stage || 0);
+}
+
 function determineCurrentStage(run) {
+  const activeAgents = activeAgentsForRun(run);
   const stageStatus = run?.stage_status || {};
-  for (const agent of AGENTS) {
+  for (const agent of activeAgents) {
     const s = stageStatus[agent.stage];
     if (s === "running" || s === "waiting_approval") return agent.stage;
   }
-  const pending = AGENTS.find((a) => !stageStatus[a.stage] || stageStatus[a.stage] === "pending");
-  return pending ? pending.stage : Number(run?.current_stage || 1);
+  const pending = activeAgents.find((a) => !stageStatus[a.stage] || stageStatus[a.stage] === "pending");
+  if (pending) return pending.stage;
+  return Number(run?.current_stage || activeAgents[0]?.stage || 1);
 }
 
 function renderProgress() {
+  const activeAgents = activeAgentsForRun(state.currentRun);
   const stageStatus = state.currentRun?.stage_status || {};
-  const statuses = Object.values(stageStatus);
-  const completed = statuses.filter((s) => s === "success" || s === "warning").length;
-  const pct = Math.round((completed / AGENTS.length) * 100);
+  const completed = activeAgents
+    .filter((agent) => {
+      const s = stageStatus[agent.stage];
+      return s === "success" || s === "warning";
+    })
+    .length;
+  const total = Math.max(1, activeAgents.length);
+  const pct = Math.round((completed / total) * 100);
   el.progressFill.style.width = `${pct}%`;
-  el.progressMeta.textContent = `${completed} / ${AGENTS.length} stages complete`;
+  el.progressMeta.textContent = `${completed} / ${total} stages complete`;
   if (state.runStart?.pending) {
     const elapsed = Math.max(0, Math.floor((Date.now() - Number(state.runStart.startedAt || Date.now())) / 1000));
     el.pipelineStatusText.textContent = `STARTING RUN... (${elapsed}s)`;
@@ -9870,8 +10189,10 @@ function personaForStage(run, stage) {
 
 function renderCurrentAgentPanel() {
   const run = state.currentRun;
+  const activeAgents = activeAgentsForRun(run);
   const stage = determineCurrentStage(run);
-  const agent = AGENTS.find((a) => a.stage === stage) || AGENTS[0];
+  const stepLabel = stageDisplayLabel(run, stage);
+  const agent = activeAgents.find((a) => a.stage === stage) || activeAgents[0] || AGENTS[0];
   const stageStatus = run?.stage_status || {};
   const status = stageStatus[agent.stage] || "pending";
   const result = latestResultByStage(run, agent.stage);
@@ -9882,7 +10203,7 @@ function renderCurrentAgentPanel() {
     <div class="flex flex-wrap items-start justify-between gap-3 ${status === "running" ? "running-glow" : ""}">
       <div>
         <p class="text-xs uppercase tracking-[0.16em] text-slate-600">Current Agent</p>
-        <h3 class="mt-1 text-xl font-semibold text-ink-950">Stage ${agent.stage}: ${agent.icon} ${agent.name}</h3>
+        <h3 class="mt-1 text-xl font-semibold text-ink-950">${stepLabel}: ${agent.icon} ${agent.name}</h3>
         <p class="mt-1 text-sm text-slate-700">${agent.desc}</p>
         <p class="mt-1 text-xs text-slate-700"><strong>Persona:</strong> ${escapeHtml(persona.display_name || "Default")}</p>
         ${personaReqPack ? `<p class="mt-1 text-xs text-sky-800"><strong>Requirements Pack Profile:</strong> ${escapeHtml(personaReqPack)}</p>` : ""}
@@ -9918,13 +10239,18 @@ function renderCurrentAgentPanel() {
 
 function renderAgentTabs() {
   const run = state.currentRun;
+  const activeAgents = activeAgentsForRun(run);
+  if (activeAgents.length && !activeAgents.some((agent) => agent.stage === Number(state.selectedStage || 0))) {
+    state.selectedStage = activeAgents[0].stage;
+  }
   const stageStatus = run?.stage_status || {};
-  el.agentTabs.innerHTML = AGENTS.map((agent) => {
+  el.agentTabs.innerHTML = activeAgents.map((agent) => {
     const status = stageStatus[agent.stage] || "pending";
     const selected = state.selectedStage === agent.stage;
+    const stepLabel = stageDisplayLabel(run, agent.stage);
     return `
       <button data-select-stage="${agent.stage}" class="rounded-lg border px-3 py-2 text-xs font-semibold ${selected ? "border-ink-900 bg-sky-100 text-slate-900" : `${statusTone(status)}`}">
-        ${agent.icon} ${agent.name}
+        ${agent.icon} ${stepLabel} · ${agent.name}
       </button>
     `;
   }).join("");
@@ -9940,9 +10266,13 @@ function renderAgentTabs() {
 
 function renderAgentTabPanel() {
   const run = state.currentRun;
+  const activeAgents = activeAgentsForRun(run);
   const stageStatus = run?.stage_status || {};
-  const stage = state.selectedStage || 1;
-  const agent = AGENTS.find((a) => a.stage === stage) || AGENTS[0];
+  const fallbackStage = activeAgents[0]?.stage || 1;
+  const requestedStage = Number(state.selectedStage || fallbackStage);
+  const stage = activeAgents.some((a) => a.stage === requestedStage) ? requestedStage : fallbackStage;
+  const agent = activeAgents.find((a) => a.stage === stage) || AGENTS.find((a) => a.stage === stage) || AGENTS[0];
+  const stepLabel = stageDisplayLabel(run, stage);
   const result = latestResultByStage(run, stage);
   const status = stageStatus[stage] || "pending";
   const logs = (result?.logs || []).slice(-20).join("\n");
@@ -9952,7 +10282,7 @@ function renderAgentTabPanel() {
   el.agentTabPanel.innerHTML = `
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h4 class="text-sm font-semibold text-ink-950">${agent.icon} Stage ${agent.stage}: ${agent.name}</h4>
+        <h4 class="text-sm font-semibold text-ink-950">${agent.icon} ${stepLabel}: ${agent.name}</h4>
         <p class="mt-1 text-xs text-slate-600">${agent.desc}</p>
         <p class="mt-1 text-xs text-slate-700"><strong>Persona:</strong> ${escapeHtml(persona.display_name || "Default")}</p>
       </div>
@@ -9998,7 +10328,10 @@ function collabDraftKey(stage) {
 }
 
 function currentCollabStage() {
-  return Number(state.selectedStage || determineCurrentStage(state.currentRun) || 1);
+  const activeAgents = activeAgentsForRun(state.currentRun);
+  const fallback = activeAgents[0]?.stage || 1;
+  const desired = Number(state.selectedStage || determineCurrentStage(state.currentRun) || fallback);
+  return activeAgents.some((a) => a.stage === desired) ? desired : fallback;
 }
 
 function collabRecord(stage) {
@@ -10382,8 +10715,8 @@ function renderCollaborationPanel() {
   el.collaborationPanel.classList.remove("hidden");
   const stage = currentCollabStage();
   if (el.collabStageLabel) {
-    const agent = AGENTS.find((a) => a.stage === stage);
-    el.collabStageLabel.textContent = `Stage ${stage}${agent ? ` · ${agent.name}` : ""}`;
+    const agent = activeAgentsForRun(state.currentRun).find((a) => a.stage === stage) || AGENTS.find((a) => a.stage === stage);
+    el.collabStageLabel.textContent = `${stageDisplayLabel(state.currentRun, stage)}${agent ? ` · ${agent.name}` : ""}`;
   }
   if (!["chat", "proposals", "evidence", "decisions"].includes(state.collaboration.selectedTab)) {
     state.collaboration.selectedTab = "chat";
@@ -10427,12 +10760,12 @@ function renderCollaborationPanel() {
 }
 
 function openStageModal(stage) {
-  const agent = AGENTS.find((a) => a.stage === stage);
+  const agent = activeAgentsForRun(state.currentRun).find((a) => a.stage === stage) || AGENTS.find((a) => a.stage === stage);
   const result = latestResultByStage(state.currentRun, stage);
   if (!result || !agent) return;
   const runUseCase = String(state.currentRun?.pipeline_state?.use_case || state.currentRun?.use_case || "business_objectives");
 
-  el.modalTitle.textContent = `Stage ${stage}: ${agent.name}`;
+  el.modalTitle.textContent = `${stageDisplayLabel(state.currentRun, stage)}: ${agent.name}`;
   el.modalSummary.textContent = result.summary || "";
   if (stage === 1 && state.currentRun?.run_id) {
     el.modalReadable.innerHTML = `
@@ -10526,10 +10859,21 @@ async function resumeRun() {
 
 async function rerunSelectedStage() {
   const run = state.currentRun || {};
-  const suggestedStage = Number(state.selectedStage || run.current_stage || 1);
-  const stage = Number(window.prompt("Rerun from stage number (1-8):", String(Math.max(1, Math.min(8, suggestedStage)))) || "");
-  if (!Number.isFinite(stage) || stage < 1 || stage > 8) {
-    alert("Stage must be between 1 and 8.");
+  const activeAgents = activeAgentsForRun(run);
+  if (!activeAgents.length) {
+    alert("No active team steps are available for rerun.");
+    return;
+  }
+  const suggestedStep = Math.max(1, stageDisplayIndex(run, Number(state.selectedStage || run.current_stage || activeAgents[0]?.stage || 1)));
+  const input = window.prompt(`Rerun from step number (1-${activeAgents.length}):`, String(Math.min(activeAgents.length, suggestedStep)));
+  const step = Number(input || "");
+  if (!Number.isFinite(step) || step < 1 || step > activeAgents.length) {
+    alert(`Step must be between 1 and ${activeAgents.length}.`);
+    return;
+  }
+  const stage = stageForDisplayStep(run, step);
+  if (!stage) {
+    alert("Unable to resolve selected step to an active stage.");
     return;
   }
   await runControl("rerun", { stage });
@@ -10855,7 +11199,11 @@ async function submitApproval(decision) {
 
 function selectedStageAgentIdsForRun() {
   if (state.teamSelection.stageAgentIds && Object.keys(state.teamSelection.stageAgentIds).length) {
-    return { ...state.teamSelection.stageAgentIds };
+    return normalizeStageAgentIds(state.teamSelection.stageAgentIds);
+  }
+  const builderMap = teamBuilderEffectiveStageAgentIds();
+  if (Object.keys(builderMap).length) {
+    return builderMap;
   }
   return { ...defaultBuilderMap() };
 }
@@ -10873,6 +11221,17 @@ async function startRun() {
   renderRunControls();
   renderProgress();
   const integrationContext = getIntegrationContext();
+  const stageAgentIds = selectedStageAgentIdsForRun();
+  if (!Object.keys(stageAgentIds).length) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
+    alert("Active team has no stages configured. Add at least one agent in Plan > Team Creation.");
+    setMode(MODES.PLAN);
+    setPlanTab("team_creation");
+    return;
+  }
   if (String(integrationContext.domain_pack_error || "").trim()) {
     state.runStart.pending = false;
     state.runStart.startedAt = 0;
@@ -10995,7 +11354,7 @@ async function startRun() {
     deployment_target: el.deploymentTarget.value || "local",
     cloud_config: cloudConfig,
     team_id: state.teamSelection.teamId || "",
-    stage_agent_ids: selectedStageAgentIdsForRun(),
+    stage_agent_ids: stageAgentIds,
     provider: el.provider.value,
     model: el.model.value,
     temperature: Number(el.temperature.value || 0.3),
@@ -11520,6 +11879,12 @@ function bindEvents() {
   el.workOpenHistory.addEventListener("click", () => setMode(MODES.VERIFY));
 
   el.teamSaveBtn.addEventListener("click", () => saveTeamFromBuilder().catch((err) => alert(err.message)));
+  el.planTeamLoadBtn?.addEventListener("click", () => loadSelectedTeamIntoBuilder().catch((err) => alert(err.message)));
+  el.planTeamNewBtn?.addEventListener("click", resetBuilderForNewTeam);
+  el.planTeamDuplicateBtn?.addEventListener("click", () => duplicateSelectedTeamInPlan().catch((err) => alert(err.message)));
+  el.planTeamDeleteBtn?.addEventListener("click", () => deleteSelectedTeamInPlan().catch((err) => alert(err.message)));
+  el.teamAddAgentBtn?.addEventListener("click", addAgentRowToBuilder);
+  el.teamLoadSelectedBtn?.addEventListener("click", () => loadSelectedTeamIntoBuilder().catch((err) => alert(err.message)));
   el.teamUseInWorkBtn.addEventListener("click", useBuilderTeamInWork);
   el.teamRefreshBtn.addEventListener("click", () => loadAgentsAndTeams().catch((err) => alert(err.message)));
   document.querySelectorAll("[data-plan-tab]").forEach((btn) => {
