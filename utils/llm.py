@@ -6,6 +6,7 @@ Provides a consistent interface for all agents regardless of provider.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Generator
@@ -32,6 +33,10 @@ class LLMClient:
         self.config = config
         self._anthropic_client = None
         self._openai_client = None
+        self._request_timeout_sec = max(
+            30.0,
+            float(os.getenv("LLM_REQUEST_TIMEOUT_SEC", "240") or 240),
+        )
 
     def _get_anthropic_client(self):
         if self._anthropic_client is None:
@@ -42,7 +47,14 @@ class LLMClient:
                     "Anthropic provider selected but dependency is missing. "
                     "Install with: uv pip install --python '/Users/vishak/Projects/Codex Projects/.venv/bin/python' anthropic"
                 ) from exc
-            self._anthropic_client = Anthropic(api_key=self.config.get_api_key())
+            try:
+                self._anthropic_client = Anthropic(
+                    api_key=self.config.get_api_key(),
+                    timeout=self._request_timeout_sec,
+                )
+            except TypeError:
+                # Backward compatibility for older anthropic client versions.
+                self._anthropic_client = Anthropic(api_key=self.config.get_api_key())
         return self._anthropic_client
 
     def _get_openai_client(self):
@@ -54,7 +66,11 @@ class LLMClient:
                     "OpenAI provider selected but dependency is missing. "
                     "Install with: uv pip install --python '/Users/vishak/Projects/Codex Projects/.venv/bin/python' openai"
                 ) from exc
-            self._openai_client = OpenAI(api_key=self.config.get_api_key())
+            self._openai_client = OpenAI(
+                api_key=self.config.get_api_key(),
+                timeout=self._request_timeout_sec,
+                max_retries=2,
+            )
         return self._openai_client
 
     def invoke(self, system_prompt: str, user_message: str) -> LLMResponse:

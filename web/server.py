@@ -143,6 +143,7 @@ ASYNC_RUN_QUEUE_ENABLED = str(os.getenv("ASYNC_RUN_QUEUE_ENABLED", "true")).stri
 RUN_WORKER_TOKEN = str(os.getenv("RUN_WORKER_TOKEN", "")).strip()
 RUN_WORKER_URL = str(os.getenv("RUN_WORKER_URL", "")).strip()
 RUN_TASK_QUEUE_PATH = str(os.getenv("RUN_TASK_QUEUE_PATH", "")).strip()
+RUN_STALE_RESUME_SEC = max(60, int(os.getenv("RUN_STALE_RESUME_SEC", "300") or 300))
 REPO_SCAN_MAX_FILES = max(24, int(os.getenv("REPO_SCAN_MAX_FILES", "220") or 220))
 REPO_SCAN_CHUNK_SIZE = max(8, int(os.getenv("REPO_SCAN_CHUNK_SIZE", "24") or 24))
 REPO_SCAN_CHUNK_WORKERS = max(1, min(16, int(os.getenv("REPO_SCAN_CHUNK_WORKERS", "4") or 4)))
@@ -620,6 +621,7 @@ class PipelineRunManager:
         *,
         run_id_override: str = "",
         defer_execution: bool = False,
+        run_inline: bool = False,
     ) -> str:
         integration = integration_context if isinstance(integration_context, dict) else {}
         project_state_mode = str(integration.get("project_state_mode", "auto")).strip().lower() or "auto"
@@ -797,6 +799,10 @@ class PipelineRunManager:
         if defer_execution:
             return run_id
 
+        if run_inline:
+            self._execute_run(run_id)
+            return run_id
+
         thread = threading.Thread(
             target=self._execute_run,
             args=(run_id,),
@@ -816,7 +822,35 @@ class PipelineRunManager:
         if not isinstance(persisted, dict) or not persisted:
             return {"ok": False, "error": "run not found"}
         status = str(persisted.get("pipeline_status", "")).strip().lower()
-        if status in {"running", "completed", "failed", "aborted"}:
+        if status == "running":
+            meta = self.store.load_meta(rid) or {}
+            updated_raw = str(meta.get("updated_at", "")).strip() or str(persisted.get("saved_at", "")).strip()
+            stale = False
+            if updated_raw:
+                try:
+                    ts = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+                    stale = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds() >= RUN_STALE_RESUME_SEC
+                except Exception:
+                    stale = False
+            if not stale:
+                return {"ok": True, "status": status, "run_id": rid}
+
+            record = self._get_record(rid) or self._hydrate_record(rid)
+            if not record:
+                return {"ok": False, "error": "stale running run could not be hydrated"}
+            if record.pending_approval is not None:
+                return {"ok": True, "status": "waiting_approval", "run_id": rid}
+            self._append_log(
+                record,
+                f"♻️ Stale running run detected (>={RUN_STALE_RESUME_SEC}s since heartbeat). Worker is resuming execution inline.",
+            )
+            self._persist(record)
+            self._execute_run(rid)
+            refreshed = self.store.load_run(rid) or {}
+            refreshed_status = str(refreshed.get("pipeline_status", "running")).strip().lower() or "running"
+            return {"ok": True, "status": refreshed_status, "run_id": rid, "resumed": True}
+
+        if status in {"completed", "failed", "aborted"}:
             return {"ok": True, "status": status, "run_id": rid}
 
         pipeline_state = persisted.get("pipeline_state", {}) if isinstance(persisted.get("pipeline_state", {}), dict) else {}
@@ -844,8 +878,11 @@ class PipelineRunManager:
             stage_agent_ids=queued.get("stage_agent_ids", {}) if isinstance(queued.get("stage_agent_ids", {}), dict) else {},
             run_id_override=rid,
             defer_execution=False,
+            run_inline=True,
         )
-        return {"ok": True, "status": "running", "run_id": rid}
+        refreshed = self.store.load_run(rid) or {}
+        refreshed_status = str(refreshed.get("pipeline_status", "running")).strip().lower() or "running"
+        return {"ok": True, "status": refreshed_status, "run_id": rid}
 
     def _run_context_layer(self, record: RunRecord) -> bool:
         if record.pipeline_state is None:
