@@ -859,7 +859,10 @@ class PipelineRunManager:
             return {"ok": False, "error": "queued request payload missing"}
 
         cfg_summary = queued.get("config_summary", {}) if isinstance(queued.get("config_summary", {}), dict) else {}
-        cfg = self._config_from_summary(cfg_summary)
+        try:
+            cfg = self._build_config_from_summary(cfg_summary)
+        except Exception as exc:
+            return {"ok": False, "error": f"cannot launch deferred run: {exc}"}
         self.start_run(
             objectives=str(queued.get("objectives", "")),
             config=cfg,
