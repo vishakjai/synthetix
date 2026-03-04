@@ -214,6 +214,7 @@ class _SecretBackend:
             or str(os.getenv("GCP_PROJECT", "")).strip()
         )
         self.prefix = str(os.getenv("SYNTHETIX_SECRET_PREFIX", "synthetix")).strip() or "synthetix"
+        self._cleared_sentinel = "__SYNTHETIX_EMPTY__"
         self._client: Any = None
         self._enabled = False
 
@@ -297,7 +298,10 @@ class _SecretBackend:
                 request={"name": f"{self._secret_name(slot)}/versions/latest"}
             )
             data = response.payload.data.decode("utf-8") if response and response.payload else ""
-            return str(data or "").strip()
+            value = str(data or "").strip()
+            if value == self._cleared_sentinel:
+                return ""
+            return value
         except Exception:
             return local
 
@@ -308,11 +312,11 @@ class _SecretBackend:
         if not name:
             return
         try:
-            # Add an empty latest version so future reads return blank.
+            # Secret Manager may reject empty payloads; use a sentinel and map it back to empty on reads.
             self._client.add_secret_version(
                 request={
                     "parent": name,
-                    "payload": {"data": b""},
+                    "payload": {"data": self._cleared_sentinel.encode("utf-8")},
                 }
             )
         except Exception:
