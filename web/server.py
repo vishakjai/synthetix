@@ -6401,7 +6401,7 @@ def _enqueue_run_worker_task(run_id: str) -> tuple[bool, str]:
             daemon=True,
             name=f"run-worker-fallback-{rid}",
         ).start()
-        return False, str(exc)
+        return True, f"cloud tasks unavailable, used local fallback: {exc}"
 
 
 async def api_internal_run_worker(request):
@@ -6493,7 +6493,10 @@ async def api_start_run(request):
                 },
                 status_code=500,
             )
-        return JSONResponse({"ok": True, "run_id": run_id, "status": "queued"}, status_code=202)
+        resp = {"ok": True, "run_id": run_id, "status": "queued"}
+        if enqueue_error:
+            resp["warning"] = enqueue_error
+        return JSONResponse(resp, status_code=202)
     return JSONResponse({"ok": True, "run_id": run_id, "status": "running"})
 
 
