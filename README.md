@@ -75,6 +75,14 @@ To keep Settings credentials persistent across container refresh/restart in clou
 
 This stores integration and LLM keys in Google Secret Manager, while UI/API still returns masked values only.
 
+To persist the full Settings state (users, policies, knowledge hub config, integration/LLM connection metadata) across Cloud Run instances:
+
+- Set `SYNTHETIX_SETTINGS_BACKEND=auto` (default) or `gcs`
+- Set `SYNTHETIX_SETTINGS_GCS_BUCKET=<shared-bucket>` (or reuse `RUN_STORE_GCS_BUCKET`)
+- (Optional) set `SYNTHETIX_SETTINGS_GCS_PREFIX=settings`
+
+In `auto` mode, settings automatically use GCS when a shared run-store bucket is configured; otherwise local file storage is used.
+
 For non-secret settings persistence (users, policies, knowledge config), point `team_data` to persistent storage:
 
 - Set `SYNTHETIX_TEAM_DATA_DIR=/path/to/persistent/team_data`

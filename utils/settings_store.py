@@ -7,12 +7,18 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+try:
+    from google.cloud import storage  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    storage = None
 
 
 INTEGRATION_KEYS = {"github", "jira", "linear"}
@@ -84,6 +90,233 @@ def _mask_secret(secret: str) -> str:
     if len(raw) <= 4:
         return "*" * len(raw)
     return ("*" * max(4, len(raw) - 4)) + raw[-4:]
+
+
+class _SettingsStateBackend:
+    """
+    Persist settings state either locally or in GCS.
+
+    Environment variables:
+      - SYNTHETIX_SETTINGS_BACKEND: auto|local|gcs (default: auto)
+      - SYNTHETIX_SETTINGS_GCS_BUCKET: target bucket (optional)
+      - SYNTHETIX_SETTINGS_GCS_PREFIX: object prefix (default: settings)
+
+    auto mode:
+      - If a GCS bucket is configured for run store (`RUN_STORE_GCS_BUCKET`) and
+        google-cloud-storage is available, settings state is persisted in GCS.
+      - Otherwise falls back to local file.
+    """
+
+    def __init__(self, local_path: Path):
+        self.local_path = local_path
+        mode_raw = str(os.getenv("SYNTHETIX_SETTINGS_BACKEND", "auto") or "auto").strip().lower()
+        if mode_raw not in {"auto", "local", "gcs"}:
+            mode_raw = "auto"
+        self.mode = mode_raw
+        self.gcs_bucket = str(
+            os.getenv("SYNTHETIX_SETTINGS_GCS_BUCKET", "")
+            or os.getenv("RUN_STORE_GCS_BUCKET", "")
+            or os.getenv("SYNTHETIX_RUN_STORE_BUCKET", "")
+        ).strip()
+        self.gcs_prefix = str(os.getenv("SYNTHETIX_SETTINGS_GCS_PREFIX", "settings") or "settings").strip("/") or "settings"
+        self.gcs_blob = f"{self.gcs_prefix}/settings_state.json"
+        self._gcs = None
+
+        if self._use_gcs():
+            try:
+                self._gcs = storage.Client()
+            except Exception:
+                self._gcs = None
+
+    def _use_gcs(self) -> bool:
+        if self.mode == "local":
+            return False
+        if self.mode == "gcs":
+            return bool(storage is not None and self.gcs_bucket)
+        # auto mode
+        return bool(storage is not None and self.gcs_bucket)
+
+    @property
+    def backend_label(self) -> str:
+        if self._use_gcs() and self._gcs is not None:
+            return "gcs"
+        return "local_file"
+
+    def _read_gcs_json(self) -> dict[str, Any] | None:
+        if not self._use_gcs() or self._gcs is None:
+            return None
+        try:
+            bucket = self._gcs.bucket(self.gcs_bucket)
+            blob = bucket.blob(self.gcs_blob)
+            if not blob.exists():
+                return None
+            txt = blob.download_as_text()
+            data = json.loads(txt)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return None
+        return None
+
+    def _write_gcs_json(self, payload: dict[str, Any]) -> bool:
+        if not self._use_gcs() or self._gcs is None:
+            return False
+        try:
+            bucket = self._gcs.bucket(self.gcs_bucket)
+            blob = bucket.blob(self.gcs_blob)
+            blob.cache_control = "no-store"
+            blob.upload_from_string(
+                json.dumps(payload, indent=2, ensure_ascii=True),
+                content_type="application/json; charset=utf-8",
+            )
+            return True
+        except Exception:
+            return False
+
+    def load(self, default_payload: dict[str, Any]) -> dict[str, Any]:
+        if self._use_gcs():
+            from_gcs = self._read_gcs_json()
+            if isinstance(from_gcs, dict):
+                return from_gcs
+            # One-time migration path: seed GCS from existing local settings if present.
+            local = _safe_json_load(self.local_path, default_payload)
+            if isinstance(local, dict):
+                if self._write_gcs_json(local):
+                    return local
+                return local
+            return copy.deepcopy(default_payload)
+        data = _safe_json_load(self.local_path, default_payload)
+        if isinstance(data, dict):
+            return data
+        return copy.deepcopy(default_payload)
+
+    def save(self, payload: dict[str, Any]) -> None:
+        if self._use_gcs() and self._write_gcs_json(payload):
+            return
+        _safe_json_write(self.local_path, payload)
+
+
+class _SecretBackend:
+    """
+    Optional backend for persisting secrets outside local filesystem state.
+
+    Enabled via environment variables:
+      - SYNTHETIX_SECRET_BACKEND=gcp_secret_manager
+      - GOOGLE_CLOUD_PROJECT=<project-id> (or GCP_PROJECT)
+      - SYNTHETIX_SECRET_PREFIX=synthetix (optional)
+    """
+
+    def __init__(self) -> None:
+        mode = str(os.getenv("SYNTHETIX_SECRET_BACKEND", "local") or "local").strip().lower()
+        self.mode = mode
+        self.project = (
+            str(os.getenv("GOOGLE_CLOUD_PROJECT", "")).strip()
+            or str(os.getenv("GCP_PROJECT", "")).strip()
+        )
+        self.prefix = str(os.getenv("SYNTHETIX_SECRET_PREFIX", "synthetix")).strip() or "synthetix"
+        self._client: Any = None
+        self._enabled = False
+
+        if mode in {"gcp_secret_manager", "gcp-secret-manager", "secret_manager", "secret-manager"}:
+            try:
+                from google.cloud import secretmanager  # type: ignore
+
+                if self.project:
+                    self._client = secretmanager.SecretManagerServiceClient()
+                    self._enabled = True
+            except Exception:
+                self._client = None
+                self._enabled = False
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._enabled and self._client and self.project)
+
+    @property
+    def backend_label(self) -> str:
+        if self.enabled:
+            return "gcp_secret_manager"
+        return "local_file"
+
+    def _secret_id(self, slot: str) -> str:
+        raw = f"{self.prefix}-{slot}".lower()
+        safe = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "-" for ch in raw).strip("-_")
+        return safe[:255] or "synthetix-secret"
+
+    def _secret_name(self, slot: str) -> str:
+        return f"projects/{self.project}/secrets/{self._secret_id(slot)}"
+
+    def _ensure_secret(self, slot: str) -> str:
+        if not self.enabled:
+            return ""
+        name = self._secret_name(slot)
+        parent = f"projects/{self.project}"
+        secret_id = self._secret_id(slot)
+        try:
+            self._client.create_secret(
+                request={
+                    "parent": parent,
+                    "secret_id": secret_id,
+                    "secret": {"replication": {"automatic": {}}},
+                }
+            )
+        except Exception:
+            # Already exists or transient creation race; read path still works.
+            pass
+        return name
+
+    def write(self, slot: str, secret: str) -> str:
+        value = str(secret or "").strip()
+        if not value:
+            return ""
+        if not self.enabled:
+            return value
+        name = self._ensure_secret(slot)
+        if not name:
+            return value
+        try:
+            self._client.add_secret_version(
+                request={
+                    "parent": name,
+                    "payload": {"data": value.encode("utf-8")},
+                }
+            )
+            return ""
+        except Exception:
+            # Fallback to local persistence if secret manager write fails.
+            return value
+
+    def read(self, slot: str, fallback: str = "") -> str:
+        local = str(fallback or "").strip()
+        if local:
+            return local
+        if not self.enabled:
+            return local
+        try:
+            response = self._client.access_secret_version(
+                request={"name": f"{self._secret_name(slot)}/versions/latest"}
+            )
+            data = response.payload.data.decode("utf-8") if response and response.payload else ""
+            return str(data or "").strip()
+        except Exception:
+            return local
+
+    def clear(self, slot: str) -> None:
+        if not self.enabled:
+            return
+        name = self._ensure_secret(slot)
+        if not name:
+            return
+        try:
+            # Add an empty latest version so future reads return blank.
+            self._client.add_secret_version(
+                request={
+                    "parent": name,
+                    "payload": {"data": b""},
+                }
+            )
+        except Exception:
+            pass
 
 
 def _parse_github_repo_reference(value: str) -> tuple[str, str]:
@@ -227,11 +460,60 @@ class SettingsStore:
         self.root = Path(self.root_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "settings_state.json"
-        if not self.path.exists():
-            _safe_json_write(self.path, _default_settings())
+        self._state_backend = _SettingsStateBackend(self.path)
+        self._secrets = _SecretBackend()
+        # Ensure settings are initialized in active persistence backend.
+        initial = self._state_backend.load(_default_settings())
+        if not isinstance(initial, dict):
+            initial = _default_settings()
+        if not initial:
+            initial = _default_settings()
+        self._state_backend.save(initial)
+
+    @staticmethod
+    def _integration_secret_slot(provider: str) -> str:
+        key = str(provider or "").strip().lower()
+        secret_key = INTEGRATION_SECRET_KEYS.get(key, "token")
+        return f"integration-{key}-{secret_key}"
+
+    @staticmethod
+    def _llm_secret_slot(provider: str) -> str:
+        key = str(provider or "").strip().lower()
+        return f"llm-{key}-api-key"
+
+    def _read_integration_secret(self, provider: str, integration: dict[str, Any]) -> str:
+        key = str(provider or "").strip().lower()
+        secret_key = INTEGRATION_SECRET_KEYS.get(key, "token")
+        local = str(integration.get(secret_key, "")).strip() if isinstance(integration, dict) else ""
+        return self._secrets.read(self._integration_secret_slot(key), local)
+
+    def _write_integration_secret(self, provider: str, integration: dict[str, Any], secret: str) -> None:
+        key = str(provider or "").strip().lower()
+        secret_key = INTEGRATION_SECRET_KEYS.get(key, "token")
+        integration[secret_key] = self._secrets.write(self._integration_secret_slot(key), str(secret or "").strip())
+
+    def _clear_integration_secret(self, provider: str, integration: dict[str, Any]) -> None:
+        key = str(provider or "").strip().lower()
+        secret_key = INTEGRATION_SECRET_KEYS.get(key, "token")
+        integration[secret_key] = ""
+        self._secrets.clear(self._integration_secret_slot(key))
+
+    def _read_llm_secret(self, provider: str, cfg: dict[str, Any]) -> str:
+        key = str(provider or "").strip().lower()
+        local = str(cfg.get("api_key", "")).strip() if isinstance(cfg, dict) else ""
+        return self._secrets.read(self._llm_secret_slot(key), local)
+
+    def _write_llm_secret(self, provider: str, cfg: dict[str, Any], secret: str) -> None:
+        key = str(provider or "").strip().lower()
+        cfg["api_key"] = self._secrets.write(self._llm_secret_slot(key), str(secret or "").strip())
+
+    def _clear_llm_secret(self, provider: str, cfg: dict[str, Any]) -> None:
+        key = str(provider or "").strip().lower()
+        cfg["api_key"] = ""
+        self._secrets.clear(self._llm_secret_slot(key))
 
     def _load(self) -> dict[str, Any]:
-        data = _safe_json_load(self.path, _default_settings())
+        data = self._state_backend.load(_default_settings())
         if not isinstance(data, dict):
             data = _default_settings()
 
@@ -410,10 +692,9 @@ class SettingsStore:
 
     def _save(self, data: dict[str, Any]) -> None:
         data["updated_at"] = _utc_now()
-        _safe_json_write(self.path, data)
+        self._state_backend.save(data)
 
-    @staticmethod
-    def _sanitize(data: dict[str, Any]) -> dict[str, Any]:
+    def _sanitize(self, data: dict[str, Any]) -> dict[str, Any]:
         payload = copy.deepcopy(data)
         integrations = payload.get("integrations", {})
         if isinstance(integrations, dict):
@@ -421,7 +702,7 @@ class SettingsStore:
                 integration = integrations.get(provider, {})
                 if not isinstance(integration, dict):
                     continue
-                raw = str(integration.get(secret_key, "")).strip()
+                raw = self._read_integration_secret(provider, integration)
                 integration[f"{secret_key}_masked"] = _mask_secret(raw)
                 integration["has_secret"] = bool(raw)
                 integration[secret_key] = ""
@@ -433,7 +714,7 @@ class SettingsStore:
                     cfg = providers.get(provider, {})
                     if not isinstance(cfg, dict):
                         continue
-                    raw = str(cfg.get("api_key", "")).strip()
+                    raw = self._read_llm_secret(provider, cfg)
                     cfg["api_key_masked"] = _mask_secret(raw)
                     cfg["has_secret"] = bool(raw)
                     cfg["api_key"] = ""
@@ -450,6 +731,8 @@ class SettingsStore:
             "specialist_tool_modes": sorted(SPECIALIST_TOOL_MODES),
             "specialist_depth_tiers": sorted(SPECIALIST_DEPTH_TIERS),
             "user_statuses": sorted(USER_STATUSES),
+            "secrets_backend": self._secrets.backend_label,
+            "settings_backend": self._state_backend.backend_label,
         }
         return payload
 
@@ -491,7 +774,10 @@ class SettingsStore:
         integration = data.get("integrations", {}).get(key, {})
         if not isinstance(integration, dict):
             integration = {}
-        return copy.deepcopy(integration)
+        out = copy.deepcopy(integration)
+        secret_key = INTEGRATION_SECRET_KEYS[key]
+        out[secret_key] = self._read_integration_secret(key, integration)
+        return out
 
     def update_integration(self, provider: str, payload: dict[str, Any], actor: str = "local-user") -> dict[str, Any]:
         key = str(provider or "").strip().lower()
@@ -534,6 +820,9 @@ class SettingsStore:
             if field == secret_key and not str(value or "").strip():
                 # Keep existing secret when UI submits an empty placeholder value.
                 continue
+            if field == secret_key:
+                self._write_integration_secret(key, integration, str(value or "").strip())
+                continue
             if field in {"read_only", "run_export_enabled"}:
                 integration[field] = bool(value)
             else:
@@ -548,8 +837,14 @@ class SettingsStore:
                 if not export_owner_raw and parsed_owner:
                     integration["export_owner"] = parsed_owner
 
-        has_secret = bool(str(integration.get(secret_key, "")).strip())
-        missing = [field for field in required if not str(integration.get(field, "")).strip()]
+        has_secret = bool(self._read_integration_secret(key, integration))
+        missing: list[str] = []
+        for field in required:
+            if field == secret_key:
+                if not has_secret:
+                    missing.append(field)
+            elif not str(integration.get(field, "")).strip():
+                missing.append(field)
 
         integration["connected"] = bool(has_secret and not missing)
         integration["status"] = "connected" if integration["connected"] else "incomplete"
@@ -599,11 +894,16 @@ class SettingsStore:
                 "message": "Base URL must start with http:// or https://",
             }
         )
+        resolved_secret = self._read_integration_secret(key, integration)
         for field in required:
+            if field == secret_key:
+                ok = bool(resolved_secret)
+            else:
+                ok = bool(str(integration.get(field, "")).strip())
             checks.append(
                 {
                     "name": field,
-                    "ok": bool(str(integration.get(field, "")).strip()),
+                    "ok": ok,
                     "message": f"{field} is required",
                 }
             )
@@ -677,8 +977,7 @@ class SettingsStore:
         integration["status"] = "disconnected"
         integration["last_error"] = ""
         if clear_secret:
-            secret_key = INTEGRATION_SECRET_KEYS[key]
-            integration[secret_key] = ""
+            self._clear_integration_secret(key, integration)
         data["integrations"][key] = integration
         self._append_audit(data, action="integration_disconnected", target=key, actor=actor, details={"clear_secret": bool(clear_secret)})
         self._save(data)
@@ -694,7 +993,9 @@ class SettingsStore:
         cfg = providers.get(key, {}) if isinstance(providers, dict) else {}
         if not isinstance(cfg, dict):
             cfg = {}
-        return copy.deepcopy(cfg)
+        out = copy.deepcopy(cfg)
+        out["api_key"] = self._read_llm_secret(key, cfg)
+        return out
 
     def resolve_llm_credentials(self, provider: str, requested_model: str = "") -> dict[str, Any]:
         key = str(provider or "").strip().lower()
@@ -734,12 +1035,12 @@ class SettingsStore:
         if "api_key" in incoming:
             secret = str(incoming.get("api_key", "")).strip()
             if secret:
-                cfg["api_key"] = secret
+                self._write_llm_secret(key, cfg, secret)
 
         if bool(incoming.get("set_default_provider", False)):
             llm["default_provider"] = key
 
-        has_secret = bool(str(cfg.get("api_key", "")).strip())
+        has_secret = bool(self._read_llm_secret(key, cfg))
         has_model = bool(str(cfg.get("model", "")).strip())
         cfg["connected"] = bool(has_secret and has_model)
         cfg["status"] = "connected" if cfg["connected"] else "incomplete"
@@ -786,7 +1087,7 @@ class SettingsStore:
             },
             {
                 "name": "api_key",
-                "ok": bool(str(cfg.get("api_key", "")).strip()),
+                "ok": bool(self._read_llm_secret(key, cfg)),
                 "message": "api_key is required",
             },
         ]
@@ -843,7 +1144,7 @@ class SettingsStore:
         cfg["status"] = "disconnected"
         cfg["last_error"] = ""
         if clear_secret:
-            cfg["api_key"] = ""
+            self._clear_llm_secret(key, cfg)
         providers[key] = cfg
         llm["providers"] = providers
         data["llm"] = llm
