@@ -65,6 +65,47 @@ docker compose logs -f synthetix
 docker compose restart synthetix
 ```
 
+## Settings Persistence (Cloud)
+
+To keep Settings credentials persistent across container refresh/restart in cloud deployments:
+
+- Set `SYNTHETIX_SECRET_BACKEND=gcp_secret_manager`
+- Set `GOOGLE_CLOUD_PROJECT=<your-project-id>`
+- (Optional) set `SYNTHETIX_SECRET_PREFIX=synthetix`
+
+This stores integration and LLM keys in Google Secret Manager, while UI/API still returns masked values only.
+
+For non-secret settings persistence (users, policies, knowledge config), point `team_data` to persistent storage:
+
+- Set `SYNTHETIX_TEAM_DATA_DIR=/path/to/persistent/team_data`
+
+For stateless multi-instance Cloud Run behavior (recommended):
+
+- Set `RUN_STORE_BACKEND=firestore` (or `gcs`)
+- If Firestore: set `RUN_STORE_FIRESTORE_COLLECTION=pipeline_runs`
+- If GCS: set `RUN_STORE_GCS_BUCKET=<shared-bucket>` and optional `RUN_STORE_GCS_PREFIX=pipeline_runs`
+
+For async non-blocking run start (recommended for large repos):
+
+- Set `ASYNC_RUN_QUEUE_ENABLED=true`
+- Option A (managed queue): set `RUN_TASK_QUEUE_PATH=projects/<project>/locations/<region>/queues/<queue>` and `RUN_WORKER_URL=https://<service-url>/internal/run-worker`
+- Option B (local fallback): leave queue vars unset; server uses in-process fallback worker thread.
+- Optional hardening: set `RUN_WORKER_TOKEN=<shared-secret>` and send same value in `X-Run-Worker-Token` for worker callback invocations.
+
+For repo snapshot caching + chunked repo scan (recommended for huge repos):
+
+- `REPO_SCAN_MAX_FILES=220` (max candidate files per scan)
+- `REPO_SCAN_CHUNK_SIZE=24` (files per chunk)
+- `REPO_SCAN_CHUNK_WORKERS=4` (parallel file fetches inside each chunk)
+- `REPO_SCAN_BUNDLE_MAX_CHARS=420000` (legacy code bundle cap)
+- Optional shared snapshot cache in GCS: `REPO_SNAPSHOT_GCS_BUCKET=<bucket>` and `REPO_SNAPSHOT_GCS_PREFIX=repo_snapshots`
+
+Incremental scan behavior:
+
+- Each snapshot is pinned by repo/branch/commit + scan filters.
+- A family pointer tracks the latest snapshot for `(owner, repo, branch, include/exclude, max_files)`.
+- On new commits, scanner calls GitHub compare API and reuses unchanged file contents from prior snapshot; only changed files are fetched.
+
 Persistent data is mounted to local folders so history/artifacts survive container restarts:
 
 - `pipeline_runs/`

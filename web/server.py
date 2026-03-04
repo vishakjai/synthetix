@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -29,6 +30,16 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+
+try:
+    from google.cloud import tasks_v2  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    tasks_v2 = None
+
+try:
+    from google.cloud import storage  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    storage = None
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -65,7 +76,7 @@ from utils.context_contracts import (  # noqa: E402
     build_context_contract_suite,
     persist_context_contract_suite,
 )
-from utils.run_store import PipelineRunStore  # noqa: E402
+from utils.run_store import build_pipeline_run_store, PipelineRunStore  # noqa: E402
 from utils.settings_store import SettingsStore  # noqa: E402
 from utils.team_store import TeamStore  # noqa: E402
 from utils.work_item_store import WorkItemStore  # noqa: E402
@@ -101,13 +112,18 @@ from utils.legacy_skills import (  # noqa: E402
 )
 
 
-RUN_STORE = PipelineRunStore(str(ROOT / "pipeline_runs"))
-TEAM_STORE = TeamStore(str(ROOT / "team_data"))
-SETTINGS_STORE = SettingsStore(str(ROOT / "team_data"))
-WORK_ITEM_STORE = WorkItemStore(str(ROOT / "team_data"))
+TEAM_DATA_ROOT = Path(
+    str(os.getenv("SYNTHETIX_TEAM_DATA_DIR", str(ROOT / "team_data"))).strip() or str(ROOT / "team_data")
+).expanduser()
+TEAM_DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+RUN_STORE = build_pipeline_run_store(str(ROOT / "pipeline_runs"))
+TEAM_STORE = TeamStore(str(TEAM_DATA_ROOT))
+SETTINGS_STORE = SettingsStore(str(TEAM_DATA_ROOT))
+WORK_ITEM_STORE = WorkItemStore(str(TEAM_DATA_ROOT))
 PERSONA_REGISTRY = PersonaRegistry(str(ROOT / "agent_personas"))
 KNOWLEDGE_GATEWAY = KnowledgeGateway(str(ROOT))
-TENANT_MEMORY_STORE = TenantMemoryStore(str(ROOT / "team_data" / "tenant_memory"))
+TENANT_MEMORY_STORE = TenantMemoryStore(str(TEAM_DATA_ROOT / "tenant_memory"))
 ANALYST_AAS = AnalystAASService(
     persona_registry=PERSONA_REGISTRY,
     knowledge_gateway=KNOWLEDGE_GATEWAY,
@@ -120,9 +136,24 @@ CONTRACT_SCHEMA_DIR = ROOT / ".deliveryos" / "schemas"
 DRIFT_LOCK = threading.Lock()
 DRIFT_INTERVAL_SEC = max(0, int(os.getenv("SIL_DRIFT_INTERVAL_SEC", "900") or 900))
 DOCGEN_ROOT = ROOT / "synthetix-docgen"
-KNOWLEDGE_SOURCE_UPLOAD_ROOT = ROOT / "team_data" / "knowledge_sources"
+KNOWLEDGE_SOURCE_UPLOAD_ROOT = TEAM_DATA_ROOT / "knowledge_sources"
 KNOWLEDGE_SOURCE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024
 RUN_CONTEXT_ARTIFACT_ROOT = ROOT / "run_artifacts"
+ASYNC_RUN_QUEUE_ENABLED = str(os.getenv("ASYNC_RUN_QUEUE_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+RUN_WORKER_TOKEN = str(os.getenv("RUN_WORKER_TOKEN", "")).strip()
+RUN_WORKER_URL = str(os.getenv("RUN_WORKER_URL", "")).strip()
+RUN_TASK_QUEUE_PATH = str(os.getenv("RUN_TASK_QUEUE_PATH", "")).strip()
+REPO_SCAN_MAX_FILES = max(24, int(os.getenv("REPO_SCAN_MAX_FILES", "220") or 220))
+REPO_SCAN_CHUNK_SIZE = max(8, int(os.getenv("REPO_SCAN_CHUNK_SIZE", "24") or 24))
+REPO_SCAN_CHUNK_WORKERS = max(1, min(16, int(os.getenv("REPO_SCAN_CHUNK_WORKERS", "4") or 4)))
+REPO_SCAN_BUNDLE_MAX_CHARS = max(120000, int(os.getenv("REPO_SCAN_BUNDLE_MAX_CHARS", "420000") or 420000))
+REPO_SNAPSHOT_GCS_BUCKET = str(
+    os.getenv("REPO_SNAPSHOT_GCS_BUCKET")
+    or os.getenv("RUN_STORE_GCS_BUCKET")
+    or os.getenv("SYNTHETIX_RUN_STORE_BUCKET")
+    or ""
+).strip()
+REPO_SNAPSHOT_GCS_PREFIX = str(os.getenv("REPO_SNAPSHOT_GCS_PREFIX", "repo_snapshots")).strip() or "repo_snapshots"
 
 AGENT_CARDS = [
     {"stage": 1, "name": "Analyst Agent", "icon": "📋"},
@@ -543,9 +574,31 @@ class PipelineRunManager:
             "developer_parallel_agents": cfg.developer_parallel_agents,
             "max_retries": cfg.max_retries,
             "live_deploy": cfg.live_deploy,
+            "deploy_output_dir": cfg.deploy_output_dir,
             "cluster_name": cfg.cluster_name,
             "namespace": cfg.namespace,
         }
+
+    @staticmethod
+    def _config_from_summary(summary: dict[str, Any]) -> PipelineConfig:
+        provider_raw = str(summary.get("provider", LLMProvider.ANTHROPIC.value)).strip().lower()
+        provider = LLMProvider.OPENAI if provider_raw == LLMProvider.OPENAI.value else LLMProvider.ANTHROPIC
+        model = str(summary.get("model", "")).strip()
+        cfg = PipelineConfig(
+            provider=provider,
+            temperature=float(summary.get("temperature", 0.3) or 0.3),
+            developer_parallel_agents=int(summary.get("developer_parallel_agents", 5) or 5),
+            max_retries=int(summary.get("max_retries", 2) or 2),
+            live_deploy=bool(summary.get("live_deploy", False)),
+            deploy_output_dir=str(summary.get("deploy_output_dir", "./deploy_output") or "./deploy_output"),
+            cluster_name=str(summary.get("cluster_name", "agent-pipeline") or "agent-pipeline"),
+            namespace=str(summary.get("namespace", "agent-app") or "agent-app"),
+        )
+        if provider == LLMProvider.OPENAI:
+            cfg.openai_model = model or cfg.openai_model
+        else:
+            cfg.anthropic_model = model or cfg.anthropic_model
+        return cfg
 
     def start_run(
         self,
@@ -564,6 +617,9 @@ class PipelineRunManager:
         integration_context: dict[str, Any] | None = None,
         team_id: str = "",
         stage_agent_ids: dict[str, Any] | None = None,
+        *,
+        run_id_override: str = "",
+        defer_execution: bool = False,
     ) -> str:
         integration = integration_context if isinstance(integration_context, dict) else {}
         project_state_mode = str(integration.get("project_state_mode", "auto")).strip().lower() or "auto"
@@ -579,6 +635,7 @@ class PipelineRunManager:
             stage_agent_ids=stage_overrides,
         )
 
+        run_status = "queued" if defer_execution else "running"
         run_id = self.store.create_run(
             business_objectives=objectives,
             config_summary={
@@ -592,24 +649,30 @@ class PipelineRunManager:
                 "team_id": team_meta.get("id", ""),
                 "team_name": team_meta.get("name", ""),
             },
+            run_id=str(run_id_override or "").strip() or None,
+            initial_status=run_status,
         )
-        run_context_bundle = _build_run_context_bundle(
-            run_id=run_id,
-            objectives=objectives,
-            use_case=use_case,
-            integration_context=integration,
-            legacy_code=legacy_code,
-            stage_agent_ids=team_meta.get("stage_agent_ids", {}),
-        )
-        run_context_bundle = _persist_run_context_bundle_artifacts(run_context_bundle)
-        constitution = _as_dict_safe(run_context_bundle.get("delivery_constitution"))
-        routing = _as_dict_safe(run_context_bundle.get("specialist_routing"))
-        integration["run_context_snapshot"] = {
-            "bundle_id": _clean_text(run_context_bundle.get("bundle_id")),
-            "knowledge_snapshot_id": _clean_text(_as_dict_safe(run_context_bundle.get("knowledge_context")).get("snapshot_id")),
-            "delivery_constitution_id": _clean_text(constitution.get("constitution_id")),
-            "selected_specialist_ids": _as_list_safe(routing.get("selected_specialist_ids")),
-        }
+        run_context_bundle: dict[str, Any] = {}
+        constitution: dict[str, Any] = {}
+        routing: dict[str, Any] = {}
+        if not defer_execution:
+            run_context_bundle = _build_run_context_bundle(
+                run_id=run_id,
+                objectives=objectives,
+                use_case=use_case,
+                integration_context=integration,
+                legacy_code=legacy_code,
+                stage_agent_ids=team_meta.get("stage_agent_ids", {}),
+            )
+            run_context_bundle = _persist_run_context_bundle_artifacts(run_context_bundle)
+            constitution = _as_dict_safe(run_context_bundle.get("delivery_constitution"))
+            routing = _as_dict_safe(run_context_bundle.get("specialist_routing"))
+            integration["run_context_snapshot"] = {
+                "bundle_id": _clean_text(run_context_bundle.get("bundle_id")),
+                "knowledge_snapshot_id": _clean_text(_as_dict_safe(run_context_bundle.get("knowledge_context")).get("snapshot_id")),
+                "delivery_constitution_id": _clean_text(constitution.get("constitution_id")),
+                "selected_specialist_ids": _as_list_safe(routing.get("selected_specialist_ids")),
+            }
 
         record = RunRecord(
             run_id=run_id,
@@ -634,6 +697,7 @@ class PipelineRunManager:
             agent_personas=agent_personas,
             pipeline_state=make_initial_state(objectives),
         )
+        record.status = run_status
         active_stage_indices = _active_stage_indices_from_stage_map(team_meta.get("stage_agent_ids", {}))
         active_stage_numbers = [idx + 1 for idx in active_stage_indices]
         record.stage_status = {
@@ -668,9 +732,9 @@ class PipelineRunManager:
         record.pipeline_state["health_assessment"] = {}
         record.pipeline_state["remediation_backlog"] = []
         record.pipeline_state["context_vault_ref"] = {}
-        record.pipeline_state["sil_discovery"] = discover_repo_snapshot(ROOT)
+        record.pipeline_state["sil_discovery"] = {} if defer_execution else discover_repo_snapshot(ROOT)
         record.pipeline_state["run_context_bundle"] = run_context_bundle
-        record.pipeline_state["workflow_state"] = "DISCOVERING"
+        record.pipeline_state["workflow_state"] = "QUEUED" if defer_execution else "DISCOVERING"
         record.pipeline_state["discover_review"] = {
             "overall_status": "PENDING",
             "checks": [],
@@ -680,7 +744,27 @@ class PipelineRunManager:
             "waived_ids": [],
             "updated_at": _utc_now(),
         }
-        self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
+        if defer_execution:
+            record.pipeline_state["queued_request"] = {
+                "objectives": objectives,
+                "use_case": use_case,
+                "legacy_code": legacy_code,
+                "modernization_language": modernization_language,
+                "database_source": database_source,
+                "database_target": database_target,
+                "database_schema": database_schema,
+                "human_approval": human_approval,
+                "strict_security_mode": strict_security_mode,
+                "deployment_target": deployment_target,
+                "cloud_config": cloud_config or {},
+                "integration_context": integration,
+                "team_id": str(team_meta.get("id", "")),
+                "stage_agent_ids": dict(team_meta.get("stage_agent_ids", {})),
+                "config_summary": self._config_summary(config),
+            }
+            self._append_log(record, f"🕒 Pipeline queued (run_id={run_id})")
+        else:
+            self._append_log(record, f"▶ Pipeline started (run_id={run_id})")
         self._append_log(record, f"👥 Team selected: {record.team_name or 'Ad-hoc Team'}")
         self._append_log(record, f"🧩 Active build stages: {', '.join([str(x) for x in active_stage_numbers])}")
         self._append_log(record, "🧠 System Intelligence Layer scheduled (SCM / CP / HA-RB)")
@@ -703,12 +787,15 @@ class PipelineRunManager:
 
         self.store.finalize_run(
             run_id=run_id,
-            status="running",
+            status=run_status,
             pipeline_state=record.pipeline_state,
             stage_status=record.stage_status,
             progress_logs=record.progress_logs,
             error_message=None,
         )
+
+        if defer_execution:
+            return run_id
 
         thread = threading.Thread(
             target=self._execute_run,
@@ -719,6 +806,46 @@ class PipelineRunManager:
         record.thread = thread
         thread.start()
         return run_id
+
+    def launch_deferred_run(self, run_id: str) -> dict[str, Any]:
+        rid = str(run_id or "").strip()
+        if not rid:
+            return {"ok": False, "error": "run_id is required"}
+
+        persisted = self.store.load_run(rid) or {}
+        if not isinstance(persisted, dict) or not persisted:
+            return {"ok": False, "error": "run not found"}
+        status = str(persisted.get("pipeline_status", "")).strip().lower()
+        if status in {"running", "completed", "failed", "aborted"}:
+            return {"ok": True, "status": status, "run_id": rid}
+
+        pipeline_state = persisted.get("pipeline_state", {}) if isinstance(persisted.get("pipeline_state", {}), dict) else {}
+        queued = pipeline_state.get("queued_request", {}) if isinstance(pipeline_state.get("queued_request", {}), dict) else {}
+        if not queued:
+            return {"ok": False, "error": "queued request payload missing"}
+
+        cfg_summary = queued.get("config_summary", {}) if isinstance(queued.get("config_summary", {}), dict) else {}
+        cfg = self._config_from_summary(cfg_summary)
+        self.start_run(
+            objectives=str(queued.get("objectives", "")),
+            config=cfg,
+            use_case=str(queued.get("use_case", "business_objectives")),
+            legacy_code=str(queued.get("legacy_code", "")),
+            modernization_language=str(queued.get("modernization_language", "")),
+            database_source=str(queued.get("database_source", "")),
+            database_target=str(queued.get("database_target", "")),
+            database_schema=str(queued.get("database_schema", "")),
+            human_approval=bool(queued.get("human_approval", False)),
+            strict_security_mode=bool(queued.get("strict_security_mode", False)),
+            deployment_target=str(queued.get("deployment_target", "local") or "local"),
+            cloud_config=queued.get("cloud_config", {}) if isinstance(queued.get("cloud_config", {}), dict) else {},
+            integration_context=queued.get("integration_context", {}) if isinstance(queued.get("integration_context", {}), dict) else {},
+            team_id=str(queued.get("team_id", "")),
+            stage_agent_ids=queued.get("stage_agent_ids", {}) if isinstance(queued.get("stage_agent_ids", {}), dict) else {},
+            run_id_override=rid,
+            defer_execution=False,
+        )
+        return {"ok": True, "status": "running", "run_id": rid}
 
     def _run_context_layer(self, record: RunRecord) -> bool:
         if record.pipeline_state is None:
@@ -940,6 +1067,38 @@ class PipelineRunManager:
 
         return logs[:1600]
 
+    def _ensure_repo_scan_legacy_code(self, record: RunRecord) -> bool:
+        if str(record.use_case).strip().lower() != "code_modernization":
+            return True
+        if str(record.legacy_code or "").strip():
+            return True
+        integration = record.integration_context if isinstance(record.integration_context, dict) else {}
+        scan_scope = integration.get("scan_scope", {}) if isinstance(integration.get("scan_scope", {}), dict) else {}
+        mode = str(scan_scope.get("modernization_source_mode", "manual")).strip().lower() or "manual"
+        if mode != "repo_scan":
+            return True
+
+        self._append_log(record, "📡 Repo scan started (background source extraction)")
+        legacy_code, cache, err = _resolve_legacy_code_from_repo_scan(
+            integration,
+            progress_cb=lambda msg: self._append_log(record, str(msg)),
+        )
+        if err:
+            self._fail(record, f"Repo scan failed before Stage 1: {err}")
+            return False
+        record.legacy_code = legacy_code
+        record.integration_context = integration
+        if isinstance(cache, dict) and cache:
+            integration["repo_scan_cache"] = cache
+        if isinstance(record.pipeline_state, dict):
+            record.pipeline_state["legacy_code"] = legacy_code
+            record.pipeline_state["integration_context"] = integration
+            if isinstance(cache.get("repo_snapshot", {}), dict):
+                record.pipeline_state["repo_snapshot"] = copy.deepcopy(cache.get("repo_snapshot", {}))
+        self._append_log(record, f"✅ Repo scan extracted source bundle ({len(legacy_code)} chars)")
+        self._persist(record)
+        return True
+
     def _execute_run(self, run_id: str) -> None:
         while True:
             record = self._get_record(run_id)
@@ -948,6 +1107,9 @@ class PipelineRunManager:
             if record.status != "running":
                 return
             if record.pending_approval is not None:
+                return
+
+            if not self._ensure_repo_scan_legacy_code(record):
                 return
 
             if not record.pipeline_state or not record.pipeline_state.get("sil_ready"):
@@ -1450,6 +1612,7 @@ class PipelineRunManager:
         if record.pipeline_state is not None:
             record.pipeline_state["pending_approval"] = copy.deepcopy(record.pending_approval)
             record.pipeline_state["next_stage_idx"] = int(record.next_stage_idx)
+            record.pipeline_state["current_stage"] = int(record.current_stage)
         self.store.finalize_run(
             run_id=record.run_id,
             status=record.status,
@@ -1940,11 +2103,17 @@ class PipelineRunManager:
             int(k): v for k, v in stage_status_raw.items() if str(k).isdigit()
         }
         pipeline_state = persisted.get("pipeline_state") or {}
+        current_stage = int(pipeline_state.get("current_stage", 0) or 0) if isinstance(pipeline_state, dict) else 0
+        if current_stage <= 0 and stage_status:
+            active_states = {"running", "completed", "failed", "waiting_approval", "paused"}
+            seen = [stage for stage, state in stage_status.items() if str(state).strip().lower() in active_states]
+            if seen:
+                current_stage = max(seen)
         pending = pipeline_state.get("pending_approval")
         return {
             "run_id": run_id,
             "status": status,
-            "current_stage": max(stage_status.keys(), default=0),
+            "current_stage": current_stage,
             "next_stage_idx": int(pipeline_state.get("next_stage_idx", 0) or 0),
             "stage_status": stage_status,
             "progress_logs": persisted.get("progress_logs", []),
@@ -3206,7 +3375,16 @@ def _select_source_entries_for_analysis(
         suffix = Path(normalized).suffix.lower()
         base_name = Path(normalized).name.lower()
         if suffix in allowed_ext or base_name.startswith("readme"):
-            candidate_entries.append({"path": normalized, "type": "file", "depth": normalized.count("/")})
+            candidate_entries.append(
+                {
+                    "path": normalized,
+                    "type": "file",
+                    "depth": normalized.count("/"),
+                    "size": int(item.get("size", 0) or 0),
+                    "sha": str(item.get("sha", "") or ""),
+                    "ext": suffix,
+                }
+            )
 
     vb6_file_hits = sum(
         1 for entry in candidate_entries
@@ -3262,6 +3440,522 @@ def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: 
         if total >= max_total_chars:
             break
     return "".join(chunks).strip()
+
+
+def _repo_snapshot_local_dir(snapshot_id: str) -> Path:
+    root = RUN_CONTEXT_ARTIFACT_ROOT / "repo_snapshots" / snapshot_id
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _repo_snapshot_blob_name(snapshot_id: str, filename: str) -> str:
+    prefix = REPO_SNAPSHOT_GCS_PREFIX.strip("/ ")
+    return f"{prefix}/{snapshot_id}/{filename}" if prefix else f"{snapshot_id}/{filename}"
+
+
+def _repo_snapshot_family_key(
+    *,
+    owner: str,
+    repository: str,
+    branch: str,
+    include_paths: list[str],
+    exclude_paths: list[str],
+    max_files: int,
+) -> str:
+    seed = "|".join(
+        [
+            owner.lower().strip(),
+            repository.lower().strip(),
+            branch.lower().strip(),
+            hashlib.sha1(",".join(sorted(include_paths)).encode("utf-8")).hexdigest()[:12],
+            hashlib.sha1(",".join(sorted(exclude_paths)).encode("utf-8")).hexdigest()[:12],
+            str(int(max_files or 0)),
+        ]
+    )
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
+
+
+def _repo_snapshot_latest_ref_blob_name(family_key: str) -> str:
+    prefix = REPO_SNAPSHOT_GCS_PREFIX.strip("/ ")
+    return f"{prefix}/_index/{family_key}.json" if prefix else f"_index/{family_key}.json"
+
+
+def _repo_snapshot_latest_ref_load(family_key: str) -> str:
+    key = str(family_key or "").strip()
+    if not key:
+        return ""
+    if REPO_SNAPSHOT_GCS_BUCKET and storage is not None:
+        try:
+            client = storage.Client()
+            bucket = client.bucket(REPO_SNAPSHOT_GCS_BUCKET)
+            blob = bucket.blob(_repo_snapshot_latest_ref_blob_name(key))
+            if blob.exists():
+                payload = json.loads(blob.download_as_text())
+                if isinstance(payload, dict):
+                    sid = str(payload.get("snapshot_id", "")).strip()
+                    if sid:
+                        return sid
+        except Exception:
+            pass
+    local = RUN_CONTEXT_ARTIFACT_ROOT / "repo_snapshots" / "_index" / f"{key}.json"
+    try:
+        if local.exists():
+            payload = json.loads(local.read_text())
+            if isinstance(payload, dict):
+                return str(payload.get("snapshot_id", "")).strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _repo_snapshot_latest_ref_save(family_key: str, snapshot_id: str) -> None:
+    key = str(family_key or "").strip()
+    sid = str(snapshot_id or "").strip()
+    if not key or not sid:
+        return
+    payload = {"snapshot_id": sid, "updated_at": _utc_now()}
+    local_dir = RUN_CONTEXT_ARTIFACT_ROOT / "repo_snapshots" / "_index"
+    local_dir.mkdir(parents=True, exist_ok=True)
+    (local_dir / f"{key}.json").write_text(json.dumps(payload, indent=2, ensure_ascii=True))
+    if REPO_SNAPSHOT_GCS_BUCKET and storage is not None:
+        try:
+            client = storage.Client()
+            bucket = client.bucket(REPO_SNAPSHOT_GCS_BUCKET)
+            bucket.blob(_repo_snapshot_latest_ref_blob_name(key)).upload_from_string(
+                json.dumps(payload, indent=2, ensure_ascii=True),
+                content_type="application/json",
+            )
+        except Exception:
+            pass
+
+
+def _repo_changed_paths_via_compare(
+    *,
+    base_url: str,
+    owner: str,
+    repository: str,
+    base_commit: str,
+    head_commit: str,
+    headers: dict[str, str],
+) -> tuple[set[str], str]:
+    if not base_commit or not head_commit or base_commit == head_commit:
+        return set(), ""
+    try:
+        compare = _http_json_request(
+            f"{base_url}/repos/{quote(owner)}/{quote(repository)}/compare/{quote(base_commit, safe='')}...{quote(head_commit, safe='')}",
+            headers=headers,
+        )
+    except Exception as exc:
+        return set(), str(exc)
+    if not isinstance(compare, dict):
+        return set(), "invalid compare payload"
+    files = compare.get("files", [])
+    if not isinstance(files, list):
+        return set(), "compare payload missing files list"
+    changed: set[str] = set()
+    for row in files:
+        if not isinstance(row, dict):
+            continue
+        filename = str(row.get("filename", "")).strip().replace("\\", "/")
+        if filename:
+            changed.add(filename)
+        prev = str(row.get("previous_filename", "")).strip().replace("\\", "/")
+        if prev:
+            changed.add(prev)
+    return changed, ""
+
+
+def _repo_snapshot_load(snapshot_id: str) -> dict[str, Any] | None:
+    sid = str(snapshot_id or "").strip()
+    if not sid:
+        return None
+    # Prefer GCS shared cache when configured.
+    if REPO_SNAPSHOT_GCS_BUCKET and storage is not None:
+        try:
+            client = storage.Client()
+            bucket = client.bucket(REPO_SNAPSHOT_GCS_BUCKET)
+            snap_blob = bucket.blob(_repo_snapshot_blob_name(sid, "snapshot.json"))
+            if snap_blob.exists():
+                payload = json.loads(snap_blob.download_as_text())
+                if isinstance(payload, dict):
+                    return payload
+        except Exception:
+            pass
+    # Local fallback cache.
+    path = RUN_CONTEXT_ARTIFACT_ROOT / "repo_snapshots" / sid / "snapshot.json"
+    try:
+        if path.exists():
+            payload = json.loads(path.read_text())
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        return None
+    return None
+
+
+def _repo_snapshot_save(snapshot_id: str, payload: dict[str, Any]) -> None:
+    sid = str(snapshot_id or "").strip()
+    if not sid or not isinstance(payload, dict):
+        return
+    local_dir = _repo_snapshot_local_dir(sid)
+    snapshot_path = local_dir / "snapshot.json"
+    bundle_path = local_dir / "bundle.txt"
+    snapshot_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str))
+    bundle_path.write_text(str(payload.get("legacy_code", "") or ""))
+
+    if REPO_SNAPSHOT_GCS_BUCKET and storage is not None:
+        try:
+            client = storage.Client()
+            bucket = client.bucket(REPO_SNAPSHOT_GCS_BUCKET)
+            bucket.blob(_repo_snapshot_blob_name(sid, "snapshot.json")).upload_from_string(
+                json.dumps(payload, indent=2, ensure_ascii=True, default=str),
+                content_type="application/json",
+            )
+            bucket.blob(_repo_snapshot_blob_name(sid, "bundle.txt")).upload_from_string(
+                str(payload.get("legacy_code", "") or ""),
+                content_type="text/plain",
+            )
+        except Exception:
+            # Keep local snapshot even if GCS upload fails.
+            pass
+
+
+def _path_language_hint(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix in {".frm", ".bas", ".cls", ".vbp", ".vbg", ".frx", ".ctl", ".ctx", ".dca", ".dcx"}:
+        return "vb6"
+    if suffix in {".py"}:
+        return "python"
+    if suffix in {".js", ".ts", ".tsx"}:
+        return "javascript"
+    if suffix in {".go"}:
+        return "go"
+    if suffix in {".java"}:
+        return "java"
+    if suffix in {".cs"}:
+        return "csharp"
+    if suffix in {".sql"}:
+        return "sql"
+    if suffix in {".md"}:
+        return "markdown"
+    return "unknown"
+
+
+def _chunk_entries(entries: list[dict[str, Any]], chunk_size: int) -> list[list[dict[str, Any]]]:
+    size = max(1, int(chunk_size or 1))
+    out: list[list[dict[str, Any]]] = []
+    for i in range(0, len(entries), size):
+        out.append(entries[i : i + size])
+    return out
+
+
+def _resolve_legacy_code_from_repo_scan(
+    integration_context: dict[str, Any],
+    *,
+    progress_cb: Any | None = None,
+) -> tuple[str, dict[str, Any], str]:
+    """
+    Returns (legacy_code, repo_scan_cache, error_message).
+    Expensive network fetch happens here so callers can run it in background worker threads.
+    """
+    def emit(message: str) -> None:
+        if callable(progress_cb):
+            try:
+                progress_cb(str(message))
+            except Exception:
+                pass
+
+    integration = integration_context if isinstance(integration_context, dict) else {}
+    scan_scope = integration.get("scan_scope", {}) if isinstance(integration.get("scan_scope", {}), dict) else {}
+    brownfield = integration.get("brownfield", {}) if isinstance(integration.get("brownfield", {}), dict) else {}
+    sample_mode = bool(integration.get("sample_dataset_enabled", False))
+
+    repo_provider = str(brownfield.get("repo_provider", "")).strip().lower()
+    repo_url = str(brownfield.get("repo_url", "")).strip()
+    include_paths = _normalize_lines(scan_scope.get("include_paths", []))
+    exclude_paths = _normalize_lines(scan_scope.get("exclude_paths", []))
+
+    if repo_provider != "github" or not repo_url:
+        return "", {}, "Repo scan mode requires a connected GitHub repository URL."
+
+    owner, repository = _parse_github_repo_url(repo_url)
+    github_cfg = SETTINGS_STORE.get_integration_config("github")
+    if not owner:
+        owner = str(github_cfg.get("owner", "")).strip()
+    if not repository:
+        repository = str(github_cfg.get("repository", "")).strip()
+    if not owner or not repository:
+        return "", {}, "Unable to resolve GitHub owner/repository from integration settings."
+
+    if sample_mode:
+        sample_contents = {
+            "services/orders-service/src/main.java": "@RestController\n@RequestMapping(\"/v1/orders\")\npublic class OrdersController {}",
+            "services/payments-service/cmd/api/main.go": "router.POST(\"/v1/payments\", handlePayments)\n// uses redis idempotency",
+            "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
+            "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
+        }
+        legacy_code = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        sid_seed = f"sample::{owner}/{repository}::{','.join(sorted(sample_contents.keys()))}"
+        snapshot_id = hashlib.sha1(sid_seed.encode("utf-8")).hexdigest()[:20]
+        payload = {
+            "snapshot_id": snapshot_id,
+            "owner": owner,
+            "repository": repository,
+            "branch": "sample",
+            "commit_sha": "sample",
+            "tree_sha": "sample",
+            "repo_provider": "github",
+            "repo_url": repo_url,
+            "created_at": _utc_now(),
+            "cache_hit": False,
+            "selected_file_count": len(sample_contents),
+            "manifest": [
+                {
+                    "path": p,
+                    "size": len(sample_contents.get(p, "")),
+                    "sha": hashlib.sha1(str(sample_contents.get(p, "")).encode("utf-8")).hexdigest()[:12],
+                    "language": _path_language_hint(p),
+                    "is_binary": False,
+                }
+                for p in sorted(sample_contents.keys())
+            ],
+            "legacy_code": legacy_code,
+        }
+        _repo_snapshot_save(snapshot_id, payload)
+        return legacy_code, {"owner": owner, "repository": repository, "sampled_files": sorted(sample_contents.keys()), "repo_snapshot": payload}, ""
+
+    token = str(github_cfg.get("token", "")).strip()
+    if not token:
+        return "", {}, "GitHub token is missing. Configure it in Settings > Integrations."
+
+    base_url = str(github_cfg.get("base_url") or "https://api.github.com").rstrip("/")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "synthetix-discover/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        emit("📁 Repo snapshot: resolving repository metadata")
+        repo_meta = _http_json_request(
+            f"{base_url}/repos/{quote(owner)}/{quote(repository)}",
+            headers=headers,
+        )
+        branch = "main"
+        if isinstance(repo_meta, dict):
+            branch = str(repo_meta.get("default_branch") or "main")
+        commit_payload = _http_json_request(
+            f"{base_url}/repos/{quote(owner)}/{quote(repository)}/commits/{quote(branch, safe='')}",
+            headers=headers,
+        )
+        commit_sha = ""
+        if isinstance(commit_payload, dict):
+            commit_sha = str(commit_payload.get("sha", "")).strip()
+        tree_payload = _http_json_request(
+            f"{base_url}/repos/{quote(owner)}/{quote(repository)}/git/trees/{quote(branch, safe='')}?recursive=1",
+            headers=headers,
+        )
+        raw_entries = tree_payload.get("tree", []) if isinstance(tree_payload, dict) else []
+        tree_sha = str(tree_payload.get("sha", "")).strip() if isinstance(tree_payload, dict) else ""
+        selected_entries = _select_source_entries_for_analysis(
+            [item for item in raw_entries if isinstance(item, dict)],
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            limit=REPO_SCAN_MAX_FILES,
+        )
+        if not selected_entries:
+            return "", {}, "Repo scan completed but no eligible source files matched current include/exclude filters."
+
+        family_key = _repo_snapshot_family_key(
+            owner=owner,
+            repository=repository,
+            branch=branch,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            max_files=REPO_SCAN_MAX_FILES,
+        )
+
+        snapshot_seed = "|".join(
+            [
+                "github",
+                owner.lower(),
+                repository.lower(),
+                branch.lower(),
+                commit_sha or tree_sha or "unknown",
+                hashlib.sha1(",".join(include_paths).encode("utf-8")).hexdigest()[:12],
+                hashlib.sha1(",".join(exclude_paths).encode("utf-8")).hexdigest()[:12],
+                str(REPO_SCAN_MAX_FILES),
+                str(REPO_SCAN_CHUNK_SIZE),
+            ]
+        )
+        snapshot_id = hashlib.sha1(snapshot_seed.encode("utf-8")).hexdigest()[:20]
+        cached = _repo_snapshot_load(snapshot_id)
+        if isinstance(cached, dict) and str(cached.get("legacy_code", "")).strip():
+            emit(f"📦 Repo snapshot cache hit: {snapshot_id} (commit {commit_sha[:12] or 'unknown'})")
+            sampled = cached.get("sampled_files", [])
+            return (
+                str(cached.get("legacy_code", "")),
+                {
+                    "owner": owner,
+                    "repository": repository,
+                    "default_branch": branch,
+                    "commit_sha": commit_sha,
+                    "sampled_files": sampled[:40] if isinstance(sampled, list) else [],
+                    "repo_snapshot": {
+                        **{k: v for k, v in cached.items() if k not in {"legacy_code", "file_contents"}},
+                        "cache_hit": True,
+                    },
+                },
+                "",
+            )
+
+        base_snapshot_id = _repo_snapshot_latest_ref_load(family_key)
+        base_snapshot = _repo_snapshot_load(base_snapshot_id) if base_snapshot_id and base_snapshot_id != snapshot_id else None
+        base_file_contents = (
+            {str(k): str(v) for k, v in base_snapshot.get("file_contents", {}).items()}
+            if isinstance(base_snapshot, dict) and isinstance(base_snapshot.get("file_contents", {}), dict)
+            else {}
+        )
+        base_commit = str(base_snapshot.get("commit_sha", "")).strip() if isinstance(base_snapshot, dict) else ""
+        changed_paths, compare_error = _repo_changed_paths_via_compare(
+            base_url=base_url,
+            owner=owner,
+            repository=repository,
+            base_commit=base_commit,
+            head_commit=commit_sha,
+            headers=headers,
+        ) if base_file_contents and base_commit and commit_sha and base_commit != commit_sha else (set(), "")
+        if base_file_contents and base_commit and commit_sha and base_commit != commit_sha:
+            if compare_error:
+                emit(f"⚠️ Incremental compare unavailable; full chunk fetch for changed commit ({compare_error})")
+            else:
+                emit(
+                    f"🧮 Incremental diff loaded: base={base_commit[:12]} head={commit_sha[:12]} "
+                    f"changed_paths={len(changed_paths)}"
+                )
+
+        chunks = _chunk_entries(selected_entries, REPO_SCAN_CHUNK_SIZE)
+        emit(
+            f"📦 Repo snapshot created: {snapshot_id} "
+            f"(commit {commit_sha[:12] or 'unknown'}, files={len(selected_entries)}, chunks={len(chunks)})"
+        )
+
+        file_contents: dict[str, str] = {}
+        failed_paths: list[str] = []
+        reused_paths: list[str] = []
+        compare_enabled = bool(base_file_contents and base_commit and commit_sha and base_commit != commit_sha and not compare_error)
+        selected_path_set = {str(entry.get("path", "")).strip() for entry in selected_entries if str(entry.get("path", "")).strip()}
+        for idx, chunk in enumerate(chunks, start=1):
+            emit(f"🧩 Repo scan chunk {idx}/{len(chunks)}: {len(chunk)} file(s)")
+            with ThreadPoolExecutor(max_workers=REPO_SCAN_CHUNK_WORKERS) as pool:
+                futures = {}
+                for entry in chunk:
+                    path = str(entry.get("path", "")).strip()
+                    if not path:
+                        continue
+                    if compare_enabled and path in base_file_contents and path not in changed_paths:
+                        content = str(base_file_contents.get(path, "") or "")
+                        if content:
+                            file_contents[path] = content
+                            reused_paths.append(path)
+                            continue
+                    fut = pool.submit(
+                        _fetch_github_file_content,
+                        base_url=base_url,
+                        owner=owner,
+                        repository=repository,
+                        path=path,
+                        ref=branch,
+                        headers=headers,
+                        max_chars=12000,
+                    )
+                    futures[fut] = path
+                for fut in as_completed(list(futures.keys())):
+                    path = futures.get(fut, "")
+                    try:
+                        content = str(fut.result() or "")
+                    except Exception:
+                        content = ""
+                    if content:
+                        file_contents[path] = content
+                    else:
+                        if path:
+                            failed_paths.append(path)
+            emit(
+                f"✅ Chunk {idx}/{len(chunks)} complete: "
+                f"resolved={len(file_contents)} reused={len(reused_paths)} failed={len(failed_paths)}"
+            )
+
+        legacy_code = _compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        if not legacy_code:
+            return "", {}, "Repo scan completed but no analyzable source content was extracted."
+        manifest = []
+        for entry in selected_entries:
+            path = str(entry.get("path", "")).strip()
+            if not path:
+                continue
+            ext = str(entry.get("ext", "") or "").strip().lower()
+            manifest.append(
+                {
+                    "path": path,
+                    "size": int(entry.get("size", 0) or 0),
+                    "sha": str(entry.get("sha", "") or ""),
+                    "ext": ext,
+                    "depth": int(entry.get("depth", 0) or 0),
+                    "language": _path_language_hint(path),
+                    "is_binary": ext in {".frx", ".ctx", ".res", ".ocx"},
+                }
+            )
+
+        snapshot_payload = {
+            "snapshot_id": snapshot_id,
+            "family_key": family_key,
+            "repo_provider": "github",
+            "repo_url": repo_url,
+            "owner": owner,
+            "repository": repository,
+            "branch": branch,
+            "commit_sha": commit_sha,
+            "base_snapshot_id": base_snapshot_id if isinstance(base_snapshot, dict) else "",
+            "base_commit_sha": base_commit if isinstance(base_snapshot, dict) else "",
+            "tree_sha": tree_sha,
+            "created_at": _utc_now(),
+            "include_paths": include_paths,
+            "exclude_paths": exclude_paths,
+            "total_tree_entries": len(raw_entries),
+            "selected_file_count": len(selected_entries),
+            "selected_paths": sorted(selected_path_set)[:400],
+            "chunk_count": len(chunks),
+            "chunk_size": REPO_SCAN_CHUNK_SIZE,
+            "chunk_workers": REPO_SCAN_CHUNK_WORKERS,
+            "compare_error": compare_error,
+            "changed_path_count": len(changed_paths),
+            "changed_paths_sample": sorted(list(changed_paths))[:200],
+            "reused_file_count": len(reused_paths),
+            "reused_paths_sample": sorted(reused_paths)[:200],
+            "failed_paths": failed_paths[:200],
+            "sampled_files": sorted(file_contents.keys())[:80],
+            "manifest": manifest,
+            "file_contents": file_contents,
+            "legacy_code": legacy_code,
+        }
+        _repo_snapshot_save(snapshot_id, snapshot_payload)
+        _repo_snapshot_latest_ref_save(family_key, snapshot_id)
+        emit(f"🗂️ Repo snapshot persisted: {snapshot_id} (bundle chars={len(legacy_code)})")
+        return (
+            legacy_code,
+            {
+                "owner": owner,
+                "repository": repository,
+                "default_branch": branch,
+                "commit_sha": commit_sha,
+                "sampled_files": sorted(file_contents.keys())[:40],
+                "repo_snapshot": {k: v for k, v in snapshot_payload.items() if k not in {"legacy_code", "file_contents"}},
+            },
+            "",
+        )
+    except Exception as exc:
+        return "", {}, f"Repo scan failed: {exc}"
 
 
 def _normalize_mdbtools_engine(engine: str) -> str:
@@ -5647,6 +6341,81 @@ async def api_discover_access_inspect(request):
     )
 
 
+def _local_worker_fallback(run_id: str) -> None:
+    # Local/dev fallback when Cloud Tasks isn't configured.
+    try:
+        MANAGER.launch_deferred_run(run_id)
+    except Exception:
+        pass
+
+
+def _enqueue_run_worker_task(run_id: str) -> tuple[bool, str]:
+    rid = str(run_id or "").strip()
+    if not rid:
+        return False, "missing run_id"
+
+    if tasks_v2 is None or not RUN_TASK_QUEUE_PATH:
+        threading.Thread(
+            target=_local_worker_fallback,
+            args=(rid,),
+            daemon=True,
+            name=f"run-worker-fallback-{rid}",
+        ).start()
+        return True, ""
+
+    target_url = RUN_WORKER_URL
+    if not target_url:
+        target_url = f"/internal/run-worker"
+    if target_url.startswith("/"):
+        # Relative URL cannot be used by Cloud Tasks without host, fallback locally.
+        threading.Thread(
+            target=_local_worker_fallback,
+            args=(rid,),
+            daemon=True,
+            name=f"run-worker-fallback-{rid}",
+        ).start()
+        return True, ""
+
+    body = {"run_id": rid}
+    headers = {"Content-Type": "application/json"}
+    if RUN_WORKER_TOKEN:
+        headers["X-Run-Worker-Token"] = RUN_WORKER_TOKEN
+
+    try:
+        client = tasks_v2.CloudTasksClient()
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": target_url,
+                "headers": headers,
+                "body": json.dumps(body).encode("utf-8"),
+            }
+        }
+        client.create_task(parent=RUN_TASK_QUEUE_PATH, task=task)
+        return True, ""
+    except Exception as exc:
+        # If queue infra has issues, fallback to in-process to avoid run loss.
+        threading.Thread(
+            target=_local_worker_fallback,
+            args=(rid,),
+            daemon=True,
+            name=f"run-worker-fallback-{rid}",
+        ).start()
+        return False, str(exc)
+
+
+async def api_internal_run_worker(request):
+    if RUN_WORKER_TOKEN:
+        incoming = str(request.headers.get("x-run-worker-token", "")).strip()
+        if incoming != RUN_WORKER_TOKEN:
+            return JSONResponse({"ok": False, "error": "unauthorized worker invocation"}, status_code=401)
+    payload = _get_json(await request.body())
+    run_id = str(payload.get("run_id", "")).strip()
+    result = MANAGER.launch_deferred_run(run_id)
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)
+
+
 async def api_start_run(request):
     payload = _get_json(await request.body())
     objectives = str(payload.get("objectives", "")).strip()
@@ -5674,94 +6443,19 @@ async def api_start_run(request):
             status_code=400,
         )
     if use_case == "code_modernization" and not legacy_code and modernization_source_mode == "repo_scan":
-        sample_mode = bool(integration_context.get("sample_dataset_enabled", False))
         repo_provider = str(brownfield.get("repo_provider", "")).strip().lower()
         repo_url = str(brownfield.get("repo_url", "")).strip()
-        include_paths = _normalize_lines(scan_scope.get("include_paths", []))
-        exclude_paths = _normalize_lines(scan_scope.get("exclude_paths", []))
-        if repo_provider == "github" and repo_url:
-            owner, repository = _parse_github_repo_url(repo_url)
-            github_cfg = SETTINGS_STORE.get_integration_config("github")
-            if not owner:
-                owner = str(github_cfg.get("owner", "")).strip()
-            if not repository:
-                repository = str(github_cfg.get("repository", "")).strip()
-            if owner and repository:
-                if sample_mode:
-                    sample_contents = {
-                        "services/orders-service/src/main.java": "@RestController\n@RequestMapping(\"/v1/orders\")\npublic class OrdersController {}",
-                        "services/payments-service/cmd/api/main.go": "router.POST(\"/v1/payments\", handlePayments)\n// uses redis idempotency",
-                        "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
-                        "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
-                    }
-                    legacy_code = _compose_legacy_code_bundle(sample_contents)
-                else:
-                    token = str(github_cfg.get("token", "")).strip()
-                    base_url = str(github_cfg.get("base_url") or "https://api.github.com").rstrip("/")
-                    if token:
-                        headers = {
-                            "Accept": "application/vnd.github+json",
-                            "Authorization": f"Bearer {token}",
-                            "User-Agent": "synthetix-discover/1.0",
-                            "X-GitHub-Api-Version": "2022-11-28",
-                        }
-                        try:
-                            repo_meta = _http_json_request(
-                                f"{base_url}/repos/{quote(owner)}/{quote(repository)}",
-                                headers=headers,
-                            )
-                            branch = "main"
-                            if isinstance(repo_meta, dict):
-                                branch = str(repo_meta.get("default_branch") or "main")
-                            tree_payload = _http_json_request(
-                                f"{base_url}/repos/{quote(owner)}/{quote(repository)}/git/trees/{quote(branch, safe='')}?recursive=1",
-                                headers=headers,
-                            )
-                            raw_entries = tree_payload.get("tree", []) if isinstance(tree_payload, dict) else []
-                            selected_entries = _select_source_entries_for_analysis(
-                                [item for item in raw_entries if isinstance(item, dict)],
-                                include_paths=include_paths,
-                                exclude_paths=exclude_paths,
-                                limit=32,
-                            )
-                            file_contents: dict[str, str] = {}
-                            for entry in selected_entries:
-                                path = str(entry.get("path", "")).strip()
-                                if not path:
-                                    continue
-                                content = _fetch_github_file_content(
-                                    base_url=base_url,
-                                    owner=owner,
-                                    repository=repository,
-                                    path=path,
-                                    ref=branch,
-                                    headers=headers,
-                                    max_chars=12000,
-                                )
-                                if content:
-                                    file_contents[path] = content
-                            legacy_code = _compose_legacy_code_bundle(file_contents)
-                            if legacy_code:
-                                integration_context.setdefault("repo_scan_cache", {})
-                                cache = integration_context.get("repo_scan_cache", {})
-                                if isinstance(cache, dict):
-                                    cache["owner"] = owner
-                                    cache["repository"] = repository
-                                    cache["default_branch"] = branch
-                                    cache["sampled_files"] = sorted(file_contents.keys())[:40]
-                                    integration_context["repo_scan_cache"] = cache
-                        except ValueError:
-                            legacy_code = ""
-    if use_case == "code_modernization" and not legacy_code:
-        if modernization_source_mode == "repo_scan":
+        if repo_provider != "github" or not repo_url:
             return JSONResponse(
                 {
                     "ok": False,
-                    "error": "legacy_code is unavailable. Repo scan mode could not extract source from connected GitHub repository.",
+                    "error": "Repo scan mode requires a connected GitHub repository in Discover Connect.",
                 },
                 status_code=400,
             )
-        return JSONResponse({"ok": False, "error": "legacy_code is required for code_modernization use case"}, status_code=400)
+    if use_case == "code_modernization" and not legacy_code:
+        if modernization_source_mode != "repo_scan":
+            return JSONResponse({"ok": False, "error": "legacy_code is required for code_modernization use case"}, status_code=400)
     if use_case == "database_conversion" and not database_schema:
         return JSONResponse({"ok": False, "error": "database_schema is required for database_conversion use case"}, status_code=400)
 
@@ -5786,8 +6480,21 @@ async def api_start_run(request):
         integration_context=integration_context,
         team_id=team_id,
         stage_agent_ids=stage_agent_ids,
+        defer_execution=ASYNC_RUN_QUEUE_ENABLED,
     )
-    return JSONResponse({"ok": True, "run_id": run_id})
+    if ASYNC_RUN_QUEUE_ENABLED:
+        enqueued, enqueue_error = _enqueue_run_worker_task(run_id)
+        if not enqueued:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"run queued but worker dispatch failed: {enqueue_error}",
+                    "run_id": run_id,
+                },
+                status_code=500,
+            )
+        return JSONResponse({"ok": True, "run_id": run_id, "status": "queued"}, status_code=202)
+    return JSONResponse({"ok": True, "run_id": run_id, "status": "running"})
 
 
 async def api_get_run(request):
@@ -5795,7 +6502,34 @@ async def api_get_run(request):
     data = MANAGER.get_run(run_id)
     if not data:
         return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    view = str(request.query_params.get("view", "")).strip().lower()
+    if view in {"summary", "status", "compact"}:
+        return JSONResponse({"ok": True, "run": _compact_run_status(data)})
     return JSONResponse({"ok": True, "run": data})
+
+
+def _compact_run_status(run: dict[str, Any]) -> dict[str, Any]:
+    logs = run.get("progress_logs", []) if isinstance(run.get("progress_logs", []), list) else []
+    stage_status = run.get("stage_status", {}) if isinstance(run.get("stage_status", {}), dict) else {}
+    return {
+        "run_id": str(run.get("run_id", "")),
+        "status": str(run.get("status", "unknown")),
+        "current_stage": int(run.get("current_stage", 0) or 0),
+        "next_stage_idx": int(run.get("next_stage_idx", 0) or 0),
+        "stage_status": stage_status,
+        "error_message": run.get("error_message"),
+        "updated_at": str(run.get("updated_at", "")),
+        "progress_log_count": len(logs),
+        "progress_logs_tail": logs[-80:],
+    }
+
+
+async def api_get_run_status(request):
+    run_id = request.path_params.get("run_id", "")
+    data = MANAGER.get_run(run_id)
+    if not data:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    return JSONResponse({"ok": True, "status": _compact_run_status(data)})
 
 
 async def api_list_runs(_request):
@@ -6719,6 +7453,7 @@ def _run_synthetix_docgen(
     markdown_text: str,
     doc_type: str,
     run_id: str,
+    analyst_output: dict[str, Any] | None = None,
 ) -> tuple[bytes, str]:
     if doc_type not in {"ba_brief", "tech_workbook"}:
         raise RuntimeError(f"Unsupported doc type: {doc_type}")
@@ -6751,6 +7486,75 @@ def _run_synthetix_docgen(
         target = out_dir / file_name
         if not target.exists():
             raise RuntimeError(f"Expected output not found: {target}")
+
+        # Persist a complete export bundle per request so MD/DOCX/DB design artifacts
+        # remain available outside transient temp folders.
+        try:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            export_root = RUN_CONTEXT_ARTIFACT_ROOT / safe_name(str(run_id or "run")) / "docgen_exports" / stamp
+            export_root.mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(md_path, export_root / "analyst-output.md")
+            for name in ["data.json", "code_literal_scan.json", "ba_brief.docx", "tech_workbook.docx"]:
+                src = out_dir / name
+                if src.exists():
+                    shutil.copy2(src, export_root / name)
+
+            if isinstance(analyst_output, dict) and analyst_output:
+                report = build_analyst_report_v2(analyst_output)
+                raw = report.get("raw_artifacts", {}) if isinstance(report.get("raw_artifacts", {}), dict) else {}
+                db_keys = [
+                    "source_db_profile",
+                    "source_schema_model",
+                    "source_erd",
+                    "source_query_catalog",
+                    "source_relationship_candidates",
+                    "source_data_dictionary",
+                    "source_data_dictionary_markdown",
+                    "source_hotspot_report",
+                    "target_schema_model",
+                    "target_erd",
+                    "target_data_dictionary",
+                    "schema_mapping_matrix",
+                    "migration_plan",
+                    "validation_harness_spec",
+                    "db_qa_report",
+                    "schema_approval_record",
+                    "schema_drift_report",
+                ]
+                if not any(raw.get(k) is not None for k in db_keys):
+                    # Fallback for older run payloads that keep a trimmed report shape.
+                    rebuilt = build_raw_artifact_set_v1(analyst_output)
+                    if isinstance(rebuilt, dict):
+                        raw = rebuilt
+                for key in db_keys:
+                    payload = raw.get(key)
+                    if payload is None:
+                        continue
+                    (export_root / f"{key}.json").write_text(
+                        json.dumps(payload, indent=2, ensure_ascii=True, default=str),
+                        encoding="utf-8",
+                    )
+                source_schema_model = raw.get("source_schema_model")
+                if isinstance(source_schema_model, dict) and source_schema_model:
+                    (export_root / "source_schema.json").write_text(
+                        json.dumps(source_schema_model, indent=2, ensure_ascii=True, default=str),
+                        encoding="utf-8",
+                    )
+                source_erd = raw.get("source_erd")
+                if isinstance(source_erd, dict):
+                    mermaid = str(source_erd.get("mermaid", "") or "").strip()
+                    if mermaid:
+                        (export_root / "source_erd.mmd").write_text(mermaid.rstrip() + "\n", encoding="utf-8")
+                source_dict_md = raw.get("source_data_dictionary_markdown")
+                if isinstance(source_dict_md, dict):
+                    markdown = str(source_dict_md.get("markdown", "") or "").strip()
+                    if markdown:
+                        (export_root / "data_dictionary.md").write_text(markdown.rstrip() + "\n", encoding="utf-8")
+        except Exception:
+            # Keep download resilient even if persistence fails.
+            pass
+
         return target.read_bytes(), file_name
 
 
@@ -6997,6 +7801,7 @@ async def api_download_analyst_docgen_docx(request):
             markdown_text=markdown_text,
             doc_type=doc_type,
             run_id=run_id,
+            analyst_output=analyst_output,
         )
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -7013,6 +7818,74 @@ async def api_download_analyst_docgen_docx(request):
             "Cache-Control": "no-store",
             "X-Docgen-Type": doc_type,
             "X-Docgen-Source": base_name,
+        },
+    )
+
+
+async def api_download_db_artifact(request):
+    run_id = request.path_params.get("run_id", "")
+    run = MANAGER.get_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    query = request.query_params
+    artifact_type = str(query.get("type", "source_schema")).strip().lower()
+    if artifact_type not in {"source_schema", "source_erd", "data_dictionary"}:
+        return JSONResponse(
+            {"ok": False, "error": "type must be source_schema, source_erd, or data_dictionary"},
+            status_code=400,
+        )
+
+    pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _analyst_output_from_state(pipeline_state)
+    if not isinstance(analyst_output, dict) or not analyst_output:
+        return JSONResponse({"ok": False, "error": "analyst output not found for this run"}, status_code=404)
+
+    try:
+        report = build_analyst_report_v2(analyst_output)
+        raw = report.get("raw_artifacts", {}) if isinstance(report.get("raw_artifacts", {}), dict) else {}
+        if not raw:
+            raw = build_raw_artifact_set_v1(analyst_output)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"failed to build raw artifacts: {exc}"}, status_code=500)
+
+    if artifact_type == "source_schema":
+        payload = raw.get("source_schema_model")
+        if not isinstance(payload, dict) or not payload:
+            return JSONResponse({"ok": False, "error": "source schema artifact unavailable"}, status_code=404)
+        file_name = f"source_schema-{safe_name(str(run_id or 'run'))}.json"
+        content = json.dumps(payload, indent=2, ensure_ascii=True, default=str).encode("utf-8")
+        media = "application/json"
+    elif artifact_type == "source_erd":
+        payload = raw.get("source_erd")
+        mermaid = str(payload.get("mermaid", "")).strip() if isinstance(payload, dict) else ""
+        if not mermaid:
+            return JSONResponse({"ok": False, "error": "source ERD artifact unavailable"}, status_code=404)
+        file_name = f"source_erd-{safe_name(str(run_id or 'run'))}.mmd"
+        content = (mermaid.rstrip() + "\n").encode("utf-8")
+        media = "text/plain; charset=utf-8"
+    else:
+        payload = raw.get("source_data_dictionary_markdown")
+        markdown = str(payload.get("markdown", "")).strip() if isinstance(payload, dict) else ""
+        if not markdown:
+            dd = _as_dict(raw.get("source_data_dictionary"))
+            rows = _as_list(dd.get("rows"))
+            if rows:
+                markdown = "# Source Schema - Data Dictionary\n\n"
+                markdown += f"Rows: {len(rows)}\n"
+        if not markdown:
+            return JSONResponse({"ok": False, "error": "data dictionary artifact unavailable"}, status_code=404)
+        file_name = f"data_dictionary-{safe_name(str(run_id or 'run'))}.md"
+        content = (markdown.rstrip() + "\n").encode("utf-8")
+        media = "text/markdown; charset=utf-8"
+
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=media,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+            "Cache-Control": "no-store",
+            "X-DB-Artifact-Type": artifact_type,
         },
     )
 
@@ -10381,17 +11254,33 @@ async def api_run_stream(request):
         # Always send an initial snapshot.
         yield _sse_event("snapshot", {"run": initial_run})
 
-        if initial_run.get("status") != "running":
+        if initial_run.get("status") not in {"running", "queued"}:
             yield _sse_event("done", {"status": initial_run.get("status", "unknown"), "run_id": run_id})
             return
 
         subscription = MANAGER.subscribe(run_id)
         if not subscription:
-            latest = MANAGER.get_run(run_id)
-            if latest:
-                yield _sse_event("update", {"run": latest})
-                yield _sse_event("done", {"status": latest.get("status", "unknown"), "run_id": run_id})
-            return
+            # Run may be executing on another stateless instance. Poll shared store instead of ending stream.
+            last_marker = ""
+            while True:
+                latest = MANAGER.get_run(run_id)
+                if not latest:
+                    yield _sse_event("done", {"status": "unknown", "run_id": run_id})
+                    return
+                marker = "|".join(
+                    [
+                        str(latest.get("status", "")),
+                        str(latest.get("updated_at", "")),
+                        str(len(latest.get("progress_logs", []) if isinstance(latest.get("progress_logs", []), list) else [])),
+                    ]
+                )
+                if marker != last_marker:
+                    last_marker = marker
+                    yield _sse_event("update", {"run": latest})
+                if latest.get("status") not in {"running", "queued"}:
+                    yield _sse_event("done", {"status": latest.get("status", "unknown"), "run_id": run_id})
+                    return
+                await asyncio.sleep(2.0)
 
         sub_id, q = subscription
         try:
@@ -10464,6 +11353,7 @@ if DRIFT_INTERVAL_SEC > 0:
 
 routes = [
     Route("/api/health", api_health, methods=["GET"]),
+    Route("/internal/run-worker", api_internal_run_worker, methods=["POST"]),
     Route("/api/samples", api_samples, methods=["GET"]),
     Route("/api/domain-packs", api_domain_packs, methods=["GET"]),
     Route("/api/legacy-skills", api_legacy_skills, methods=["GET"]),
@@ -10535,6 +11425,7 @@ routes = [
     Route("/api/runs", api_list_runs, methods=["GET"]),
     Route("/api/runs", api_start_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}", api_get_run, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/status", api_get_run_status, methods=["GET"]),
     Route("/api/runs/{run_id:str}/approve", api_approve_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/pause", api_pause_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/resume", api_resume_run, methods=["POST"]),
@@ -10543,6 +11434,7 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/db-artifact", api_download_db_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/chat", api_stage_chat, methods=["POST"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/proposals", api_stage_create_proposal, methods=["POST"]),

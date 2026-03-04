@@ -227,15 +227,21 @@ const el = {
   discoverOpenSystemMap: document.getElementById("discover-open-system-map"),
   discoverOpenHealthDebt: document.getElementById("discover-open-health-debt"),
   discoverOpenConventions: document.getElementById("discover-open-conventions"),
+  discoverOpenData: document.getElementById("discover-open-data"),
   discoverExportBaseline: document.getElementById("discover-export-baseline"),
   discoverCityMapPanel: document.getElementById("discover-city-map-panel"),
   discoverSystemMapPanel: document.getElementById("discover-system-map-panel"),
   discoverHealthPanel: document.getElementById("discover-health-panel"),
   discoverConventionsPanel: document.getElementById("discover-conventions-panel"),
+  discoverDataPanel: document.getElementById("discover-data-panel"),
+  discoverExportSourceSchema: document.getElementById("discover-export-source-schema"),
+  discoverExportSourceErd: document.getElementById("discover-export-source-erd"),
+  discoverExportDataDictionary: document.getElementById("discover-export-data-dictionary"),
   discoverCityMapContent: document.getElementById("discover-city-map-content"),
   discoverSystemMapContent: document.getElementById("discover-system-map-content"),
   discoverHealthContent: document.getElementById("discover-health-content"),
   discoverConventionsContent: document.getElementById("discover-conventions-content"),
+  discoverDataContent: document.getElementById("discover-data-content"),
   cityMapSvg: document.getElementById("city-map-svg"),
   cityMapInspector: document.getElementById("city-map-inspector"),
   cityMapReset: document.getElementById("city-map-reset"),
@@ -1298,6 +1304,52 @@ function buildAnalystReportV2(output) {
     legacyInventory.form_count_unmapped_files
     || Math.max(0, formsCount - formsReferenced)
   );
+  const sourceLocRows = Array.isArray(legacyInventory.source_loc_by_file)
+    ? legacyInventory.source_loc_by_file
+    : (Array.isArray(vb6Analysis.source_loc_by_file) ? vb6Analysis.source_loc_by_file : []);
+  const sourceLocByFile = {};
+  sourceLocRows.slice(0, 5000).forEach((row) => {
+    const path = String(row?.path || "").trim();
+    if (!path) return;
+    sourceLocByFile[path] = Number(row?.loc || 0);
+  });
+  const sourceLocTotal = Number(
+    legacyInventory.source_loc_total
+    || vb6Analysis.source_loc_total
+    || Object.values(sourceLocByFile).reduce((acc, loc) => acc + Number(loc || 0), 0)
+  );
+  const sourceLocForms = Number(
+    legacyInventory.source_loc_forms
+    || vb6Analysis.source_loc_forms
+    || Object.entries(sourceLocByFile).reduce((acc, [path, loc]) => (
+      String(path || "").toLowerCase().endsWith(".frm") || String(path || "").toLowerCase().endsWith(".ctl")
+        ? acc + Number(loc || 0)
+        : acc
+    ), 0)
+  );
+  const sourceLocModules = Number(
+    legacyInventory.source_loc_modules
+    || vb6Analysis.source_loc_modules
+    || Object.entries(sourceLocByFile).reduce((acc, [path, loc]) => (
+      String(path || "").toLowerCase().endsWith(".bas")
+        ? acc + Number(loc || 0)
+        : acc
+    ), 0)
+  );
+  const sourceLocClasses = Number(
+    legacyInventory.source_loc_classes
+    || vb6Analysis.source_loc_classes
+    || Object.entries(sourceLocByFile).reduce((acc, [path, loc]) => (
+      String(path || "").toLowerCase().endsWith(".cls")
+        ? acc + Number(loc || 0)
+        : acc
+    ), 0)
+  );
+  const sourceFilesScanned = Number(
+    legacyInventory.source_files_scanned
+    || vb6Analysis.source_files_scanned
+    || Object.keys(sourceLocByFile).length
+  );
   const projectCount = Math.max(vb6Projects.length, rawRepoLandscapeProjects.length, rawVariantInventoryRows.length);
   const scopeLock = (rawArtifacts.scope_lock && typeof rawArtifacts.scope_lock === "object")
     ? rawArtifacts.scope_lock
@@ -1536,6 +1588,11 @@ function buildAnalystReportV2(output) {
           forms: formsCount,
           forms_referenced: formsReferenced,
           forms_unmapped: formsUnmapped,
+          source_loc_total: sourceLocTotal,
+          source_loc_forms: sourceLocForms,
+          source_loc_modules: sourceLocModules,
+          source_loc_classes: sourceLocClasses,
+          source_files_scanned: sourceFilesScanned,
           controls: controlsCount,
           dependencies: dependencySet.length,
           event_handlers: eventHandlersExact,
@@ -1729,6 +1786,10 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const brief = report.decision_brief || {};
   const glance = brief.at_a_glance || {};
   const inventory = glance.inventory_summary || {};
+  const sourceLocTotal = Number(inventory.source_loc_total || 0);
+  const sourceLocForms = Number(inventory.source_loc_forms || 0);
+  const sourceLocModules = Number(inventory.source_loc_modules || 0);
+  const sourceFilesScanned = Number(inventory.source_files_scanned || 0);
   const strategy = brief.recommended_strategy || {};
   const decisions = brief.decisions_required || {};
   const backlog = report.delivery_spec?.backlog?.items || [];
@@ -1762,6 +1823,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     `| Modernization readiness | ${String(glance.readiness_score ?? "n/a")}/100 |`,
     `| Risk tier | ${String(glance.risk_tier || "n/a")} |`,
     `| Inventory | ${String(inventory.projects ?? 0)} project(s), ${String(inventory.forms ?? 0)} forms/usercontrols, ${String(inventory.dependencies ?? 0)} dependencies |`,
+    `| Lines of code scanned | ${String(sourceLocTotal)} total LOC (${String(sourceLocForms)} form LOC, ${String(sourceLocModules)} module LOC) across ${String(sourceFilesScanned)} files |`,
     `| Data touchpoints | ${Array.isArray(inventory.tables_touched) ? inventory.tables_touched.join(", ") : ""} |`,
     `| Headline | ${String(glance.headline || "")} |`,
     "",
@@ -2531,6 +2593,10 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   lines.push(`- Repo landscape variants: ${rawLandscape.length}`);
   lines.push(`- Variant inventory rows: ${rawVariantInventory.length}`);
   lines.push(`- Constitution principles: ${rawConstitution.length}`);
+  const legacyCountsSnapshot = (raw.legacy_inventory?.summary?.counts && typeof raw.legacy_inventory.summary.counts === "object")
+    ? raw.legacy_inventory.summary.counts
+    : {};
+  lines.push(`- Source LOC: ${Number(legacyCountsSnapshot.source_loc_total || 0)} total (forms=${Number(legacyCountsSnapshot.source_loc_forms || 0)}, modules=${Number(legacyCountsSnapshot.source_loc_modules || 0)}) across ${Number(legacyCountsSnapshot.source_files_scanned || 0)} file(s)`);
 
   const rawLegacy = (raw.legacy_inventory && typeof raw.legacy_inventory === "object")
     ? raw.legacy_inventory
@@ -2556,13 +2622,16 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     lines.push("### A. Legacy Inventory");
     lines.push(`- Projects: ${projects.length}`);
     lines.push(`- Data touchpoints: ${(Array.isArray(rawLegacy.summary?.data_touchpoints) ? rawLegacy.summary.data_touchpoints.join(", ") : "") || "None detected"}`);
+    const legacyCounts = (rawLegacy.summary?.counts && typeof rawLegacy.summary.counts === "object") ? rawLegacy.summary.counts : {};
+    lines.push(`- Source LOC: ${Number(legacyCounts.source_loc_total || 0)} total (forms=${Number(legacyCounts.source_loc_forms || 0)}, modules=${Number(legacyCounts.source_loc_modules || 0)}) across ${Number(legacyCounts.source_files_scanned || 0)} file(s)`);
     if (projects.length) {
-      lines.push("| Project | Type | Startup | Members | Forms | Reports | Dependencies | Shared tables |");
-      lines.push("|---|---|---|---:|---:|---:|---:|---|");
+      lines.push("| Project | Type | Startup | Members | Forms | Reports | Dependencies | Source LOC | Shared tables |");
+      lines.push("|---|---|---|---:|---:|---:|---:|---:|---|");
       projects.slice(0, 250).forEach((project) => {
         const members = Array.isArray(project?.members) ? project.members.length : 0;
         const ui = Array.isArray(project?.ui_assets) ? project.ui_assets.length : 0;
         const deps = Array.isArray(project?.dependencies) ? project.dependencies.length : 0;
+        const sourceLoc = Number(project?.source_loc_total || 0);
         const projectName = String(project?.name || project?.project_id || "").trim();
         const reports = (Array.isArray(project?.members) ? project.members : []).filter((member) => {
           const kind = String(member?.kind || "").toLowerCase();
@@ -2572,7 +2641,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         const sharedTables = Array.from(projectTablesByName[projectName] instanceof Set ? projectTablesByName[projectName] : [])
           .filter((t) => (tableToProjects[t] instanceof Set) && tableToProjects[t].size > 1)
           .sort();
-        lines.push(`| ${projectName} | ${String(project?.type || "")} | ${String(project?.startup || "")} | ${members} | ${ui} | ${reports} | ${deps} | ${sharedTables.slice(0, 8).join(", ") || "none"} |`);
+        lines.push(`| ${projectName} | ${String(project?.type || "")} | ${String(project?.startup || "")} | ${members} | ${ui} | ${reports} | ${deps} | ${sourceLoc} | ${sharedTables.slice(0, 8).join(", ") || "none"} |`);
       });
     } else {
       lines.push("- No project rows available.");
@@ -3343,12 +3412,13 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     lines.push("", "### Q. Form Traceability Matrix");
     const traceabilityRows = [];
     if (formDossierRows.length) {
-      lines.push("| Form | Project | has_event_map | has_sql_map | has_business_rules | has_risk_entry | completeness_score | missing_links |");
-      lines.push("|---|---|---|---|---|---|---:|---|");
+      lines.push("| Form | Project | Source LOC | has_event_map | has_sql_map | has_business_rules | has_risk_entry | completeness_score | missing_links |");
+      lines.push("|---|---|---:|---|---|---|---|---:|---|");
       const seenKeys = new Set();
       formDossierRows.slice(0, 400).forEach((row) => {
         const formName = String(row?.form_name || "n/a").trim() || "n/a";
         const projectName = String(row?.project_name || "").trim();
+        const sourceLoc = Number(row?.source_loc || 0);
         const key = formKey(projectName, formName);
         if (!key || seenKeys.has(key)) return;
         seenKeys.add(key);
@@ -3364,7 +3434,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
         if (!hasRisk) missing.push("risk_register");
         if (!hasProc) missing.push("procedure_summary");
         const completenessScore = (Number(hasEvent) + Number(hasSql) + Number(hasRules) + Number(hasRisk) + Number(hasProc)) * 20;
-        lines.push(`| ${qualifiedFormName(projectName, formName)} | ${projectLabel(projectName)} | ${hasEvent ? "yes" : "no"} | ${hasSql ? "yes" : "no"} | ${hasRules ? "yes" : "no"} | ${hasRisk ? "yes" : "no"} | ${completenessScore} | ${missing.join(", ") || "none"} |`);
+        lines.push(`| ${qualifiedFormName(projectName, formName)} | ${projectLabel(projectName)} | ${sourceLoc} | ${hasEvent ? "yes" : "no"} | ${hasSql ? "yes" : "no"} | ${hasRules ? "yes" : "no"} | ${hasRisk ? "yes" : "no"} | ${completenessScore} | ${missing.join(", ") || "none"} |`);
         traceabilityRows.push({
           formName,
           projectName,
@@ -3741,6 +3811,7 @@ function renderDiscoverResultsView() {
     system: el.discoverSystemMapPanel,
     health: el.discoverHealthPanel,
     conventions: el.discoverConventionsPanel,
+    data: el.discoverDataPanel,
   };
   Object.entries(viewMap).forEach(([key, panel]) => {
     panel?.classList.toggle("hidden", key !== view);
@@ -3995,6 +4066,20 @@ function _discoverData() {
     return { ...preview, demo: false };
   }
   return { nodes: [], edges: [], rules: [], findings: [], backlog: [], demo: false };
+}
+
+function _discoverRawArtifacts() {
+  const runOutput = getAnalystOutput(state.currentRun || {});
+  const runRaw = (runOutput && typeof runOutput.raw_artifacts === "object") ? runOutput.raw_artifacts : {};
+  if (runRaw && Object.keys(runRaw).length) return runRaw;
+  const brief = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : {};
+  const briefRaw = (brief.raw_artifacts && typeof brief.raw_artifacts === "object") ? brief.raw_artifacts : {};
+  if (briefRaw && Object.keys(briefRaw).length) return briefRaw;
+  const report = (brief.analyst_report_v2 && typeof brief.analyst_report_v2 === "object") ? brief.analyst_report_v2 : {};
+  const reportRaw = (report.raw_artifacts && typeof report.raw_artifacts === "object") ? report.raw_artifacts : {};
+  return reportRaw || {};
 }
 
 function _nodeKey(node, idx) {
@@ -4455,6 +4540,7 @@ function renderDiscoverInsights() {
   const data = _discoverData();
   const { nodes, edges, rules, findings, backlog, demo } = data;
   _renderCityAndSystemGraphs(data);
+  const rawArtifacts = _discoverRawArtifacts();
 
   if (el.discoverCityMapContent && el.discoverCityMapContent.dataset) {
     el.discoverCityMapContent.dataset.mode = demo ? "demo" : "live";
@@ -4500,6 +4586,162 @@ function renderDiscoverInsights() {
           <ul class="mt-2 list-disc pl-4">${examples}</ul>
         `
       : `<p class="text-slate-700">No convention rules available yet.</p>`;
+  }
+
+  if (el.discoverDataContent) {
+    const sourceProfile = (rawArtifacts.source_db_profile && typeof rawArtifacts.source_db_profile === "object")
+      ? rawArtifacts.source_db_profile
+      : {};
+    const sourceSchema = (rawArtifacts.source_schema_model && typeof rawArtifacts.source_schema_model === "object")
+      ? rawArtifacts.source_schema_model
+      : {};
+    const targetSchema = (rawArtifacts.target_schema_model && typeof rawArtifacts.target_schema_model === "object")
+      ? rawArtifacts.target_schema_model
+      : {};
+    const sourceErd = (rawArtifacts.source_erd && typeof rawArtifacts.source_erd === "object")
+      ? rawArtifacts.source_erd
+      : {};
+    const sourceDictionary = (rawArtifacts.source_data_dictionary && typeof rawArtifacts.source_data_dictionary === "object")
+      ? rawArtifacts.source_data_dictionary
+      : {};
+    const mapping = (rawArtifacts.schema_mapping_matrix && typeof rawArtifacts.schema_mapping_matrix === "object")
+      ? rawArtifacts.schema_mapping_matrix
+      : {};
+    const dbQa = (rawArtifacts.db_qa_report && typeof rawArtifacts.db_qa_report === "object")
+      ? rawArtifacts.db_qa_report
+      : {};
+
+    const summary = (sourceProfile.summary && typeof sourceProfile.summary === "object")
+      ? sourceProfile.summary
+      : ((sourceSchema.summary && typeof sourceSchema.summary === "object") ? sourceSchema.summary : {});
+    const tableCount = Number(summary.tables || 0);
+    const columnCount = Number(summary.columns || 0);
+    const queryCount = Number(summary.queries || 0);
+    const relCount = Number(summary.relationships || 0);
+    const mappingRows = Array.isArray(mapping.mappings) ? mapping.mappings : [];
+    const sourceTables = Array.isArray(sourceSchema.tables) ? sourceSchema.tables : [];
+    const targetTables = Array.isArray(targetSchema.tables) ? targetSchema.tables : [];
+    const sourceRelationships = Array.isArray(sourceSchema.relationships) ? sourceSchema.relationships : [];
+    const sourceDictionaryRows = Array.isArray(sourceDictionary.rows) ? sourceDictionary.rows : [];
+    const sourceErdText = String(sourceErd.mermaid || "").trim();
+    const dbChecks = Array.isArray(dbQa.checks) ? dbQa.checks : [];
+
+    if (!tableCount && !sourceTables.length && !dbChecks.length) {
+      el.discoverDataContent.innerHTML = `<p class="text-slate-700">Run Analyst Brief to generate database archaeology artifacts.</p>`;
+    } else {
+      const badgeClass = (status) => {
+        const s = String(status || "").toUpperCase();
+        if (s === "PASS") return "border-emerald-300 bg-emerald-50 text-emerald-800";
+        if (s === "FAIL") return "border-rose-300 bg-rose-50 text-rose-800";
+        return "border-amber-300 bg-amber-50 text-amber-800";
+      };
+
+      const sourceRows = sourceTables.slice(0, 8).map((tbl) => {
+        const columns = Array.isArray(tbl?.columns) ? tbl.columns : [];
+        const pk = Array.isArray(tbl?.primary_key_candidates) ? tbl.primary_key_candidates : [];
+        return `
+          <tr>
+            <td class="px-2 py-1">${escapeHtml(String(tbl?.name || ""))}</td>
+            <td class="px-2 py-1 text-right">${columns.length}</td>
+            <td class="px-2 py-1">${escapeHtml(pk.slice(0, 3).join(", ") || "n/a")}</td>
+          </tr>
+        `;
+      }).join("");
+
+      const targetRows = targetTables.slice(0, 8).map((tbl) => {
+        const cols = Array.isArray(tbl?.columns) ? tbl.columns : [];
+        const pk = Array.isArray(tbl?.primary_key) ? tbl.primary_key : [];
+        return `
+          <tr>
+            <td class="px-2 py-1">${escapeHtml(String(tbl?.name || ""))}</td>
+            <td class="px-2 py-1 text-right">${cols.length}</td>
+            <td class="px-2 py-1">${escapeHtml(pk.slice(0, 3).join(", ") || "n/a")}</td>
+          </tr>
+        `;
+      }).join("");
+
+      const qaRows = dbChecks.slice(0, 8).map((check) => `
+        <div class="rounded border px-2 py-1 ${badgeClass(check?.status)}">
+          <strong>${escapeHtml(String(check?.id || "db_check"))}</strong>: ${escapeHtml(String(check?.detail || ""))}
+        </div>
+      `).join("");
+      const relRows = sourceRelationships.slice(0, 10).map((rel) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(rel?.from_table || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(rel?.from_column || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(rel?.to_table || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(rel?.to_column || ""))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String(rel?.confidence ?? ""))}</td>
+        </tr>
+      `).join("");
+      const dictRows = sourceDictionaryRows.slice(0, 12).map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.table || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.column || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.inferred_type || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.business_meaning || ""))}</td>
+        </tr>
+      `).join("");
+
+      el.discoverDataContent.innerHTML = `
+        <div class="grid gap-2 sm:grid-cols-5">
+          <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Tables</strong><br/>${tableCount || sourceTables.length}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Columns</strong><br/>${columnCount || 0}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Queries</strong><br/>${queryCount || 0}</div>
+          <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Relationships</strong><br/>${relCount || 0}</div>
+          <div class="rounded border px-2 py-1 ${badgeClass(dbQa?.overall_status)}"><strong>DB QA</strong><br/>${escapeHtml(String(dbQa?.overall_status || "WARN"))}</div>
+        </div>
+        <div class="mt-2 grid gap-2 lg:grid-cols-2">
+          <div class="rounded border border-slate-300 bg-white p-2">
+            <p class="mb-1 font-semibold text-slate-900">Source Schema (sample)</p>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[11px]">
+                <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Table</th><th class="px-2 py-1 text-right">Cols</th><th class="px-2 py-1">PK candidates</th></tr></thead>
+                <tbody>${sourceRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No source schema rows.</td></tr>`}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="rounded border border-slate-300 bg-white p-2">
+            <p class="mb-1 font-semibold text-slate-900">Target Schema (sample)</p>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[11px]">
+                <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Table</th><th class="px-2 py-1 text-right">Cols</th><th class="px-2 py-1">Primary key</th></tr></thead>
+                <tbody>${targetRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No target schema rows.</td></tr>`}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+          <p class="mb-1 font-semibold text-slate-900">Mapping + QA</p>
+          <p class="text-[11px] text-slate-700">Schema mappings: <strong>${mappingRows.length}</strong> rows.</p>
+          <div class="mt-1 grid gap-1">${qaRows || `<p class="text-[11px] text-slate-700">No DB QA checks available yet.</p>`}</div>
+        </div>
+        <div class="mt-2 grid gap-2 lg:grid-cols-2">
+          <div class="rounded border border-slate-300 bg-white p-2">
+            <p class="mb-1 font-semibold text-slate-900">Source Relationships (sample)</p>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[11px]">
+                <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">From Table</th><th class="px-2 py-1">From Col</th><th class="px-2 py-1">To Table</th><th class="px-2 py-1">To Col</th><th class="px-2 py-1 text-right">Conf</th></tr></thead>
+                <tbody>${relRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="5">No relationship rows.</td></tr>`}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="rounded border border-slate-300 bg-white p-2">
+            <p class="mb-1 font-semibold text-slate-900">Source ERD (Mermaid)</p>
+            <pre class="max-h-64 overflow-auto rounded border border-slate-200 bg-slate-50 p-2 text-[10px] leading-relaxed">${escapeHtml(sourceErdText || "No source_erd artifact available.")}</pre>
+          </div>
+        </div>
+        <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+          <p class="mb-1 font-semibold text-slate-900">Source Data Dictionary (sample)</p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-[11px]">
+              <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Table</th><th class="px-2 py-1">Column</th><th class="px-2 py-1">Type</th><th class="px-2 py-1">Meaning</th></tr></thead>
+              <tbody>${dictRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No dictionary rows.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
   }
 }
 
@@ -4678,6 +4920,10 @@ function updateIntegrationForm(provider, integration) {
     }
     if (key === refs.secretKey) {
       node.value = "";
+      if (node instanceof HTMLInputElement) {
+        const masked = String(data[`${refs.secretKey}_masked`] || "");
+        node.placeholder = masked ? `Saved: ${masked}` : "Leave blank to keep existing token";
+      }
       return;
     }
     node.value = String(data[key] || "");
@@ -4723,6 +4969,10 @@ function updateLlmForm(provider, cfg) {
     if (!node) return;
     if (key === refs.secretKey) {
       node.value = "";
+      if (node instanceof HTMLInputElement) {
+        const masked = String(data.api_key_masked || "");
+        node.placeholder = masked ? `Saved: ${masked}` : "Leave blank to keep existing API key";
+      }
       return;
     }
     node.value = String(data[key] || "");
@@ -8716,6 +8966,46 @@ function exportDiscoverBaselineReport() {
   URL.revokeObjectURL(url);
 }
 
+async function downloadDiscoverDbArtifact(kind) {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) {
+    throw new Error("No run selected. Complete Discover scan first.");
+  }
+  const validKinds = new Set(["source_schema", "source_erd", "data_dictionary"]);
+  const type = validKinds.has(String(kind || "")) ? String(kind) : "source_schema";
+  const response = await fetch(
+    `/api/runs/${encodeURIComponent(runId)}/db-artifact?type=${encodeURIComponent(type)}`,
+    { method: "GET" },
+  );
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = String(payload?.error || message);
+    } catch (_err) {
+      // no-op
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const header = String(response.headers.get("content-disposition") || "");
+  const match = header.match(/filename=\"?([^\";]+)\"?/i);
+  const fallbackByType = {
+    source_schema: `source_schema-${runId}.json`,
+    source_erd: `source_erd-${runId}.mmd`,
+    data_dictionary: `data_dictionary-${runId}.md`,
+  };
+  const filename = (match && match[1]) ? match[1] : fallbackByType[type];
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 function renderVerifyTabButtons() {
   if (!el.verifyTabButtons) return;
   const selected = String(state.verify.selectedTab || "summary");
@@ -9107,8 +9397,14 @@ function renderTaskSummary() {
   if (useCase === "code_modernization") {
     const lang = String(pipeline.modernization_language || el.modernizationLanguage.value || "Python");
     const legacyCode = String(pipeline.legacy_code || el.legacyCode.value || "");
+    const stage1 = _stageOutput(run, 1) || {};
+    const inventorySummary = stage1?.analyst_report_v2?.decision_brief?.at_a_glance?.inventory_summary
+      || stage1?.requirements_pack?.decision_brief?.at_a_glance?.inventory_summary
+      || {};
+    const discoveredLoc = Number(inventorySummary?.source_loc_total || 0);
+    const legacyLines = discoveredLoc > 0 ? discoveredLoc : (legacyCode ? legacyCode.split("\n").length : 0);
     detailItems.push({ label: "Target Language", value: lang });
-    detailItems.push({ label: "Legacy Code", value: `${legacyCode ? legacyCode.split("\n").length : 0} lines` });
+    detailItems.push({ label: "Legacy Code", value: `${legacyLines} lines` });
   } else if (useCase === "database_conversion") {
     const source = String(pipeline.database_source || el.dbSource.value || "Not set");
     const target = String(pipeline.database_target || el.dbTarget.value || "Not set");
@@ -11020,6 +11316,37 @@ async function fetchRunSnapshot(runId) {
   return data.run;
 }
 
+async function fetchRunStatus(runId) {
+  const data = await api(`/api/runs/${runId}/status`, null);
+  return data.status || null;
+}
+
+function applyRunStatus(status) {
+  if (!status) return;
+  if (!state.currentRun || state.currentRun.run_id !== status.run_id) {
+    state.currentRun = {
+      run_id: status.run_id,
+      status: status.status || "running",
+      current_stage: Number(status.current_stage || 0),
+      next_stage_idx: Number(status.next_stage_idx || 0),
+      stage_status: status.stage_status || {},
+      progress_logs: [],
+      pipeline_state: state.currentRun?.pipeline_state || {},
+      error_message: status.error_message || null,
+    };
+  } else {
+    state.currentRun.status = status.status || state.currentRun.status;
+    state.currentRun.current_stage = Number(status.current_stage || state.currentRun.current_stage || 0);
+    state.currentRun.next_stage_idx = Number(status.next_stage_idx || state.currentRun.next_stage_idx || 0);
+    state.currentRun.stage_status = status.stage_status || state.currentRun.stage_status || {};
+    state.currentRun.error_message = status.error_message || state.currentRun.error_message || null;
+  }
+  const tail = Array.isArray(status.progress_logs_tail) ? status.progress_logs_tail : [];
+  for (const line of tail) {
+    if (typeof line === "string" && line) upsertLog(line);
+  }
+}
+
 function startStreaming(runId) {
   stopStreaming();
   state.eventSource = new EventSource(`/api/runs/${runId}/stream`);
@@ -11069,8 +11396,14 @@ function startStreaming(runId) {
   state.eventSource.onerror = async () => {
     stopStreaming();
     try {
-      const run = await fetchRunSnapshot(runId);
-      if (run.status === "running") setTimeout(() => startStreaming(runId), 1200);
+      const status = await fetchRunStatus(runId);
+      applyRunStatus(status);
+      renderRun();
+      if ((status?.status || "").toLowerCase() === "running") {
+        setTimeout(() => startStreaming(runId), 1200);
+      } else {
+        await fetchRunSnapshot(runId);
+      }
     } catch (err) {
       el.pipelineStatusText.textContent = `STREAM ERROR: ${err.message}`;
     }
@@ -11386,7 +11719,7 @@ async function startRun() {
   state.selectedStage = 1;
   state.currentRun = {
     run_id: data.run_id,
-    status: "running",
+    status: data.status || "running",
     current_stage: 0,
     stage_status: {},
     progress_logs: [],
@@ -11398,7 +11731,11 @@ async function startRun() {
   };
   state.runStart.pending = false;
   state.runStart.startedAt = 0;
-  setGlobalSearchStatus(`Run ${data.run_id} started. Streaming live updates...`);
+  setGlobalSearchStatus(
+    (String(data.status || "").toLowerCase() === "queued")
+      ? `Run ${data.run_id} queued. Waiting for worker dispatch...`
+      : `Run ${data.run_id} started. Streaming live updates...`
+  );
   setMode(MODES.BUILD);
   renderRun();
 
@@ -11617,6 +11954,7 @@ function bindEvents() {
   el.discoverOpenSystemMap?.addEventListener("click", () => setDiscoverResultsView("system"));
   el.discoverOpenHealthDebt?.addEventListener("click", () => setDiscoverResultsView("health"));
   el.discoverOpenConventions?.addEventListener("click", () => setDiscoverResultsView("conventions"));
+  el.discoverOpenData?.addEventListener("click", () => setDiscoverResultsView("data"));
   document.querySelectorAll("[data-city-overlay]").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.cityOverlay = String(btn.getAttribute("data-city-overlay") || "none");
@@ -11651,6 +11989,30 @@ function bindEvents() {
       setGlobalSearchStatus("Baseline report exported from Discover.");
     } catch (err) {
       setGlobalSearchStatus(`Baseline export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportSourceSchema?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverDbArtifact("source_schema");
+      setGlobalSearchStatus("Source schema exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Source schema export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportSourceErd?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverDbArtifact("source_erd");
+      setGlobalSearchStatus("Source ERD exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Source ERD export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportDataDictionary?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverDbArtifact("data_dictionary");
+      setGlobalSearchStatus("Data dictionary exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Data dictionary export failed: ${err.message || err}`, true);
     }
   });
   el.wizardPrevDiscover?.addEventListener("click", () => {
