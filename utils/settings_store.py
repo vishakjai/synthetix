@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -90,6 +91,42 @@ def _mask_secret(secret: str) -> str:
     if len(raw) <= 4:
         return "*" * len(raw)
     return ("*" * max(4, len(raw) - 4)) + raw[-4:]
+
+
+def _normalize_llm_secret(provider: str, secret: str) -> str:
+    raw = str(secret or "").strip()
+    if not raw:
+        return ""
+    value = raw.strip().strip('"').strip("'").strip()
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+
+    key = str(provider or "").strip().lower()
+    env_tokens = [
+        f"{key.upper()}_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ]
+    for token in env_tokens:
+        # Handles forms like:
+        #   OPENAI_API_KEY=sk-...
+        #   export OPENAI_API_KEY="sk-..."
+        match = re.match(rf"^(?:export\s+)?{re.escape(token)}\s*[:=]\s*(.+)$", value, flags=re.IGNORECASE)
+        if match:
+            value = str(match.group(1) or "").strip().strip('"').strip("'").strip()
+            break
+
+    # If user pasted a whole command/snippet, extract the key-like token.
+    if key == "openai":
+        m = re.search(r"(sk-proj-[A-Za-z0-9_\-]{16,}|sk-[A-Za-z0-9_\-]{16,})", value)
+        if m:
+            return m.group(1).strip()
+    if key == "anthropic":
+        m = re.search(r"(sk-ant-[A-Za-z0-9_\-]{16,})", value)
+        if m:
+            return m.group(1).strip()
+
+    return value.strip()
 
 
 class _SettingsStateBackend:
@@ -505,11 +542,13 @@ class SettingsStore:
     def _read_llm_secret(self, provider: str, cfg: dict[str, Any]) -> str:
         key = str(provider or "").strip().lower()
         local = str(cfg.get("api_key", "")).strip() if isinstance(cfg, dict) else ""
-        return self._secrets.read(self._llm_secret_slot(key), local)
+        raw = self._secrets.read(self._llm_secret_slot(key), local)
+        return _normalize_llm_secret(key, raw)
 
     def _write_llm_secret(self, provider: str, cfg: dict[str, Any], secret: str) -> None:
         key = str(provider or "").strip().lower()
-        cfg["api_key"] = self._secrets.write(self._llm_secret_slot(key), str(secret or "").strip())
+        normalized = _normalize_llm_secret(key, str(secret or "").strip())
+        cfg["api_key"] = self._secrets.write(self._llm_secret_slot(key), normalized)
 
     def _clear_llm_secret(self, provider: str, cfg: dict[str, Any]) -> None:
         key = str(provider or "").strip().lower()
