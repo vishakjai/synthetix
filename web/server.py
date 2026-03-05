@@ -8690,6 +8690,10 @@ def _legacy_ui_analysis_from_state(output: dict[str, Any], state: dict[str, Any]
 
 def _analyst_context_reply(message: str, output: dict[str, Any], state: dict[str, Any] | None = None) -> str | None:
     lower = message.lower()
+    asks_section_brief = (
+        "section" in lower
+        and any(token in lower for token in ["document", "documents", "doc", "brief", "summary", "overview", "explain"])
+    )
     asks_count = bool(re.search(r"\b(how many|count|number of)\b", lower))
     asks_list_detail = any(token in lower for token in ["list", "which", "show", "detail", "details", "name", "names"])
     asks_project = any(token in lower for token in ["project", "projects", ".vbp", "vbp", "solution", "workspace"])
@@ -8731,6 +8735,97 @@ def _analyst_context_reply(message: str, output: dict[str, Any], state: dict[str
     asks_rules = any(token in lower for token in ["business rule", "rule catalog", "rule", "calculation logic"])
     asks_orphans = any(token in lower for token in ["orphan", "unmapped form", "membership", "reconcile"])
     asks_appendix = any(token in lower for token in ["appendix", "evidence", "artifact", "detailed output"])
+    if asks_section_brief:
+        report = (
+            output.get("analyst_report_v2", {})
+            if isinstance(output.get("analyst_report_v2", {}), dict)
+            else {}
+        )
+        if not report:
+            try:
+                report = build_analyst_report_v2(output)
+            except Exception:
+                report = {}
+        raw = (
+            report.get("raw_artifacts", {})
+            if isinstance(report.get("raw_artifacts", {}), dict)
+            else output.get("raw_artifacts", {})
+            if isinstance(output.get("raw_artifacts", {}), dict)
+            else {}
+        )
+        if not isinstance(raw, dict) or not raw:
+            return (
+                "I do not have a completed Analyst artifact yet for this run. "
+                "Run Stage 1 analysis first, then I can produce a section-by-section brief."
+            )
+
+        legacy_counts = (
+            _as_dict_safe(_as_dict_safe(_as_dict_safe(raw.get("legacy_inventory")).get("summary")).get("counts"))
+            if isinstance(raw.get("legacy_inventory"), dict)
+            else {}
+        )
+        section_rows: list[tuple[str, str]] = [
+            (
+                "A. Legacy Inventory",
+                "Project and source footprint baseline"
+                + f" (projects={int(legacy_counts.get('projects', 0) or 0)},"
+                + f" forms={int(legacy_counts.get('forms_or_screens', 0) or 0)},"
+                + f" loc={int(legacy_counts.get('source_loc_total', 0) or 0)}).",
+            ),
+            (
+                "B. Dependency Inventory",
+                f"External/runtime dependencies and references (rows={len(_as_list_safe(_as_dict_safe(raw.get('dependency_inventory')).get('dependencies')))}).",
+            ),
+            (
+                "C. Event Map",
+                f"UI event handlers and call chains (rows={len(_as_list_safe(_as_dict_safe(raw.get('event_map')).get('entries')))}).",
+            ),
+            (
+                "D. SQL Catalog",
+                f"Extracted SQL statements and touched tables (rows={len(_as_list_safe(_as_dict_safe(raw.get('sql_catalog')).get('statements')))}).",
+            ),
+            (
+                "E. Business Rules",
+                f"Business-rule statements inferred from code behavior (rows={len(_as_list_safe(_as_dict_safe(raw.get('business_rule_catalog')).get('rules')))}).",
+            ),
+            (
+                "F. Detector Findings",
+                f"Static detector outcomes and remediation guidance (rows={len(_as_list_safe(_as_dict_safe(raw.get('detector_findings')).get('findings')))}).",
+            ),
+            (
+                "H. SQL Map",
+                f"Form/procedure to SQL attribution map (rows={len(_as_list_safe(_as_dict_safe(raw.get('sql_map')).get('entries')))}).",
+            ),
+            (
+                "I. Procedure Summaries",
+                f"Handler/procedure behavior summaries (rows={len(_as_list_safe(_as_dict_safe(raw.get('procedure_summary')).get('procedures')))}).",
+            ),
+            (
+                "K. Form Dossiers",
+                f"Per-form purpose, inputs/outputs, and coverage profile (rows={len(_as_list_safe(_as_dict_safe(raw.get('form_dossier')).get('dossiers')))}).",
+            ),
+            (
+                "L. Risk Register",
+                f"Risk list with severity and recommended actions (rows={len(_as_list_safe(_as_dict_safe(raw.get('risk_register')).get('risks')))}).",
+            ),
+            (
+                "M. Orphan Analysis",
+                f"Unmapped/orphaned form or file analysis (rows={len(_as_list_safe(_as_dict_safe(raw.get('orphan_analysis')).get('orphans')))}).",
+            ),
+            (
+                "N. Repository Landscape",
+                f"Project/variant inventory and topology (projects={len(_as_list_safe(_as_dict_safe(raw.get('repo_landscape')).get('projects')))}, variants={len(_as_list_safe(_as_dict_safe(raw.get('variant_inventory')).get('variants')))}).",
+            ),
+            (
+                "Database Archaeology",
+                f"Source schema + query catalog + mapping artifacts (tables={len(_as_list_safe(_as_dict_safe(raw.get('source_schema_model')).get('tables')))}, queries={len(_as_list_safe(_as_dict_safe(raw.get('source_query_catalog')).get('queries')))}, mappings={len(_as_list_safe(_as_dict_safe(raw.get('schema_mapping_matrix')).get('mappings')))}).",
+            ),
+        ]
+        lines = ["Section-by-section brief (grounded in this run):"]
+        lines.extend([f"- {name}: {summary}" for name, summary in section_rows])
+        lines.append("If you want, I can also produce the same brief split into BA Brief vs Tech Workbook sections.")
+        return "\n".join(lines)
+
     if not any(
         [
             asks_for_objective,
@@ -9159,6 +9254,264 @@ def _is_simple_analyst_count_question(message: str) -> bool:
         for token in ["project", "projects", "form", "forms", "control", "controls", "activex", "active x", "ocx", "event handler"]
     )
     return has_count and has_vb6_topic and len(lower.split()) <= 20
+
+
+def _is_analyst_section_brief_question(message: str) -> bool:
+    lower = str(message or "").strip().lower()
+    if not lower:
+        return False
+    if "section" not in lower:
+        return False
+    mentions_docs = any(token in lower for token in ["document", "documents", "doc", "brief", "workbook"])
+    asks_summary = any(token in lower for token in ["brief", "summary", "overview", "summarize", "explain"])
+    return mentions_docs and asks_summary
+
+
+def _latest_docgen_export_dir(run_id: str) -> Path | None:
+    root = RUN_CONTEXT_ARTIFACT_ROOT / safe_name(str(run_id or "run")) / "docgen_exports"
+    if not root.exists() or not root.is_dir():
+        return None
+    dirs = [p for p in root.iterdir() if p.is_dir()]
+    if not dirs:
+        return None
+    # Directory names are UTC timestamps, lexical sort matches recency.
+    return sorted(dirs, key=lambda p: p.name)[-1]
+
+
+def _load_docgen_data_json(run_id: str) -> dict[str, Any]:
+    export_dir = _latest_docgen_export_dir(run_id)
+    if not export_dir:
+        return {}
+    path = export_dir / "data.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_docgen_markdown(run_id: str) -> str:
+    export_dir = _latest_docgen_export_dir(run_id)
+    if not export_dir:
+        return ""
+    path = export_dir / "analyst-output.md"
+    if not path.exists():
+        return ""
+    try:
+        return str(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+
+def _tokenize_rag_query(text: str) -> list[str]:
+    lower = str(text or "").lower()
+    raw = re.findall(r"[a-z0-9_]{3,}", lower)
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "this",
+        "that",
+        "what",
+        "when",
+        "where",
+        "which",
+        "about",
+        "each",
+        "section",
+        "document",
+        "documents",
+        "brief",
+        "summary",
+        "please",
+        "help",
+    }
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in raw:
+        if token in stop or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out[:14]
+
+
+def _extract_markdown_sections(markdown: str, max_sections: int = 80) -> list[tuple[str, str]]:
+    text = str(markdown or "").strip()
+    if not text:
+        return []
+    lines = text.splitlines()
+    sections: list[tuple[str, str]] = []
+    current_title = "Document Overview"
+    buffer: list[str] = []
+    for line in lines:
+        if re.match(r"^\s*#{2,4}\s+", line):
+            body = "\n".join(buffer).strip()
+            if current_title or body:
+                sections.append((current_title.strip(), body))
+            current_title = re.sub(r"^\s*#{2,4}\s+", "", line).strip() or "Untitled Section"
+            buffer = []
+            if len(sections) >= max_sections:
+                break
+            continue
+        buffer.append(line)
+    if len(sections) < max_sections:
+        body = "\n".join(buffer).strip()
+        if current_title or body:
+            sections.append((current_title.strip(), body))
+    return sections[:max_sections]
+
+
+def _section_relevance_score(title: str, body: str, tokens: list[str]) -> int:
+    hay = f"{title}\n{body}".lower()
+    score = 0
+    for token in tokens:
+        if token in title.lower():
+            score += 5
+        score += hay.count(token)
+    return score
+
+
+def _doc_rag_context_for_chat(run_id: str, message: str, max_chars: int = 1800) -> str:
+    md = _load_docgen_markdown(run_id)
+    data = _load_docgen_data_json(run_id)
+    tokens = _tokenize_rag_query(message)
+
+    snippets: list[str] = []
+    if isinstance(data, dict) and data:
+        meta = data.get("meta", {}) if isinstance(data.get("meta", {}), dict) else {}
+        risks = data.get("risks", []) if isinstance(data.get("risks", []), list) else []
+        sql_entries = data.get("sql_entries", []) if isinstance(data.get("sql_entries", []), list) else []
+        mapped_forms = data.get("mapped_forms", []) if isinstance(data.get("mapped_forms", []), list) else []
+        traceability = data.get("traceability", []) if isinstance(data.get("traceability", []), list) else []
+        snippets.append(
+            "Doc data snapshot: "
+            f"title={str(meta.get('title', '')).strip() or 'n/a'}; "
+            f"generated_at={str(meta.get('generated_at', '')).strip() or 'n/a'}; "
+            f"forms={len(mapped_forms)}; sql_rows={len(sql_entries)}; risks={len(risks)}; traceability_rows={len(traceability)}."
+        )
+
+    sections = _extract_markdown_sections(md, max_sections=120)
+    if sections:
+        ranked = sorted(
+            sections,
+            key=lambda row: _section_relevance_score(row[0], row[1], tokens),
+            reverse=True,
+        )
+        selected = []
+        for title, body in ranked[:4]:
+            if not title and not body:
+                continue
+            excerpt = re.sub(r"\s+", " ", body).strip()
+            if len(excerpt) > 420:
+                excerpt = excerpt[:420] + "..."
+            selected.append(f"{title}: {excerpt}" if excerpt else title)
+        if selected:
+            snippets.append("Retrieved document sections:\n- " + "\n- ".join(selected))
+
+    payload = "\n".join([s for s in snippets if s.strip()]).strip()
+    if len(payload) <= max_chars:
+        return payload
+    return payload[:max_chars] + " ...[truncated]"
+
+
+def _analyst_document_sections_reply(
+    *,
+    run_id: str,
+    message: str,
+    output: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> str | None:
+    lower = str(message or "").lower()
+    if not _is_analyst_section_brief_question(lower):
+        return None
+
+    asks_ba = any(token in lower for token in ["ba brief", "business analyst brief", "ba document", "business brief"])
+    asks_tech = any(token in lower for token in ["tech workbook", "technical workbook", "technical document", "tech document"])
+    mode = "both"
+    if asks_ba and not asks_tech:
+        mode = "ba"
+    elif asks_tech and not asks_ba:
+        mode = "tech"
+
+    data = _load_docgen_data_json(run_id)
+    report = (
+        output.get("analyst_report_v2", {})
+        if isinstance(output.get("analyst_report_v2", {}), dict)
+        else {}
+    )
+    raw = (
+        report.get("raw_artifacts", {})
+        if isinstance(report.get("raw_artifacts", {}), dict)
+        else output.get("raw_artifacts", {})
+        if isinstance(output.get("raw_artifacts", {}), dict)
+        else {}
+    )
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _count(path_key: str, raw_fallback: int = 0) -> int:
+        if isinstance(data, dict) and path_key in data and isinstance(data.get(path_key), list):
+            return len(data.get(path_key))
+        return int(raw_fallback or 0)
+
+    lines: list[str] = []
+    if mode in {"ba", "both"}:
+        lines.append("BA Brief sections:")
+        lines.append(
+            f"- Executive Snapshot: delivery status and KPI view (active_q={_count('active_q')}, decisions={_count('decisions')})."
+        )
+        lines.append(
+            f"- Decision Log: blockers/open decisions and ownership (rows={_count('decisions')})."
+        )
+        lines.append(
+            f"- Form Inventory: business-facing form purposes, inputs, outputs (rows={_count('mapped_forms', len(_as_list_safe(_as_dict_safe(raw.get('form_dossier')).get('dossiers'))))})."
+        )
+        lines.append(
+            f"- Business Rules: consolidated plain-English rules (rows={_count('rules', len(_as_list_safe(_as_dict_safe(raw.get('business_rule_catalog')).get('rules'))))})."
+        )
+        lines.append(
+            f"- Traceability Matrix: form-level coverage and gaps (rows={_count('traceability')})."
+        )
+        lines.append(
+            f"- Sprint Dependency Map: sprint assignment and blockers (rows={_count('sprints')})."
+        )
+        lines.append(
+            f"- Risk Register: risks, severity, remediation actions (rows={_count('risks', len(_as_list_safe(_as_dict_safe(raw.get('risk_register')).get('risks'))))})."
+        )
+
+    if mode in {"tech", "both"}:
+        lines.append("Tech Workbook sections:")
+        lines.append(
+            f"- Project Inventory: variants/projects, startup/member footprint (rows={_count('projects', len(_as_list_safe(_as_dict_safe(raw.get('repo_landscape')).get('projects'))))})."
+        )
+        lines.append(
+            f"- Dependency Catalog: COM/OCX/DLL dependencies with references (rows={_count('dependencies', len(_as_list_safe(_as_dict_safe(raw.get('dependency_inventory')).get('dependencies'))))})."
+        )
+        lines.append(
+            f"- Event Map + Procedure Summaries: event-driven call flows (events={_count('events', len(_as_list_safe(_as_dict_safe(raw.get('event_map')).get('entries'))))}, procedures={_count('procedure_summaries', len(_as_list_safe(_as_dict_safe(raw.get('procedure_summary')).get('procedures'))))})."
+        )
+        lines.append(
+            f"- SQL Catalog + SQL Map: SQL extraction and form/procedure mapping (sql={_count('sql_entries', len(_as_list_safe(_as_dict_safe(raw.get('sql_catalog')).get('statements'))))}, sql_map={_count('sql_map_rows', len(_as_list_safe(_as_dict_safe(raw.get('sql_map')).get('entries'))))})."
+        )
+        lines.append(
+            f"- Form Flow Traces: handler-to-SQL trace continuity (rows={_count('form_traces')})."
+        )
+        lines.append(
+            f"- Project Dependency Map: cross-form/module/report dependencies (rows={_count('dep_map')})."
+        )
+        lines.append(
+            f"- Detector Findings + Schema Conflicts: code smell and variant risk surfacing (findings={_count('findings', len(_as_list_safe(_as_dict_safe(raw.get('detector_findings')).get('findings'))))})."
+        )
+
+    if not lines:
+        return None
+    lines.append("Ask 'expand <section name>' and I’ll break it down with key rows and implications.")
+    return "\n".join(lines)
 
 
 def _cross_stage_objective_reply(stage: int, message: str, state: dict[str, Any]) -> str | None:
@@ -9727,6 +10080,7 @@ def _maybe_llm_stage_chat_response(
     client = LLMClient(cfg)
 
     output = _stage_output_snapshot(state, stage)
+    doc_rag_context = _doc_rag_context_for_chat(run_id, message) if stage == 1 else ""
     constraints_text = "; ".join(
         [
             f"{str(row.get('priority', 'medium')).upper()} {str(row.get('text', '')).strip()[:140]}"
@@ -9753,6 +10107,7 @@ def _maybe_llm_stage_chat_response(
         f"Stage: {stage} ({_stage_agent_name(stage)})\n"
         f"Latest stage summary: {summary or 'none'}\n"
         f"Deterministic context draft: {contextual}\n"
+        f"Retrieved document context: {doc_rag_context or 'none'}\n"
         f"Stored constraints: {constraints_text}\n"
         f"Recent thread:\n{thread_text}\n"
         f"Stage artifact snapshot ({_prompt_payload_format()}): {_json_compact(output, max_chars=3600)}\n"
@@ -9817,6 +10172,15 @@ def _build_stage_memory_response(
     )
 
     contextual = _stage_context_reply(stage, message, output, state)
+    if stage == 1 and _is_analyst_section_brief_question(message):
+        doc_sections = _analyst_document_sections_reply(
+            run_id=run_id,
+            message=message,
+            output=output,
+            state=state,
+        )
+        if doc_sections:
+            contextual = doc_sections
     if not contextual:
         contextual = _generic_stage_reply(stage, output, summary)
     if not contextual:
@@ -9839,6 +10203,25 @@ def _build_stage_memory_response(
             metadata={"stage": stage, "run_id": run_id, "source": "stage_chat"},
         )
         bucket["llm_chat"] = {"used": False, "provider": "", "model": "", "reason": "simple_count_shortcut"}
+        return concise
+
+    if stage == 1 and _is_analyst_section_brief_question(message):
+        concise = f"{_stage_agent_name(stage)} response: {contextual}"
+        if memory_items:
+            concise += f" Applied memory items: {len(memory_items)}."
+        if directive_created:
+            concise += " Saved as a persistent directive for downstream stages."
+        if proposal_created:
+            concise += " Created a proposed artifact change for review."
+        TENANT_MEMORY_STORE.append_thread_message(
+            scope,
+            thread_id=thread_id,
+            agent_role=role,
+            role="assistant",
+            message=concise,
+            metadata={"stage": stage, "run_id": run_id, "source": "stage_chat"},
+        )
+        bucket["llm_chat"] = {"used": False, "provider": "", "model": "", "reason": "section_brief_shortcut"}
         return concise
 
     lines = [f"{_stage_agent_name(stage)} response:", contextual]
