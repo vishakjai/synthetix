@@ -349,6 +349,26 @@ function parseB(content) {
   });
 }
 
+function ensureMdbDependency(meta, dependencies) {
+  const out = Array.isArray(dependencies) ? [...dependencies] : [];
+  const mdbDetected = !!(meta && meta.mdb_detected);
+  if (!mdbDetected) return out;
+  const hasMdb = out.some((d) => {
+    const hay = `${d?.name || ''} ${d?.type || ''} ${d?.guid || ''}`.toLowerCase();
+    return hay.includes('.mdb') || hay.includes('.accdb') || hay.includes('microsoft access') || hay.includes('mdb/accdb');
+  });
+  if (hasMdb) return out;
+  out.push({
+    name: 'Source Database (Microsoft Access)',
+    type: 'MDB/ACCDB',
+    guid: 'artifact://analyst/raw/source_schema_model/v1',
+    forms: 'Project-wide',
+    risk: 'medium',
+    action: 'Preserve MDB schema lineage and enforce source-to-target mapping validation.',
+  });
+  return out;
+}
+
 function parseC(content) {
   const { rows } = parseTableSection(getSection(content, 'C.', 'D.'));
   return rows.map(r => ({
@@ -1488,7 +1508,7 @@ function parseMd(mdContent, meta = {}) {
   const appendixCounts = parseAppendixCounts(mdContent);
 
   const projects = parseA(mdContent);
-  const dependencies = parseB(mdContent);
+  let dependencies = parseB(mdContent);
   const events = parseC(mdContent);
   let sqlEntries = parseD(mdContent);
   const rules = parseE(mdContent);
@@ -1504,6 +1524,8 @@ function parseMd(mdContent, meta = {}) {
   const rRaw = parseR(mdContent);
 
   normalizeTraceabilitySqlCoverage(qData, sqlEntries);
+
+  dependencies = ensureMdbDependency(headerMeta, dependencies);
 
   deSaturateMappedInputs(kData.mapped, events);
   deSaturateMappedActiveX(kData.mapped, dependencies);

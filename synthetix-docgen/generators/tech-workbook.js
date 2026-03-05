@@ -279,6 +279,15 @@ function buildProjectInventory(data) {
   };
   for (const f of (data.mapped_forms || [])) add(mappedByProject, f.project_display || f.project, f.form);
   for (const f of (data.excluded_forms || [])) add(excludedByProject, f.project_display || f.project, f.form);
+  const unmappedKeys = ['(unmapped)', 'n/a', '(project unresolved)'].map((v) => projectKey(v));
+  const unmappedMapped = unmappedKeys.reduce((acc, k) => acc + ((mappedByProject.get(k) || new Set()).size), 0);
+  const unmappedExcluded = unmappedKeys.reduce((acc, k) => acc + ((excludedByProject.get(k) || new Set()).size), 0);
+  const resolvedProjectKeys = new Set(
+    (data.projects || [])
+      .map((p) => projectKey(p.project_display || p.project))
+      .filter((k) => !unmappedKeys.includes(k))
+  );
+  const singleResolvedProjectKey = resolvedProjectKeys.size === 1 ? [...resolvedProjectKeys][0] : '';
 
   return new Table({
     layout: TableLayoutType.FIXED,
@@ -295,8 +304,14 @@ function buildProjectInventory(data) {
       ...(data.projects || []).map((p) => {
         const pLabel = displayProjectLabel(p.project_display || p.project);
         const pKey = projectKey(pLabel);
-        const mapped = (mappedByProject.get(pKey) || new Set()).size;
-        const excluded = (excludedByProject.get(pKey) || new Set()).size;
+        let mapped = (mappedByProject.get(pKey) || new Set()).size;
+        let excluded = (excludedByProject.get(pKey) || new Set()).size;
+        // If only one resolved project exists, fold unmapped forms into that row
+        // so the summary count reconciles with the form profile section.
+        if (singleResolvedProjectKey && pKey === singleResolvedProjectKey) {
+          mapped += unmappedMapped;
+          excluded += unmappedExcluded;
+        }
         const discovered = mapped + excluded;
         const fallbackForms = toInt(p.forms);
         const formsText = discovered > 0
@@ -378,6 +393,26 @@ function buildKTech(data) {
 
 // ── Section 3: Dependency Inventory ───────────────────────────────────────
 function buildDependencies(data) {
+  const prettyForms = (value) => {
+    const items = String(value || '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+    if (!items.length) return '—';
+    const mapped = items.map((item) => {
+      if (!item.includes('::')) return displayFormLabel(item);
+      const [projectRaw, formRaw] = item.split('::', 2);
+      const project = displayProjectLabel(projectRaw);
+      const form = displayFormLabel(formRaw || '');
+      if (!form || form === '—') return '—';
+      if (project.toLowerCase() === 'n/a' || project.toLowerCase() === '(unmapped)') {
+        return `${form} [Unmapped]`;
+      }
+      return `${form} (${project})`;
+    });
+    return mapped.join(', ');
+  };
+
   return new Table({
     layout: TableLayoutType.FIXED,
     width: { size: W, type: WidthType.DXA },
@@ -396,7 +431,7 @@ function buildDependencies(data) {
           cell(d.name, 2200, { bold: true }),
           cell(d.type, 900, { fill: C.GREY, align: AlignmentType.CENTER }),
           codeCell(d.guid, 2200),
-          cell(displayFormLabel(d.forms), 2200, { sz: 14, color: C.DGREY }),
+          cell(prettyForms(d.forms), 2200, { sz: 14, color: C.DGREY }),
           cell(d.risk, 900, { fill, color, sz: 15 }),
           cell(d.action, 2040, { sz: 14 }),
         ]});
@@ -407,6 +442,33 @@ function buildDependencies(data) {
 
 // ── Section 4: SQL Catalog ─────────────────────────────────────────────────
 function buildSqlCatalog(data) {
+  const normalizeCsv = (value) => String(value || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .join(', ');
+
+  const wrapLongTokens = (value, max = 36) => {
+    const text = String(value || '');
+    if (!text) return '';
+    return text
+      .split(/\s+/)
+      .map((tok) => (tok.length > max ? tok.match(new RegExp(`.{1,${max}}`, 'g')).join('\u200B') : tok))
+      .join(' ');
+  };
+
+  const formatSqlHandler = (value) => {
+    const raw = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return '';
+    const clauses = ['SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'INSERT INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE FROM', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'HAVING'];
+    let out = raw;
+    for (const clause of clauses) {
+      const rx = new RegExp(`\\s+${clause}\\s+`, 'ig');
+      out = out.replace(rx, `\n${clause} `);
+    }
+    return wrapLongTokens(out.trim(), 36);
+  };
+
   const sqlByForm = {};
   for (const s of (data.sql_entries || [])) {
     if (!sqlByForm[s.form]) sqlByForm[s.form] = [];
@@ -422,25 +484,30 @@ function buildSqlCatalog(data) {
 
     sqlContent.push(h3(label));
     sqlContent.push(new Table({
+      layout: TableLayoutType.FIXED,
       width: { size: W, type: WidthType.DXA },
-      columnWidths: [800, 1400, 1600, 2800, 2000, 1840],
+      columnWidths: [700, 3400, 950, 1800, 1800, 1790],
       rows: [
         new TableRow({ children: [
-          hCell('SQL ID', 800, C.SLATE), hCell('Handler', 1400, C.SLATE),
-          hCell('Operation', 1600, C.SLATE), hCell('Tables', 2800, C.SLATE),
-          hCell('Columns', 2000, C.SLATE), hCell('Notes', 1840, C.SLATE),
+          hCell('SQL ID', 700, C.SLATE), hCell('Handler / Query', 3400, C.SLATE),
+          hCell('Operation', 950, C.SLATE), hCell('Tables', 1800, C.SLATE),
+          hCell('Columns', 1800, C.SLATE), hCell('Notes', 1790, C.SLATE),
         ]}),
         ...entries.map(e => {
           const op      = (e.op || '').toUpperCase();
           const opFill  = op === 'INSERT' ? C.LTEAL : op === 'UPDATE' ? C.LAMB : op === 'DELETE' ? C.LRED  : C.GREY;
           const opColor = op === 'INSERT' ? C.TEAL  : op === 'UPDATE' ? C.AMBR : op === 'DELETE' ? C.RED   : C.DGREY;
+          const tables = normalizeCsv(e.tables || '');
+          const columns = normalizeCsv(e.columns || '');
+          const handler = formatSqlHandler(e.handler || '');
+          const isLong = String(e.handler || '').length > 180;
           return new TableRow({ children: [
-            codeCell(e.id, 800),
-            codeCell(e.handler, 1400),
-            cell(op, 1600, { fill: opFill, color: opColor, bold: true, align: AlignmentType.CENTER }),
-            codeCell(e.tables, 2800),
-            cell(e.columns || '—', 2000, { sz: 15, color: C.DGREY }),
-            cell('', 1840, { color: C.DGREY, sz: 15 }),
+            codeCell(e.id, 700),
+            cell(handler || '—', 3400, { sz: 14, color: C.CODE, mono: true }),
+            cell(op, 950, { fill: opFill, color: opColor, bold: true, align: AlignmentType.CENTER }),
+            cell(wrapLongTokens(tables || '—', 24), 1800, { sz: 14, mono: true, color: C.DGREY }),
+            cell(wrapLongTokens(columns || '—', 24), 1800, { sz: 14, mono: true, color: C.DGREY }),
+            cell(isLong ? 'Query normalized for readability.' : '', 1790, { color: C.DGREY, sz: 14 }),
           ]});
         }),
       ],
