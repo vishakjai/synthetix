@@ -753,6 +753,10 @@
                 <button id="discover-open-system-map" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View System map</button>
                 <button id="discover-open-health-debt" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Health & debt</button>
                 <button id="discover-open-conventions" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Convention profile</button>
+                <button id="discover-open-code-quality" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Code quality</button>
+                <button id="discover-open-dead-code" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Dead code</button>
+                <button id="discover-open-dependency-matrix" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Dependency matrix</button>
+                <button id="discover-open-trends" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Trends</button>
                 <button id="discover-open-data" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">View Data</button>
                 <button id="discover-export-baseline" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export baseline report</button>
               </div>
@@ -808,6 +812,43 @@
                 <p class="mt-1 text-slate-700">Repo-native conventions extracted from code to ensure generated changes fit your operating model.</p>
                 <p class="mt-2">Filters: Naming · Error handling · Testing · Logging & observability · Auth · API design</p>
                 <div id="discover-conventions-content" class="mt-2"></div>
+              </div>
+              <div id="discover-code-quality-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">Code quality</h4>
+                <p class="mt-1 text-slate-700">Complexity, quality-rule violations, and hotspot inventory.</p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="discover-export-project-metrics" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Project Metrics</button>
+                  <button id="discover-export-quality-rules" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Quality Rules</button>
+                  <button id="discover-export-quality-violations" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Quality Violations</button>
+                </div>
+                <div id="discover-code-quality-content" class="mt-2"></div>
+              </div>
+              <div id="discover-dead-code-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">Dead code</h4>
+                <p class="mt-1 text-slate-700">Candidates for unused types, methods, and fields.</p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="discover-export-dead-code" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Dead Code Report</button>
+                </div>
+                <div id="discover-dead-code-content" class="mt-2"></div>
+              </div>
+              <div id="discover-dependency-matrix-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">Dependency matrix</h4>
+                <p class="mt-1 text-slate-700">Type/runtime dependency edges and third-party usage footprint.</p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="discover-export-type-dependency-matrix" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Type Matrix</button>
+                  <button id="discover-export-runtime-dependency-matrix" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Runtime Matrix</button>
+                  <button id="discover-export-third-party-usage" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Third-Party Usage</button>
+                </div>
+                <div id="discover-dependency-matrix-content" class="mt-2"></div>
+              </div>
+              <div id="discover-trends-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <h4 class="text-sm font-semibold text-ink-950">Trends</h4>
+                <p class="mt-1 text-slate-700">Trend snapshot and baseline series for quality trend tracking.</p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button id="discover-export-trend-snapshot" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Trend Snapshot</button>
+                  <button id="discover-export-trend-series" class="btn-light rounded-lg px-3 py-1.5 text-xs font-semibold">Export Trend Series</button>
+                </div>
+                <div id="discover-trends-content" class="mt-2"></div>
               </div>
               <div id="discover-data-panel" class="mt-3 hidden rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
                 <h4 class="text-sm font-semibold text-ink-950">Database archaeology</h4>

@@ -227,20 +227,41 @@ const el = {
   discoverOpenSystemMap: document.getElementById("discover-open-system-map"),
   discoverOpenHealthDebt: document.getElementById("discover-open-health-debt"),
   discoverOpenConventions: document.getElementById("discover-open-conventions"),
+  discoverOpenCodeQuality: document.getElementById("discover-open-code-quality"),
+  discoverOpenDeadCode: document.getElementById("discover-open-dead-code"),
+  discoverOpenDependencyMatrix: document.getElementById("discover-open-dependency-matrix"),
+  discoverOpenTrends: document.getElementById("discover-open-trends"),
   discoverOpenData: document.getElementById("discover-open-data"),
   discoverExportBaseline: document.getElementById("discover-export-baseline"),
   discoverCityMapPanel: document.getElementById("discover-city-map-panel"),
   discoverSystemMapPanel: document.getElementById("discover-system-map-panel"),
   discoverHealthPanel: document.getElementById("discover-health-panel"),
   discoverConventionsPanel: document.getElementById("discover-conventions-panel"),
+  discoverCodeQualityPanel: document.getElementById("discover-code-quality-panel"),
+  discoverDeadCodePanel: document.getElementById("discover-dead-code-panel"),
+  discoverDependencyMatrixPanel: document.getElementById("discover-dependency-matrix-panel"),
+  discoverTrendsPanel: document.getElementById("discover-trends-panel"),
   discoverDataPanel: document.getElementById("discover-data-panel"),
   discoverExportSourceSchema: document.getElementById("discover-export-source-schema"),
   discoverExportSourceErd: document.getElementById("discover-export-source-erd"),
   discoverExportDataDictionary: document.getElementById("discover-export-data-dictionary"),
+  discoverExportProjectMetrics: document.getElementById("discover-export-project-metrics"),
+  discoverExportQualityRules: document.getElementById("discover-export-quality-rules"),
+  discoverExportQualityViolations: document.getElementById("discover-export-quality-violations"),
+  discoverExportDeadCode: document.getElementById("discover-export-dead-code"),
+  discoverExportTypeDependencyMatrix: document.getElementById("discover-export-type-dependency-matrix"),
+  discoverExportRuntimeDependencyMatrix: document.getElementById("discover-export-runtime-dependency-matrix"),
+  discoverExportThirdPartyUsage: document.getElementById("discover-export-third-party-usage"),
+  discoverExportTrendSnapshot: document.getElementById("discover-export-trend-snapshot"),
+  discoverExportTrendSeries: document.getElementById("discover-export-trend-series"),
   discoverCityMapContent: document.getElementById("discover-city-map-content"),
   discoverSystemMapContent: document.getElementById("discover-system-map-content"),
   discoverHealthContent: document.getElementById("discover-health-content"),
   discoverConventionsContent: document.getElementById("discover-conventions-content"),
+  discoverCodeQualityContent: document.getElementById("discover-code-quality-content"),
+  discoverDeadCodeContent: document.getElementById("discover-dead-code-content"),
+  discoverDependencyMatrixContent: document.getElementById("discover-dependency-matrix-content"),
+  discoverTrendsContent: document.getElementById("discover-trends-content"),
   discoverDataContent: document.getElementById("discover-data-content"),
   cityMapSvg: document.getElementById("city-map-svg"),
   cityMapInspector: document.getElementById("city-map-inspector"),
@@ -3394,6 +3415,77 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
       lines.push("- No project dependency rows available.");
     }
 
+    lines.push("", "### O1. Form User Flow (Spec-Kit Style)");
+    const knownForms = new Set();
+    discoveredForms.forEach((d) => {
+      const n = String(d?.form_name || "").trim().toLowerCase();
+      if (n) knownForms.add(n);
+    });
+    formDossierRows.forEach((d) => {
+      const n = String(d?.form_name || "").trim().toLowerCase();
+      if (n) knownForms.add(n);
+    });
+
+    const flowGraph = new Map(); // source -> Map(target -> Set(notes))
+    const flowNote = (entry) => {
+      const trig = entry?.trigger && typeof entry.trigger === "object" ? entry.trigger : {};
+      const parts = [
+        String(trig.control || "").trim(),
+        String(trig.event || "").trim(),
+        String(entry?.handler?.symbol || "").trim(),
+      ].filter(Boolean);
+      return parts[0] || "";
+    };
+
+    eventRows.forEach((entry) => {
+      const source = String(entry?.container || entry?.form || entry?.name || "n/a").trim() || "n/a";
+      const sourceLow = source.toLowerCase();
+      const note = flowNote(entry);
+      const calls = Array.isArray(entry?.calls) ? entry.calls : [];
+      calls.forEach((callValue) => {
+        const call = String(callValue || "").trim();
+        if (!call) return;
+        if (sharedModuleProcedures.has(call)) return;
+        const low = call.toLowerCase();
+        let target = "";
+        if (["end", "quit", "app.end", "endapp"].includes(low)) target = "End";
+        else if (low === "frm" || low === "form") target = "frm [Unresolved]";
+        else if (/^(rpt|datareport)/i.test(call)) target = call;
+        else if (/^(frm|form)/i.test(call) || low === "main" || knownForms.has(low)) target = call;
+        else return;
+        if (sourceLow === target.toLowerCase()) return;
+
+        if (!flowGraph.has(source)) flowGraph.set(source, new Map());
+        const byTarget = flowGraph.get(source);
+        if (!byTarget.has(target)) byTarget.set(target, new Set());
+        if (note) byTarget.get(target).add(note);
+      });
+    });
+
+    if (flowGraph.size) {
+      const sortTargets = (targets) => [...targets].sort((a, b) => {
+        const rank = (v) => (v === "End" ? 2 : (v.startsWith("frm [Unresolved]") ? 1 : 0));
+        const ra = rank(a);
+        const rb = rank(b);
+        if (ra !== rb) return ra - rb;
+        return a.localeCompare(b);
+      });
+      [...flowGraph.keys()].sort((a, b) => a.localeCompare(b)).forEach((source) => {
+        lines.push(source);
+        const targets = sortTargets(flowGraph.get(source).keys());
+        targets.forEach((target, idx) => {
+          const isLast = idx === targets.length - 1;
+          const branch = isLast ? "'- ->" : "|- ->";
+          const notes = [...(flowGraph.get(source).get(target) || new Set())].sort();
+          const suffix = notes.length ? ` [via ${notes[0]}]` : "";
+          lines.push(`  ${branch} ${target}${suffix}`);
+        });
+        lines.push("");
+      });
+    } else {
+      lines.push("- No explicit form-to-form navigation links detected.");
+    }
+
     lines.push("", "### P. Form Flow Traces");
     if (formDossierRows.length) {
       formDossierRows.slice(0, 250).forEach((row) => {
@@ -3837,6 +3929,10 @@ function renderDiscoverResultsView() {
     system: el.discoverSystemMapPanel,
     health: el.discoverHealthPanel,
     conventions: el.discoverConventionsPanel,
+    code_quality: el.discoverCodeQualityPanel,
+    dead_code: el.discoverDeadCodePanel,
+    dependency_matrix: el.discoverDependencyMatrixPanel,
+    trends: el.discoverTrendsPanel,
     data: el.discoverDataPanel,
   };
   Object.entries(viewMap).forEach(([key, panel]) => {
@@ -4614,6 +4710,189 @@ function renderDiscoverInsights() {
       : `<p class="text-slate-700">No convention rules available yet.</p>`;
   }
 
+  const cqProjectMetrics = Array.isArray(rawArtifacts.project_metrics?.rows) ? rawArtifacts.project_metrics.rows : [];
+  const cqTypeMetrics = Array.isArray(rawArtifacts.type_metrics?.rows) ? rawArtifacts.type_metrics.rows : [];
+  const cqTypeDependencyMatrix = Array.isArray(rawArtifacts.type_dependency_matrix?.edges) ? rawArtifacts.type_dependency_matrix.edges : [];
+  const cqRuntimeDependencyMatrix = Array.isArray(rawArtifacts.runtime_dependency_matrix?.edges) ? rawArtifacts.runtime_dependency_matrix.edges : [];
+  const cqDeadCode = (rawArtifacts.dead_code_report && typeof rawArtifacts.dead_code_report === "object")
+    ? rawArtifacts.dead_code_report
+    : {};
+  const cqThirdParty = Array.isArray(rawArtifacts.third_party_usage?.rows) ? rawArtifacts.third_party_usage.rows : [];
+  const cqRules = Array.isArray(rawArtifacts.code_quality_rules?.rules) ? rawArtifacts.code_quality_rules.rules : [];
+  const cqViolations = (rawArtifacts.quality_violation_report && typeof rawArtifacts.quality_violation_report === "object")
+    ? rawArtifacts.quality_violation_report
+    : {};
+  const cqViolationRows = Array.isArray(cqViolations.violations) ? cqViolations.violations : [];
+  const cqViolationSummary = (cqViolations.summary && typeof cqViolations.summary === "object") ? cqViolations.summary : {};
+  const cqDeadSummary = (cqDeadCode.summary && typeof cqDeadCode.summary === "object") ? cqDeadCode.summary : {};
+  const cqTrendSnapshot = (rawArtifacts.trend_snapshot && typeof rawArtifacts.trend_snapshot === "object")
+    ? rawArtifacts.trend_snapshot
+    : {};
+  const cqTrendSeries = (rawArtifacts.trend_series && typeof rawArtifacts.trend_series === "object")
+    ? rawArtifacts.trend_series
+    : {};
+  const cqTrendMetrics = (cqTrendSnapshot.snapshot && typeof cqTrendSnapshot.snapshot === "object" && typeof cqTrendSnapshot.snapshot.metrics === "object")
+    ? cqTrendSnapshot.snapshot.metrics
+    : {};
+
+  if (el.discoverCodeQualityContent) {
+    const hotspotRows = [...cqTypeMetrics]
+      .sort((a, b) => Number(b?.cyclomatic_complexity || 0) - Number(a?.cyclomatic_complexity || 0))
+      .slice(0, 10)
+      .map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.project || "n/a"))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.type_name || ""))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String(row?.cyclomatic_complexity || 0))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String(Number(row?.afferent_coupling || 0) + Number(row?.efferent_coupling || 0)))}</td>
+        </tr>
+      `).join("");
+    const violationRows = cqViolationRows.slice(0, 10).map((row) => `
+      <tr>
+        <td class="px-2 py-1">${escapeHtml(String(row?.rule_id || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.severity || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.subject || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.detail || ""))}</td>
+      </tr>
+    `).join("");
+    el.discoverCodeQualityContent.innerHTML = `
+      <div class="grid gap-2 sm:grid-cols-6">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Projects</strong><br/>${cqProjectMetrics.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Types</strong><br/>${cqTypeMetrics.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Rules</strong><br/>${cqRules.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Violations</strong><br/>${Number(cqViolationSummary.total_violations || cqViolationRows.length)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Critical</strong><br/>${Number(cqViolationSummary.critical_violations || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Hotspots</strong><br/>${Number(cqTrendMetrics.hotspot_count || 0)}</div>
+      </div>
+      <div class="mt-2 grid gap-2 lg:grid-cols-2">
+        <div class="rounded border border-slate-300 bg-slate-50 p-2">
+          <p class="mb-1 font-semibold text-slate-900">Hotspot Types (sample)</p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-[11px]">
+              <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Project</th><th class="px-2 py-1">Type</th><th class="px-2 py-1 text-right">Complexity</th><th class="px-2 py-1 text-right">Coupling</th></tr></thead>
+              <tbody>${hotspotRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No type metrics rows.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="rounded border border-slate-300 bg-slate-50 p-2">
+          <p class="mb-1 font-semibold text-slate-900">Quality Violations (sample)</p>
+          <div class="overflow-x-auto">
+            <table class="w-full text-[11px]">
+              <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Rule</th><th class="px-2 py-1">Severity</th><th class="px-2 py-1">Subject</th><th class="px-2 py-1">Detail</th></tr></thead>
+              <tbody>${violationRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No violations detected.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (el.discoverDeadCodeContent) {
+    const candidates = Array.isArray(cqDeadCode.candidates) ? cqDeadCode.candidates : [];
+    const rows = candidates.slice(0, 12).map((row) => `
+      <tr>
+        <td class="px-2 py-1">${escapeHtml(String(row?.kind || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.name || row?.symbol || ""))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.confidence || row?.score || ""))}</td>
+      </tr>
+    `).join("");
+    el.discoverDeadCodeContent.innerHTML = `
+      <div class="grid gap-2 sm:grid-cols-4">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Dead Types</strong><br/>${Number(cqDeadSummary.dead_type_candidates || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Dead Methods</strong><br/>${Number(cqDeadSummary.dead_method_candidates || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Dead Fields</strong><br/>${Number(cqDeadSummary.dead_field_candidates || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Candidates</strong><br/>${candidates.length}</div>
+      </div>
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <p class="mb-1 font-semibold text-slate-900">Dead Code Candidates (sample)</p>
+        <div class="overflow-x-auto">
+          <table class="w-full text-[11px]">
+            <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Kind</th><th class="px-2 py-1">Name</th><th class="px-2 py-1 text-right">Confidence</th></tr></thead>
+            <tbody>${rows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No dead-code candidates detected.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  if (el.discoverDependencyMatrixContent) {
+    const typeRows = cqTypeDependencyMatrix.slice(0, 12).map((row) => `
+      <tr>
+        <td class="px-2 py-1">${escapeHtml(String(row?.source || row?.from || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.target || row?.to || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.kind || row?.type || ""))}</td>
+      </tr>
+    `).join("");
+    const runtimeRows = cqRuntimeDependencyMatrix.slice(0, 12).map((row) => `
+      <tr>
+        <td class="px-2 py-1">${escapeHtml(String(row?.source || row?.from || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.target || row?.to || ""))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.kind || row?.type || ""))}</td>
+      </tr>
+    `).join("");
+    const tpRows = [...cqThirdParty]
+      .sort((a, b) => Number(b?.usage_intensity || 0) - Number(a?.usage_intensity || 0))
+      .slice(0, 10)
+      .map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.dependency || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.kind || ""))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String(row?.forms_using_count || 0))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String(row?.usage_intensity || 0))}</td>
+        </tr>
+      `).join("");
+    el.discoverDependencyMatrixContent.innerHTML = `
+      <div class="grid gap-2 sm:grid-cols-3">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Type Edges</strong><br/>${cqTypeDependencyMatrix.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Runtime Edges</strong><br/>${cqRuntimeDependencyMatrix.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Third-Party Deps</strong><br/>${cqThirdParty.length}</div>
+      </div>
+      <div class="mt-2 grid gap-2 lg:grid-cols-2">
+        <div class="rounded border border-slate-300 bg-slate-50 p-2">
+          <p class="mb-1 font-semibold text-slate-900">Type Dependency Matrix (sample)</p>
+          <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">From</th><th class="px-2 py-1">To</th><th class="px-2 py-1">Kind</th></tr></thead><tbody>${typeRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No type dependencies.</td></tr>`}</tbody></table></div>
+        </div>
+        <div class="rounded border border-slate-300 bg-slate-50 p-2">
+          <p class="mb-1 font-semibold text-slate-900">Runtime Dependency Matrix (sample)</p>
+          <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">From</th><th class="px-2 py-1">To</th><th class="px-2 py-1">Kind</th></tr></thead><tbody>${runtimeRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No runtime dependencies.</td></tr>`}</tbody></table></div>
+        </div>
+      </div>
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <p class="mb-1 font-semibold text-slate-900">Third-Party Usage (sample)</p>
+        <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Dependency</th><th class="px-2 py-1">Kind</th><th class="px-2 py-1 text-right">Forms</th><th class="px-2 py-1 text-right">Intensity</th></tr></thead><tbody>${tpRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No third-party usage rows.</td></tr>`}</tbody></table></div>
+      </div>
+    `;
+  }
+
+  if (el.discoverTrendsContent) {
+    const series = Array.isArray(cqTrendSeries.points) ? cqTrendSeries.points : [];
+    const seriesRows = series.slice(0, 12).map((row) => `
+      <tr>
+        <td class="px-2 py-1">${escapeHtml(String(row?.at || row?.timestamp || ""))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.loc_total || row?.loc || 0))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.avg_complexity || 0))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.max_complexity || 0))}</td>
+      </tr>
+    `).join("");
+    el.discoverTrendsContent.innerHTML = `
+      <div class="grid gap-2 sm:grid-cols-4">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>LOC Total</strong><br/>${escapeHtml(String(cqTrendMetrics.loc_total || 0))}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Avg Complexity</strong><br/>${escapeHtml(String(cqTrendMetrics.avg_complexity || 0))}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Max Complexity</strong><br/>${escapeHtml(String(cqTrendMetrics.max_complexity || 0))}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Hotspots</strong><br/>${escapeHtml(String(cqTrendMetrics.hotspot_count || 0))}</div>
+      </div>
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <p class="mb-1 font-semibold text-slate-900">Trend Series (sample)</p>
+        <div class="overflow-x-auto">
+          <table class="w-full text-[11px]">
+            <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Timestamp</th><th class="px-2 py-1 text-right">LOC</th><th class="px-2 py-1 text-right">Avg Complexity</th><th class="px-2 py-1 text-right">Max Complexity</th></tr></thead>
+            <tbody>${seriesRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No trend series rows.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
   if (el.discoverDataContent) {
     const sourceProfile = (rawArtifacts.source_db_profile && typeof rawArtifacts.source_db_profile === "object")
       ? rawArtifacts.source_db_profile
@@ -4636,6 +4915,21 @@ function renderDiscoverInsights() {
     const dbQa = (rawArtifacts.db_qa_report && typeof rawArtifacts.db_qa_report === "object")
       ? rawArtifacts.db_qa_report
       : {};
+    const projectMetrics = Array.isArray(rawArtifacts.project_metrics?.rows) ? rawArtifacts.project_metrics.rows : [];
+    const typeMetrics = Array.isArray(rawArtifacts.type_metrics?.rows) ? rawArtifacts.type_metrics.rows : [];
+    const typeDependencyMatrix = Array.isArray(rawArtifacts.type_dependency_matrix?.edges) ? rawArtifacts.type_dependency_matrix.edges : [];
+    const runtimeDependencyMatrix = Array.isArray(rawArtifacts.runtime_dependency_matrix?.edges) ? rawArtifacts.runtime_dependency_matrix.edges : [];
+    const deadCodeReport = (rawArtifacts.dead_code_report && typeof rawArtifacts.dead_code_report === "object")
+      ? rawArtifacts.dead_code_report
+      : {};
+    const thirdPartyUsage = Array.isArray(rawArtifacts.third_party_usage?.rows) ? rawArtifacts.third_party_usage.rows : [];
+    const codeQualityRules = Array.isArray(rawArtifacts.code_quality_rules?.rules) ? rawArtifacts.code_quality_rules.rules : [];
+    const qualityViolationReport = (rawArtifacts.quality_violation_report && typeof rawArtifacts.quality_violation_report === "object")
+      ? rawArtifacts.quality_violation_report
+      : {};
+    const trendSnapshot = (rawArtifacts.trend_snapshot && typeof rawArtifacts.trend_snapshot === "object")
+      ? rawArtifacts.trend_snapshot
+      : {};
 
     const summary = (sourceProfile.summary && typeof sourceProfile.summary === "object")
       ? sourceProfile.summary
@@ -4651,8 +4945,27 @@ function renderDiscoverInsights() {
     const sourceDictionaryRows = Array.isArray(sourceDictionary.rows) ? sourceDictionary.rows : [];
     const sourceErdText = String(sourceErd.mermaid || "").trim();
     const dbChecks = Array.isArray(dbQa.checks) ? dbQa.checks : [];
+    const deadSummary = (deadCodeReport.summary && typeof deadCodeReport.summary === "object")
+      ? deadCodeReport.summary
+      : {};
+    const violationSummary = (qualityViolationReport.summary && typeof qualityViolationReport.summary === "object")
+      ? qualityViolationReport.summary
+      : {};
+    const violationRows = Array.isArray(qualityViolationReport.violations) ? qualityViolationReport.violations : [];
+    const trendMetrics = (trendSnapshot.snapshot && typeof trendSnapshot.snapshot === "object" && typeof trendSnapshot.snapshot.metrics === "object")
+      ? trendSnapshot.snapshot.metrics
+      : {};
+    const hasQualityBaseline = (
+      projectMetrics.length > 0
+      || typeMetrics.length > 0
+      || typeDependencyMatrix.length > 0
+      || runtimeDependencyMatrix.length > 0
+      || thirdPartyUsage.length > 0
+      || codeQualityRules.length > 0
+      || violationRows.length > 0
+    );
 
-    if (!tableCount && !sourceTables.length && !dbChecks.length) {
+    if (!tableCount && !sourceTables.length && !dbChecks.length && !hasQualityBaseline) {
       el.discoverDataContent.innerHTML = `<p class="text-slate-700">Run Analyst Brief to generate database archaeology artifacts.</p>`;
     } else {
       const badgeClass = (status) => {
@@ -4708,6 +5021,86 @@ function renderDiscoverInsights() {
           <td class="px-2 py-1">${escapeHtml(String(row?.business_meaning || ""))}</td>
         </tr>
       `).join("");
+      const hotspotRows = [...typeMetrics]
+        .sort((a, b) => Number(b?.cyclomatic_complexity || 0) - Number(a?.cyclomatic_complexity || 0))
+        .slice(0, 8)
+        .map((row) => `
+          <tr>
+            <td class="px-2 py-1">${escapeHtml(String(row?.project || "n/a"))}</td>
+            <td class="px-2 py-1">${escapeHtml(String(row?.type_name || ""))}</td>
+            <td class="px-2 py-1 text-right">${escapeHtml(String(row?.cyclomatic_complexity || 0))}</td>
+            <td class="px-2 py-1 text-right">${escapeHtml(String((Number(row?.afferent_coupling || 0) + Number(row?.efferent_coupling || 0))))}</td>
+          </tr>
+        `).join("");
+      const violationSampleRows = violationRows.slice(0, 8).map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.rule_id || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.severity || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.subject || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.detail || ""))}</td>
+        </tr>
+      `).join("");
+      const dependencyUsageRows = [...thirdPartyUsage]
+        .sort((a, b) => Number(b?.usage_intensity || 0) - Number(a?.usage_intensity || 0))
+        .slice(0, 8)
+        .map((row) => `
+          <tr>
+            <td class="px-2 py-1">${escapeHtml(String(row?.dependency || ""))}</td>
+            <td class="px-2 py-1">${escapeHtml(String(row?.kind || ""))}</td>
+            <td class="px-2 py-1 text-right">${escapeHtml(String(row?.forms_using_count || 0))}</td>
+            <td class="px-2 py-1 text-right">${escapeHtml(String(row?.usage_intensity || 0))}</td>
+          </tr>
+        `).join("");
+      const qualitySectionHtml = hasQualityBaseline ? `
+        <div class="mt-3 rounded border border-slate-300 bg-white p-2">
+          <p class="mb-2 font-semibold text-slate-900">Code Quality Baseline</p>
+          <div class="grid gap-2 sm:grid-cols-4 lg:grid-cols-8">
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Projects</strong><br/>${projectMetrics.length}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Types</strong><br/>${typeMetrics.length}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Type Edges</strong><br/>${typeDependencyMatrix.length}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Runtime Edges</strong><br/>${runtimeDependencyMatrix.length}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Violations</strong><br/>${Number(violationSummary.total_violations || violationRows.length)}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Critical</strong><br/>${Number(violationSummary.critical_violations || 0)}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Dead Candidates</strong><br/>${Number(deadSummary.dead_type_candidates || 0) + Number(deadSummary.dead_method_candidates || 0) + Number(deadSummary.dead_field_candidates || 0)}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Rules</strong><br/>${codeQualityRules.length}</div>
+          </div>
+          <div class="mt-2 grid gap-2 lg:grid-cols-2">
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-1 font-semibold text-slate-900">Hotspot Types (sample)</p>
+              <div class="overflow-x-auto">
+                <table class="w-full text-[11px]">
+                  <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Project</th><th class="px-2 py-1">Type</th><th class="px-2 py-1 text-right">Complexity</th><th class="px-2 py-1 text-right">Coupling</th></tr></thead>
+                  <tbody>${hotspotRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No type metrics rows.</td></tr>`}</tbody>
+                </table>
+              </div>
+            </div>
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-1 font-semibold text-slate-900">Third-Party Usage (sample)</p>
+              <div class="overflow-x-auto">
+                <table class="w-full text-[11px]">
+                  <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Dependency</th><th class="px-2 py-1">Kind</th><th class="px-2 py-1 text-right">Forms</th><th class="px-2 py-1 text-right">Intensity</th></tr></thead>
+                  <tbody>${dependencyUsageRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No dependency usage rows.</td></tr>`}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+            <p class="mb-1 font-semibold text-slate-900">Quality Violations (sample)</p>
+            <div class="overflow-x-auto">
+              <table class="w-full text-[11px]">
+                <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Rule</th><th class="px-2 py-1">Severity</th><th class="px-2 py-1">Subject</th><th class="px-2 py-1">Detail</th></tr></thead>
+                <tbody>${violationSampleRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No violations detected.</td></tr>`}</tbody>
+              </table>
+            </div>
+            <p class="mt-1 text-[11px] text-slate-600">
+              Trend snapshot: LOC=${escapeHtml(String(trendMetrics.loc_total || 0))},
+              max_complexity=${escapeHtml(String(trendMetrics.max_complexity || 0))},
+              avg_complexity=${escapeHtml(String(trendMetrics.avg_complexity || 0))},
+              hotspot_count=${escapeHtml(String(trendMetrics.hotspot_count || 0))}
+            </p>
+          </div>
+        </div>
+      ` : "";
 
       el.discoverDataContent.innerHTML = `
         <div class="grid gap-2 sm:grid-cols-5">
@@ -4766,6 +5159,7 @@ function renderDiscoverInsights() {
             </table>
           </div>
         </div>
+        ${qualitySectionHtml}
       `;
     }
   }
@@ -9032,6 +9426,62 @@ async function downloadDiscoverDbArtifact(kind) {
   window.URL.revokeObjectURL(url);
 }
 
+async function downloadDiscoverArtifact(kind) {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) {
+    throw new Error("No run selected. Complete Discover scan first.");
+  }
+  const validKinds = new Set([
+    "project_metrics",
+    "quality_rules",
+    "quality_violations",
+    "dead_code",
+    "type_dependency_matrix",
+    "runtime_dependency_matrix",
+    "third_party_usage",
+    "trend_snapshot",
+    "trend_series",
+  ]);
+  const type = validKinds.has(String(kind || "")) ? String(kind) : "project_metrics";
+  const response = await fetch(
+    `/api/runs/${encodeURIComponent(runId)}/discover-artifact?type=${encodeURIComponent(type)}`,
+    { method: "GET" },
+  );
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const payload = await response.json();
+      message = String(payload?.error || message);
+    } catch (_err) {
+      // no-op
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const header = String(response.headers.get("content-disposition") || "");
+  const match = header.match(/filename=\"?([^\";]+)\"?/i);
+  const fallbackByType = {
+    project_metrics: `project_metrics-${runId}.json`,
+    quality_rules: `quality_rules-${runId}.json`,
+    quality_violations: `quality_violations-${runId}.json`,
+    dead_code: `dead_code-${runId}.json`,
+    type_dependency_matrix: `type_dependency_matrix-${runId}.json`,
+    runtime_dependency_matrix: `runtime_dependency_matrix-${runId}.json`,
+    third_party_usage: `third_party_usage-${runId}.json`,
+    trend_snapshot: `trend_snapshot-${runId}.json`,
+    trend_series: `trend_series-${runId}.json`,
+  };
+  const filename = (match && match[1]) ? match[1] : fallbackByType[type];
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 function renderVerifyTabButtons() {
   if (!el.verifyTabButtons) return;
   const selected = String(state.verify.selectedTab || "summary");
@@ -12001,6 +12451,10 @@ function bindEvents() {
   el.discoverOpenSystemMap?.addEventListener("click", () => setDiscoverResultsView("system"));
   el.discoverOpenHealthDebt?.addEventListener("click", () => setDiscoverResultsView("health"));
   el.discoverOpenConventions?.addEventListener("click", () => setDiscoverResultsView("conventions"));
+  el.discoverOpenCodeQuality?.addEventListener("click", () => setDiscoverResultsView("code_quality"));
+  el.discoverOpenDeadCode?.addEventListener("click", () => setDiscoverResultsView("dead_code"));
+  el.discoverOpenDependencyMatrix?.addEventListener("click", () => setDiscoverResultsView("dependency_matrix"));
+  el.discoverOpenTrends?.addEventListener("click", () => setDiscoverResultsView("trends"));
   el.discoverOpenData?.addEventListener("click", () => setDiscoverResultsView("data"));
   document.querySelectorAll("[data-city-overlay]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -12060,6 +12514,78 @@ function bindEvents() {
       setGlobalSearchStatus("Data dictionary exported.");
     } catch (err) {
       setGlobalSearchStatus(`Data dictionary export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportProjectMetrics?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("project_metrics");
+      setGlobalSearchStatus("Project metrics exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Project metrics export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportQualityRules?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("quality_rules");
+      setGlobalSearchStatus("Quality rules exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Quality rules export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportQualityViolations?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("quality_violations");
+      setGlobalSearchStatus("Quality violations exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Quality violations export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportDeadCode?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("dead_code");
+      setGlobalSearchStatus("Dead code report exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Dead code export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportTypeDependencyMatrix?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("type_dependency_matrix");
+      setGlobalSearchStatus("Type dependency matrix exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Type dependency matrix export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportRuntimeDependencyMatrix?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("runtime_dependency_matrix");
+      setGlobalSearchStatus("Runtime dependency matrix exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Runtime dependency matrix export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportThirdPartyUsage?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("third_party_usage");
+      setGlobalSearchStatus("Third-party usage exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Third-party usage export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportTrendSnapshot?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("trend_snapshot");
+      setGlobalSearchStatus("Trend snapshot exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Trend snapshot export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportTrendSeries?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("trend_series");
+      setGlobalSearchStatus("Trend series exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Trend series export failed: ${err.message || err}`, true);
     }
   });
   el.wizardPrevDiscover?.addEventListener("click", () => {

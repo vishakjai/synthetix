@@ -8115,6 +8115,69 @@ async def api_download_db_artifact(request):
     )
 
 
+async def api_download_discover_artifact(request):
+    run_id = request.path_params.get("run_id", "")
+    run = MANAGER.get_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    query = request.query_params
+    artifact_type = str(query.get("type", "project_metrics")).strip().lower()
+    allowlist: dict[str, tuple[str, str]] = {
+        "project_metrics": ("project_metrics", "project_metrics"),
+        "quality_rules": ("code_quality_rules", "quality_rules"),
+        "quality_violations": ("quality_violation_report", "quality_violations"),
+        "dead_code": ("dead_code_report", "dead_code"),
+        "type_dependency_matrix": ("type_dependency_matrix", "type_dependency_matrix"),
+        "runtime_dependency_matrix": ("runtime_dependency_matrix", "runtime_dependency_matrix"),
+        "third_party_usage": ("third_party_usage", "third_party_usage"),
+        "trend_snapshot": ("trend_snapshot", "trend_snapshot"),
+        "trend_series": ("trend_series", "trend_series"),
+    }
+    if artifact_type not in allowlist:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "type must be one of: project_metrics, quality_rules, quality_violations, "
+                    "dead_code, type_dependency_matrix, runtime_dependency_matrix, "
+                    "third_party_usage, trend_snapshot, trend_series"
+                ),
+            },
+            status_code=400,
+        )
+
+    pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _analyst_output_from_state(pipeline_state)
+    if not isinstance(analyst_output, dict) or not analyst_output:
+        return JSONResponse({"ok": False, "error": "analyst output not found for this run"}, status_code=404)
+
+    try:
+        report = build_analyst_report_v2(analyst_output)
+        raw = report.get("raw_artifacts", {}) if isinstance(report.get("raw_artifacts", {}), dict) else {}
+        if not raw:
+            raw = build_raw_artifact_set_v1(analyst_output)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"failed to build raw artifacts: {exc}"}, status_code=500)
+
+    artifact_key, file_stub = allowlist[artifact_type]
+    payload = raw.get(artifact_key)
+    if not payload:
+        return JSONResponse({"ok": False, "error": f"{artifact_type} artifact unavailable"}, status_code=404)
+
+    file_name = f"{file_stub}-{safe_name(str(run_id or 'run'))}.json"
+    content = json.dumps(payload, indent=2, ensure_ascii=True, default=str).encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+            "Cache-Control": "no-store",
+            "X-Discover-Artifact-Type": artifact_type,
+        },
+    )
+
+
 def _coerce_stage(stage_raw: Any) -> int:
     try:
         stage = int(stage_raw)
@@ -12044,6 +12107,7 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/db-artifact", api_download_db_artifact, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/discover-artifact", api_download_discover_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/chat", api_stage_chat, methods=["POST"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration/proposals", api_stage_create_proposal, methods=["POST"]),
