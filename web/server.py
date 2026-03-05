@@ -4165,6 +4165,101 @@ def _config_from_payload(payload: dict[str, Any]) -> PipelineConfig:
     )
 
 
+def _llm_preflight_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    provider_raw = str(payload.get("provider", "anthropic")).strip().lower()
+    if provider_raw not in {"anthropic", "openai"}:
+        raise ValueError("provider must be 'anthropic' or 'openai'")
+
+    requested_model = str(payload.get("model", "")).strip()
+    incoming_key = str(payload.get("api_key", "")).strip()
+    key_source = "payload" if incoming_key else "settings"
+    llm_cfg = SETTINGS_STORE.get_llm_provider_config(provider_raw)
+    resolved_key = incoming_key or str(llm_cfg.get("api_key", "")).strip()
+    resolved_model = requested_model or str(llm_cfg.get("model", "")).strip() or (
+        "gpt-4o" if provider_raw == "openai" else "claude-sonnet-4-20250514"
+    )
+    base_url = str(llm_cfg.get("base_url", "")).strip().lower()
+
+    if not resolved_key:
+        return {
+            "ok": False,
+            "provider": provider_raw,
+            "model": resolved_model,
+            "key_source": key_source,
+            "error": (
+                f"No {provider_raw} API key is configured. "
+                "Save it in Settings > LLM credentials."
+            ),
+            "code": "missing_key",
+        }
+
+    key_lower = resolved_key.lower()
+    if provider_raw == "openai":
+        if key_lower.startswith("bearer "):
+            return {
+                "ok": False,
+                "provider": provider_raw,
+                "model": resolved_model,
+                "key_source": key_source,
+                "error": "OpenAI API key is malformed. Paste only the raw key value (sk-... / sk-proj-...), not 'Bearer ...'.",
+                "code": "malformed_key",
+            }
+        if key_lower.startswith("openai_api_key") or key_lower.startswith("export openai_api_key"):
+            return {
+                "ok": False,
+                "provider": provider_raw,
+                "model": resolved_model,
+                "key_source": key_source,
+                "error": "OpenAI API key is malformed. Paste only the key value, not 'OPENAI_API_KEY=...'.",
+                "code": "malformed_key",
+            }
+        is_openai_host = ("api.openai.com" in base_url) or (not base_url)
+        if is_openai_host and not re.match(r"^sk-(proj-)?[A-Za-z0-9_\-]{20,}$", resolved_key):
+            return {
+                "ok": False,
+                "provider": provider_raw,
+                "model": resolved_model,
+                "key_source": key_source,
+                "error": "OpenAI API key format looks invalid for api.openai.com. Expected sk-... or sk-proj-....",
+                "code": "malformed_key",
+            }
+    elif provider_raw == "anthropic":
+        if key_lower.startswith("bearer "):
+            return {
+                "ok": False,
+                "provider": provider_raw,
+                "model": resolved_model,
+                "key_source": key_source,
+                "error": "Anthropic API key is malformed. Paste only the raw key value (sk-ant-...), not 'Bearer ...'.",
+                "code": "malformed_key",
+            }
+        if key_lower.startswith("anthropic_api_key") or key_lower.startswith("export anthropic_api_key"):
+            return {
+                "ok": False,
+                "provider": provider_raw,
+                "model": resolved_model,
+                "key_source": key_source,
+                "error": "Anthropic API key is malformed. Paste only the key value, not 'ANTHROPIC_API_KEY=...'.",
+                "code": "malformed_key",
+            }
+        if not re.match(r"^sk-ant-[A-Za-z0-9_\-]{16,}$", resolved_key):
+            return {
+                "ok": False,
+                "provider": provider_raw,
+                "model": resolved_model,
+                "key_source": key_source,
+                "error": "Anthropic API key format looks invalid. Expected sk-ant-....",
+                "code": "malformed_key",
+            }
+
+    return {
+        "ok": True,
+        "provider": provider_raw,
+        "model": resolved_model,
+        "key_source": key_source,
+    }
+
+
 def _read_json_file(path: Path) -> Any:
     if not path.exists() or not path.is_file():
         return None
@@ -6456,6 +6551,24 @@ async def api_internal_run_worker(request):
     return JSONResponse(result, status_code=status)
 
 
+async def api_run_preflight(request):
+    payload = _get_json(await request.body())
+    try:
+        llm_preflight = _llm_preflight_from_payload(payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc), "preflight": {"ok": False, "code": "invalid_provider"}}, status_code=400)
+    if not bool(llm_preflight.get("ok")):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(llm_preflight.get("error", "LLM preflight failed")),
+                "preflight": llm_preflight,
+            },
+            status_code=400,
+        )
+    return JSONResponse({"ok": True, "preflight": llm_preflight})
+
+
 async def api_start_run(request):
     payload = _get_json(await request.body())
     objectives = str(payload.get("objectives", "")).strip()
@@ -6498,6 +6611,20 @@ async def api_start_run(request):
             return JSONResponse({"ok": False, "error": "legacy_code is required for code_modernization use case"}, status_code=400)
     if use_case == "database_conversion" and not database_schema:
         return JSONResponse({"ok": False, "error": "database_schema is required for database_conversion use case"}, status_code=400)
+
+    try:
+        llm_preflight = _llm_preflight_from_payload(payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc), "preflight": {"ok": False, "code": "invalid_provider"}}, status_code=400)
+    if not bool(llm_preflight.get("ok")):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(llm_preflight.get("error", "LLM preflight failed")),
+                "preflight": llm_preflight,
+            },
+            status_code=400,
+        )
 
     try:
         config = _config_from_payload(payload)
@@ -11465,6 +11592,7 @@ routes = [
     Route("/api/work-items", api_list_work_items, methods=["GET"]),
     Route("/api/work-items", api_create_work_item, methods=["POST"]),
     Route("/api/work-items/{item_id:str}/status", api_set_work_item_status, methods=["POST"]),
+    Route("/api/runs/preflight", api_run_preflight, methods=["POST"]),
     Route("/api/runs", api_list_runs, methods=["GET"]),
     Route("/api/runs", api_start_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}", api_get_run, methods=["GET"]),

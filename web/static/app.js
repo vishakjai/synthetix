@@ -11541,6 +11541,10 @@ function selectedStageAgentIdsForRun() {
   return { ...defaultBuilderMap() };
 }
 
+async function runStartPreflight(payload) {
+  return api("/api/runs/preflight", payload, "POST");
+}
+
 async function startRun() {
   if (state.runStart?.pending) return;
   const objectives = (el.objectives.value || "").trim();
@@ -11699,6 +11703,23 @@ async function startRun() {
     deploy_output_dir: el.deployOutputDir.value || "./deploy_output",
     integration_context: integrationContext,
   };
+
+  try {
+    setGlobalSearchStatus("Running start-run preflight checks...");
+    await runStartPreflight(payload);
+  } catch (err) {
+    state.runStart.pending = false;
+    state.runStart.startedAt = 0;
+    renderRunControls();
+    renderProgress();
+    const msg = String(err?.message || err || "Run preflight failed");
+    setGlobalSearchStatus(`Run preflight failed: ${msg}`, true);
+    alert(`Run preflight failed: ${msg}`);
+    if (/api key|llm|provider|credentials/i.test(msg)) {
+      setMode(MODES.SETTINGS);
+    }
+    return;
+  }
 
   let data = null;
   try {
