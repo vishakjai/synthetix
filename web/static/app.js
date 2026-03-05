@@ -4193,15 +4193,46 @@ function _discoverData() {
 function _discoverRawArtifacts() {
   const runOutput = getAnalystOutput(state.currentRun || {});
   const runRaw = (runOutput && typeof runOutput.raw_artifacts === "object") ? runOutput.raw_artifacts : {};
-  if (runRaw && Object.keys(runRaw).length) return runRaw;
   const brief = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
     ? state.discoverAnalystBrief.data
     : {};
   const briefRaw = (brief.raw_artifacts && typeof brief.raw_artifacts === "object") ? brief.raw_artifacts : {};
-  if (briefRaw && Object.keys(briefRaw).length) return briefRaw;
   const report = (brief.analyst_report_v2 && typeof brief.analyst_report_v2 === "object") ? brief.analyst_report_v2 : {};
   const reportRaw = (report.raw_artifacts && typeof report.raw_artifacts === "object") ? report.raw_artifacts : {};
-  return reportRaw || {};
+  const isMeaningful = (value) => {
+    if (value == null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    if (typeof value === "string") return value.trim().length > 0;
+    return true;
+  };
+  const mergeValues = (current, incoming) => {
+    if (!isMeaningful(incoming)) return current;
+    if (!isMeaningful(current)) return incoming;
+    if (
+      current
+      && incoming
+      && typeof current === "object"
+      && typeof incoming === "object"
+      && !Array.isArray(current)
+      && !Array.isArray(incoming)
+    ) {
+      const merged = { ...current };
+      Object.entries(incoming).forEach(([key, value]) => {
+        merged[key] = mergeValues(merged[key], value);
+      });
+      return merged;
+    }
+    return incoming;
+  };
+  const merged = {};
+  [runRaw, briefRaw, reportRaw].forEach((source) => {
+    if (!source || typeof source !== "object") return;
+    Object.entries(source).forEach(([key, value]) => {
+      merged[key] = mergeValues(merged[key], value);
+    });
+  });
+  return merged;
 }
 
 function _nodeKey(node, idx) {
@@ -4788,7 +4819,13 @@ function renderDiscoverInsights() {
   }
 
   if (el.discoverDeadCodeContent) {
-    const candidates = Array.isArray(cqDeadCode.candidates) ? cqDeadCode.candidates : [];
+    const candidates = (Array.isArray(cqDeadCode.candidates) && cqDeadCode.candidates.length > 0)
+      ? cqDeadCode.candidates
+      : [
+        ...(Array.isArray(cqDeadCode.probable_dead_types) ? cqDeadCode.probable_dead_types.map((row) => ({ ...row, kind: row?.kind || "type" })) : []),
+        ...(Array.isArray(cqDeadCode.probable_dead_methods) ? cqDeadCode.probable_dead_methods.map((row) => ({ ...row, kind: row?.kind || "method" })) : []),
+        ...(Array.isArray(cqDeadCode.probable_dead_fields) ? cqDeadCode.probable_dead_fields.map((row) => ({ ...row, kind: row?.kind || "field" })) : []),
+      ];
     const rows = candidates.slice(0, 12).map((row) => `
       <tr>
         <td class="px-2 py-1">${escapeHtml(String(row?.kind || ""))}</td>
@@ -4849,29 +4886,31 @@ function renderDiscoverInsights() {
       </div>
       <div class="mt-2 grid gap-2 lg:grid-cols-2">
         <div class="rounded border border-slate-300 bg-slate-50 p-2">
-          <p class="mb-1 font-semibold text-slate-900">Type Dependency Matrix (sample)</p>
+          <p class="mb-1 font-semibold text-slate-900">Type Dependency Matrix (top rows)</p>
           <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">From</th><th class="px-2 py-1">To</th><th class="px-2 py-1">Kind</th></tr></thead><tbody>${typeRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No type dependencies.</td></tr>`}</tbody></table></div>
         </div>
         <div class="rounded border border-slate-300 bg-slate-50 p-2">
-          <p class="mb-1 font-semibold text-slate-900">Runtime Dependency Matrix (sample)</p>
+          <p class="mb-1 font-semibold text-slate-900">Runtime Dependency Matrix (top rows)</p>
           <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">From</th><th class="px-2 py-1">To</th><th class="px-2 py-1">Kind</th></tr></thead><tbody>${runtimeRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No runtime dependencies.</td></tr>`}</tbody></table></div>
         </div>
       </div>
       <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
-        <p class="mb-1 font-semibold text-slate-900">Third-Party Usage (sample)</p>
+        <p class="mb-1 font-semibold text-slate-900">Third-Party Usage (top rows)</p>
         <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Dependency</th><th class="px-2 py-1">Kind</th><th class="px-2 py-1 text-right">Forms</th><th class="px-2 py-1 text-right">Intensity</th></tr></thead><tbody>${tpRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="4">No third-party usage rows.</td></tr>`}</tbody></table></div>
       </div>
     `;
   }
 
   if (el.discoverTrendsContent) {
-    const series = Array.isArray(cqTrendSeries.points) ? cqTrendSeries.points : [];
+    const series = (Array.isArray(cqTrendSeries.points) && cqTrendSeries.points.length > 0)
+      ? cqTrendSeries.points
+      : (Array.isArray(cqTrendSeries.series) ? cqTrendSeries.series : []);
     const seriesRows = series.slice(0, 12).map((row) => `
       <tr>
-        <td class="px-2 py-1">${escapeHtml(String(row?.at || row?.timestamp || ""))}</td>
-        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.loc_total || row?.loc || 0))}</td>
-        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.avg_complexity || 0))}</td>
-        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.max_complexity || 0))}</td>
+        <td class="px-2 py-1">${escapeHtml(String(row?.at || row?.timestamp || row?.captured_at || ""))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.loc_total || row?.loc || row?.metrics?.loc_total || 0))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.avg_complexity || row?.metrics?.avg_complexity || 0))}</td>
+        <td class="px-2 py-1 text-right">${escapeHtml(String(row?.max_complexity || row?.metrics?.max_complexity || 0))}</td>
       </tr>
     `).join("");
     el.discoverTrendsContent.innerHTML = `
@@ -9386,13 +9425,61 @@ function exportDiscoverBaselineReport() {
   URL.revokeObjectURL(url);
 }
 
+function _downloadBlobContent(content, fileName, contentType = "application/octet-stream") {
+  const blob = new Blob([content], { type: contentType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 async function downloadDiscoverDbArtifact(kind) {
-  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
-  if (!runId) {
-    throw new Error("No run selected. Complete Discover scan first.");
-  }
   const validKinds = new Set(["source_schema", "source_erd", "data_dictionary"]);
   const type = validKinds.has(String(kind || "")) ? String(kind) : "source_schema";
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  const safeRun = runId || "discover";
+  const rawArtifacts = _discoverRawArtifacts();
+  const localKeyByType = {
+    source_schema: "source_schema_model",
+    source_erd: "source_erd",
+    data_dictionary: "source_data_dictionary_markdown",
+  };
+  const localPayload = rawArtifacts?.[localKeyByType[type]];
+  if (localPayload) {
+    if (type === "source_schema") {
+      _downloadBlobContent(
+        JSON.stringify(localPayload, null, 2),
+        `source_schema-${safeRun}.json`,
+        "application/json",
+      );
+      return;
+    }
+    if (type === "source_erd") {
+      const mermaid = String(localPayload?.mermaid || "").trim();
+      if (mermaid) {
+        _downloadBlobContent(`${mermaid}\n`, `source_erd-${safeRun}.mmd`, "text/plain;charset=utf-8");
+        return;
+      }
+    }
+    const markdownFromArtifact = String(localPayload?.markdown || "").trim();
+    const dictRows = Array.isArray(rawArtifacts?.source_data_dictionary?.rows) ? rawArtifacts.source_data_dictionary.rows : [];
+    const markdownFallback = markdownFromArtifact || (
+      dictRows.length
+        ? `# Source Data Dictionary\n\nRows: ${dictRows.length}\n`
+        : ""
+    );
+    if (markdownFallback) {
+      _downloadBlobContent(`${markdownFallback}\n`, `data_dictionary-${safeRun}.md`, "text/markdown;charset=utf-8");
+      return;
+    }
+  }
+  if (!runId) {
+    throw new Error("No artifact available to export yet. Complete Discover scan first.");
+  }
   const response = await fetch(
     `/api/runs/${encodeURIComponent(runId)}/db-artifact?type=${encodeURIComponent(type)}`,
     { method: "GET" },
@@ -9427,10 +9514,6 @@ async function downloadDiscoverDbArtifact(kind) {
 }
 
 async function downloadDiscoverArtifact(kind) {
-  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
-  if (!runId) {
-    throw new Error("No run selected. Complete Discover scan first.");
-  }
   const validKinds = new Set([
     "project_metrics",
     "quality_rules",
@@ -9443,6 +9526,32 @@ async function downloadDiscoverArtifact(kind) {
     "trend_series",
   ]);
   const type = validKinds.has(String(kind || "")) ? String(kind) : "project_metrics";
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  const safeRun = runId || "discover";
+  const rawArtifacts = _discoverRawArtifacts();
+  const localKeyByType = {
+    project_metrics: "project_metrics",
+    quality_rules: "code_quality_rules",
+    quality_violations: "quality_violation_report",
+    dead_code: "dead_code_report",
+    type_dependency_matrix: "type_dependency_matrix",
+    runtime_dependency_matrix: "runtime_dependency_matrix",
+    third_party_usage: "third_party_usage",
+    trend_snapshot: "trend_snapshot",
+    trend_series: "trend_series",
+  };
+  const localPayload = rawArtifacts?.[localKeyByType[type]];
+  if (localPayload) {
+    _downloadBlobContent(
+      JSON.stringify(localPayload, null, 2),
+      `${type}-${safeRun}.json`,
+      "application/json",
+    );
+    return;
+  }
+  if (!runId) {
+    throw new Error("No artifact available to export yet. Complete Discover scan first.");
+  }
   const response = await fetch(
     `/api/runs/${encodeURIComponent(runId)}/discover-artifact?type=${encodeURIComponent(type)}`,
     { method: "GET" },
