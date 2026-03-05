@@ -931,14 +931,53 @@ OUTPUT REQUIREMENTS:
                 break
         return rules[:180]
 
+    def _compute_bundle_loc_metrics(self, bundle_file_map: dict[str, str]) -> dict[str, Any]:
+        file_line_counts: dict[str, int] = {}
+        totals = {
+            "total_loc": 0,
+            "forms_loc": 0,
+            "modules_loc": 0,
+            "classes_loc": 0,
+            "reports_loc": 0,
+            "projects_loc": 0,
+        }
+        if not isinstance(bundle_file_map, dict):
+            return {**totals, "files_scanned": 0, "by_file": file_line_counts}
+        for raw_path, raw_text in bundle_file_map.items():
+            path = self._normalize_legacy_path(str(raw_path))
+            if not path:
+                continue
+            text = str(raw_text or "")
+            loc = len(text.splitlines())
+            file_line_counts[path] = loc
+            totals["total_loc"] += loc
+            low = path.lower()
+            if low.endswith((".frm", ".ctl")):
+                totals["forms_loc"] += loc
+            elif low.endswith(".bas"):
+                totals["modules_loc"] += loc
+            elif low.endswith(".cls"):
+                totals["classes_loc"] += loc
+            elif low.endswith(".dsr"):
+                totals["reports_loc"] += loc
+            elif low.endswith(".vbp"):
+                totals["projects_loc"] += loc
+        return {
+            **totals,
+            "files_scanned": len(file_line_counts),
+            "by_file": file_line_counts,
+        }
+
     def _build_vb6_project_breakdown(
         self,
         project_defs: list[dict[str, Any]],
         vb6_by_path: dict[str, dict[str, Any]],
         bundle_file_map: dict[str, str] | None = None,
+        file_line_counts: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         files = bundle_file_map if isinstance(bundle_file_map, dict) else {}
+        loc_by_file = file_line_counts if isinstance(file_line_counts, dict) else {}
         known_paths: set[str] = {str(path) for path in vb6_by_path.keys()}
         known_paths.update(str(path) for path in files.keys())
         known_paths_by_lower = {str(path).lower(): path for path in known_paths}
@@ -1027,9 +1066,26 @@ OUTPUT REQUIREMENTS:
                 modernization_notes.append("Validate SQL/table contracts and side effects during migration.")
             if not modernization_notes:
                 modernization_notes.append("Preserve workflow behavior and event semantics during modernization.")
-            bas_modules = [m for m in sorted({str(x) for x in member_files if str(x).strip()}) if str(m).lower().endswith(".bas")]
+            member_files_unique = sorted({str(x) for x in member_files if str(x).strip()})
+            project_source_loc = sum(int(loc_by_file.get(path, 0) or 0) for path in member_files_unique)
+            project_forms_loc = sum(
+                int(loc_by_file.get(path, 0) or 0)
+                for path in member_files_unique
+                if str(path).lower().endswith((".frm", ".ctl"))
+            )
+            project_modules_loc = sum(
+                int(loc_by_file.get(path, 0) or 0)
+                for path in member_files_unique
+                if str(path).lower().endswith(".bas")
+            )
+            project_classes_loc = sum(
+                int(loc_by_file.get(path, 0) or 0)
+                for path in member_files_unique
+                if str(path).lower().endswith(".cls")
+            )
+            bas_modules = [m for m in member_files_unique if str(m).lower().endswith(".bas")]
             binary_companions = [
-                m for m in sorted({str(x) for x in member_files if str(x).strip()})
+                m for m in member_files_unique
                 if str(m).lower().endswith((".frx", ".ctx", ".res"))
             ]
             rows.append(
@@ -1039,7 +1095,11 @@ OUTPUT REQUIREMENTS:
                     "project_type": str(project.get("project_type", "")).strip(),
                     "startup_object": str(project.get("startup_object", "")).strip(),
                     "member_count": len(members),
-                    "member_files": sorted({str(x) for x in member_files if str(x).strip()})[:160],
+                    "member_files": member_files_unique[:160],
+                    "source_loc_total": project_source_loc,
+                    "source_loc_forms": project_forms_loc,
+                    "source_loc_modules": project_modules_loc,
+                    "source_loc_classes": project_classes_loc,
                     "member_type_counts": member_type_counts,
                     "forms": sorted_forms,
                     "controls": sorted_controls,
@@ -1128,6 +1188,23 @@ OUTPUT REQUIREMENTS:
                 for v in signals.get("integrations", []):
                     bucket["integration_hints"].add(str(v))
             for _, bucket in grouped.items():
+                member_files_unique = sorted({str(x) for x in bucket["member_files"] if str(x).strip()})
+                project_source_loc = sum(int(loc_by_file.get(path, 0) or 0) for path in member_files_unique)
+                project_forms_loc = sum(
+                    int(loc_by_file.get(path, 0) or 0)
+                    for path in member_files_unique
+                    if str(path).lower().endswith((".frm", ".ctl"))
+                )
+                project_modules_loc = sum(
+                    int(loc_by_file.get(path, 0) or 0)
+                    for path in member_files_unique
+                    if str(path).lower().endswith(".bas")
+                )
+                project_classes_loc = sum(
+                    int(loc_by_file.get(path, 0) or 0)
+                    for path in member_files_unique
+                    if str(path).lower().endswith(".cls")
+                )
                 forms_sorted = sorted(bucket["forms"])[: self.LEGACY_MAX_FORMS]
                 controls_sorted = sorted(bucket["controls"])[: self.LEGACY_MAX_CONTROLS]
                 events_sorted = sorted(bucket["event_handlers"])[: self.LEGACY_MAX_CONTROLS]
@@ -1152,7 +1229,11 @@ OUTPUT REQUIREMENTS:
                         "project_type": bucket["project_type"],
                         "startup_object": bucket["startup_object"],
                         "member_count": int(bucket["member_count"] or 0),
-                        "member_files": sorted({str(x) for x in bucket["member_files"] if str(x).strip()})[:160],
+                        "member_files": member_files_unique[:160],
+                        "source_loc_total": project_source_loc,
+                        "source_loc_forms": project_forms_loc,
+                        "source_loc_modules": project_modules_loc,
+                        "source_loc_classes": project_classes_loc,
                         "member_type_counts": dict(bucket["member_type_counts"]),
                         "forms": forms_sorted,
                         "controls": controls_sorted,
@@ -1540,6 +1621,12 @@ Analyze this code chunk and extract behavior compactly.
         bundle_file_map = self._parse_legacy_bundle_files(text)
         if not bundle_file_map:
             bundle_file_map = {"inline_legacy.vb": text}
+        source_loc_metrics = self._compute_bundle_loc_metrics(bundle_file_map)
+        source_loc_by_file = (
+            source_loc_metrics.get("by_file", {})
+            if isinstance(source_loc_metrics.get("by_file", {}), dict)
+            else {}
+        )
         bundle_paths = list(bundle_file_map.keys())
         legacy_skill_profile = infer_legacy_skill(
             file_paths=bundle_paths,
@@ -1823,7 +1910,12 @@ Analyze this code chunk and extract behavior compactly.
             if len(contracts) >= 40:
                 break
 
-        vb6_projects = self._build_vb6_project_breakdown(project_definitions, vb6_by_path, bundle_file_map)
+        vb6_projects = self._build_vb6_project_breakdown(
+            project_definitions,
+            vb6_by_path,
+            bundle_file_map,
+            source_loc_by_file,
+        )
 
         ui_event_rows_all = list(ui_event_map_index.values())
         ui_form_handler_map: dict[str, set[str]] = {}
@@ -1874,6 +1966,15 @@ Analyze this code chunk and extract behavior compactly.
                         if matches:
                             form_member_path_map[(pname, form_id)] = matches
         discovered_unmapped_form_ids: list[str] = []
+        form_file_loc_by_base: dict[str, int] = {}
+        for path, loc in source_loc_by_file.items():
+            low_path = str(path).lower()
+            if not low_path.endswith((".frm", ".ctl", ".cls")):
+                continue
+            stem = str(path).replace("\\", "/").split("/")[-1].rsplit(".", 1)[0].strip().lower()
+            if not stem:
+                continue
+            form_file_loc_by_base[stem] = int(form_file_loc_by_base.get(stem, 0) or 0) + int(loc or 0)
         if project_scoped_forms:
             for fid in sorted(forms_set):
                 form_id = str(fid).strip()
@@ -1924,6 +2025,10 @@ Analyze this code chunk and extract behavior compactly.
             expected_handlers_count = max(len(expected_events), len(ui_handlers), extracted_handlers_count)
             explained_handlers_count = extracted_handlers_count
             sql_touched_count = int(ui_form_sql_touches.get(normalized_form_name, 0) or 0)
+            member_loc = 0
+            for member_path in form_member_path_map.get((project_name, form_id), []):
+                member_loc += int(source_loc_by_file.get(self._normalize_legacy_path(member_path), 0) or 0)
+            source_loc = int(member_loc or form_file_loc_by_base.get(normalized_form_name, 0) or 0)
             coverage_score = 1.0 if expected_handlers_count == 0 else min(1.0, extracted_handlers_count / float(expected_handlers_count))
             confidence_score = min(
                 0.99,
@@ -1948,6 +2053,7 @@ Analyze this code chunk and extract behavior compactly.
                     "extracted_handlers_count": extracted_handlers_count,
                     "explained_handlers_count": explained_handlers_count,
                     "sql_touched_count": sql_touched_count,
+                    "source_loc": source_loc,
                     "coverage_score": round(coverage_score, 4),
                     "confidence_score": round(confidence_score, 4),
                 }
@@ -1962,6 +2068,7 @@ Analyze this code chunk and extract behavior compactly.
                     "extracted_handlers_count": extracted_handlers_count,
                     "explained_handlers_count": explained_handlers_count,
                     "sql_touched_count": sql_touched_count,
+                    "source_loc": source_loc,
                     "risk_count": 0,
                 }
             )
@@ -2041,6 +2148,15 @@ Analyze this code chunk and extract behavior compactly.
             "form_count_referenced": referenced_form_count,
             "form_count_discovered_files": discovered_form_file_count,
             "form_count_unmapped_files": unmapped_form_file_count,
+            "source_loc_total": int(source_loc_metrics.get("total_loc", 0) or 0),
+            "source_loc_forms": int(source_loc_metrics.get("forms_loc", 0) or 0),
+            "source_loc_modules": int(source_loc_metrics.get("modules_loc", 0) or 0),
+            "source_loc_classes": int(source_loc_metrics.get("classes_loc", 0) or 0),
+            "source_files_scanned": int(source_loc_metrics.get("files_scanned", 0) or 0),
+            "source_loc_by_file": [
+                {"path": path, "loc": int(loc or 0)}
+                for path, loc in sorted(source_loc_by_file.items())
+            ][:2000],
             "vb6_projects": vb6_projects,
             "forms": forms_details,
             "form_coverage": form_coverage[: self.LEGACY_MAX_FORMS],
@@ -2143,6 +2259,15 @@ Analyze this code chunk and extract behavior compactly.
                 "form_count_referenced": referenced_form_count,
                 "form_count_discovered_files": discovered_form_file_count,
                 "form_count_unmapped_files": unmapped_form_file_count,
+                "source_loc_total": int(source_loc_metrics.get("total_loc", 0) or 0),
+                "source_loc_forms": int(source_loc_metrics.get("forms_loc", 0) or 0),
+                "source_loc_modules": int(source_loc_metrics.get("modules_loc", 0) or 0),
+                "source_loc_classes": int(source_loc_metrics.get("classes_loc", 0) or 0),
+                "source_files_scanned": int(source_loc_metrics.get("files_scanned", 0) or 0),
+                "source_loc_by_file": [
+                    {"path": path, "loc": int(loc or 0)}
+                    for path, loc in sorted(source_loc_by_file.items())
+                ][:2000],
                 "controls": sorted(controls_set)[: self.LEGACY_MAX_CONTROLS],
                 "activex_dependencies": sorted(activex_set)[: self.LEGACY_MAX_DEPENDENCIES],
                 "dependency_references": dependency_reference_rows,
@@ -2182,7 +2307,7 @@ Analyze this code chunk and extract behavior compactly.
             + f"chunks={chunk_count}, llm_chunks={llm_chunk_limit}, extracted_contracts={len(contracts)}, "
             + f"projects={len(vb6_projects)}, forms={forms_count_reported}, activex={len(activex_set)}, "
             + f"event_handlers={event_handler_count_exact}, dlls={len(dll_set)}, ocx={len(ocx_set)}, business_rules={len(business_rules_catalog)}, "
-            + f"sql={len(sql_query_set)}, win32_declares={len(win32_declares_set)}, readiness={readiness_score}.\n"
+            + f"sql={len(sql_query_set)}, win32_declares={len(win32_declares_set)}, loc={int(source_loc_metrics.get('total_loc', 0) or 0)}, readiness={readiness_score}.\n"
             + f"source_target={str(source_target_profile.get('source', {}).get('language', 'legacy'))}"
             + f"->{str(source_target_profile.get('target', {}).get('language', 'unspecified'))}.\n"
             + "\n".join(summaries[:10])
@@ -2258,6 +2383,33 @@ Analyze this code chunk and extract behavior compactly.
             if isinstance(vb6.get("binary_companion_files", []), list)
             else []
         )
+        source_loc_by_file_rows = (
+            vb6.get("source_loc_by_file", [])
+            if isinstance(vb6.get("source_loc_by_file", []), list)
+            else []
+        )
+        source_loc_by_file: dict[str, int] = {}
+        for row in source_loc_by_file_rows[:5000]:
+            if not isinstance(row, dict):
+                continue
+            path = self._normalize_legacy_path(str(row.get("path", "")))
+            if not path:
+                continue
+            source_loc_by_file[path] = int(row.get("loc", 0) or 0)
+        source_loc_total = int(vb6.get("source_loc_total", 0) or sum(source_loc_by_file.values()))
+        source_loc_forms = int(
+            vb6.get("source_loc_forms", 0)
+            or sum(loc for path, loc in source_loc_by_file.items() if str(path).lower().endswith((".frm", ".ctl")))
+        )
+        source_loc_modules = int(
+            vb6.get("source_loc_modules", 0)
+            or sum(loc for path, loc in source_loc_by_file.items() if str(path).lower().endswith(".bas"))
+        )
+        source_loc_classes = int(
+            vb6.get("source_loc_classes", 0)
+            or sum(loc for path, loc in source_loc_by_file.items() if str(path).lower().endswith(".cls"))
+        )
+        source_files_scanned = int(vb6.get("source_files_scanned", 0) or len(source_loc_by_file))
         vb6_projects: list[dict[str, Any]] = []
         for row in projects_raw[: self.LEGACY_MAX_PROJECTS]:
             if not isinstance(row, dict):
@@ -2270,6 +2422,10 @@ Analyze this code chunk and extract behavior compactly.
                     "startup_object": str(row.get("startup_object", "")).strip(),
                     "member_count": int(row.get("member_count", 0) or 0),
                     "member_files": row.get("member_files", [])[:80] if isinstance(row.get("member_files", []), list) else [],
+                    "source_loc_total": int(row.get("source_loc_total", 0) or 0),
+                    "source_loc_forms": int(row.get("source_loc_forms", 0) or 0),
+                    "source_loc_modules": int(row.get("source_loc_modules", 0) or 0),
+                    "source_loc_classes": int(row.get("source_loc_classes", 0) or 0),
                     "forms": row.get("forms", [])[: self.LEGACY_MAX_FORMS] if isinstance(row.get("forms", []), list) else [],
                     "controls": row.get("controls", [])[: self.LEGACY_MAX_CONTROLS] if isinstance(row.get("controls", []), list) else [],
                     "activex_dependencies": row.get("activex_dependencies", [])[: self.LEGACY_MAX_DEPENDENCIES]
@@ -2295,6 +2451,15 @@ Analyze this code chunk and extract behavior compactly.
         ui_form_control_map: dict[str, set[str]] = {}
         ui_form_event_map: dict[str, set[str]] = {}
         ui_form_sql_count: dict[str, int] = {}
+        form_file_loc_by_base: dict[str, int] = {}
+        for path, loc in source_loc_by_file.items():
+            low_path = str(path).lower()
+            if not low_path.endswith((".frm", ".ctl", ".cls")):
+                continue
+            stem = str(path).replace("\\", "/").split("/")[-1].rsplit(".", 1)[0].strip().lower()
+            if not stem:
+                continue
+            form_file_loc_by_base[stem] = int(form_file_loc_by_base.get(stem, 0) or 0) + int(loc or 0)
         for row in ui_event_map[:400]:
             if not isinstance(row, dict):
                 continue
@@ -2335,6 +2500,14 @@ Analyze this code chunk and extract behavior compactly.
                         extracted,
                         int(project.get("event_handler_count_exact", 0) or 0) // max(1, int(project.get("forms_count", 0) or len(project.get("forms", [])) or 1)),
                     )
+                    member_files = project.get("member_files", []) if isinstance(project.get("member_files", []), list) else []
+                    member_loc = 0
+                    for member_path in member_files:
+                        path_norm = self._normalize_legacy_path(str(member_path))
+                        low_path = path_norm.lower()
+                        if low_path.endswith(f"/{normalized}.frm") or low_path.endswith(f"/{normalized}.ctl") or low_path.endswith(f"/{normalized}.cls"):
+                            member_loc += int(source_loc_by_file.get(path_norm, 0) or 0)
+                    source_loc = int(member_loc or form_file_loc_by_base.get(normalized, 0) or 0)
                     coverage = 1.0 if expected <= 0 else min(1.0, extracted / float(expected))
                     confidence = min(
                         0.99,
@@ -2353,6 +2526,7 @@ Analyze this code chunk and extract behavior compactly.
                             "extracted_handlers_count": extracted,
                             "explained_handlers_count": extracted,
                             "sql_touched_count": int(ui_form_sql_count.get(normalized, 0) or 0),
+                            "source_loc": source_loc,
                             "coverage_score": round(coverage, 4),
                             "confidence_score": round(confidence, 4),
                         }
@@ -2379,6 +2553,7 @@ Analyze this code chunk and extract behavior compactly.
             event_handlers = sorted(ui_form_event_map.get(normalized, set()))[:120]
             extracted = len(event_handlers)
             expected = max(extracted, len(event_handlers))
+            source_loc = int(form_file_loc_by_base.get(normalized, 0) or 0)
             coverage = 1.0 if expected <= 0 else min(1.0, extracted / float(expected))
             confidence = min(0.99, 0.55 + (0.25 * coverage) + (0.1 if controls else 0.0))
             forms_details.append(
@@ -2394,6 +2569,7 @@ Analyze this code chunk and extract behavior compactly.
                     "extracted_handlers_count": extracted,
                     "explained_handlers_count": extracted,
                     "sql_touched_count": int(ui_form_sql_count.get(normalized, 0) or 0),
+                    "source_loc": source_loc,
                     "coverage_score": round(coverage, 4),
                     "confidence_score": round(confidence, 4),
                 }
@@ -2424,6 +2600,10 @@ Analyze this code chunk and extract behavior compactly.
                 expected = int(existing.get("expected_handlers_count", 0) or 0)
                 coverage = 1.0 if expected <= 0 else min(1.0, len(merged_events) / float(expected))
                 existing["coverage_score"] = round(coverage, 4)
+                existing["source_loc"] = max(
+                    int(existing.get("source_loc", 0) or 0),
+                    int(row.get("source_loc", 0) or 0),
+                )
                 existing["confidence_score"] = round(
                     min(0.99, 0.55 + (0.25 * coverage) + (0.1 if merged_controls else 0.0)),
                     4,
@@ -2439,6 +2619,7 @@ Analyze this code chunk and extract behavior compactly.
                 "extracted_handlers_count": int(row.get("extracted_handlers_count", 0) or 0),
                 "explained_handlers_count": int(row.get("explained_handlers_count", 0) or 0),
                 "sql_touched_count": int(row.get("sql_touched_count", 0) or 0),
+                "source_loc": int(row.get("source_loc", 0) or 0),
             }
             for row in forms_details[: self.LEGACY_MAX_FORMS]
             if isinstance(row, dict)
@@ -2473,6 +2654,12 @@ Analyze this code chunk and extract behavior compactly.
             "form_count_referenced": referenced_form_count,
             "form_count_discovered_files": discovered_form_file_count,
             "form_count_unmapped_files": unmapped_form_file_count,
+            "source_loc_total": source_loc_total,
+            "source_loc_forms": source_loc_forms,
+            "source_loc_modules": source_loc_modules,
+            "source_loc_classes": source_loc_classes,
+            "source_files_scanned": source_files_scanned,
+            "source_loc_by_file": [{"path": path, "loc": int(loc or 0)} for path, loc in sorted(source_loc_by_file.items())][:2000],
             "vb6_projects": vb6_projects,
             "forms": forms_details,
             "form_coverage": form_coverage,
@@ -2508,6 +2695,12 @@ Analyze this code chunk and extract behavior compactly.
                 "form_count_referenced": referenced_form_count,
                 "form_count_discovered_files": discovered_form_file_count,
                 "form_count_unmapped_files": unmapped_form_file_count,
+                "source_loc_total": source_loc_total,
+                "source_loc_forms": source_loc_forms,
+                "source_loc_modules": source_loc_modules,
+                "source_loc_classes": source_loc_classes,
+                "source_files_scanned": source_files_scanned,
+                "source_loc_by_file": [{"path": path, "loc": int(loc or 0)} for path, loc in sorted(source_loc_by_file.items())][:2000],
                 "controls": vb6.get("controls", []) if isinstance(vb6.get("controls", []), list) else [],
                 "activex_dependencies": vb6.get("activex_dependencies", []) if isinstance(vb6.get("activex_dependencies", []), list) else [],
                 "dependency_references": vb6.get("dependency_references", []) if isinstance(vb6.get("dependency_references", []), list) else [],
@@ -4273,6 +4466,12 @@ BUSINESS OBJECTIVES:
                 out["business_rules_catalog"] = rules[:200]
         elif isinstance(requirements_pack.get("business_rules_catalog", []), list):
             out["business_rules_catalog"] = requirements_pack.get("business_rules_catalog", [])[:200]
+        db_schema_input = str(state.get("database_schema", "")).strip()
+        if db_schema_input:
+            # Preserve schema input for deterministic DB archaeology artifacts.
+            out["database_schema_input"] = db_schema_input[:900000]
+            out["database_source"] = str(state.get("database_source", "")).strip()
+            out["database_target"] = str(state.get("database_target", "")).strip()
         try:
             out["raw_artifacts"] = build_raw_artifact_set_v1(out)
         except Exception as exc:

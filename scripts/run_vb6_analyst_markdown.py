@@ -83,6 +83,13 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _escape_pipe(value: Any) -> str:
     return _clean(value).replace("|", "\\|")
 
@@ -143,6 +150,116 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     brief = _as_dict(report.get("decision_brief"))
     glance = _as_dict(brief.get("at_a_glance"))
     inventory = _as_dict(glance.get("inventory_summary"))
+    source_loc_total = _as_int(inventory.get("source_loc_total"), 0)
+    source_loc_forms = _as_int(inventory.get("source_loc_forms"), 0)
+    source_loc_modules = _as_int(inventory.get("source_loc_modules"), 0)
+    source_files_scanned = _as_int(inventory.get("source_files_scanned"), 0)
+    raw_for_loc = _as_dict(report.get("raw_artifacts")) or _as_dict(output.get("raw_artifacts"))
+    raw_legacy_for_loc = _as_dict(raw_for_loc.get("legacy_inventory"))
+    legacy_summary_for_loc = _as_dict(raw_legacy_for_loc.get("summary"))
+    legacy_counts_for_loc = _as_dict(legacy_summary_for_loc.get("counts"))
+    loc_rows_for_loc = _as_list(raw_legacy_for_loc.get("source_loc_by_file"))
+    vb6_projects_for_loc = _as_list(raw_legacy_for_loc.get("vb6_projects"))
+    if source_loc_total <= 0:
+        source_loc_total = _as_int(legacy_counts_for_loc.get("source_loc_total"), 0)
+    if source_loc_forms <= 0:
+        source_loc_forms = _as_int(legacy_counts_for_loc.get("source_loc_forms"), 0)
+    if source_loc_modules <= 0:
+        source_loc_modules = _as_int(legacy_counts_for_loc.get("source_loc_modules"), 0)
+    if source_files_scanned <= 0:
+        source_files_scanned = _as_int(legacy_counts_for_loc.get("source_files_scanned"), 0)
+    if (
+        source_loc_total <= 0
+        or source_loc_forms <= 0
+        or source_loc_modules <= 0
+        or source_files_scanned <= 0
+    ) and vb6_projects_for_loc:
+        project_loc_total = 0
+        project_loc_forms = 0
+        project_loc_modules = 0
+        project_files_scanned = 0
+        for row in vb6_projects_for_loc[:200]:
+            rr = _as_dict(row)
+            project_loc_total += _as_int(rr.get("source_loc_total"), 0)
+            project_loc_forms += _as_int(rr.get("source_loc_forms"), 0)
+            project_loc_modules += _as_int(rr.get("source_loc_modules"), 0)
+            project_files_scanned += _as_int(rr.get("members"), 0)
+        if source_loc_total <= 0:
+            source_loc_total = project_loc_total
+        if source_loc_forms <= 0:
+            source_loc_forms = project_loc_forms
+        if source_loc_modules <= 0:
+            source_loc_modules = project_loc_modules
+        if source_files_scanned <= 0:
+            source_files_scanned = project_files_scanned
+    if (source_loc_total <= 0 or source_files_scanned <= 0) and loc_rows_for_loc:
+        loc_by_path: dict[str, int] = {}
+        for row in loc_rows_for_loc[:8000]:
+            rr = _as_dict(row)
+            path = _clean(rr.get("path"))
+            if not path:
+                continue
+            loc_by_path[path] = _as_int(rr.get("loc"), 0)
+        if source_loc_total <= 0:
+            source_loc_total = sum(loc_by_path.values())
+        if source_loc_forms <= 0:
+            source_loc_forms = sum(
+                loc for path, loc in loc_by_path.items()
+                if path.lower().endswith((".frm", ".ctl"))
+            )
+        if source_loc_modules <= 0:
+            source_loc_modules = sum(
+                loc for path, loc in loc_by_path.items()
+                if path.lower().endswith(".bas")
+            )
+        if source_files_scanned <= 0:
+            source_files_scanned = len(loc_by_path)
+    if source_loc_total <= 0 or source_files_scanned <= 0:
+        line_hints: dict[str, int] = {}
+        line_ref_rx = re.compile(r"([A-Za-z0-9_./\\\\ -]+\.(?:frm|frx|bas|cls|ctl|vb|ctx|dsr)):(\d+)", re.IGNORECASE)
+
+        def _collect_line_hints(node: Any, depth: int = 0) -> None:
+            if depth > 8:
+                return
+            if isinstance(node, dict):
+                for vv in list(node.values())[:2000]:
+                    _collect_line_hints(vv, depth + 1)
+                return
+            if isinstance(node, list):
+                for vv in node[:4000]:
+                    _collect_line_hints(vv, depth + 1)
+                return
+            text = _clean(node)
+            if not text:
+                return
+            for m in line_ref_rx.finditer(text):
+                path = _clean(m.group(1)).replace("\\\\", "/")
+                if not path:
+                    continue
+                ln = _as_int(m.group(2), 0)
+                if ln <= 0:
+                    continue
+                prev = line_hints.get(path, 0)
+                if ln > prev:
+                    line_hints[path] = ln
+
+        _collect_line_hints(report)
+        _collect_line_hints(output)
+        if line_hints:
+            if source_loc_total <= 0:
+                source_loc_total = sum(int(v or 0) for v in line_hints.values())
+            if source_loc_forms <= 0:
+                source_loc_forms = sum(
+                    int(loc or 0) for path, loc in line_hints.items()
+                    if path.lower().endswith((".frm", ".ctl", ".frx"))
+                )
+            if source_loc_modules <= 0:
+                source_loc_modules = sum(
+                    int(loc or 0) for path, loc in line_hints.items()
+                    if path.lower().endswith(".bas")
+                )
+            if source_files_scanned <= 0:
+                source_files_scanned = len(line_hints)
     strategy = _as_dict(brief.get("recommended_strategy"))
     decisions = _as_dict(brief.get("decisions_required"))
     delivery_spec = _as_dict(report.get("delivery_spec"))
@@ -177,6 +294,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         f"| Modernization readiness | {_clean(glance.get('readiness_score') or 'n/a')}/100 |",
         f"| Risk tier | {_clean(glance.get('risk_tier') or 'n/a')} |",
         f"| Inventory | {_clean(inventory.get('projects') or 0)} project(s), {_clean(inventory.get('forms') or 0)} forms/usercontrols, {_clean(inventory.get('dependencies') or 0)} dependencies |",
+        f"| Lines of code scanned | {source_loc_total} total LOC ({source_loc_forms} form LOC, {source_loc_modules} module LOC) across {source_files_scanned} files |",
         f"| Data touchpoints | {', '.join(_as_list(inventory.get('tables_touched')))} |",
         f"| Headline | {_escape_pipe(glance.get('headline'))} |",
         "",
@@ -492,6 +610,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         controls: list[str] | None = None,
     ) -> str:
         form_token = _clean(form_name).lower()
+        if form_token in {"main", "mdiform"}:
+            return "Navigation Hub"
         is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
         if form_token.endswith("frmsearch") or form_token == "frmsearch":
             return "Record Search"
@@ -591,6 +711,14 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     def _rule_business_meaning(statement: str, category: str) -> str:
         stmt = _clean(statement)
         low = stmt.lower()
+        if (
+            ("asc(" in low and ("< 46" in low or "<= 45" in low) and ("> 57" in low or ">= 58" in low))
+            or (
+                ("keyascii" in low or "keyvalue" in low)
+                and (">= 48" in low and "<= 57" in low)
+            )
+        ):
+            return "Input is restricted to numeric digits only."
         if re.search(r"keyascii\s*=\s*13", low):
             return "Pressing Enter triggers the same action flow as the primary button."
         if "case keyascii" in low:
@@ -610,6 +738,15 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         if "threshold decision rule" in low and "if " in low:
             cond = stmt.split("IF", 1)[-1].strip()
             cond = re.sub(r"\s*THEN.*$", "", cond, flags=re.IGNORECASE).strip()
+            cond_low = cond.lower()
+            if (
+                ("asc(" in cond_low and ("< 46" in cond_low or "<= 45" in cond_low) and ("> 57" in cond_low or ">= 58" in cond_low))
+                or (
+                    ("keyascii" in cond_low or "keyvalue" in cond_low)
+                    and (">= 48" in cond_low and "<= 57" in cond_low)
+                )
+            ):
+                return "Input is restricted to numeric digits only."
             return f"The workflow continues only when this condition is true: {cond}."
         if "executes transaction workflow through procedures" in low:
             return "Workflow is orchestrated through UI event handlers and internal procedures."
@@ -1158,6 +1295,16 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     lines.append(f"- Repo landscape variants: {len(raw_landscape)}")
     lines.append(f"- Variant inventory rows: {len(raw_variant_inventory)}")
     lines.append(f"- Constitution principles: {len(raw_constitution)}")
+    legacy_counts = _as_dict(_as_dict(raw.get("legacy_inventory")).get("summary")).get("counts", {})
+    legacy_counts = _as_dict(legacy_counts)
+    lines.append(
+        "- Source LOC: {} total (forms={}, modules={}) across {} file(s)".format(
+            _as_int(legacy_counts.get("source_loc_total"), 0),
+            _as_int(legacy_counts.get("source_loc_forms"), 0),
+            _as_int(legacy_counts.get("source_loc_modules"), 0),
+            _as_int(legacy_counts.get("source_files_scanned"), 0),
+        )
+    )
 
     include_detailed_appendix = mode != "summary"
     if not include_detailed_appendix:
@@ -1175,9 +1322,18 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     lines.extend(["", "## Detailed Appendix", "", "### A. Legacy Inventory"])
     lines.append(f"- Projects: {len(projects)}")
     lines.append(f"- Data touchpoints: {', '.join(_as_list(_as_dict(raw_legacy.get('summary')).get('data_touchpoints'))) or 'None detected'}")
+    legacy_counts = _as_dict(_as_dict(raw_legacy.get("summary")).get("counts"))
+    lines.append(
+        "- Source LOC: {} total (forms={}, modules={}) across {} file(s)".format(
+            _as_int(legacy_counts.get("source_loc_total"), 0),
+            _as_int(legacy_counts.get("source_loc_forms"), 0),
+            _as_int(legacy_counts.get("source_loc_modules"), 0),
+            _as_int(legacy_counts.get("source_files_scanned"), 0),
+        )
+    )
     if projects:
-        lines.append("| Project | Type | Startup | Members | Forms | Reports | Dependencies | Shared tables |")
-        lines.append("|---|---|---|---:|---:|---:|---:|---|")
+        lines.append("| Project | Type | Startup | Members | Forms | Reports | Dependencies | Source LOC | Shared tables |")
+        lines.append("|---|---|---|---:|---:|---:|---:|---:|---|")
         for project in projects[:250]:
             p = _as_dict(project)
             project_name = _clean(p.get("name") or p.get("project_id"))
@@ -1196,7 +1352,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 if len(table_to_projects.get(t, set())) > 1
             )
             lines.append(
-                "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                     _escape_pipe(project_name),
                     _escape_pipe(p.get("type")),
                     _escape_pipe(p.get("startup")),
@@ -1204,6 +1360,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     len(_as_list(p.get("ui_assets"))),
                     reports_count,
                     len(_as_list(p.get("dependencies"))),
+                    _as_int(p.get("source_loc_total"), 0),
                     _escape_pipe(", ".join(shared_tables[:8]) or "none"),
                 )
             )
@@ -2022,6 +2179,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         calls = [_clean(c) for c in _as_list(e.get("calls")) if _clean(c)]
         for call in calls:
             dep_type = ""
+            call_norm = _clean(call)
+            call_low = call_norm.lower()
             if call in shared_module_procs:
                 dep_type = "shared_module_call"
             elif (
@@ -2029,7 +2188,13 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 or "toolbar" in source.lower()
                 or "toolbar" in source_trigger.lower()
             ) and call.lower().startswith(("frm", "form", "rpt", "datareport")):
-                dep_type = "mdi_navigation"
+                if call_low.startswith(("rpt", "datareport")):
+                    dep_type = "report_navigation"
+                elif call_low in {"frm", "form"}:
+                    dep_type = "mdi_navigation_unresolved"
+                    call_norm = f"{call_norm} [Unresolved]"
+                else:
+                    dep_type = "mdi_navigation"
             if not dep_type:
                 continue
             stable_evidence = _clean(_as_dict(e.get("handler")).get("symbol")) or f"{source}->{call}"
@@ -2038,12 +2203,16 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 continue
             seen_dependency_keys.add(key)
             blocks_sprint = "Sprint 1"
+            if dep_type == "report_navigation":
+                blocks_sprint = "Sprint 2"
+            if dep_type == "mdi_navigation_unresolved":
+                blocks_sprint = "n/a (unresolved)"
             if dep_type == "cross_variant_schema_conflict":
                 blocks_sprint = "Sprint 0"
             dependency_rows.append(
                 {
                     "from": source,
-                    "to": call,
+                    "to": call_norm,
                     "type": dep_type,
                     "evidence": stable_evidence,
                     "blocks_sprint": blocks_sprint,
@@ -2169,8 +2338,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     lines.extend(["", "### Q. Form Traceability Matrix"])
     traceability_rows: list[dict[str, Any]] = []
     if raw_form_dossiers:
-        lines.append("| Form | Project | has_event_map | has_sql_map | has_business_rules | has_risk_entry | completeness_score | missing_links |")
-        lines.append("|---|---|---|---|---|---|---:|---|")
+        lines.append("| Form | Project | Source LOC | has_event_map | has_sql_map | has_business_rules | has_risk_entry | completeness_score | missing_links |")
+        lines.append("|---|---|---:|---|---|---|---|---:|---|")
         seen_form_keys: set[str] = set()
         for row in raw_form_dossiers[:400]:
             r = _as_dict(row)
@@ -2198,9 +2367,10 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 missing.append("procedure_summary")
             completeness_score = int((int(has_event) + int(has_sql) + int(has_rules) + int(has_risk) + int(has_proc)) * 20)
             lines.append(
-                "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                     _escape_pipe(_qualified_form_name(project_name, form_name)),
                     _escape_pipe(_project_label(project_name, project_path_by_name)),
+                    _as_int(r.get("source_loc"), 0),
                     "yes" if has_event else "no",
                     "yes" if has_sql else "no",
                     "yes" if has_rules else "no",
@@ -2273,7 +2443,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 rationale = "Implement remediation-first changes for high-risk legacy behavior."
             else:
                 sprint = "Sprint 2 (Parity hardening)"
-                rationale = "Form has baseline traceability and can move into parity build/test."
+                rationale = "Complete hardening, regression validation, and release evidence for production readiness."
 
             shared_required = sorted(_lookup_set(form_shared_components, row.get("project_name"), row.get("form_name")))
             lines.append(
@@ -2598,6 +2768,69 @@ def _write_outputs(
     return md_path, json_path
 
 
+def _write_db_design_artifacts(
+    *,
+    analyst_output: dict[str, Any],
+    out_dir: Path,
+) -> list[Path]:
+    """Materialize DB archaeology + target-schema artifacts as standalone JSON files."""
+    report = build_analyst_report_v2(analyst_output)
+    raw = _as_dict(report.get("raw_artifacts"))
+    db_keys = [
+        "source_db_profile",
+        "source_schema_model",
+        "source_erd",
+        "source_query_catalog",
+        "source_relationship_candidates",
+        "source_data_dictionary",
+        "source_data_dictionary_markdown",
+        "source_hotspot_report",
+        "target_schema_model",
+        "target_erd",
+        "target_data_dictionary",
+        "schema_mapping_matrix",
+        "migration_plan",
+        "validation_harness_spec",
+        "db_qa_report",
+        "schema_approval_record",
+        "schema_drift_report",
+    ]
+    written: list[Path] = []
+    for key in db_keys:
+        payload = raw.get(key)
+        if payload is None:
+            continue
+        target = out_dir / f"{key}.json"
+        target.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=True, default=str),
+            encoding="utf-8",
+        )
+        written.append(target)
+
+    # Compatibility outputs for SourceSchemaAgent contract.
+    source_schema_model = _as_dict(raw.get("source_schema_model"))
+    if source_schema_model:
+        schema_alias = out_dir / "source_schema.json"
+        schema_alias.write_text(
+            json.dumps(source_schema_model, indent=2, ensure_ascii=True, default=str),
+            encoding="utf-8",
+        )
+        written.append(schema_alias)
+    source_erd = _as_dict(raw.get("source_erd"))
+    source_erd_mermaid = _clean(source_erd.get("mermaid"))
+    if source_erd_mermaid:
+        erd_alias = out_dir / "source_erd.mmd"
+        erd_alias.write_text(source_erd_mermaid.rstrip() + "\n", encoding="utf-8")
+        written.append(erd_alias)
+    source_dict_md = _as_dict(raw.get("source_data_dictionary_markdown"))
+    source_dict_text = _clean(source_dict_md.get("markdown"))
+    if source_dict_text:
+        dict_alias = out_dir / "data_dictionary.md"
+        dict_alias.write_text(source_dict_text.rstrip() + "\n", encoding="utf-8")
+        written.append(dict_alias)
+    return written
+
+
 def _generate_docx_bundle(md_path: Path, out_dir: Path) -> tuple[Path, Path, Path] | None:
     docgen_dir = ROOT / "synthetix-docgen"
     index_js = docgen_dir / "index.js"
@@ -2769,9 +3002,12 @@ def run_and_export_api(args: argparse.Namespace) -> int:
         output_dir=args.output_dir,
         run_id_hint=run_id,
     )
+    db_artifacts = _write_db_design_artifacts(analyst_output=analyst_output, out_dir=md_path.parent)
 
     print(f"[ok] markdown: {md_path}")
     print(f"[ok] analyst output json: {json_path}")
+    if db_artifacts:
+        print(f"[ok] DB design artifacts: {len(db_artifacts)} files in {md_path.parent}")
     if not args.skip_docgen:
         generated = _generate_docx_bundle(md_path, md_path.parent)
         if generated:
@@ -2840,8 +3076,11 @@ def run_and_export_direct(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
             run_id_hint=_clean(result_state.get("run_id")) or "local",
         )
+        db_artifacts = _write_db_design_artifacts(analyst_output=analyst_output, out_dir=md_path.parent)
         print(f"[ok] markdown: {md_path}")
         print(f"[ok] analyst output json: {json_path}")
+        if db_artifacts:
+            print(f"[ok] DB design artifacts: {len(db_artifacts)} files in {md_path.parent}")
         if not args.skip_docgen:
             generated = _generate_docx_bundle(md_path, md_path.parent)
             if generated:

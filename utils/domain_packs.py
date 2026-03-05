@@ -519,6 +519,8 @@ def build_open_questions(
     regulatory_constraints: list[dict[str, Any]],
 ) -> list[str]:
     questions: list[str] = []
+    # Keep Q-001 stable across runs for BA review continuity.
+    questions.append("Are there existing operational constraints or integration dependencies not listed?")
     primary = capability_map.get("primary_capabilities", [])
     capability_ids = [str(item.get("id", "")) for item in primary if isinstance(item, dict)]
     if "ledger_management" in capability_ids:
@@ -531,7 +533,9 @@ def build_open_questions(
         questions.append("What are approved retention and deletion SLAs for personal data?")
     if not normalized.get("constraints"):
         questions.append("What are target latency, throughput, and availability SLOs?")
-    if not questions:
-        questions.append("Are there existing operational constraints or integration dependencies not listed?")
-    return questions[:8]
-
+    deduped: list[str] = []
+    for q in questions:
+        qq = str(q or "").strip()
+        if qq and qq not in deduped:
+            deduped.append(qq)
+    return deduped[:8]

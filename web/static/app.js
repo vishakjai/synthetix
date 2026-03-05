@@ -2072,6 +2072,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   };
   const semanticFormAlias = ({ formName, purpose, dbTables, procedures, rules, controls = [] }) => {
     const formToken = String(formName || "").toLowerCase();
+    if (formToken === "main" || formToken === "mdiform") return "Navigation Hub";
     const isGenericForm = /^(form\d+|frm\d+)$/i.test(formToken);
     if (formToken.endsWith("frmsearch") || formToken === "frmsearch") return "Record Search";
     if (formToken.endsWith("frmtransactions") || formToken.endsWith("transactions")) return "Transaction History";
@@ -2134,6 +2135,12 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const ruleBusinessMeaning = (statement, category) => {
     const stmt = String(statement || "").trim();
     const low = stmt.toLowerCase();
+    if (
+      (low.includes("asc(") && (low.includes("< 46") || low.includes("<= 45")) && (low.includes("> 57") || low.includes(">= 58"))) ||
+      ((low.includes("keyascii") || low.includes("keyvalue")) && low.includes(">= 48") && low.includes("<= 57"))
+    ) {
+      return "Input is restricted to numeric digits only.";
+    }
     if (/keyascii\s*=\s*13/i.test(low)) return "Pressing Enter triggers the same action flow as the primary button.";
     if (low.includes("case keyascii")) return "Keyboard input routing determines which action path is executed.";
     if (/\.\s*state\s*=\s*1/i.test(low)) return "The action proceeds only when the recordset/connection is active.";
@@ -2146,6 +2153,13 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     if (low.includes("case button.index") || low.includes("case buttonmenu.key")) return "User menu selection routes the workflow to the corresponding module.";
     if (low.includes("threshold decision rule") && low.includes("if ")) {
       const rhs = String(stmt.split("IF").pop() || "").replace(/\s*THEN.*$/i, "").trim();
+      const rhsLow = rhs.toLowerCase();
+      if (
+        (rhsLow.includes("asc(") && (rhsLow.includes("< 46") || rhsLow.includes("<= 45")) && (rhsLow.includes("> 57") || rhsLow.includes(">= 58"))) ||
+        ((rhsLow.includes("keyascii") || rhsLow.includes("keyvalue")) && rhsLow.includes(">= 48") && rhsLow.includes("<= 57"))
+      ) {
+        return "Input is restricted to numeric digits only.";
+      }
       return `The workflow continues only when this condition is true: ${rhs}.`;
     }
     if (low.includes("executes transaction workflow through procedures")) return "Workflow is orchestrated through UI event handlers and internal procedures.";
@@ -3334,15 +3348,27 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
       calls.forEach((callValue) => {
         const call = String(callValue || "").trim();
         if (!call) return;
+        const callLower = call.toLowerCase();
         let type = "";
         if (sharedModuleProcedures.has(call)) type = "shared_module_call";
-        else if ((source.toLowerCase().includes("main") || source.toLowerCase().includes("toolbar") || triggerControl.includes("toolbar")) && /^(frm|form|rpt|datareport)/i.test(call)) type = "mdi_navigation";
+        else if ((source.toLowerCase().includes("main") || source.toLowerCase().includes("toolbar") || triggerControl.includes("toolbar")) && /^(frm|form|rpt|datareport)/i.test(call)) {
+          if (/^(rpt|datareport)/i.test(call)) type = "report_navigation";
+          else if (callLower === "frm" || callLower === "form") type = "mdi_navigation_unresolved";
+          else type = "mdi_navigation";
+        }
         if (!type) return;
         const evidence = String(entry?.handler?.symbol || `${source}->${call}`).trim();
         const key = `${source}|${call}|${type}|${evidence}`;
         if (depSeen.has(key)) return;
         depSeen.add(key);
-        depRows.push({ from: source, to: call, type, evidence, blocksSprint: "Sprint 1" });
+        let to = call;
+        let blocksSprint = "Sprint 1";
+        if (type === "report_navigation") blocksSprint = "Sprint 2";
+        if (type === "mdi_navigation_unresolved") {
+          to = `${call} [Unresolved]`;
+          blocksSprint = "n/a (unresolved)";
+        }
+        depRows.push({ from: source, to, type, evidence, blocksSprint });
       });
     });
     const schema = (rawVariantDiff.schema_divergence && typeof rawVariantDiff.schema_divergence === "object") ? rawVariantDiff.schema_divergence : {};
@@ -3471,7 +3497,7 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
           item.riskIds.slice(0, 2).forEach((id) => deps.push(id));
           const shared = Array.from(lookupSet(formSharedComponents, item.projectName, item.formName)).sort();
           let sprint = "Sprint 2 (Parity hardening)";
-          let rationale = "Form has baseline traceability and can move into parity build/test.";
+          let rationale = "Finalize quality gates and publish evidence pack for production readiness.";
           if (item.missing.includes("event_map") || item.missing.includes("sql_map")) {
             sprint = "Sprint 0 (Discovery closure)";
             rationale = "Close traceability gaps before modernization changes.";

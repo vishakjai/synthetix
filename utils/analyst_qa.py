@@ -591,6 +591,117 @@ def build_qa_report_v1(
             refs=["analyst_report_v2.appendix.artifact_refs"],
         )
 
+    # DB archaeology artifact integrity (new Discover->Plan capability).
+    db_required = [
+        "source_db_profile",
+        "source_schema_model",
+        "source_query_catalog",
+        "source_relationship_candidates",
+        "source_data_dictionary",
+        "source_hotspot_report",
+        "target_schema_model",
+        "target_erd",
+        "target_data_dictionary",
+        "schema_mapping_matrix",
+        "migration_plan",
+        "validation_harness_spec",
+        "db_qa_report",
+        "schema_approval_record",
+    ]
+    missing_db = [key for key in db_required if not isinstance(raw_artifacts.get(key, {}), dict) or not raw_artifacts.get(key)]
+    if missing_db:
+        add_check(
+            check_id="struct_db_artifacts_present",
+            title="DB archaeology artifacts are present",
+            result="fail",
+            detail=f"Missing DB artifacts: {', '.join(missing_db[:12])}",
+            blocking=True,
+            refs=["raw_artifacts"],
+        )
+    else:
+        add_check(
+            check_id="struct_db_artifacts_present",
+            title="DB archaeology artifacts are present",
+            result="pass",
+            detail=f"{len(db_required)} DB artifacts detected.",
+            refs=["raw_artifacts"],
+        )
+
+    source_schema = _as_dict(raw_artifacts.get("source_schema_model"))
+    source_query = _as_dict(raw_artifacts.get("source_query_catalog"))
+    mapping_matrix = _as_dict(raw_artifacts.get("schema_mapping_matrix"))
+    source_tables = {
+        _norm_token(_as_dict(row).get("name"))
+        for row in _as_list(source_schema.get("tables"))
+        if isinstance(row, dict) and _clean(_as_dict(row).get("name"))
+    }
+    unresolved_db_tables: set[str] = set()
+    for query in _as_list(source_query.get("queries")):
+        if not isinstance(query, dict):
+            continue
+        for table in _as_list(query.get("tables")):
+            t = _norm_token(table)
+            if t and t not in source_tables:
+                unresolved_db_tables.add(_clean(table))
+    if unresolved_db_tables:
+        add_check(
+            check_id="cross_db_query_schema_resolution",
+            title="DB query tables resolve against source schema",
+            result="fail",
+            detail=f"Unresolved query table references: {', '.join(sorted(unresolved_db_tables)[:10])}",
+            blocking=True,
+            refs=["raw_artifacts.source_query_catalog.queries", "raw_artifacts.source_schema_model.tables"],
+        )
+    else:
+        add_check(
+            check_id="cross_db_query_schema_resolution",
+            title="DB query tables resolve against source schema",
+            result="pass",
+            detail="All query table references resolve to source schema tables.",
+            refs=["raw_artifacts.source_query_catalog.queries", "raw_artifacts.source_schema_model.tables"],
+        )
+
+    src_cols = {
+        (_norm_token(_as_dict(table).get("name")), _norm_token(_as_dict(col).get("name")))
+        for table in _as_list(source_schema.get("tables"))
+        if isinstance(table, dict)
+        for col in _as_list(_as_dict(table).get("columns"))
+        if isinstance(col, dict)
+        and _clean(_as_dict(table).get("name"))
+        and _clean(_as_dict(col).get("name"))
+    }
+    mapped_cols = {
+        (_norm_token(row.get("source_table")), _norm_token(row.get("source_column")))
+        for row in _as_list(mapping_matrix.get("mappings"))
+        if isinstance(row, dict) and _clean(row.get("target_column"))
+    }
+    coverage = (len(mapped_cols) / float(len(src_cols))) if src_cols else 1.0
+    if coverage < 0.80:
+        add_check(
+            check_id="cross_db_mapping_coverage",
+            title="DB schema mapping coverage",
+            result="fail",
+            detail=f"Source->target mapping coverage is {coverage:.2%} (minimum 80%).",
+            blocking=True,
+            refs=["raw_artifacts.schema_mapping_matrix.mappings", "raw_artifacts.source_schema_model.tables"],
+        )
+    elif coverage < 0.95:
+        add_check(
+            check_id="cross_db_mapping_coverage",
+            title="DB schema mapping coverage",
+            result="warn",
+            detail=f"Source->target mapping coverage is {coverage:.2%}; verify unmapped columns before planning.",
+            refs=["raw_artifacts.schema_mapping_matrix.mappings", "raw_artifacts.source_schema_model.tables"],
+        )
+    else:
+        add_check(
+            check_id="cross_db_mapping_coverage",
+            title="DB schema mapping coverage",
+            result="pass",
+            detail=f"Source->target mapping coverage is {coverage:.2%}.",
+            refs=["raw_artifacts.schema_mapping_matrix.mappings", "raw_artifacts.source_schema_model.tables"],
+        )
+
     pass_count = sum(1 for row in checks if _norm_token(row.get("result")) == "pass")
     warn_count = sum(1 for row in checks if _norm_token(row.get("result")) == "warn")
     fail_count = sum(1 for row in checks if _norm_token(row.get("result")) == "fail")

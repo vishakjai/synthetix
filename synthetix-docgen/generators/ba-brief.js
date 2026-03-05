@@ -36,7 +36,9 @@ function displayProjectLabel(value) {
   if (!v) return '(unmapped)';
   if (/^\(project unresolved\)$/i.test(v)) return '(Project Unresolved)';
   if (/^inferred:\(root\)$/i.test(v)) return '(Project Unresolved)';
-  return v.replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+  return v
+    .replace(/Inferred:\(root\)/ig, '(Project Unresolved)')
+    .replace(/^P1\s*\(/i, 'Project1 (');
 }
 
 function displayFormLabel(value) {
@@ -86,20 +88,30 @@ function dedupeRules(rows = [], scopeLabel = '') {
   const grouped = new Map();
   for (const r of rows) {
     const meaning = normalizedMeaning(r.meaning);
-    const risk = String((r.risk && r.risk !== 'none' && r.risk !== '—') ? r.risk : '').toLowerCase();
-    const key = `${scopeLabel.toLowerCase()}||${meaning}||${risk}`;
+    const risk = String((r.risk && r.risk !== 'none' && r.risk !== '—') ? r.risk : '').trim();
+    const key = `${scopeLabel.toLowerCase()}||${meaning}`;
     const current = grouped.get(key);
     if (!current) {
-      grouped.set(key, { ...r, _ids: [r.id] });
+      grouped.set(key, { ...r, _ids: [r.id], _risk_values: risk ? [risk] : [] });
     } else {
       current._ids.push(r.id);
+      if (risk && !current._risk_values.includes(risk)) current._risk_values.push(risk);
+      if ((!current.risk || current.risk === 'none' || current.risk === '—') && risk) {
+        current.risk = risk;
+      }
     }
   }
   return Array.from(grouped.values()).map((r) => {
     const ids = sortRuleIds(r._ids);
     const canonical = ids[0] || r.id;
     const aliases = ids.slice(1);
-    return { ...r, id: canonical, _alias_ids: aliases };
+    const mergedRisk = sortRuleIds(r._risk_values || []);
+    return {
+      ...r,
+      id: canonical,
+      risk: mergedRisk.length ? mergedRisk.join(', ') : (r.risk || 'none'),
+      _alias_ids: aliases,
+    };
   });
 }
 
@@ -112,6 +124,7 @@ function decisionTopic(decision = {}) {
     'DEC-IAM-001': 'Identity model',
     'DEC-SCHEMA-KEY-001': 'Transaction key model',
     'DEC-COMPLIANCE-001': 'Compliance linkage',
+    'Q-001': 'Operational constraints',
   };
   if (known[id]) return known[id];
   if (!desc) return 'Decision';
@@ -350,8 +363,17 @@ function buildExecSnapshot(data) {
     ],
   });
 
-  // Decisions Required — from parsed decisions array
-  const decisions = (data.decisions || []).slice(0, 8);
+  // Decisions Required — keep DEC-COMPLIANCE-001 visible even when we cap rows.
+  const allDecisions = Array.isArray(data.decisions) ? data.decisions : [];
+  let decisions = allDecisions.slice(0, 8);
+  const hasCompliance = decisions.some((d) => String(d?.id || '').toUpperCase() === 'DEC-COMPLIANCE-001');
+  if (!hasCompliance) {
+    const compliance = allDecisions.find((d) => String(d?.id || '').toUpperCase() === 'DEC-COMPLIANCE-001');
+    if (compliance) {
+      if (decisions.length >= 8) decisions = decisions.slice(0, 7);
+      decisions.push(compliance);
+    }
+  }
   const decTable = new Table({
     width: { size: W, type: WidthType.DXA },
     columnWidths: [1000, 1800, 5540, 2100],
@@ -642,7 +664,7 @@ function buildTraceability(data, s100, s80, s40, s0) {
     const rawForm = String(row.form || '').trim();
     const short = shortFormKey(rawForm);
     const base = displayFormLabel(rawForm.includes('::') ? rawForm.split('::').pop() : rawForm);
-    const projShort = displayProjectLabel((String(row.project || '').split(' [')[0] || '').replace('Project1 ', 'P1 ').trim());
+    const projShort = displayProjectLabel((String(row.project || '').split(' [')[0] || '').trim());
     return (qDupCounts.get(short) || 0) > 1 && projShort ? `${base} (${projShort})` : base;
   };
 
@@ -676,7 +698,7 @@ function buildTraceability(data, s100, s80, s40, s0) {
         hCell('Score', 380, C.NAV),
       ]}),
       ...(data.active_q || []).map(t => {
-        const projShort = (t.project || '').split(' [')[0].replace('Project1 ', 'P1 ');
+        const projShort = (t.project || '').split(' [')[0];
         return new TableRow({ children: [
           cell(qFormLabel(t), 2600),
           cell(displayProjectLabel(projShort), 3360, { sz: 16, color: C.DGREY }),

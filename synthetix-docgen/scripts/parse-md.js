@@ -87,7 +87,9 @@ function prettyProjectLabel(value) {
   const v = String(value || '').trim();
   if (!v) return '(unmapped)';
   if (/^inferred:\(root\)$/i.test(v)) return '(Project Unresolved)';
-  return v.replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+  let out = v.replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+  out = out.replace(/^P1\s*\(/i, 'Project1 (');
+  return out;
 }
 
 function canonicalProjectKey(value) {
@@ -219,12 +221,23 @@ function inferSqlOperation(op, handler) {
   if (raw && raw !== 'unknown') return raw;
   const text = normalizeSqlSnippet(handler).toLowerCase();
   if (!text) return raw || 'unknown';
-  if (text.startsWith('select ')) return 'select';
-  if (text.startsWith('insert ')) return 'insert';
-  if (text.startsWith('update ')) return 'update';
-  if (text.startsWith('delete ')) return 'delete';
-  if (/^(create|alter|drop|truncate)\s+/.test(text)) return 'ddl';
+  if (/\bselect\b[\s\S]+\bfrom\b/.test(text) || text.startsWith('select ')) return 'select';
+  if (/\binsert\s+into\b/.test(text) || text.startsWith('insert ')) return 'insert';
+  if (/\bupdate\b\s+\S+\s+\bset\b/.test(text) || text.startsWith('update ')) return 'update';
+  if (/\bdelete\b\s+from\b/.test(text) || text.startsWith('delete ')) return 'delete';
+  if (/\b(create|alter|drop|truncate)\b/.test(text)) return 'ddl';
   return raw || 'unknown';
+}
+
+function isUnknownSqlNoise(row) {
+  const item = row && typeof row === 'object' ? row : {};
+  const op = String(item.op || '').trim().toLowerCase();
+  if (op && op !== 'unknown') return false;
+  const handler = normalizeSqlSnippet(item.handler || '');
+  const tables = String(item.tables || '').trim().toLowerCase();
+  const hasTableSignal = !!tables && tables !== 'n/a' && tables !== 'unknown' && tables !== '-';
+  const likelySql = isLikelySqlQuery(handler);
+  return !likelySql && !hasTableSignal;
 }
 
 function deriveDependencyReference(name, kind) {
@@ -343,7 +356,8 @@ function parseD(content) {
       const likelySql = isLikelySqlQuery(r.handler);
       if (op === 'unknown') return likelySql || hasTableSignal;
       return likelySql || hasTableSignal || !!String(r.id || '').trim();
-    });
+    })
+    .filter((r) => !isUnknownSqlNoise(r));
 }
 
 function parseE(content) {
@@ -507,11 +521,13 @@ function parseH(content) {
   const hm = headerMap(headers);
   const iForm = idxFirst(hm, ['form'], 0);
   const iProcedure = idxFirst(hm, ['procedure', 'handler'], 1);
+  const iOperation = idxFirst(hm, ['operation', 'op', 'kind'], 2);
   const iTables = idxFirst(hm, ['tables'], 3);
   const iSql = idxFirst(hm, ['sqlids', 'sqlid', 'sql'], -1);
   return rows.map((r) => ({
     form: gc(r, iForm),
     procedure: gc(r, iProcedure),
+    op: iOperation >= 0 ? inferSqlOperation(gc(r, iOperation), gc(r, iProcedure)) : inferSqlOperation('', gc(r, iProcedure)),
     tables: gc(r, iTables),
     sql_ids: iSql >= 0 ? gc(r, iSql) : '',
   }));
@@ -531,8 +547,9 @@ function mergeSqlEntriesWithMap(sqlEntries, sqlMapRows) {
     for (const id of ids) {
       if (seenIds.has(id)) continue;
       const handler = normalizeSqlSnippet(mapRow.procedure || '');
-      const op = inferSqlOperation('', handler);
+      const op = inferSqlOperation(mapRow.op || mapRow.operation || '', handler);
       const tables = String(mapRow.tables || 'n/a').trim() || 'n/a';
+      if (op === 'unknown' && !isLikelySqlQuery(handler) && (tables === 'n/a' || !tables.trim())) continue;
       out.push({
         id,
         form: String(mapRow.form || 'n/a').trim() || 'n/a',
@@ -556,6 +573,7 @@ function ensureSqlCoverage(sqlEntries, mdContent, procedureSummaries = [], sqlMa
   const formById = new Map();
   const tablesById = new Map();
   const handlerById = new Map();
+  const opById = new Map();
 
   for (const row of (procedureSummaries || [])) {
     const item = row && typeof row === 'object' ? row : {};
@@ -571,25 +589,33 @@ function ensureSqlCoverage(sqlEntries, mdContent, procedureSummaries = [], sqlMa
     const form = String(item.form || 'n/a').trim() || 'n/a';
     const tables = String(item.tables || 'n/a').trim() || 'n/a';
     const proc = String(item.procedure || '').trim();
+    const op = String(item.op || item.operation || '').trim();
     for (const id of extractSqlIds(item.sql_ids)) {
       if (!formById.has(id)) formById.set(id, form);
       if (!tablesById.has(id) && tables !== 'n/a') tablesById.set(id, tables);
       if (proc && !handlerById.has(id)) handlerById.set(id, proc);
+      if (op && !opById.has(id)) opById.set(id, op);
     }
   }
 
   for (const id of allIds) {
     if (seen.has(id)) continue;
-    const handler = handlerById.get(id) || 'unmapped_sql_reference';
-    const op = inferSqlOperation('', handler) || 'unknown';
+    const mappedForm = formById.get(id) || '';
+    const handler = handlerById.get(id) || '';
+    const mapOp = opById.get(id) || '';
     const tables = tablesById.get(id) || 'n/a';
+    // Skip synthetic placeholders when there is no usable attribution signal.
+    if (!mappedForm && !handler && (tables === 'n/a' || !tables.trim())) continue;
+    const normalizedHandler = normalizeSqlSnippet(handler);
+    const op = inferSqlOperation(mapOp, normalizedHandler) || 'unknown';
+    if (op === 'unknown' && !isLikelySqlQuery(normalizedHandler) && (tables === 'n/a' || !tables.trim())) continue;
     out.push({
       id,
-      form: formById.get(id) || 'Project-wide / unattributed SQL',
-      handler,
+      form: mappedForm || 'Project-wide / unattributed SQL',
+      handler: normalizedHandler || 'sql_reference',
       op,
       tables,
-      columns: deriveColumnsFromSql(handler, op),
+      columns: deriveColumnsFromSql(normalizedHandler, op),
     });
     seen.add(id);
   }
@@ -599,7 +625,7 @@ function ensureSqlCoverage(sqlEntries, mdContent, procedureSummaries = [], sqlMa
     const bi = parseInt(String(b?.id || '').split(':')[1] || '0', 10) || 0;
     return ai - bi;
   });
-  return out;
+  return out.filter((r) => !isUnknownSqlNoise(r));
 }
 
 function parseI(content) {
@@ -1008,15 +1034,24 @@ function parseP(content) {
 }
 
 function parseQ(content) {
-  const { rows } = parseTableSection(getSection(content, 'Q.', 'R.'));
+  const { headers, rows } = parseTableSection(getSection(content, 'Q.', 'R.'));
+  const hm = headerMap(headers);
+  const iForm = idxFirst(hm, ['form'], 0);
+  const iProject = idxFirst(hm, ['project'], 1);
+  const iEvent = idxFirst(hm, ['haseventmap'], 2);
+  const iSql = idxFirst(hm, ['hassqlmap'], 3);
+  const iRules = idxFirst(hm, ['hasbusinessrules'], 4);
+  const iRisk = idxFirst(hm, ['hasriskentry'], 5);
+  const iScore = idxFirst(hm, ['completenessscore', 'score'], 6);
+  const iMissing = idxFirst(hm, ['missinglinks'], 7);
   return rows
-    .filter(r => !gc(r,0).endsWith('.frm'))   // exclude orphan rows
+    .filter(r => !gc(r, iForm).endsWith('.frm'))   // exclude orphan rows
     .map(r => ({
-      form:               gc(r,0), project:            gc(r,1),
-      has_event_map:      gc(r,2), has_sql_map:        gc(r,3),
-      has_business_rules: gc(r,4), has_risk_entry:     gc(r,5),
-      score:              parseInt(gc(r,6)) || 0,
-      missing_links:      gc(r,7),
+      form:               gc(r, iForm), project:            gc(r, iProject),
+      has_event_map:      gc(r, iEvent), has_sql_map:       gc(r, iSql),
+      has_business_rules: gc(r, iRules), has_risk_entry:    gc(r, iRisk),
+      score:              parseInt(gc(r, iScore)) || 0,
+      missing_links:      gc(r, iMissing),
     }));
 }
 
@@ -1088,7 +1123,6 @@ function sprintBlockLabel(value) {
 
 function inferMdiNavigationDeps(depMap, events, mappedForms, excludedForms, sprints) {
   const existing = Array.isArray(depMap) ? [...depMap] : [];
-  if (existing.some((d) => String(d.type || '').toLowerCase() === 'mdi_navigation')) return existing;
 
   const mappedByShort = new Map();
   for (const f of (mappedForms || [])) {
@@ -1134,6 +1168,46 @@ function inferMdiNavigationDeps(depMap, events, mappedForms, excludedForms, spri
     existing.map((d) => `${String(d.from || '').toLowerCase()}||${String(d.to || '').toLowerCase()}||${String(d.type || '').toLowerCase()}`),
   );
 
+  const normalizedExisting = [];
+  for (const row of existing) {
+    const d = row && typeof row === 'object' ? { ...row } : {};
+    const from = String(d.from || '').trim();
+    let to = String(d.to || '').trim();
+    const lowTo = shortFormName(to).toLowerCase();
+    let type = String(d.type || '').trim().toLowerCase();
+    if (!type) type = 'mdi_navigation';
+    if (isReportTarget(to)) {
+      type = 'report_navigation';
+    } else if (!to || lowTo === 'frm' || lowTo === 'form' || lowTo === 'n/a') {
+      type = 'mdi_navigation_unresolved';
+      to = to && to !== 'n/a' ? `${to} [Unresolved]` : '[Unresolved]';
+    } else if (!mappedByShort.has(lowTo) && !excludedByShort.has(lowTo) && isNavTarget(to)) {
+      type = 'mdi_navigation_unresolved';
+      to = `${shortFormName(to) || to} [Unresolved]`;
+    } else if (excludedByShort.has(lowTo)) {
+      type = 'mdi_navigation_excluded';
+      to = `${excludedByShort.get(lowTo)} [Excluded]`;
+    } else if (type === 'mdi_navigation' && isNavTarget(to)) {
+      type = 'mdi_navigation';
+    }
+    const block = type === 'mdi_navigation_unresolved'
+      ? 'n/a (unresolved)'
+      : type === 'report_navigation'
+        ? 'Sprint 2'
+        : (sprintByShort.get(canonFormKey(to)) || String(d.blocks || '').trim() || 'Sprint 1');
+    normalizedExisting.push({
+      from: from || 'n/a',
+      to: to || 'n/a',
+      type,
+      evidence: String(d.evidence || '').trim() || 'inferred',
+      blocks: block,
+    });
+  }
+
+  const seenNormalized = new Set(
+    normalizedExisting.map((d) => `${String(d.from || '').toLowerCase()}||${String(d.to || '').toLowerCase()}||${String(d.type || '').toLowerCase()}`),
+  );
+
   for (const e of (events || [])) {
     const rawForm = String(e.form || '').trim();
     if (!rawForm) continue;
@@ -1165,7 +1239,7 @@ function inferMdiNavigationDeps(depMap, events, mappedForms, excludedForms, spri
       }
 
       const key = `${source.toLowerCase()}||${to.toLowerCase()}||${linkType}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key) || seenNormalized.has(key)) continue;
       seen.add(key);
       const block = linkType === 'mdi_navigation_unresolved'
         ? 'n/a (unresolved)'
@@ -1182,7 +1256,27 @@ function inferMdiNavigationDeps(depMap, events, mappedForms, excludedForms, spri
     }
   }
 
-  return [...existing, ...out];
+  const merged = [...normalizedExisting, ...out];
+  // If the same source evidence has at least one resolved navigation target, suppress duplicate
+  // unresolved rows for that exact source/evidence pair to keep BA-facing tables concise.
+  const hasResolvedForEvidence = new Set();
+  for (const row of merged) {
+    const from = String(row?.from || '').trim().toLowerCase();
+    const evidence = String(row?.evidence || '').trim().toLowerCase();
+    const type = String(row?.type || '').trim().toLowerCase();
+    if (!from || !evidence) continue;
+    if (type !== 'mdi_navigation_unresolved') {
+      hasResolvedForEvidence.add(`${from}||${evidence}`);
+    }
+  }
+  return merged.filter((row) => {
+    const from = String(row?.from || '').trim().toLowerCase();
+    const evidence = String(row?.evidence || '').trim().toLowerCase();
+    const type = String(row?.type || '').trim().toLowerCase();
+    if (type !== 'mdi_navigation_unresolved') return true;
+    if (!from || !evidence) return true;
+    return !hasResolvedForEvidence.has(`${from}||${evidence}`);
+  });
 }
 
 function parseDecisions(preamble) {
@@ -1209,8 +1303,10 @@ function parseBacklog(preamble) {
 function parseQaBlock(preamble) {
   const checks = {};
   for (const line of preamble.split('\n')) {
-    const m = line.match(/- ([\w_]+): (PASS|FAIL|WARN) \| (.+)/);
-    if (m) checks[m[1]] = { status: m[2], detail: m[3].trim() };
+    const m1 = line.match(/-\s*([\w_]+):\s*(PASS|FAIL|WARN)\s*\|\s*(.+)/i);
+    const m2 = line.match(/-\s*QA Gate\s+([\w_]+):\s*(PASS|FAIL|WARN)\s*\|\s*(.+)/i);
+    const m = m2 || m1;
+    if (m) checks[m[1]] = { status: String(m[2] || '').toUpperCase(), detail: m[3].trim() };
   }
   const statusLine = preamble.match(/- Status: (PASS|FAIL|WARN)/);
   return {
@@ -1271,10 +1367,26 @@ function addQaDecisions(decisions, qa) {
 
   const compliance = checks.compliance_constraints_applied || null;
   if (compliance && String(compliance.status || '').toUpperCase() === 'FAIL' && !hasId.has('DEC-COMPLIANCE-001')) {
-    out.push({
+    out.unshift({
       id: 'DEC-COMPLIANCE-001',
       description: `Compliance constraints are not linked to detected security/privacy risks. ${String(compliance.detail || '').trim()}`.trim(),
     });
+  }
+  return out;
+}
+
+function parseAppendixCounts(content) {
+  const out = {};
+  for (const line of String(content || '').split('\n')) {
+    const m = line.match(/-\s*([^:]+):\s*(\d+)/);
+    if (!m) continue;
+    if (!/rows\b/i.test(String(m[1] || ''))) continue;
+    const key = String(m[1] || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    const n = parseInt(String(m[2] || '0'), 10) || 0;
+    if (key) out[key] = n;
   }
   return out;
 }
@@ -1304,6 +1416,7 @@ function parseMd(mdContent, meta = {}) {
 
   const qaBlock = parseQaBlock(preamble);
   const parsedDecisions = parseDecisions(preamble);
+  const appendixCounts = parseAppendixCounts(mdContent);
 
   const projects = parseA(mdContent);
   const dependencies = parseB(mdContent);
@@ -1370,6 +1483,22 @@ function parseMd(mdContent, meta = {}) {
     }
   }
   const rData = Array.from(sprintByForm.values());
+  for (const row of rData) {
+    const sprint = String(row.sprint || '').toLowerCase();
+    const rationale = String(row.rationale || '').trim();
+    if (sprint.includes('sprint 2') && (
+      !rationale
+      || /baseline traceability/i.test(rationale)
+      || /parity build\/test/i.test(rationale)
+      || /complete hardening,\s*regression validation,\s*and release evidence/i.test(rationale)
+    )) {
+      row.rationale = 'Finalize quality gates and publish evidence pack for production readiness.';
+    } else if (sprint.includes('sprint 1') && /hardening|production readiness/i.test(rationale)) {
+      row.rationale = 'Implement remediation-first changes for high-risk legacy behavior.';
+    } else if (sprint.includes('sprint 0') && /hardening|production readiness/i.test(rationale)) {
+      row.rationale = 'Close traceability gaps before modernization changes.';
+    }
+  }
   depMap = inferMdiNavigationDeps(depMap, events, kData.mapped, kData.excluded_unique || kData.excluded, rData);
 
   const formDisplayIndex = buildFormDisplayIndex(kData.mapped, kData.excluded);
@@ -1386,6 +1515,7 @@ function parseMd(mdContent, meta = {}) {
   return {
     meta:            headerMeta,
     qa:              qaBlock,
+    appendix_counts: appendixCounts,
     decision_brief:  parseDecisionBrief(preamble),
     decisions:       decisions,
     backlog:         parseBacklog(preamble),

@@ -3400,6 +3400,7 @@ def _select_source_entries_for_analysis(
     exclude_paths = exclude_paths or []
     allowed_ext = _allowed_source_extensions()
     candidate_entries: list[dict[str, Any]] = []
+    supplemental_project_entries: list[dict[str, Any]] = []
     for item in raw_entries:
         if not isinstance(item, dict):
             continue
@@ -3408,23 +3409,36 @@ def _select_source_entries_for_analysis(
         if not path or node_type != "blob":
             continue
         normalized = path.replace("\\", "/")
-        if include_paths and not any(normalized.startswith(prefix + "/") or normalized == prefix for prefix in include_paths):
-            continue
+        suffix = Path(normalized).suffix.lower()
+        is_project_descriptor = suffix in {".vbp", ".vbg"}
+        in_scope = (not include_paths) or any(normalized.startswith(prefix + "/") or normalized == prefix for prefix in include_paths)
         if exclude_paths and any(normalized.startswith(prefix + "/") or normalized == prefix for prefix in exclude_paths):
             continue
-        suffix = Path(normalized).suffix.lower()
+        # Always keep VB6 project descriptor files in scope for attribution, even when include paths
+        # are narrowed to subfolders that may omit the root project file.
+        if not in_scope and not is_project_descriptor:
+            continue
         base_name = Path(normalized).name.lower()
         if suffix in allowed_ext or base_name.startswith("readme"):
-            candidate_entries.append(
-                {
-                    "path": normalized,
-                    "type": "file",
-                    "depth": normalized.count("/"),
-                    "size": int(item.get("size", 0) or 0),
-                    "sha": str(item.get("sha", "") or ""),
-                    "ext": suffix,
-                }
-            )
+            row = {
+                "path": normalized,
+                "type": "file",
+                "depth": normalized.count("/"),
+                "size": int(item.get("size", 0) or 0),
+                "sha": str(item.get("sha", "") or ""),
+                "ext": suffix,
+            }
+            candidate_entries.append(row)
+            if is_project_descriptor and not in_scope:
+                supplemental_project_entries.append(row)
+
+    if supplemental_project_entries:
+        seen = {str(entry.get("path", "")).strip().lower() for entry in candidate_entries}
+        for row in supplemental_project_entries:
+            path = str(row.get("path", "")).strip().lower()
+            if path and path not in seen:
+                candidate_entries.append(row)
+                seen.add(path)
 
     vb6_file_hits = sum(
         1 for entry in candidate_entries

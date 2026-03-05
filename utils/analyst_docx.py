@@ -388,6 +388,8 @@ def _semantic_form_alias(
     controls: list[str] | None = None,
 ) -> str:
     form_token = _clean(form_name).lower()
+    if form_token in {"main", "mdiform"}:
+        return "Navigation Hub"
     is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
     purpose_low = _clean(purpose).lower()
     if "deposit capture" in purpose_low:
@@ -473,6 +475,14 @@ def _display_form_name(form_name: str, alias: str) -> str:
 def _rule_business_meaning(statement: str, category: str) -> str:
     stmt = _clean(statement)
     low = stmt.lower()
+    if (
+        ("asc(" in low and ("< 46" in low or "<= 45" in low) and ("> 57" in low or ">= 58" in low))
+        or (
+            ("keyascii" in low or "keyvalue" in low)
+            and (">= 48" in low and "<= 57" in low)
+        )
+    ):
+        return "Input is restricted to numeric digits only."
     if re.search(r"keyascii\s*=\s*13", low):
         return "Pressing Enter triggers the same action flow as the primary button."
     if "case keyascii" in low:
@@ -492,6 +502,15 @@ def _rule_business_meaning(statement: str, category: str) -> str:
     if "threshold decision rule" in low and "if " in low:
         cond = stmt.split("IF", 1)[-1].strip()
         cond = re.sub(r"\s*THEN.*$", "", cond, flags=re.IGNORECASE).strip()
+        cond_low = cond.lower()
+        if (
+            ("asc(" in cond_low and ("< 46" in cond_low or "<= 45" in cond_low) and ("> 57" in cond_low or ">= 58" in cond_low))
+            or (
+                ("keyascii" in cond_low or "keyvalue" in cond_low)
+                and (">= 48" in cond_low and "<= 57" in cond_low)
+            )
+        ):
+            return "Input is restricted to numeric digits only."
         return f"The workflow continues only when this condition is true: {cond}."
     if "executes transaction workflow through procedures" in low:
         return "Workflow is orchestrated through UI event handlers and internal procedures."
@@ -1343,6 +1362,8 @@ def _build_business_docx_bytes_rich(
         trigger_control = _clean(_as_dict(e.get("trigger")).get("control")).lower()
         for call in [_clean(x) for x in _as_list(e.get("calls")) if _clean(x)]:
             dep_type = ""
+            call_norm = _clean(call)
+            call_low = call_norm.lower()
             if call in shared_module_procs:
                 dep_type = "shared_module_call"
             elif (
@@ -1350,7 +1371,13 @@ def _build_business_docx_bytes_rich(
                 or "toolbar" in source.lower()
                 or "toolbar" in trigger_control
             ) and call.lower().startswith(("frm", "form", "rpt", "datareport")):
-                dep_type = "mdi_navigation"
+                if call_low.startswith(("rpt", "datareport")):
+                    dep_type = "report_navigation"
+                elif call_low in {"frm", "form"}:
+                    dep_type = "mdi_navigation_unresolved"
+                    call_norm = f"{call_norm} [Unresolved]"
+                else:
+                    dep_type = "mdi_navigation"
             if not dep_type:
                 continue
             stable_evidence = _clean(_as_dict(e.get("handler")).get("symbol")) or f"{source}->{call}"
@@ -1358,13 +1385,20 @@ def _build_business_docx_bytes_rich(
             if key in dep_seen:
                 continue
             dep_seen.add(key)
+            blocks = "Sprint 1"
+            if dep_type == "report_navigation":
+                blocks = "Sprint 2"
+            elif dep_type == "mdi_navigation_unresolved":
+                blocks = "n/a (unresolved)"
+            elif dep_type == "cross_variant_schema_conflict":
+                blocks = "Sprint 0"
             dep_rows.append(
                 {
                     "from": source,
-                    "to": call,
+                    "to": call_norm,
                     "type": dep_type,
                     "evidence": stable_evidence,
-                    "blocks_sprint": "Sprint 1",
+                    "blocks_sprint": blocks,
                 }
             )
 
@@ -1706,10 +1740,16 @@ def _build_business_docx_bytes_rich(
     doc.add_page_break()
     _add_paragraph_with_role(doc, "Section P - Form Flow Traces", role="heading1")
     _add_section_intro(doc, _as_dict(plan.get("section_intros")).get("flow_traces", ""))
+    rendered_trace_forms: set[str] = set()
     for form_idx, row in enumerate(raw_form_dossiers[:120], start=1):
         r = _as_dict(row)
         form_name = _clean(r.get("form_name")) or f"Form-{form_idx}"
         project_name = _clean(r.get("project_name"))
+        trace_form_key = _form_key(project_name, form_name)
+        if trace_form_key and trace_form_key in rendered_trace_forms:
+            continue
+        if trace_form_key:
+            rendered_trace_forms.add(trace_form_key)
         _add_paragraph_with_role(doc, f"{_qualified_form_name(project_name, form_name)} ({_project_label(project_name, project_path_by_name)})", role="heading2")
 
         events = _lookup_rows(form_event_rows, project_name, form_name)
@@ -1897,7 +1937,7 @@ def _build_business_docx_bytes_rich(
             rationale = "Implement remediation-first changes for high-risk legacy behavior."
         else:
             sprint = "Sprint 2 (Parity hardening)"
-            rationale = "Form has baseline traceability and can move into parity build/test."
+            rationale = "Complete hardening, regression validation, and release evidence for production readiness."
         shared_required = sorted(_lookup_set(form_shared_components, row.get("project_name"), row.get("form_name")))
         _add_table_row(
             sprint_table,

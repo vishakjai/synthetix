@@ -977,6 +977,1426 @@ def _sql_risk_flags(sql_text: str) -> list[str]:
     return unique
 
 
+def _to_snake_case(value: Any) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    text = text.replace("-", "_").replace(" ", "_")
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    text = re.sub(r"[^a-zA-Z0-9_]", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text.lower()
+
+
+def _guess_column_type(column_name: str) -> str:
+    token = _clean(column_name).lower()
+    if not token:
+        return "text"
+    if token.endswith("_id") or token in {"id", "customerid", "accountid", "transactionid"}:
+        return "integer"
+    if any(tok in token for tok in ("date", "time", "timestamp", "joined", "created", "updated")):
+        return "timestamp"
+    if any(tok in token for tok in ("amount", "balance", "rate", "interest", "total", "price", "debit", "credit")):
+        return "numeric(18,2)"
+    if any(tok in token for tok in ("is_", "_flag", "enabled", "active", "deleted")):
+        return "boolean"
+    if any(tok in token for tok in ("count", "qty", "quantity", "number", "no", "code")):
+        return "integer"
+    if any(tok in token for tok in ("name", "address", "email", "phone", "status", "type", "description", "narration", "mode")):
+        return "varchar(255)"
+    return "text"
+
+
+def _column_business_meaning(column_name: str) -> str:
+    token = _to_snake_case(column_name)
+    if not token:
+        return "Business meaning requires verification."
+    if token.endswith("_id") or token == "id":
+        return "Identifier key used to reference a business entity."
+    mapping = {
+        "customer_id": "Customer identifier used to associate records with a customer.",
+        "account_id": "Account identifier used to group account-level activity.",
+        "transaction_id": "Transaction identifier for unique ledger records.",
+        "amount": "Monetary amount captured for debit/credit operations.",
+        "balance": "Running or current balance used for account state.",
+        "date": "Business date captured for transaction timing.",
+        "dated": "Business date captured for transaction timing.",
+        "created_at": "Audit timestamp for record creation.",
+        "updated_at": "Audit timestamp for latest record update.",
+        "mode": "Transaction mode indicator (for example cash/cheque).",
+        "status": "Record lifecycle or approval state.",
+        "narration": "Free-text description attached to transaction activity.",
+    }
+    if token in mapping:
+        return mapping[token]
+    if "name" in token:
+        return "Human-readable name used in UI and reports."
+    if "date" in token or "time" in token:
+        return "Date/time field used in filtering and reconciliation."
+    if "amount" in token or "balance" in token or "rate" in token:
+        return "Financial value used in calculation and posting logic."
+    return "Business meaning inferred from query usage; verify with SME."
+
+
+def _extract_column_tokens_from_sql(raw_sql: str, kind: str) -> list[str]:
+    text = _clean(raw_sql)
+    if not text:
+        return []
+    lower_kind = _clean(kind).lower()
+    cols: list[str] = []
+    if lower_kind == "select":
+        m = re.search(r"(?is)\bselect\b(.*?)\bfrom\b", text)
+        if m:
+            segment = _clean(m.group(1))
+            for part in segment.split(","):
+                token = _clean(part)
+                if not token or token == "*" or token.endswith(".*"):
+                    continue
+                token = re.sub(r"(?is)\bas\b\s+[a-zA-Z_][\w$]*", "", token).strip()
+                token = token.split(".")[-1].strip(" []`\"")
+                if token and token not in cols:
+                    cols.append(token)
+    elif lower_kind == "insert":
+        m = re.search(r"(?is)\binsert\s+into\b\s+[a-zA-Z_][\w.]*\s*\((.*?)\)", text)
+        if m:
+            for part in _clean(m.group(1)).split(","):
+                token = _clean(part).strip(" []`\"")
+                if token and token not in cols:
+                    cols.append(token)
+    elif lower_kind == "update":
+        m = re.search(r"(?is)\bset\b(.*?)(?:\bwhere\b|$)", text)
+        if m:
+            assignments = _clean(m.group(1)).split(",")
+            for part in assignments:
+                token = _clean(part.split("=", 1)[0]).split(".")[-1].strip(" []`\"")
+                if token and token not in cols:
+                    cols.append(token)
+    else:
+        # DELETE often references key columns in WHERE clause.
+        where_cols = re.findall(r"(?is)\bwhere\b(.*)$", text)
+        if where_cols:
+            for wc in where_cols:
+                for token in re.findall(r"([a-zA-Z_][\w$]*)\s*=", wc):
+                    col = _clean(token).split(".")[-1]
+                    if col and col not in cols:
+                        cols.append(col)
+    return cols[:60]
+
+
+_ACCESS_TYPE_MAP: dict[str, str] = {
+    "text": "varchar(255)",
+    "memo": "text",
+    "byte": "tinyint",
+    "integer": "smallint",
+    "long integer": "integer",
+    "single": "real",
+    "double": "double precision",
+    "currency": "decimal(19,4)",
+    "date/time": "timestamp",
+    "boolean": "boolean",
+    "yes/no": "boolean",
+    "ole object": "blob",
+    "autonumber": "integer",
+}
+
+
+def _normalize_sql_identifier(value: Any) -> str:
+    token = _clean(value)
+    if not token:
+        return ""
+    token = token.strip("[]`\"")
+    token = token.split(".")[-1]
+    return token.strip("[]`\"")
+
+
+def _split_sql_csv(segment: str) -> list[str]:
+    text = _clean(segment)
+    if not text:
+        return []
+    out: list[str] = []
+    buff: list[str] = []
+    depth = 0
+    in_single = False
+    in_double = False
+    for ch in text:
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        if not in_single and not in_double:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            elif ch == "," and depth == 0:
+                token = _clean("".join(buff))
+                if token:
+                    out.append(token)
+                buff = []
+                continue
+        buff.append(ch)
+    token = _clean("".join(buff))
+    if token:
+        out.append(token)
+    return out
+
+
+def _normalize_access_data_type(raw_type: str) -> str:
+    token = _clean(raw_type).lower()
+    if not token:
+        return "text"
+    token = re.sub(r"\s+", " ", token)
+    if token in _ACCESS_TYPE_MAP:
+        return _ACCESS_TYPE_MAP[token]
+    if token.startswith("varchar") or token.startswith("char"):
+        return token
+    if token.startswith("decimal") or token.startswith("numeric"):
+        return token
+    if token.startswith("datetime") or token.startswith("timestamp"):
+        return "timestamp"
+    if token.startswith("int"):
+        return "integer"
+    return token
+
+
+def _parse_track_a_schema(database_schema_text: str) -> dict[str, Any]:
+    text = str(database_schema_text or "").strip()
+    if not text:
+        return {"route": "code_only", "tables": [], "relationships": []}
+
+    route = "ddl_text"
+    lower_text = text.lower()
+    if "parsed with: mdbtools" in lower_text or "source database: microsoft access" in lower_text:
+        route = "mdb_direct_read"
+
+    table_map: dict[str, dict[str, Any]] = {}
+    rel_rows: list[dict[str, Any]] = []
+    rel_seen: set[str] = set()
+
+    def ensure_table(name: str) -> dict[str, Any]:
+        tname = _normalize_sql_identifier(name)
+        key = tname.lower()
+        if key not in table_map:
+            table_map[key] = {
+                "name": tname,
+                "columns_map": {},
+                "primary_key_candidates": [],
+            }
+        return table_map[key]
+
+    def add_rel(from_table: str, from_col: str, to_table: str, to_col: str, confidence: float = 0.95) -> None:
+        ft = _normalize_sql_identifier(from_table)
+        fc = _normalize_sql_identifier(from_col)
+        tt = _normalize_sql_identifier(to_table)
+        tc = _normalize_sql_identifier(to_col)
+        if not (ft and fc and tt and tc):
+            return
+        key = f"{ft.lower()}|{fc.lower()}|{tt.lower()}|{tc.lower()}"
+        if key in rel_seen:
+            return
+        rel_seen.add(key)
+        rel_rows.append(
+            {
+                "relationship_id": f"src_rel:{len(rel_rows) + 1}",
+                "kind": "enforced_fk",
+                "from_table": ft,
+                "from_column": fc,
+                "to_table": tt,
+                "to_column": tc,
+                "confidence": round(confidence, 2),
+                "evidence_sql_ids": [],
+                "enforced_in_db": True,
+            }
+        )
+
+    for m in re.finditer(r"(?is)\bcreate\s+table\b\s+([^\s(]+)\s*\((.*?)\)\s*;", text):
+        table_name = _normalize_sql_identifier(m.group(1))
+        body = m.group(2)
+        if not table_name:
+            continue
+        trow = ensure_table(table_name)
+        parts = _split_sql_csv(body)
+        for part in parts:
+            line = _clean(part).rstrip(",")
+            if not line:
+                continue
+            lline = line.lower()
+            if "foreign key" in lline and "references" in lline:
+                fk_m = re.search(
+                    r"(?is)foreign\s+key\s*\(\s*([^\)]+)\s*\)\s*references\s+([^\s(]+)\s*\(\s*([^\)]+)\s*\)",
+                    line,
+                )
+                if fk_m:
+                    add_rel(table_name, fk_m.group(1), fk_m.group(2), fk_m.group(3))
+                continue
+            if "primary key" in lline and ("constraint" in lline or line.strip().lower().startswith("primary key")):
+                pk_m = re.search(r"(?is)primary\s+key\s*\((.*?)\)", line)
+                if pk_m:
+                    for col_tok in _split_sql_csv(pk_m.group(1)):
+                        col_name = _normalize_sql_identifier(col_tok)
+                        if not col_name:
+                            continue
+                        pk = _as_list(trow.get("primary_key_candidates"))
+                        if col_name not in pk:
+                            pk.append(col_name)
+                        trow["primary_key_candidates"] = pk[:12]
+                continue
+
+            col_m = re.match(r"(?is)^\s*([^\s]+)\s+(.+)$", line)
+            if not col_m:
+                continue
+            col_name = _normalize_sql_identifier(col_m.group(1))
+            remainder = _clean(col_m.group(2))
+            if not col_name or col_name.lower() in {"constraint", "primary", "foreign", "unique", "check"}:
+                continue
+
+            type_m = re.match(
+                r"(?is)^(.+?)(?:\s+not\s+null|\s+null|\s+default\b|\s+constraint\b|\s+primary\s+key|\s+references\b|$)",
+                remainder,
+            )
+            raw_type = _clean(type_m.group(1) if type_m else remainder)
+            inferred_type = _normalize_access_data_type(raw_type)
+            nullable = "not null" not in remainder.lower()
+            is_pk_inline = "primary key" in remainder.lower()
+            ref_m = re.search(r"(?is)\breferences\s+([^\s(]+)\s*\(\s*([^\)]+)\s*\)", remainder)
+            ref_value = ""
+            if ref_m:
+                ref_value = f"{_normalize_sql_identifier(ref_m.group(1))}.{_normalize_sql_identifier(ref_m.group(2))}"
+                add_rel(table_name, col_name, ref_m.group(1), ref_m.group(2))
+            col_key = col_name.lower()
+            cmap = _as_dict(trow.get("columns_map"))
+            cmap[col_key] = {
+                "name": col_name,
+                "inferred_type": inferred_type or _guess_column_type(col_name),
+                "nullable": bool(nullable),
+                "is_primary_key": bool(is_pk_inline),
+                "is_foreign_key": bool(ref_value),
+                "fk_references": ref_value or None,
+                "inferred_from": "track_a_mdb" if route == "mdb_direct_read" else "track_a_ddl",
+            }
+            if is_pk_inline:
+                pk = _as_list(trow.get("primary_key_candidates"))
+                if col_name not in pk:
+                    pk.append(col_name)
+                trow["primary_key_candidates"] = pk[:12]
+            trow["columns_map"] = cmap
+
+    for m in re.finditer(
+        r"(?is)\balter\s+table\b\s+([^\s]+)\s+add\s+constraint\s+[^\s]+\s+foreign\s+key\s*\(\s*([^\)]+)\)\s+references\s+([^\s(]+)\s*\(\s*([^\)]+)\s*\)",
+        text,
+    ):
+        add_rel(m.group(1), m.group(2), m.group(3), m.group(4))
+
+    tables_out: list[dict[str, Any]] = []
+    for table in sorted(table_map.values(), key=lambda x: _clean(x.get("name")).lower()):
+        columns_map = _as_dict(table.get("columns_map"))
+        table["columns"] = [
+            _as_dict(columns_map.get(k))
+            for k in sorted(columns_map.keys())
+            if isinstance(columns_map.get(k), dict)
+        ]
+        table.pop("columns_map", None)
+        tables_out.append(table)
+
+    return {"route": route, "tables": tables_out, "relationships": rel_rows}
+
+
+def _coalesce_sql_catalog_rows(sql_catalog_rows: list[Any]) -> list[Any]:
+    if not isinstance(sql_catalog_rows, list) or not sql_catalog_rows:
+        return sql_catalog_rows
+    out: list[dict[str, Any]] = []
+    buffer: dict[str, Any] | None = None
+    ui_like = re.compile(r"(?i)^(please|error|warning|click|save|cancel|ok|yes|no)\b")
+    start_pat = re.compile(r"(?i)\b(select|insert\s+into|update\s+\w|delete\s+from|delete\s+\*)\b")
+    for row in sql_catalog_rows:
+        if isinstance(row, dict):
+            raw = _clean(row.get("raw") or row.get("sql") or row.get("statement"))
+            tables = [_clean(x) for x in _as_list(row.get("tables")) if _clean(x)]
+            columns = [_clean(x) for x in _as_list(row.get("columns")) if _clean(x)]
+            base = dict(row)
+        else:
+            raw = _clean(row)
+            tables = []
+            columns = []
+            base = {"raw": raw}
+        if not raw:
+            continue
+        raw_clean = raw.strip()
+        looks_start = bool(start_pat.search(raw_clean))
+        looks_fragment = bool(re.fullmatch(r"(?i)(select|from|where|and|or|insert|into|update|set|delete|\&delete|\"delete\")", raw_clean))
+        looks_ui = bool(ui_like.search(raw_clean))
+
+        if looks_start:
+            if buffer:
+                out.append(buffer)
+            buffer = {"raw": raw_clean, "tables": tables[:], "columns": columns[:]}
+            continue
+
+        if buffer and (looks_fragment or (len(raw_clean) <= 80 and not looks_ui)):
+            buffer["raw"] = _clean(f"{_clean(buffer.get('raw'))} {raw_clean}")
+            merged_tables = [_clean(x) for x in _as_list(buffer.get("tables")) if _clean(x)]
+            for t in tables:
+                if t not in merged_tables:
+                    merged_tables.append(t)
+            merged_cols = [_clean(x) for x in _as_list(buffer.get("columns")) if _clean(x)]
+            for c in columns:
+                if c not in merged_cols:
+                    merged_cols.append(c)
+            buffer["tables"] = merged_tables
+            buffer["columns"] = merged_cols
+            continue
+
+        if buffer:
+            out.append(buffer)
+            buffer = None
+        out.append(base if isinstance(row, dict) else {"raw": raw_clean, "tables": [], "columns": []})
+    if buffer:
+        out.append(buffer)
+    return out
+
+
+def _build_source_schema_model(
+    *,
+    metadata_common: dict[str, Any],
+    sql_statements: list[dict[str, Any]],
+    database_tables: list[str],
+    database_schema_text: str = "",
+) -> dict[str, Any]:
+    table_map: dict[str, dict[str, Any]] = {}
+    relationships: list[dict[str, Any]] = []
+    rel_seen: set[str] = set()
+    unknown_query_count = 0
+    track_b_tables_seen: set[str] = set()
+    track_a = _parse_track_a_schema(database_schema_text)
+
+    def _ensure_table(table_name: str) -> dict[str, Any]:
+        key = _clean(table_name).lower()
+        if key not in table_map:
+            table_map[key] = {
+                "table_id": f"src_tbl:{len(table_map) + 1}",
+                "name": _clean(table_name),
+                "columns_map": {},
+                "primary_key_candidates": [],
+                "read_query_count": 0,
+                "write_query_count": 0,
+                "risk_flags": set(),
+                "evidence_sql_ids": set(),
+            }
+        return table_map[key]
+
+    # Track A: schema-first extraction from DDL/mdbtools output.
+    for t in _as_list(track_a.get("tables")):
+        if not isinstance(t, dict):
+            continue
+        tname = _clean(t.get("name"))
+        if not tname:
+            continue
+        trow = _ensure_table(tname)
+        pk_seed = [_clean(x) for x in _as_list(t.get("primary_key_candidates")) if _clean(x)]
+        if pk_seed:
+            trow["primary_key_candidates"] = sorted(set(_as_list(trow.get("primary_key_candidates")) + pk_seed))[:12]
+        cmap = _as_dict(trow.get("columns_map"))
+        for col in _as_list(t.get("columns")):
+            if not isinstance(col, dict):
+                continue
+            cname = _clean(col.get("name"))
+            if not cname:
+                continue
+            ckey = cname.lower()
+            cmap[ckey] = {
+                "column_id": f"{trow['table_id']}:col:{len(cmap) + 1}",
+                "name": cname,
+                "inferred_type": _clean(col.get("inferred_type")) or _guess_column_type(cname),
+                "nullable": bool(col.get("nullable", True)),
+                "evidence_sql_ids": [],
+                "confidence": 0.92,
+                "business_meaning": _column_business_meaning(cname),
+                "inferred_from": _clean(col.get("inferred_from")) or ("track_a_mdb" if _clean(track_a.get("route")) == "mdb_direct_read" else "track_a_ddl"),
+                "is_primary_key": bool(col.get("is_primary_key", False)),
+                "is_foreign_key": bool(col.get("is_foreign_key", False)),
+                "fk_references": _clean(col.get("fk_references")) or None,
+            }
+        trow["columns_map"] = cmap
+
+    for rel in _as_list(track_a.get("relationships")):
+        if not isinstance(rel, dict):
+            continue
+        ft = _clean(rel.get("from_table"))
+        fc = _clean(rel.get("from_column"))
+        tt = _clean(rel.get("to_table"))
+        tc = _clean(rel.get("to_column"))
+        if not (ft and fc and tt and tc):
+            continue
+        rel_key = f"{ft.lower()}|{fc.lower()}|{tt.lower()}|{tc.lower()}"
+        if rel_key in rel_seen:
+            continue
+        rel_seen.add(rel_key)
+        relationships.append(
+            {
+                "relationship_id": _clean(rel.get("relationship_id")) or f"src_rel:{len(relationships) + 1}",
+                "kind": _clean(rel.get("kind")) or "enforced_fk",
+                "from_table": ft,
+                "from_column": fc,
+                "to_table": tt,
+                "to_column": tc,
+                "confidence": round(_to_float(rel.get("confidence"), 0.95), 2),
+                "evidence_sql_ids": [_clean(x) for x in _as_list(rel.get("evidence_sql_ids")) if _clean(x)][:30],
+                "enforced_in_db": bool(rel.get("enforced_in_db", True)),
+            }
+        )
+
+    for table in database_tables:
+        t = _clean(table)
+        if t:
+            _ensure_table(t)
+
+    for stmt in sql_statements[:5000]:
+        if not isinstance(stmt, dict):
+            continue
+        sql_id = _clean(stmt.get("sql_id"))
+        raw = _clean(stmt.get("raw"))
+        kind = _clean(stmt.get("kind")).lower() or _parse_sql_kind(raw)
+        tables = [_clean(x) for x in _as_list(stmt.get("tables")) if _clean(x)]
+        columns = [_clean(x) for x in _as_list(stmt.get("columns")) if _clean(x)]
+        if not columns:
+            columns = _extract_column_tokens_from_sql(raw, kind)
+
+        if not tables:
+            unknown_query_count += 1
+            continue
+
+        op_is_write = kind in {"insert", "update", "delete", "ddl"}
+        for table in tables:
+            trow = _ensure_table(table)
+            track_b_tables_seen.add(_clean(table).lower())
+            if op_is_write:
+                trow["write_query_count"] += 1
+            else:
+                trow["read_query_count"] += 1
+            if sql_id:
+                trow["evidence_sql_ids"].add(sql_id)
+            for flag in _as_list(stmt.get("risk_flags")):
+                f = _clean(flag)
+                if f:
+                    trow["risk_flags"].add(f)
+            for col in columns:
+                cc = _clean(col).split(".")[-1].strip(" []`\"")
+                if not cc or cc == "*":
+                    continue
+                ckey = cc.lower()
+                cmap = _as_dict(trow.get("columns_map"))
+                if ckey not in cmap:
+                    cmap[ckey] = {
+                        "column_id": f"{trow['table_id']}:col:{len(cmap) + 1}",
+                        "name": cc,
+                        "inferred_type": _guess_column_type(cc),
+                        "nullable": True,
+                        "evidence_sql_ids": [],
+                        "confidence": 0.66,
+                        "business_meaning": _column_business_meaning(cc),
+                    }
+                col_row = _as_dict(cmap.get(ckey))
+                evidence = _as_list(col_row.get("evidence_sql_ids"))
+                if sql_id and sql_id not in evidence:
+                    evidence.append(sql_id)
+                col_row["evidence_sql_ids"] = evidence[:30]
+                col_row["inferred_from"] = _clean(col_row.get("inferred_from")) or "track_b_sql"
+                col_row["confidence"] = max(_to_float(col_row.get("confidence"), 0.66), 0.74)
+                if cc.lower() in {"id", "customerid", "accountid", "transactionid"} or cc.lower().endswith("_id"):
+                    pk = _as_list(trow.get("primary_key_candidates"))
+                    if cc not in pk:
+                        pk.append(cc)
+                    trow["primary_key_candidates"] = pk[:8]
+                    col_row["nullable"] = False
+                    col_row["confidence"] = max(_to_float(col_row.get("confidence"), 0.66), 0.78)
+                cmap[ckey] = col_row
+                trow["columns_map"] = cmap
+
+        # Join-based relationship inference.
+        alias_map: dict[str, str] = {}
+        for tbl, alias in re.findall(r"(?is)\b(?:from|join)\s+([a-zA-Z_][\w.]*)\s+(?:as\s+)?([a-zA-Z_][\w]*)", raw):
+            alias_map[_clean(alias).lower()] = _clean(tbl)
+        for left_alias, left_col, right_alias, right_col in re.findall(
+            r"(?is)\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w$]*)\s*=\s*([a-zA-Z_][\w]*)\.([a-zA-Z_][\w$]*)",
+            raw,
+        ):
+            lt = alias_map.get(_clean(left_alias).lower(), _clean(left_alias))
+            rt = alias_map.get(_clean(right_alias).lower(), _clean(right_alias))
+            if not _clean(lt) or not _clean(rt):
+                continue
+            rel_key = f"{lt.lower()}|{_clean(left_col).lower()}|{rt.lower()}|{_clean(right_col).lower()}"
+            if rel_key in rel_seen:
+                continue
+            rel_seen.add(rel_key)
+            confidence = 0.86 if ("id" in _clean(left_col).lower() or "id" in _clean(right_col).lower()) else 0.68
+            relationships.append(
+                {
+                    "relationship_id": f"src_rel:{len(relationships) + 1}",
+                    "kind": "soft_fk",
+                    "from_table": _clean(lt),
+                    "from_column": _clean(left_col),
+                    "to_table": _clean(rt),
+                    "to_column": _clean(right_col),
+                    "confidence": round(confidence, 2),
+                    "evidence_sql_ids": [sql_id] if sql_id else [],
+                }
+            )
+
+    tables_out: list[dict[str, Any]] = []
+    total_columns = 0
+    for table_row in sorted(table_map.values(), key=lambda x: _clean(x.get("name")).lower()):
+        columns_map = _as_dict(table_row.pop("columns_map"))
+        columns = sorted(columns_map.values(), key=lambda x: _clean(_as_dict(x).get("name")).lower())
+        total_columns += len(columns)
+        table_row["columns"] = columns[:500]
+        table_row["evidence_sql_ids"] = sorted(_as_list(table_row.get("evidence_sql_ids")) or list(table_row.get("evidence_sql_ids", set())))[:80]
+        table_row["risk_flags"] = sorted(_as_list(table_row.get("risk_flags")) or list(table_row.get("risk_flags", set())))[:40]
+        tables_out.append(table_row)
+
+    return {
+        "artifact_type": "source_schema_model",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "extraction_tracks": {
+            "track_a": {
+                "enabled": bool(_clean(database_schema_text)),
+                "route": _clean(track_a.get("route")) or "code_only",
+                "table_count": len(_as_list(track_a.get("tables"))),
+                "relationship_count": len(_as_list(track_a.get("relationships"))),
+            },
+            "track_b": {
+                "enabled": True,
+                "table_count": len(track_b_tables_seen),
+                "query_count": len(sql_statements),
+            },
+        },
+        "summary": {
+            "tables": len(tables_out),
+            "columns": total_columns,
+            "relationships": len(relationships),
+            "unknown_query_count": int(unknown_query_count),
+        },
+        "tables": tables_out[:800],
+        "relationships": relationships[:1200],
+    }
+
+
+def _build_source_query_catalog(
+    *,
+    metadata_common: dict[str, Any],
+    sql_statements: list[dict[str, Any]],
+    sql_map_entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    usage_by_sql: dict[str, list[dict[str, Any]]] = {}
+    for row in sql_map_entries[:6000]:
+        if not isinstance(row, dict):
+            continue
+        sql_id = _clean(row.get("sql_id"))
+        if not sql_id:
+            continue
+        usage_by_sql.setdefault(sql_id, []).append(
+            {
+                "form": _clean(row.get("form")),
+                "procedure": _clean(row.get("procedure")),
+                "operation": _clean(row.get("operation")),
+            }
+        )
+    queries: list[dict[str, Any]] = []
+    for stmt in sql_statements[:5000]:
+        if not isinstance(stmt, dict):
+            continue
+        sql_id = _clean(stmt.get("sql_id"))
+        queries.append(
+            {
+                "query_id": sql_id or f"q:{len(queries) + 1}",
+                "kind": _clean(stmt.get("kind")) or _parse_sql_kind(_clean(stmt.get("raw"))),
+                "raw": _clean(stmt.get("raw")),
+                "normalized": _clean(stmt.get("normalized")),
+                "tables": [_clean(x) for x in _as_list(stmt.get("tables")) if _clean(x)],
+                "columns": [_clean(x) for x in _as_list(stmt.get("columns")) if _clean(x)],
+                "risk_flags": [_clean(x) for x in _as_list(stmt.get("risk_flags")) if _clean(x)],
+                "usage_sites": usage_by_sql.get(sql_id, [])[:20],
+            }
+        )
+    return {
+        "artifact_type": "source_query_catalog",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "queries": queries[:6000],
+    }
+
+
+def _build_source_relationship_candidates(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    relationships = [_as_dict(x) for x in _as_list(source_schema_model.get("relationships")) if isinstance(x, dict)]
+    table_rows = [_as_dict(x) for x in _as_list(source_schema_model.get("tables")) if isinstance(x, dict)]
+    col_index: dict[str, set[str]] = {}
+    for table in table_rows:
+        tname = _clean(table.get("name"))
+        cols = {_clean(_as_dict(c).get("name")).lower() for c in _as_list(table.get("columns")) if _clean(_as_dict(c).get("name"))}
+        if tname and cols:
+            col_index[tname] = cols
+
+    # Add heuristic candidates for shared *id columns across tables.
+    seen = {
+        f"{_clean(r.get('from_table')).lower()}|{_clean(r.get('from_column')).lower()}|{_clean(r.get('to_table')).lower()}|{_clean(r.get('to_column')).lower()}"
+        for r in relationships
+    }
+    table_names = sorted(col_index.keys())
+    for left in table_names:
+        for right in table_names:
+            if left == right:
+                continue
+            shared_id_cols = [c for c in col_index[left].intersection(col_index[right]) if c.endswith("id") or c.endswith("_id")]
+            for col in shared_id_cols[:4]:
+                key = f"{left.lower()}|{col}|{right.lower()}|{col}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                relationships.append(
+                    {
+                        "relationship_id": f"src_rel:{len(relationships) + 1}",
+                        "kind": "candidate_fk",
+                        "from_table": left,
+                        "from_column": col,
+                        "to_table": right,
+                        "to_column": col,
+                        "confidence": 0.58,
+                        "evidence_sql_ids": [],
+                    }
+                )
+    return {
+        "artifact_type": "source_relationship_candidates",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "candidates": relationships[:2000],
+    }
+
+
+def _build_source_data_dictionary(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for table in _as_list(source_schema_model.get("tables")):
+        if not isinstance(table, dict):
+            continue
+        tname = _clean(table.get("name"))
+        for col in _as_list(table.get("columns")):
+            if not isinstance(col, dict):
+                continue
+            cname = _clean(col.get("name"))
+            if not tname or not cname:
+                continue
+            rows.append(
+                {
+                    "table": tname,
+                    "column": cname,
+                    "inferred_type": _clean(col.get("inferred_type")) or "text",
+                    "business_meaning": _clean(col.get("business_meaning")) or _column_business_meaning(cname),
+                    "evidence_sql_ids": [_clean(x) for x in _as_list(col.get("evidence_sql_ids")) if _clean(x)][:20],
+                    "confidence": round(_to_float(col.get("confidence"), 0.6), 2),
+                    "verification_required": _to_float(col.get("confidence"), 0.6) < 0.7,
+                }
+            )
+    return {
+        "artifact_type": "source_data_dictionary",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "rows": rows[:12000],
+    }
+
+
+def _build_source_erd(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    tables = [_as_dict(x) for x in _as_list(source_schema_model.get("tables")) if isinstance(x, dict)]
+    relationships = [_as_dict(x) for x in _as_list(source_schema_model.get("relationships")) if isinstance(x, dict)]
+    lines: list[str] = ["erDiagram"]
+    for table in tables[:600]:
+        tname = _clean(table.get("name"))
+        if not tname:
+            continue
+        lines.append(f"    {tname} {{")
+        for col in _as_list(table.get("columns"))[:160]:
+            crow = _as_dict(col)
+            cname = _clean(crow.get("name"))
+            if not cname:
+                continue
+            ctype = _clean(crow.get("inferred_type")) or "text"
+            lines.append(f"        {ctype} {cname}")
+        lines.append("    }")
+    for rel in relationships[:1600]:
+        ft = _clean(rel.get("from_table"))
+        fc = _clean(rel.get("from_column"))
+        tt = _clean(rel.get("to_table"))
+        tc = _clean(rel.get("to_column"))
+        if not (ft and fc and tt and tc):
+            continue
+        lines.append(f"    {ft} ||--o{{ {tt} : \"{fc} -> {tc}\"")
+    return {
+        "artifact_type": "source_erd",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "format": "mermaid",
+        "mermaid": "\n".join(lines),
+    }
+
+
+def _build_source_data_dictionary_markdown(
+    *,
+    metadata_common: dict[str, Any],
+    source_data_dictionary: dict[str, Any],
+    source_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    rows = [_as_dict(x) for x in _as_list(source_data_dictionary.get("rows")) if isinstance(x, dict)]
+    by_table: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        t = _clean(row.get("table"))
+        if not t:
+            continue
+        by_table.setdefault(t, []).append(row)
+
+    rel_refs: dict[str, list[str]] = {}
+    for rel in _as_list(source_schema_model.get("relationships")):
+        if not isinstance(rel, dict):
+            continue
+        ft = _clean(rel.get("from_table"))
+        fc = _clean(rel.get("from_column"))
+        tt = _clean(rel.get("to_table"))
+        tc = _clean(rel.get("to_column"))
+        if ft and fc and tt and tc:
+            rel_refs.setdefault(f"{ft}.{fc}".lower(), []).append(f"{tt}.{tc}")
+
+    lines: list[str] = [
+        "# Source Schema - Data Dictionary",
+        "",
+        "_Generated by Synthetix SourceSchemaAgent_",
+        "",
+        f"**Total tables:** {len(by_table)}  ",
+        f"**Total columns:** {len(rows)}",
+        "",
+        "---",
+        "",
+    ]
+    for table_name in sorted(by_table.keys(), key=lambda x: x.lower()):
+        lines.append(f"## {table_name}")
+        lines.append("")
+        lines.append("| Column | Type | FK Ref | Confidence | Access Evidence | Meaning |")
+        lines.append("|---|---|---|---:|---|---|")
+        table_rows = sorted(by_table[table_name], key=lambda x: _clean(x.get("column")).lower())
+        for row in table_rows:
+            col = _clean(row.get("column"))
+            ctype = _clean(row.get("inferred_type")) or "text"
+            key = f"{table_name}.{col}".lower()
+            fk_ref = ", ".join(rel_refs.get(key, [])[:3]) or "n/a"
+            conf = round(_to_float(row.get("confidence"), 0.0), 2)
+            evidence = ", ".join([_clean(x) for x in _as_list(row.get("evidence_sql_ids")) if _clean(x)][:4]) or "n/a"
+            meaning = _clean(row.get("business_meaning")) or "n/a"
+            lines.append(
+                f"| {col} | {ctype} | {fk_ref} | {conf} | {evidence} | {meaning} |"
+            )
+        lines.append("")
+    return {
+        "artifact_type": "source_data_dictionary_markdown",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "markdown": "\n".join(lines).strip() + "\n",
+    }
+
+
+def _build_source_hotspot_report(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+    source_query_catalog: dict[str, Any],
+) -> dict[str, Any]:
+    query_rows = [_as_dict(x) for x in _as_list(source_query_catalog.get("queries")) if isinstance(x, dict)]
+    risk_by_table: dict[str, int] = {}
+    for q in query_rows:
+        flags = [_clean(x) for x in _as_list(q.get("risk_flags")) if _clean(x)]
+        if not flags:
+            continue
+        for table in _as_list(q.get("tables")):
+            t = _clean(table)
+            if not t:
+                continue
+            risk_by_table[t] = int(risk_by_table.get(t, 0) or 0) + len(flags)
+
+    hotspots: list[dict[str, Any]] = []
+    for table in _as_list(source_schema_model.get("tables")):
+        if not isinstance(table, dict):
+            continue
+        tname = _clean(table.get("name"))
+        reads = int(table.get("read_query_count", 0) or 0)
+        writes = int(table.get("write_query_count", 0) or 0)
+        risks = int(risk_by_table.get(tname, 0) or 0)
+        score = (reads * 1.0) + (writes * 1.4) + (risks * 1.8)
+        hotspots.append(
+            {
+                "table": tname,
+                "reads": reads,
+                "writes": writes,
+                "risk_signals": risks,
+                "hotspot_score": round(score, 2),
+                "blast_radius": "high" if score >= 14 else ("medium" if score >= 6 else "low"),
+            }
+        )
+    hotspots.sort(key=lambda x: (_to_float(x.get("hotspot_score"), 0.0), int(x.get("risk_signals", 0))), reverse=True)
+    return {
+        "artifact_type": "source_hotspot_report",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "hotspots": hotspots[:300],
+    }
+
+
+def _build_source_db_profile(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+    source_query_catalog: dict[str, Any],
+    source_relationship_candidates: dict[str, Any],
+    source_hotspot_report: dict[str, Any],
+) -> dict[str, Any]:
+    queries = _as_list(source_query_catalog.get("queries"))
+    kinds: dict[str, int] = {}
+    unknown = 0
+    for q in queries:
+        if not isinstance(q, dict):
+            continue
+        kind = _clean(q.get("kind")).lower() or "unknown"
+        kinds[kind] = int(kinds.get(kind, 0) or 0) + 1
+        if kind == "unknown":
+            unknown += 1
+    dominant = "unknown"
+    if kinds:
+        dominant = max(kinds.items(), key=lambda kv: kv[1])[0]
+    profile = {
+        "artifact_type": "source_db_profile",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "tables": int(_as_dict(source_schema_model.get("summary")).get("tables", 0) or 0),
+            "columns": int(_as_dict(source_schema_model.get("summary")).get("columns", 0) or 0),
+            "relationships": len(_as_list(source_relationship_candidates.get("candidates"))),
+            "queries": len(queries),
+            "unknown_queries": int(unknown),
+            "dominant_query_kind": dominant,
+            "hotspots": len(_as_list(source_hotspot_report.get("hotspots"))),
+        },
+        "query_kind_distribution": kinds,
+        "db_type_guess": "microsoft_access_or_ado" if any(k in kinds for k in ("select", "update", "delete")) else "unknown",
+        "archaeology_route": "code_derived_sql_mining",
+    }
+    return profile
+
+
+def _build_target_schema_model(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+    source_relationship_candidates: dict[str, Any],
+    target_database: str,
+) -> dict[str, Any]:
+    src_tables = [_as_dict(x) for x in _as_list(source_schema_model.get("tables")) if isinstance(x, dict)]
+    rel_rows = [_as_dict(x) for x in _as_list(source_relationship_candidates.get("candidates")) if isinstance(x, dict)]
+    target_tables: list[dict[str, Any]] = []
+    table_name_map: dict[str, str] = {}
+    for src in src_tables:
+        sname = _clean(src.get("name"))
+        if not sname:
+            continue
+        tname = _to_snake_case(sname) or sname.lower()
+        table_name_map[sname.lower()] = tname
+        target_cols: list[dict[str, Any]] = []
+        source_cols = [_as_dict(c) for c in _as_list(src.get("columns")) if isinstance(c, dict)]
+        for col in source_cols:
+            cname = _clean(col.get("name"))
+            if not cname:
+                continue
+            tcol = _to_snake_case(cname) or cname.lower()
+            src_type = _clean(col.get("inferred_type")) or _guess_column_type(cname)
+            target_type = src_type
+            if src_type == "timestamp" and _clean(target_database).lower() in {"sql server"}:
+                target_type = "datetime2"
+            elif src_type == "boolean" and _clean(target_database).lower() in {"oracle"}:
+                target_type = "number(1)"
+            target_cols.append(
+                {
+                    "name": tcol,
+                    "type": target_type,
+                    "nullable": bool(col.get("nullable", True)),
+                    "source_column": cname,
+                    "source_type": src_type,
+                }
+            )
+        existing = {row["name"] for row in target_cols}
+        for audit_col, audit_type in (("created_at", "timestamp"), ("updated_at", "timestamp")):
+            if audit_col not in existing:
+                target_cols.append(
+                    {
+                        "name": audit_col,
+                        "type": audit_type,
+                        "nullable": True,
+                        "source_column": "",
+                        "source_type": "",
+                    }
+                )
+        pk_candidates = [_to_snake_case(x) for x in _as_list(src.get("primary_key_candidates")) if _clean(x)]
+        if not pk_candidates and any(col["name"] == "id" for col in target_cols):
+            pk_candidates = ["id"]
+        indexes = [col["name"] for col in target_cols if col["name"].endswith("_id")][:20]
+        target_tables.append(
+            {
+                "table_id": f"tgt_tbl:{len(target_tables) + 1}",
+                "name": tname,
+                "source_table": sname,
+                "columns": target_cols[:800],
+                "primary_key": pk_candidates[:4],
+                "indexes": indexes,
+            }
+        )
+
+    constraints: list[dict[str, Any]] = []
+    for rel in rel_rows:
+        conf = _to_float(rel.get("confidence"), 0.0)
+        if conf < 0.7:
+            continue
+        ftable = _clean(rel.get("from_table"))
+        ttable = _clean(rel.get("to_table"))
+        fcol = _to_snake_case(rel.get("from_column"))
+        tcol = _to_snake_case(rel.get("to_column"))
+        if not ftable or not ttable or not fcol or not tcol:
+            continue
+        constraints.append(
+            {
+                "constraint_id": f"fk:{len(constraints) + 1}",
+                "type": "foreign_key",
+                "from_table": table_name_map.get(ftable.lower(), _to_snake_case(ftable)),
+                "from_column": fcol,
+                "to_table": table_name_map.get(ttable.lower(), _to_snake_case(ttable)),
+                "to_column": tcol,
+                "source_relationship_id": _clean(rel.get("relationship_id")),
+            }
+        )
+
+    total_cols = sum(len(_as_list(t.get("columns"))) for t in target_tables)
+    return {
+        "artifact_type": "target_schema_model",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "target_database": _clean(target_database) or "PostgreSQL",
+        "summary": {
+            "tables": len(target_tables),
+            "columns": total_cols,
+            "constraints": len(constraints),
+        },
+        "tables": target_tables[:800],
+        "constraints": constraints[:1600],
+    }
+
+
+def _build_target_erd(
+    *,
+    metadata_common: dict[str, Any],
+    target_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    tables = [_as_dict(x) for x in _as_list(target_schema_model.get("tables")) if isinstance(x, dict)]
+    constraints = [_as_dict(x) for x in _as_list(target_schema_model.get("constraints")) if isinstance(x, dict)]
+    lines: list[str] = ["erDiagram"]
+    for table in tables[:180]:
+        tname = _clean(table.get("name"))
+        if not tname:
+            continue
+        lines.append(f"  {tname} {{")
+        pk_set = { _clean(x) for x in _as_list(table.get("primary_key")) if _clean(x) }
+        for col in _as_list(table.get("columns"))[:120]:
+            if not isinstance(col, dict):
+                continue
+            cname = _clean(col.get("name"))
+            ctype = _clean(col.get("type")) or "text"
+            if not cname:
+                continue
+            suffix = " PK" if cname in pk_set else ""
+            lines.append(f"    {ctype} {cname}{suffix}")
+        lines.append("  }")
+    for fk in constraints[:300]:
+        ftable = _clean(fk.get("from_table"))
+        ttable = _clean(fk.get("to_table"))
+        if not ftable or not ttable:
+            continue
+        lines.append(f"  {ttable} ||--o{{ {ftable} : references")
+    return {
+        "artifact_type": "target_erd",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "format": "mermaid",
+        "mermaid": "\n".join(lines),
+        "tables": [t.get("name") for t in tables[:300]],
+        "relationships": len(constraints),
+    }
+
+
+def _build_target_data_dictionary(
+    *,
+    metadata_common: dict[str, Any],
+    target_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for table in _as_list(target_schema_model.get("tables")):
+        if not isinstance(table, dict):
+            continue
+        tname = _clean(table.get("name"))
+        source_table = _clean(table.get("source_table"))
+        for col in _as_list(table.get("columns")):
+            if not isinstance(col, dict):
+                continue
+            cname = _clean(col.get("name"))
+            if not cname:
+                continue
+            rows.append(
+                {
+                    "target_table": tname,
+                    "target_column": cname,
+                    "target_type": _clean(col.get("type")) or "text",
+                    "nullable": bool(col.get("nullable", True)),
+                    "source_table": source_table,
+                    "source_column": _clean(col.get("source_column")),
+                    "business_meaning": _column_business_meaning(cname),
+                }
+            )
+    return {
+        "artifact_type": "target_data_dictionary",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "rows": rows[:12000],
+    }
+
+
+def _build_schema_mapping_matrix(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+    target_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    target_by_source: dict[tuple[str, str], dict[str, Any]] = {}
+    for t in _as_list(target_schema_model.get("tables")):
+        if not isinstance(t, dict):
+            continue
+        src_table = _clean(t.get("source_table"))
+        tgt_table = _clean(t.get("name"))
+        for c in _as_list(t.get("columns")):
+            if not isinstance(c, dict):
+                continue
+            src_col = _clean(c.get("source_column"))
+            if not src_table or not src_col:
+                continue
+            target_by_source[(src_table.lower(), src_col.lower())] = {
+                "target_table": tgt_table,
+                "target_column": _clean(c.get("name")),
+                "target_type": _clean(c.get("type")) or "text",
+            }
+
+    mappings: list[dict[str, Any]] = []
+    for st in _as_list(source_schema_model.get("tables")):
+        if not isinstance(st, dict):
+            continue
+        src_table = _clean(st.get("name"))
+        for sc in _as_list(st.get("columns")):
+            if not isinstance(sc, dict):
+                continue
+            src_col = _clean(sc.get("name"))
+            if not src_table or not src_col:
+                continue
+            tgt = target_by_source.get((src_table.lower(), src_col.lower()), {})
+            src_type = _clean(sc.get("inferred_type")) or "text"
+            tgt_type = _clean(tgt.get("target_type")) or src_type
+            rule = "identity"
+            if _to_snake_case(src_col) != _clean(tgt.get("target_column")):
+                rule = "rename_case_normalization"
+            if src_type != tgt_type:
+                rule = "cast_type"
+            mappings.append(
+                {
+                    "mapping_id": f"map:{len(mappings) + 1}",
+                    "source_table": src_table,
+                    "source_column": src_col,
+                    "source_type": src_type,
+                    "target_table": _clean(tgt.get("target_table")) or "",
+                    "target_column": _clean(tgt.get("target_column")) or "",
+                    "target_type": tgt_type,
+                    "transform_rule": rule,
+                    "confidence": round(_to_float(sc.get("confidence"), 0.65), 2),
+                    "verification_required": not bool(tgt),
+                }
+            )
+    return {
+        "artifact_type": "schema_mapping_matrix",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "mappings": mappings[:24000],
+    }
+
+
+def _build_data_migration_plan(
+    *,
+    metadata_common: dict[str, Any],
+    schema_mapping_matrix: dict[str, Any],
+    target_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    mappings = [_as_dict(x) for x in _as_list(schema_mapping_matrix.get("mappings")) if isinstance(x, dict)]
+    unresolved = [m for m in mappings if bool(m.get("verification_required"))]
+    target_tables = [_clean(_as_dict(t).get("name")) for t in _as_list(target_schema_model.get("tables")) if _clean(_as_dict(t).get("name"))]
+    return {
+        "artifact_type": "migration_plan",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "strategy": {
+            "cutover": "phased",
+            "backfill": "table_by_table_with_reconciliation",
+            "rollback": "retain_source_snapshot_per_batch",
+        },
+        "sequence": [
+            {"step": 1, "title": "Create target schema and constraints in staging environment."},
+            {"step": 2, "title": "Backfill reference/master tables, then transaction/history tables."},
+            {"step": 3, "title": "Run reconciliation checks (row counts, financial aggregates, spot checks)."},
+            {"step": 4, "title": "Perform controlled cutover and monitor verification dashboard."},
+        ],
+        "target_tables": target_tables[:300],
+        "unresolved_mappings": len(unresolved),
+        "blocking_items": unresolved[:120],
+    }
+
+
+def _build_validation_harness_spec(
+    *,
+    metadata_common: dict[str, Any],
+    schema_mapping_matrix: dict[str, Any],
+    source_hotspot_report: dict[str, Any],
+) -> dict[str, Any]:
+    mappings = [_as_dict(x) for x in _as_list(schema_mapping_matrix.get("mappings")) if isinstance(x, dict)]
+    high_hotspots = [
+        _as_dict(x)
+        for x in _as_list(source_hotspot_report.get("hotspots"))
+        if isinstance(x, dict) and _clean(x.get("blast_radius")).lower() == "high"
+    ]
+    return {
+        "artifact_type": "validation_harness_spec",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "checks": [
+            {
+                "id": "VAL-001",
+                "name": "Row count reconciliation",
+                "description": "Validate source/target row counts per migrated table within accepted threshold.",
+            },
+            {
+                "id": "VAL-002",
+                "name": "Critical aggregate parity",
+                "description": "Validate key financial aggregates (balance, debit, credit, transaction totals).",
+            },
+            {
+                "id": "VAL-003",
+                "name": "Column-level checksum",
+                "description": "Compute deterministic checksums for mapped columns in sampled ranges.",
+            },
+            {
+                "id": "VAL-004",
+                "name": "Workflow-level equivalence",
+                "description": "Replay golden legacy workflows and confirm target side effects are equivalent.",
+            },
+        ],
+        "coverage": {
+            "mapped_columns": len([m for m in mappings if _clean(m.get("target_column"))]),
+            "unmapped_columns": len([m for m in mappings if not _clean(m.get("target_column"))]),
+            "high_blast_tables": len(high_hotspots),
+        },
+        "focus_tables": [_clean(x.get("table")) for x in high_hotspots[:20] if _clean(x.get("table"))],
+    }
+
+
+def _build_db_qa_report(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+    source_query_catalog: dict[str, Any],
+    source_relationship_candidates: dict[str, Any],
+    schema_mapping_matrix: dict[str, Any],
+    target_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def add(check_id: str, status: str, detail: str, blocking: bool = False) -> None:
+        checks.append(
+            {
+                "id": check_id,
+                "status": _clean(status).upper() if _clean(status).upper() in {"PASS", "WARN", "FAIL"} else "WARN",
+                "blocking": bool(blocking),
+                "detail": _clean(detail),
+            }
+        )
+
+    src_tables = {_clean(_as_dict(t).get("name")).lower() for t in _as_list(source_schema_model.get("tables")) if _clean(_as_dict(t).get("name"))}
+    query_rows = [_as_dict(x) for x in _as_list(source_query_catalog.get("queries")) if isinstance(x, dict)]
+    unresolved_tables: set[str] = set()
+    for q in query_rows:
+        for tbl in _as_list(q.get("tables")):
+            t = _clean(tbl)
+            if t and t.lower() not in src_tables:
+                unresolved_tables.add(t)
+    if unresolved_tables:
+        add(
+            "db_struct_query_table_resolution",
+            "FAIL",
+            f"Query catalog references unknown source tables: {', '.join(sorted(unresolved_tables)[:10])}.",
+            True,
+        )
+    else:
+        add("db_struct_query_table_resolution", "PASS", "All query table references resolve to source schema model.")
+
+    src_cols = {
+        (_clean(_as_dict(t).get("name")).lower(), _clean(_as_dict(c).get("name")).lower())
+        for t in _as_list(source_schema_model.get("tables"))
+        if isinstance(t, dict)
+        for c in _as_list(_as_dict(t).get("columns"))
+        if isinstance(c, dict) and _clean(_as_dict(t).get("name")) and _clean(_as_dict(c).get("name"))
+    }
+    map_rows = [_as_dict(x) for x in _as_list(schema_mapping_matrix.get("mappings")) if isinstance(x, dict)]
+    mapped_cols = {
+        (_clean(m.get("source_table")).lower(), _clean(m.get("source_column")).lower())
+        for m in map_rows
+        if _clean(m.get("source_table")) and _clean(m.get("source_column")) and _clean(m.get("target_column"))
+    }
+    coverage = (len(mapped_cols) / float(len(src_cols))) if src_cols else 1.0
+    if coverage < 0.8:
+        add(
+            "db_struct_mapping_coverage",
+            "FAIL",
+            f"Schema mapping coverage is {coverage:.2%}, below required 80%.",
+            True,
+        )
+    elif coverage < 0.95:
+        add("db_struct_mapping_coverage", "WARN", f"Schema mapping coverage is {coverage:.2%}; verify unresolved columns.")
+    else:
+        add("db_struct_mapping_coverage", "PASS", f"Schema mapping coverage is {coverage:.2%}.")
+
+    tgt_tables = [_as_dict(x) for x in _as_list(target_schema_model.get("tables")) if isinstance(x, dict)]
+    pk_missing = [t for t in tgt_tables if not _as_list(t.get("primary_key"))]
+    if pk_missing:
+        add(
+            "db_struct_target_pk_presence",
+            "WARN",
+            f"{len(pk_missing)} target table(s) missing explicit primary key proposal.",
+        )
+    else:
+        add("db_struct_target_pk_presence", "PASS", "All target tables have primary key proposal.")
+
+    rel_rows = [_as_dict(x) for x in _as_list(source_relationship_candidates.get("candidates")) if isinstance(x, dict)]
+    rel_unresolved = 0
+    src_table_cols: dict[str, set[str]] = {}
+    for t in _as_list(source_schema_model.get("tables")):
+        if not isinstance(t, dict):
+            continue
+        tname = _clean(t.get("name")).lower()
+        cols = {_clean(_as_dict(c).get("name")).lower() for c in _as_list(t.get("columns")) if _clean(_as_dict(c).get("name"))}
+        if tname:
+            src_table_cols[tname] = cols
+    for rel in rel_rows:
+        ft = _clean(rel.get("from_table")).lower()
+        fc = _clean(rel.get("from_column")).lower()
+        tt = _clean(rel.get("to_table")).lower()
+        tc = _clean(rel.get("to_column")).lower()
+        if ft and fc and (fc not in src_table_cols.get(ft, set())):
+            rel_unresolved += 1
+            continue
+        if tt and tc and (tc not in src_table_cols.get(tt, set())):
+            rel_unresolved += 1
+    if rel_unresolved:
+        add(
+            "db_struct_relationship_resolution",
+            "WARN",
+            f"{rel_unresolved} relationship candidate(s) reference columns not present in schema model.",
+        )
+    else:
+        add("db_struct_relationship_resolution", "PASS", "Relationship candidates resolve to schema columns.")
+
+    overall = "PASS"
+    if any(_clean(x.get("status")).upper() == "FAIL" and bool(x.get("blocking")) for x in checks):
+        overall = "FAIL"
+    elif any(_clean(x.get("status")).upper() in {"FAIL", "WARN"} for x in checks):
+        overall = "WARN"
+
+    return {
+        "artifact_type": "db_qa_report",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "overall_status": overall,
+        "checks": checks,
+    }
+
+
+def _build_schema_approval_record(
+    *,
+    metadata_common: dict[str, Any],
+    db_qa_report: dict[str, Any],
+) -> dict[str, Any]:
+    qa_status = _clean(db_qa_report.get("overall_status")).upper() or "WARN"
+    approval_status = "REQUIRED"
+    if qa_status == "PASS":
+        approval_status = "PENDING_APPROVAL"
+    elif qa_status == "FAIL":
+        approval_status = "BLOCKED"
+    return {
+        "artifact_type": "schema_approval_record",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "status": approval_status,
+        "qa_status": qa_status,
+        "approved_by": "",
+        "approved_at": "",
+        "notes": (
+            "Approve source/target schema baseline for planning and implementation only after DB QA passes."
+        ),
+    }
+
+
+def _build_schema_drift_report(
+    *,
+    metadata_common: dict[str, Any],
+    source_schema_model: dict[str, Any],
+    target_schema_model: dict[str, Any],
+) -> dict[str, Any]:
+    src_summary = _as_dict(source_schema_model.get("summary"))
+    tgt_summary = _as_dict(target_schema_model.get("summary"))
+    table_delta = int(tgt_summary.get("tables", 0) or 0) - int(src_summary.get("tables", 0) or 0)
+    col_delta = int(tgt_summary.get("columns", 0) or 0) - int(src_summary.get("columns", 0) or 0)
+    return {
+        "artifact_type": "schema_drift_report",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "status": "WARN" if abs(table_delta) > 0 or abs(col_delta) > 0 else "PASS",
+        "drift_summary": {
+            "source_tables": int(src_summary.get("tables", 0) or 0),
+            "target_tables": int(tgt_summary.get("tables", 0) or 0),
+            "table_delta": table_delta,
+            "source_columns": int(src_summary.get("columns", 0) or 0),
+            "target_columns": int(tgt_summary.get("columns", 0) or 0),
+            "column_delta": col_delta,
+        },
+        "notes": [
+            "Drift report compares source reconstruction vs target proposal.",
+            "Large deltas require explicit ADR and migration justification.",
+        ],
+    }
+
+
 def _derive_procedure_steps(
     *,
     form: str,
@@ -1328,6 +2748,8 @@ def _infer_form_alias(
     controls: list[str] | None = None,
 ) -> str:
     form_token = _clean(form_name).lower()
+    if form_token in {"main", "mdiform"}:
+        return "Navigation Hub"
     is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
     purpose_low = _clean(purpose).lower()
     if "deposit capture" in purpose_low:
@@ -1487,6 +2909,7 @@ def _derive_form_coverage_rows(
                     "extracted_handlers_count": int(row.get("extracted_handlers_count", 0) or 0),
                     "explained_handlers_count": int(row.get("explained_handlers_count", 0) or 0),
                     "sql_touched_count": int(row.get("sql_touched_count", 0) or 0),
+                    "source_loc": int(row.get("source_loc", 0) or 0),
                     "risk_count": int(row.get("risk_count", 0) or 0),
                 }
             )
@@ -1538,6 +2961,7 @@ def _derive_form_coverage_rows(
                 "extracted_handlers_count": extracted,
                 "explained_handlers_count": extracted,
                 "sql_touched_count": int(sql_by_form.get(norm, 0) or 0),
+                "source_loc": int(_as_dict(form_row).get("source_loc", 0) or 0),
                 "risk_count": 0,
             }
         )
@@ -1817,6 +3241,7 @@ def _build_discover_review_checklist(
     variant_diff_report: dict[str, Any],
     reporting_model: dict[str, Any],
     identity_access_model: dict[str, Any],
+    db_qa_report: dict[str, Any],
     sql_statements: list[dict[str, Any]],
     detector_findings: list[dict[str, Any]],
     business_rules: list[dict[str, Any]],
@@ -2137,6 +3562,18 @@ def _build_discover_review_checklist(
                 "Role model or credential handling requires confirmation."
                 if _clean(identity_access_model.get("status")).upper() in {"WARN", "FAIL"}
                 else "Identity/access model signals are sufficiently captured."
+            ),
+        },
+        {
+            "id": "database_archaeology_ready",
+            "title": "Database Archaeology & Mapping Readiness",
+            "status": _clean(db_qa_report.get("overall_status")).upper() or "WARN",
+            "detail": (
+                "Source schema, target schema, and mapping matrix passed DB QA checks."
+                if _clean(db_qa_report.get("overall_status")).upper() == "PASS"
+                else (
+                    "DB QA detected blocking or warning issues in schema reconstruction/mapping."
+                )
             ),
         },
     ]
@@ -2954,6 +4391,7 @@ def _build_form_dossiers(
                     "coverage_score": round(coverage_score, 4),
                     "confidence_score": round(confidence, 4),
                 },
+                "source_loc": int(row.get("source_loc", 0) or 0),
             }
         )
     return {
@@ -3019,8 +4457,10 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     event_handlers = _as_list(legacy_inventory.get("event_handlers"))
     database_tables = [_clean(x) for x in _as_list(legacy_inventory.get("database_tables")) if _clean(x)]
     sql_catalog_rows = _as_list(legacy_inventory.get("sql_query_catalog")) or _as_list(vb6_analysis.get("sql_query_catalog"))
+    sql_catalog_rows = _coalesce_sql_catalog_rows(sql_catalog_rows)
     ui_event_rows = _as_list(legacy_inventory.get("ui_event_map")) or _as_list(vb6_analysis.get("ui_event_map"))
     readiness = _as_dict(legacy_inventory.get("modernization_readiness")) or _as_dict(vb6_analysis.get("modernization_readiness"))
+    database_schema_text = _clean(safe.get("database_schema_input") or safe.get("database_schema"))
 
     sql_statements: list[dict[str, Any]] = []
     sql_raw_to_id: dict[str, str] = {}
@@ -3501,6 +4941,41 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
             disambiguated_project_labels[pidx - 1] = unique_candidate
             seen_disambiguated.add(unique_candidate.lower())
 
+    source_loc_rows = _as_list(legacy_inventory.get("source_loc_by_file")) or _as_list(vb6_analysis.get("source_loc_by_file"))
+    source_loc_by_file: dict[str, int] = {}
+    for row in source_loc_rows[:5000]:
+        if not isinstance(row, dict):
+            continue
+        path = _clean(row.get("path"))
+        if not path:
+            continue
+        source_loc_by_file[path] = int(row.get("loc", 0) or 0)
+    source_loc_total = int(
+        legacy_inventory.get("source_loc_total", 0)
+        or vb6_analysis.get("source_loc_total", 0)
+        or sum(source_loc_by_file.values())
+    )
+    source_loc_forms = int(
+        legacy_inventory.get("source_loc_forms", 0)
+        or vb6_analysis.get("source_loc_forms", 0)
+        or sum(loc for path, loc in source_loc_by_file.items() if path.lower().endswith((".frm", ".ctl")))
+    )
+    source_loc_modules = int(
+        legacy_inventory.get("source_loc_modules", 0)
+        or vb6_analysis.get("source_loc_modules", 0)
+        or sum(loc for path, loc in source_loc_by_file.items() if path.lower().endswith(".bas"))
+    )
+    source_loc_classes = int(
+        legacy_inventory.get("source_loc_classes", 0)
+        or vb6_analysis.get("source_loc_classes", 0)
+        or sum(loc for path, loc in source_loc_by_file.items() if path.lower().endswith(".cls"))
+    )
+    source_files_scanned = int(
+        legacy_inventory.get("source_files_scanned", 0)
+        or vb6_analysis.get("source_files_scanned", 0)
+        or len(source_loc_by_file)
+    )
+
     projects_out: list[dict[str, Any]] = []
     for pidx, project in enumerate(vb6_projects, start=1):
         if not isinstance(project, dict):
@@ -3551,6 +5026,10 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
                 "type": _clean(project.get("project_type")) or "legacy_project",
                 "startup": _clean(project.get("startup_object")),
                 "file": _clean(project.get("project_file")),
+                "source_loc_total": int(project.get("source_loc_total", 0) or 0),
+                "source_loc_forms": int(project.get("source_loc_forms", 0) or 0),
+                "source_loc_modules": int(project.get("source_loc_modules", 0) or 0),
+                "source_loc_classes": int(project.get("source_loc_classes", 0) or 0),
                 "forms": [_clean(x) for x in _as_list(project.get("forms")) if _clean(x)],
                 "member_files": [_clean(x) for x in _as_list(project.get("member_files")) if _clean(x)],
                 "data_touchpoints": _as_dict(project.get("data_touchpoints")),
@@ -3620,6 +5099,11 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
                 "forms_unmapped": int(
                     _as_dict(legacy_inventory).get("form_count_unmapped_files", 0) or 0
                 ),
+                "source_loc_total": source_loc_total,
+                "source_loc_forms": source_loc_forms,
+                "source_loc_modules": source_loc_modules,
+                "source_loc_classes": source_loc_classes,
+                "source_files_scanned": source_files_scanned,
                 "controls": controls_count,
                 "dependencies": total_deps,
                 "event_handlers": event_handler_count_exact,
@@ -3634,6 +5118,10 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         },
         "projects": projects_out,
         "form_coverage": form_coverage_rows,
+        "source_loc_by_file": [
+            {"path": path, "loc": int(loc or 0)}
+            for path, loc in sorted(source_loc_by_file.items())
+        ][:2000],
     }
 
     dependency_inventory_artifact = {
@@ -3695,6 +5183,93 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "entries": sql_map_entries[:900],
     }
 
+    source_schema_model_artifact = _build_source_schema_model(
+        metadata_common=metadata_common,
+        sql_statements=sql_statements,
+        database_tables=database_tables,
+        database_schema_text=database_schema_text,
+    )
+    source_query_catalog_artifact = _build_source_query_catalog(
+        metadata_common=metadata_common,
+        sql_statements=sql_statements,
+        sql_map_entries=sql_map_entries,
+    )
+    source_relationship_candidates_artifact = _build_source_relationship_candidates(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+    )
+    source_data_dictionary_artifact = _build_source_data_dictionary(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+    )
+    source_erd_artifact = _build_source_erd(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+    )
+    source_data_dictionary_markdown_artifact = _build_source_data_dictionary_markdown(
+        metadata_common=metadata_common,
+        source_data_dictionary=source_data_dictionary_artifact,
+        source_schema_model=source_schema_model_artifact,
+    )
+    source_hotspot_report_artifact = _build_source_hotspot_report(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+        source_query_catalog=source_query_catalog_artifact,
+    )
+    source_db_profile_artifact = _build_source_db_profile(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+        source_query_catalog=source_query_catalog_artifact,
+        source_relationship_candidates=source_relationship_candidates_artifact,
+        source_hotspot_report=source_hotspot_report_artifact,
+    )
+    target_schema_model_artifact = _build_target_schema_model(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+        source_relationship_candidates=source_relationship_candidates_artifact,
+        target_database=_clean(target_profile.get("database")) or "PostgreSQL",
+    )
+    target_erd_artifact = _build_target_erd(
+        metadata_common=metadata_common,
+        target_schema_model=target_schema_model_artifact,
+    )
+    target_data_dictionary_artifact = _build_target_data_dictionary(
+        metadata_common=metadata_common,
+        target_schema_model=target_schema_model_artifact,
+    )
+    schema_mapping_matrix_artifact = _build_schema_mapping_matrix(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+        target_schema_model=target_schema_model_artifact,
+    )
+    migration_plan_artifact = _build_data_migration_plan(
+        metadata_common=metadata_common,
+        schema_mapping_matrix=schema_mapping_matrix_artifact,
+        target_schema_model=target_schema_model_artifact,
+    )
+    validation_harness_spec_artifact = _build_validation_harness_spec(
+        metadata_common=metadata_common,
+        schema_mapping_matrix=schema_mapping_matrix_artifact,
+        source_hotspot_report=source_hotspot_report_artifact,
+    )
+    db_qa_report_artifact = _build_db_qa_report(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+        source_query_catalog=source_query_catalog_artifact,
+        source_relationship_candidates=source_relationship_candidates_artifact,
+        schema_mapping_matrix=schema_mapping_matrix_artifact,
+        target_schema_model=target_schema_model_artifact,
+    )
+    schema_approval_record_artifact = _build_schema_approval_record(
+        metadata_common=metadata_common,
+        db_qa_report=db_qa_report_artifact,
+    )
+    schema_drift_report_artifact = _build_schema_drift_report(
+        metadata_common=metadata_common,
+        source_schema_model=source_schema_model_artifact,
+        target_schema_model=target_schema_model_artifact,
+    )
+
     domain_pack = _as_dict(safe.get("domain_pack")) or _as_dict(_as_dict(req_pack.get("project")).get("domain_pack"))
     global_directives = _as_list(safe.get("global_directives"))
     memory_constraints = _as_list(safe.get("memory_constraints"))
@@ -3748,6 +5323,7 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         variant_diff_report=variant_diff_report_artifact,
         reporting_model=reporting_model_artifact,
         identity_access_model=identity_access_model_artifact,
+        db_qa_report=db_qa_report_artifact,
         sql_statements=sql_statements,
         detector_findings=detector_findings,
         business_rules=rules,
@@ -3827,6 +5403,23 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "risk_register": "artifact://analyst/raw/risk_register/v1",
         "orphan_analysis": "artifact://analyst/raw/orphan_analysis/v1",
         "delivery_constitution": "artifact://analyst/raw/delivery_constitution/v1",
+        "source_db_profile": "artifact://analyst/raw/source_db_profile/v1",
+        "source_schema_model": "artifact://analyst/raw/source_schema_model/v1",
+        "source_query_catalog": "artifact://analyst/raw/source_query_catalog/v1",
+        "source_relationship_candidates": "artifact://analyst/raw/source_relationship_candidates/v1",
+        "source_data_dictionary": "artifact://analyst/raw/source_data_dictionary/v1",
+        "source_data_dictionary_markdown": "artifact://analyst/raw/source_data_dictionary_markdown/v1",
+        "source_erd": "artifact://analyst/raw/source_erd/v1",
+        "source_hotspot_report": "artifact://analyst/raw/source_hotspot_report/v1",
+        "target_schema_model": "artifact://analyst/raw/target_schema_model/v1",
+        "target_erd": "artifact://analyst/raw/target_erd/v1",
+        "target_data_dictionary": "artifact://analyst/raw/target_data_dictionary/v1",
+        "schema_mapping_matrix": "artifact://analyst/raw/schema_mapping_matrix/v1",
+        "migration_plan": "artifact://analyst/raw/migration_plan/v1",
+        "validation_harness_spec": "artifact://analyst/raw/validation_harness_spec/v1",
+        "db_qa_report": "artifact://analyst/raw/db_qa_report/v1",
+        "schema_approval_record": "artifact://analyst/raw/schema_approval_record/v1",
+        "schema_drift_report": "artifact://analyst/raw/schema_drift_report/v1",
         "variant_diff_report": "artifact://analyst/raw/variant_diff_report/v1",
         "reporting_model": "artifact://analyst/raw/reporting_model/v1",
         "identity_access_model": "artifact://analyst/raw/identity_access_model/v1",
@@ -3858,6 +5451,23 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
             {"type": "risk_register", "ref": refs["risk_register"]},
             {"type": "orphan_analysis", "ref": refs["orphan_analysis"]},
             {"type": "delivery_constitution", "ref": refs["delivery_constitution"]},
+            {"type": "source_db_profile", "ref": refs["source_db_profile"]},
+            {"type": "source_schema_model", "ref": refs["source_schema_model"]},
+            {"type": "source_query_catalog", "ref": refs["source_query_catalog"]},
+            {"type": "source_relationship_candidates", "ref": refs["source_relationship_candidates"]},
+            {"type": "source_data_dictionary", "ref": refs["source_data_dictionary"]},
+            {"type": "source_data_dictionary_markdown", "ref": refs["source_data_dictionary_markdown"]},
+            {"type": "source_erd", "ref": refs["source_erd"]},
+            {"type": "source_hotspot_report", "ref": refs["source_hotspot_report"]},
+            {"type": "target_schema_model", "ref": refs["target_schema_model"]},
+            {"type": "target_erd", "ref": refs["target_erd"]},
+            {"type": "target_data_dictionary", "ref": refs["target_data_dictionary"]},
+            {"type": "schema_mapping_matrix", "ref": refs["schema_mapping_matrix"]},
+            {"type": "migration_plan", "ref": refs["migration_plan"]},
+            {"type": "validation_harness_spec", "ref": refs["validation_harness_spec"]},
+            {"type": "db_qa_report", "ref": refs["db_qa_report"]},
+            {"type": "schema_approval_record", "ref": refs["schema_approval_record"]},
+            {"type": "schema_drift_report", "ref": refs["schema_drift_report"]},
             {"type": "variant_diff_report", "ref": refs["variant_diff_report"]},
             {"type": "reporting_model", "ref": refs["reporting_model"]},
             {"type": "identity_access_model", "ref": refs["identity_access_model"]},
@@ -3883,6 +5493,23 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "risk_register": risk_register_artifact,
         "orphan_analysis": orphan_analysis_artifact,
         "delivery_constitution": delivery_constitution_artifact,
+        "source_db_profile": source_db_profile_artifact,
+        "source_schema_model": source_schema_model_artifact,
+        "source_query_catalog": source_query_catalog_artifact,
+        "source_relationship_candidates": source_relationship_candidates_artifact,
+        "source_data_dictionary": source_data_dictionary_artifact,
+        "source_data_dictionary_markdown": source_data_dictionary_markdown_artifact,
+        "source_erd": source_erd_artifact,
+        "source_hotspot_report": source_hotspot_report_artifact,
+        "target_schema_model": target_schema_model_artifact,
+        "target_erd": target_erd_artifact,
+        "target_data_dictionary": target_data_dictionary_artifact,
+        "schema_mapping_matrix": schema_mapping_matrix_artifact,
+        "migration_plan": migration_plan_artifact,
+        "validation_harness_spec": validation_harness_spec_artifact,
+        "db_qa_report": db_qa_report_artifact,
+        "schema_approval_record": schema_approval_record_artifact,
+        "schema_drift_report": schema_drift_report_artifact,
         "variant_diff_report": variant_diff_report_artifact,
         "reporting_model": reporting_model_artifact,
         "identity_access_model": identity_access_model_artifact,
@@ -3910,7 +5537,7 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     return {
         **artifacts,
         "artifact_refs": refs,
-        "raw_compiler_version": "2.2.0",
+        "raw_compiler_version": "2.5.0",
     }
 
 
@@ -3927,7 +5554,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     prebuilt_is_current = (
         _clean(prebuilt.get("artifact_type")) == "analyst_report"
         and _clean(prebuilt.get("artifact_version")) == "2.0"
-        and prebuilt_compiler == "2.2.0"
+        and prebuilt_compiler == "2.5.0"
     )
     prebuilt_qa = _as_dict(prebuilt.get("qa_report_v1"))
     prebuilt_qa_is_current = _clean(prebuilt_qa.get("qa_runtime_version")) == QA_RUNTIME_VERSION
@@ -3947,7 +5574,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
         skill = _as_dict(req_pack.get("legacy_skill_profile"))
 
     raw_artifacts = _as_dict(safe.get("raw_artifacts"))
-    if _clean(raw_artifacts.get("raw_compiler_version")) != "2.2.0":
+    if _clean(raw_artifacts.get("raw_compiler_version")) != "2.5.0":
         raw_artifacts = build_raw_artifact_set_v1(safe, generated_at=generated_at)
     if prebuilt_is_current:
         return _attach_qa_report_v1(
@@ -3963,6 +5590,10 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     identity_access_model = _as_dict(raw_artifacts.get("identity_access_model"))
     risk_register = _as_dict(raw_artifacts.get("risk_register"))
     discover_review_checklist = _as_dict(raw_artifacts.get("discover_review_checklist"))
+    source_db_profile = _as_dict(raw_artifacts.get("source_db_profile"))
+    source_schema_model = _as_dict(raw_artifacts.get("source_schema_model"))
+    schema_mapping_matrix = _as_dict(raw_artifacts.get("schema_mapping_matrix"))
+    db_qa_report = _as_dict(raw_artifacts.get("db_qa_report"))
 
     legacy_forms = _as_list(legacy_inventory.get("forms"))
     vb6_projects = _as_list(legacy_inventory.get("vb6_projects"))
@@ -4006,6 +5637,40 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     forms_unmapped = int(
         legacy_inventory.get("form_count_unmapped_files", 0)
         or max(0, forms_count - forms_referenced)
+    )
+    source_loc_rows = _as_list(legacy_inventory.get("source_loc_by_file")) or _as_list(vb6_analysis.get("source_loc_by_file"))
+    source_loc_by_file: dict[str, int] = {}
+    for row in source_loc_rows[:5000]:
+        if not isinstance(row, dict):
+            continue
+        path = _clean(row.get("path"))
+        if not path:
+            continue
+        source_loc_by_file[path] = int(row.get("loc", 0) or 0)
+    source_loc_total = int(
+        legacy_inventory.get("source_loc_total", 0)
+        or vb6_analysis.get("source_loc_total", 0)
+        or sum(source_loc_by_file.values())
+    )
+    source_loc_forms = int(
+        legacy_inventory.get("source_loc_forms", 0)
+        or vb6_analysis.get("source_loc_forms", 0)
+        or sum(loc for path, loc in source_loc_by_file.items() if path.lower().endswith((".frm", ".ctl")))
+    )
+    source_loc_modules = int(
+        legacy_inventory.get("source_loc_modules", 0)
+        or vb6_analysis.get("source_loc_modules", 0)
+        or sum(loc for path, loc in source_loc_by_file.items() if path.lower().endswith(".bas"))
+    )
+    source_loc_classes = int(
+        legacy_inventory.get("source_loc_classes", 0)
+        or vb6_analysis.get("source_loc_classes", 0)
+        or sum(loc for path, loc in source_loc_by_file.items() if path.lower().endswith(".cls"))
+    )
+    source_files_scanned = int(
+        legacy_inventory.get("source_files_scanned", 0)
+        or vb6_analysis.get("source_files_scanned", 0)
+        or len(source_loc_by_file)
     )
     event_handler_count_exact = int(
         legacy_inventory.get("event_handler_count_exact", 0)
@@ -4654,7 +6319,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
             },
         },
         "metadata": {
-            "compiler_version": "2.2.0",
+            "compiler_version": "2.5.0",
             "project": {
                 "name": project_name,
                 "objective": objective,
@@ -4696,6 +6361,11 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
                     "forms": forms_count,
                     "forms_referenced": forms_referenced,
                     "forms_unmapped": forms_unmapped,
+                    "source_loc_total": source_loc_total,
+                    "source_loc_forms": source_loc_forms,
+                    "source_loc_modules": source_loc_modules,
+                    "source_loc_classes": source_loc_classes,
+                    "source_files_scanned": source_files_scanned,
                     "controls": controls_count,
                     "dependencies": len(dep_unique),
                     "event_handlers": event_handler_count_exact,
@@ -4802,6 +6472,13 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
                 "schema_divergence_pairs": len(_as_list(_as_dict(variant_diff_report.get("schema_divergence")).get("pairs"))),
                 "schema_divergence_blocking_pairs": len(_as_list(_as_dict(variant_diff_report.get("schema_divergence")).get("blocking_pairs"))),
             },
+            "database_archaeology_summary": {
+                "status": _clean(db_qa_report.get("overall_status")) or "WARN",
+                "tables": int(_as_dict(source_db_profile.get("summary")).get("tables", 0) or int(_as_dict(source_schema_model.get("summary")).get("tables", 0) or 0)),
+                "columns": int(_as_dict(source_db_profile.get("summary")).get("columns", 0) or int(_as_dict(source_schema_model.get("summary")).get("columns", 0) or 0)),
+                "queries": int(_as_dict(source_db_profile.get("summary")).get("queries", 0) or 0),
+                "mapping_rows": len(_as_list(schema_mapping_matrix.get("mappings"))),
+            },
             "form_coverage": form_coverage_rows[:120],
         },
         "appendix": {
@@ -4824,6 +6501,23 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
                 "risk_register_ref": _clean(refs.get("risk_register")) or "artifact://analyst/raw/risk_register/v1",
                 "orphan_analysis_ref": _clean(refs.get("orphan_analysis")) or "artifact://analyst/raw/orphan_analysis/v1",
                 "delivery_constitution_ref": _clean(refs.get("delivery_constitution")) or "artifact://analyst/raw/delivery_constitution/v1",
+                "source_db_profile_ref": _clean(refs.get("source_db_profile")) or "artifact://analyst/raw/source_db_profile/v1",
+                "source_schema_model_ref": _clean(refs.get("source_schema_model")) or "artifact://analyst/raw/source_schema_model/v1",
+                "source_query_catalog_ref": _clean(refs.get("source_query_catalog")) or "artifact://analyst/raw/source_query_catalog/v1",
+                "source_relationship_candidates_ref": _clean(refs.get("source_relationship_candidates")) or "artifact://analyst/raw/source_relationship_candidates/v1",
+                "source_data_dictionary_ref": _clean(refs.get("source_data_dictionary")) or "artifact://analyst/raw/source_data_dictionary/v1",
+                "source_data_dictionary_markdown_ref": _clean(refs.get("source_data_dictionary_markdown")) or "artifact://analyst/raw/source_data_dictionary_markdown/v1",
+                "source_erd_ref": _clean(refs.get("source_erd")) or "artifact://analyst/raw/source_erd/v1",
+                "source_hotspot_report_ref": _clean(refs.get("source_hotspot_report")) or "artifact://analyst/raw/source_hotspot_report/v1",
+                "target_schema_model_ref": _clean(refs.get("target_schema_model")) or "artifact://analyst/raw/target_schema_model/v1",
+                "target_erd_ref": _clean(refs.get("target_erd")) or "artifact://analyst/raw/target_erd/v1",
+                "target_data_dictionary_ref": _clean(refs.get("target_data_dictionary")) or "artifact://analyst/raw/target_data_dictionary/v1",
+                "schema_mapping_matrix_ref": _clean(refs.get("schema_mapping_matrix")) or "artifact://analyst/raw/schema_mapping_matrix/v1",
+                "migration_plan_ref": _clean(refs.get("migration_plan")) or "artifact://analyst/raw/migration_plan/v1",
+                "validation_harness_spec_ref": _clean(refs.get("validation_harness_spec")) or "artifact://analyst/raw/validation_harness_spec/v1",
+                "db_qa_report_ref": _clean(refs.get("db_qa_report")) or "artifact://analyst/raw/db_qa_report/v1",
+                "schema_approval_record_ref": _clean(refs.get("schema_approval_record")) or "artifact://analyst/raw/schema_approval_record/v1",
+                "schema_drift_report_ref": _clean(refs.get("schema_drift_report")) or "artifact://analyst/raw/schema_drift_report/v1",
                 "variant_diff_report_ref": _clean(refs.get("variant_diff_report")) or "artifact://analyst/raw/variant_diff_report/v1",
                 "reporting_model_ref": _clean(refs.get("reporting_model")) or "artifact://analyst/raw/reporting_model/v1",
                 "identity_access_model_ref": _clean(refs.get("identity_access_model")) or "artifact://analyst/raw/identity_access_model/v1",
@@ -4844,6 +6538,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
                     "dependencies": len(dep_unique),
                     "procedures": len(procedure_rows),
                     "sql_map_entries": len(sql_map_rows),
+                    "source_loc_total": source_loc_total,
                 },
                 "key_user_stories": [
                     f"As a modernization engineer, I need a deterministic map of {forms_count} UI flows to avoid behavioral drift.",

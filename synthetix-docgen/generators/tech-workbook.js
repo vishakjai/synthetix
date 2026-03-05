@@ -38,7 +38,9 @@ function displayProjectLabel(value) {
   const v = String(value || '').trim();
   if (!v) return '(unmapped)';
   if (/^inferred:\(root\)$/i.test(v)) return '(Project Unresolved)';
-  return v.replace(/Inferred:\(root\)/ig, '(Project Unresolved)');
+  return v
+    .replace(/Inferred:\(root\)/ig, '(Project Unresolved)')
+    .replace(/^P1\s*\(/i, 'Project1 (');
 }
 
 function displayFormLabel(value) {
@@ -411,6 +413,7 @@ function buildSqlCatalog(data) {
 function buildFlowTraces(data) {
   const traceContent = [];
   const traces = data.form_traces || {};
+  const seenTraceSignature = new Map();
 
   for (const [formKey, formTraces] of Object.entries(traces)) {
     if (!formTraces || !formTraces.length) continue;
@@ -421,6 +424,29 @@ function buildFlowTraces(data) {
     const label    = fObj ? (fObj.display_name || fObj.form) : formKey;
     const okCount  = formTraces.filter(t => (t.status || '').toUpperCase() === 'OK').length;
     const gapCount = formTraces.filter(t => (t.status || '').toUpperCase() === 'TRACE_GAP').length;
+    const signature = JSON.stringify(
+      formTraces.map((t) => ({
+        callable: String(t.callable || '').trim().toLowerCase(),
+        kind: String(t.kind || '').trim().toLowerCase(),
+        event: String(t.event || '').trim().toLowerCase(),
+        activex: String(t.activex || '').trim().toLowerCase(),
+        sql_ids: String(t.sql_ids || '').trim().toLowerCase(),
+        tables: String(t.tables || '').trim().toLowerCase(),
+        status: String(t.status || '').trim().toLowerCase(),
+      }))
+    );
+
+    if (seenTraceSignature.has(signature)) {
+      const mirroredFrom = seenTraceSignature.get(signature);
+      traceContent.push(h3(label));
+      traceContent.push(para(
+        `Trace identical to ${mirroredFrom}. Mirrored reference only to avoid duplicated table output.`,
+        { color: C.DGREY, sz: 16 }
+      ));
+      traceContent.push(sp());
+      continue;
+    }
+    seenTraceSignature.set(signature, label);
 
     traceContent.push(h3(label));
     traceContent.push(para(
@@ -611,6 +637,14 @@ async function generateTechWb(data, outputPath) {
   const riskTable    = buildRiskRegister(data);
   const findingsContent = buildFindings(data);
   const qaAlerts = buildQaAlerts(data);
+  const appendixCounts = (data && typeof data === 'object' && data.appendix_counts && typeof data.appendix_counts === 'object')
+    ? data.appendix_counts
+    : {};
+  const mdSqlTotal = Number(appendixCounts.sql_catalog_rows || 0);
+  const docSqlRows = Array.isArray(data.sql_entries) ? data.sql_entries.length : 0;
+  const sqlCatalogNote = (mdSqlTotal > docSqlRows)
+    ? ` SQL catalog view note: document renders ${docSqlRows} attributed/usable SQL rows from ${mdSqlTotal} total catalog rows in the MD artifact.`
+    : '';
 
   const doc = new Document({
     styles: {
@@ -650,7 +684,7 @@ async function generateTechWb(data, outputPath) {
         sp(), depsTable, pb(),
 
         h1('4. SQL Catalog'),
-        para('All SQL operations discovered in source code, indexed by form and handler. Operations classified by type (SELECT/INSERT/UPDATE/DELETE). Basis for data access layer design in the migrated system.'),
+        para(`All SQL operations discovered in source code, indexed by form and handler. Operations classified by type (SELECT/INSERT/UPDATE/DELETE). Basis for data access layer design in the migrated system.${sqlCatalogNote}`),
         sp(), ...sqlContent, pb(),
 
         h1('5. Form Flow Traces (P)'),
