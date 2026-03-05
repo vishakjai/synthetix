@@ -14,7 +14,13 @@
       "properties": {
         "title":        { "type": "string", "description": "Project/system name e.g. 'VB6 Banking System'" },
         "repo_url":     { "type": "string", "description": "Repository URL shown on cover page" },
-        "generated_at": { "type": "string", "description": "ISO date string e.g. '2026-02-27'" }
+        "generated_at": { "type": "string", "description": "ISO date string e.g. '2026-02-27'" },
+        "source_loc_total": { "type": "number", "description": "Total LOC scanned across source files" },
+        "source_loc_forms": { "type": "number", "description": "LOC within VB6 form files" },
+        "source_loc_modules": { "type": "number", "description": "LOC within module files" },
+        "source_files_scanned": { "type": "number", "description": "Count of source files scanned for LOC" },
+        "mdb_detected": { "type": "boolean", "description": "True when MDB/ACCDB direct parsing route is detected" },
+        "source_schema_route": { "type": "string", "description": "Schema extraction route e.g. mdb_direct_read, ddl_text, code_only" }
       }
     },
 
@@ -82,7 +88,9 @@
           "startup":      { "type": "string", "description": "Startup form/module name" },
           "members":      { "type": "string", "description": "Total member count" },
           "forms":        { "type": "string", "description": "Active form count" },
+          "reports":      { "type": "string", "description": "Report asset count" },
           "dependencies": { "type": "string", "description": "External dependency count" },
+          "source_loc":   { "type": "string", "description": "Project source LOC" },
           "shared_tables":{ "type": "string", "description": "Shared table list" }
         }
       }
@@ -274,7 +282,8 @@
             "activex":  { "type": "string" },
             "sql_ids":  { "type": "string",  "description": "Comma-separated SQL IDs from Section D" },
             "tables":   { "type": "string",  "description": "Tables touched" },
-            "status":   { "type": "string",  "description": "OK | TRACE_GAP" }
+            "status":   { "type": "string",  "description": "OK | TRACE_GAP" },
+            "trace_gap_reason": { "type": "string", "description": "Reason token for TRACE_GAP rows (derived or explicit)" }
           }
         }
       }

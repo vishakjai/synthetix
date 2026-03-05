@@ -7653,12 +7653,49 @@ def _run_synthetix_docgen(
     with tempfile.TemporaryDirectory(prefix=f"docgen-{safe_name(run_id)}-") as tmp_dir:
         tmp = Path(tmp_dir)
         md_path = tmp / "analyst-output.md"
+        meta_path = tmp / "docgen-meta.json"
         out_dir = tmp / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         md_path.write_text(markdown_text, encoding="utf-8")
 
+        docgen_meta: dict[str, Any] = {}
+        if isinstance(analyst_output, dict) and analyst_output:
+            try:
+                report = build_analyst_report_v2(analyst_output)
+                brief = _as_dict_safe(report.get("decision_brief"))
+                glance = _as_dict_safe(brief.get("at_a_glance"))
+                inv = _as_dict_safe(glance.get("inventory_summary"))
+                raw = _as_dict_safe(report.get("raw_artifacts"))
+                source_schema = _as_dict_safe(raw.get("source_schema_model"))
+                provenance = _as_dict_safe(source_schema.get("provenance"))
+                track_a = _as_dict_safe(provenance.get("track_a"))
+                route = _clean_text(track_a.get("route")).lower()
+                docgen_meta = {
+                    "title": _clean_text(_as_dict_safe(report.get("metadata")).get("title")),
+                    "repoUrl": _clean_text(_as_dict_safe(_as_dict_safe(report.get("metadata")).get("context_reference")).get("repo")),
+                    "source_loc_total": int(inv.get("source_loc_total", 0) or 0),
+                    "source_loc_forms": int(inv.get("source_loc_forms", 0) or 0),
+                    "source_loc_modules": int(inv.get("source_loc_modules", 0) or 0),
+                    "source_files_scanned": int(inv.get("source_files_scanned", 0) or 0),
+                    "source_schema_route": route,
+                    "mdb_detected": route == "mdb_direct_read",
+                }
+            except Exception:
+                docgen_meta = {}
+        if docgen_meta:
+            meta_path.write_text(json.dumps(docgen_meta, ensure_ascii=True), encoding="utf-8")
+
         proc = subprocess.run(
-            [node_bin, "index.js", "--md", str(md_path), "--out", str(out_dir)],
+            [
+                node_bin,
+                "index.js",
+                "--md",
+                str(md_path),
+                "--out",
+                str(out_dir),
+                "--meta",
+                str(meta_path),
+            ],
             cwd=str(DOCGEN_ROOT),
             capture_output=True,
             text=True,

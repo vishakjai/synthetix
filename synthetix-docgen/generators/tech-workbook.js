@@ -13,7 +13,7 @@ const fs = require('fs');
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, AlignmentType, HeadingLevel, BorderStyle, WidthType,
-  ShadingType, VerticalAlign, PageNumber, PageBreak, TabStopType,
+  ShadingType, VerticalAlign, PageNumber, PageBreak, TabStopType, TableLayoutType,
 } = require('docx');
 
 // ── Palette (darker, engineering feel) ────────────────────────────────────
@@ -173,6 +173,7 @@ const para = (t, o = {}) => new Paragraph({
 });
 const sp   = () => new Paragraph({ children: [new TextRun('')], spacing: { before: 60, after: 60 } });
 const pb   = () => new Paragraph({ children: [new PageBreak()] });
+const hRow = (children) => new TableRow({ tableHeader: true, children });
 
 function buildQaAlerts(data) {
   const qa = (data && typeof data === 'object' && data.qa && typeof data.qa === 'object') ? data.qa : {};
@@ -255,25 +256,65 @@ function buildCover(data) {
 
 // ── Section 1: Project Inventory ──────────────────────────────────────────
 function buildProjectInventory(data) {
+  const toInt = (v) => {
+    const n = parseInt(String(v == null ? '' : v).replace(/[^0-9-]/g, ''), 10);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const projectKey = (v) => displayProjectLabel(v).toLowerCase();
+  const shortForm = (v) => {
+    let t = String(v || '').trim();
+    if (!t) return '';
+    if (t.includes('::')) t = t.split('::').pop();
+    t = t.replace(/\s*\[[^\]]+\]\s*$/g, '').trim();
+    return t.toLowerCase();
+  };
+  const mappedByProject = new Map();
+  const excludedByProject = new Map();
+  const add = (bucket, project, form) => {
+    const pk = projectKey(project);
+    const fk = shortForm(form);
+    if (!pk || !fk) return;
+    if (!bucket.has(pk)) bucket.set(pk, new Set());
+    bucket.get(pk).add(fk);
+  };
+  for (const f of (data.mapped_forms || [])) add(mappedByProject, f.project_display || f.project, f.form);
+  for (const f of (data.excluded_forms || [])) add(excludedByProject, f.project_display || f.project, f.form);
+
   return new Table({
+    layout: TableLayoutType.FIXED,
     width: { size: W, type: WidthType.DXA },
-    columnWidths: [3000, 1200, 1000, 1000, 1000, 1440, 1800],
+    columnWidths: [2200, 900, 1200, 800, 1300, 700, 900, 1100, 1340],
     rows: [
-      new TableRow({ children: [
-        hCell('Project', 3000, C.SLATE), hCell('Type', 1200, C.SLATE),
-        hCell('Startup', 1000, C.SLATE), hCell('Members', 1000, C.SLATE),
-        hCell('Forms', 1000, C.SLATE),   hCell('Dependencies', 1440, C.SLATE),
-        hCell('Shared Tables', 1800, C.SLATE),
-      ]}),
-      ...(data.projects || []).map(p => new TableRow({ children: [
-        cell(displayProjectLabel(p.project_display || p.project), 3000, { bold: true }),
-        cell(p.type, 1200, { fill: C.GREY, align: AlignmentType.CENTER }),
-        codeCell(p.startup, 1000),
-        cell(p.members, 1000, { align: AlignmentType.CENTER }),
-        cell(p.forms, 1000, { align: AlignmentType.CENTER }),
-        cell(p.dependencies || '—', 1440, { align: AlignmentType.CENTER }),
-        cell(p.shared_tables || '—', 1800, { sz: 16, color: C.DGREY }),
-      ]})),
+      hRow([
+        hCell('Project', 2200, C.SLATE), hCell('Type', 900, C.SLATE),
+        hCell('Startup', 1200, C.SLATE), hCell('Members', 800, C.SLATE),
+        hCell('Forms (Mapped/Discovered)', 1300, C.SLATE), hCell('Reports', 700, C.SLATE),
+        hCell('Dependencies', 900, C.SLATE), hCell('Source LOC', 1100, C.SLATE),
+        hCell('Shared Tables', 1340, C.SLATE),
+      ]),
+      ...(data.projects || []).map((p) => {
+        const pLabel = displayProjectLabel(p.project_display || p.project);
+        const pKey = projectKey(pLabel);
+        const mapped = (mappedByProject.get(pKey) || new Set()).size;
+        const excluded = (excludedByProject.get(pKey) || new Set()).size;
+        const discovered = mapped + excluded;
+        const fallbackForms = toInt(p.forms);
+        const formsText = discovered > 0
+          ? (mapped > 0 && discovered !== mapped ? `${mapped} / ${discovered}` : `${discovered}`)
+          : String(fallbackForms || p.forms || '0');
+        const sourceLoc = String(p.source_loc || '').trim() || '0';
+        return new TableRow({ children: [
+        cell(pLabel, 2200, { bold: true }),
+        cell(p.type, 900, { fill: C.GREY, align: AlignmentType.CENTER }),
+        codeCell(p.startup, 1200),
+        cell(p.members, 800, { align: AlignmentType.CENTER }),
+        cell(formsText, 1300, { align: AlignmentType.CENTER }),
+        cell(String(p.reports || '—'), 700, { align: AlignmentType.CENTER }),
+        cell(p.dependencies || '—', 900, { align: AlignmentType.CENTER }),
+        cell(sourceLoc, 1100, { align: AlignmentType.CENTER, bold: true, color: C.SLATE }),
+        cell(p.shared_tables || '—', 1340, { sz: 16, color: C.DGREY }),
+      ]});
+      }),
     ],
   });
 }
@@ -338,25 +379,26 @@ function buildKTech(data) {
 // ── Section 3: Dependency Inventory ───────────────────────────────────────
 function buildDependencies(data) {
   return new Table({
+    layout: TableLayoutType.FIXED,
     width: { size: W, type: WidthType.DXA },
-    columnWidths: [2400, 1000, 2200, 1800, 1200, 1840],
+    columnWidths: [2200, 900, 2200, 2200, 900, 2040],
     rows: [
-      new TableRow({ children: [
-        hCell('Component', 2400, C.SLATE), hCell('Type', 1000, C.SLATE),
-        hCell('GUID / Reference', 2200, C.SLATE), hCell('Used By Forms', 1800, C.SLATE),
-        hCell('Risk', 1200, C.SLATE), hCell('Migration Action', 1840, C.SLATE),
-      ]}),
+      hRow([
+        hCell('Component', 2200, C.SLATE), hCell('Type', 900, C.SLATE),
+        hCell('GUID / Reference', 2200, C.SLATE), hCell('Used By Forms', 2200, C.SLATE),
+        hCell('Risk', 900, C.SLATE), hCell('Migration Action', 2040, C.SLATE),
+      ]),
       ...(data.dependencies || []).map(d => {
         const r     = (d.risk || '').toLowerCase();
         const fill  = r.includes('high') ? C.LRED : r.includes('medium') ? C.LAMB : C.GREY;
         const color = r.includes('high') ? C.RED  : r.includes('medium') ? C.AMBR : C.DGREY;
         return new TableRow({ children: [
-          cell(d.name, 2400, { bold: true }),
-          cell(d.type, 1000, { fill: C.GREY, align: AlignmentType.CENTER }),
+          cell(d.name, 2200, { bold: true }),
+          cell(d.type, 900, { fill: C.GREY, align: AlignmentType.CENTER }),
           codeCell(d.guid, 2200),
-          cell(displayFormLabel(d.forms), 1800, { sz: 15, color: C.DGREY }),
-          cell(d.risk, 1200, { fill, color, sz: 15 }),
-          cell(d.action, 1840, { sz: 15 }),
+          cell(displayFormLabel(d.forms), 2200, { sz: 14, color: C.DGREY }),
+          cell(d.risk, 900, { fill, color, sz: 15 }),
+          cell(d.action, 2040, { sz: 14 }),
         ]});
       }),
     ],
@@ -411,6 +453,18 @@ function buildSqlCatalog(data) {
 
 // ── Section 5: Form Flow Traces ────────────────────────────────────────────
 function buildFlowTraces(data) {
+  const reasonText = (value) => {
+    const token = String(value || '').trim().toLowerCase();
+    if (!token || token === 'n/a') return '—';
+    const map = {
+      no_callable_discovered: 'No callable discovered for this form context.',
+      missing_sql_and_tables: 'SQL IDs and table touchpoints are both missing.',
+      missing_sql_ids: 'SQL IDs could not be resolved for callable.',
+      missing_tables: 'Table touchpoints could not be resolved from SQL map.',
+      unresolved_handler_mapping: 'Handler-to-SQL attribution remains unresolved.',
+    };
+    return map[token] || token.replace(/_/g, ' ');
+  };
   const traceContent = [];
   const traces = data.form_traces || {};
   const seenTraceSignature = new Map();
@@ -454,29 +508,37 @@ function buildFlowTraces(data) {
       { color: C.DGREY, sz: 16 }
     ));
     traceContent.push(new Table({
+      layout: TableLayoutType.FIXED,
       width: { size: W, type: WidthType.DXA },
-      columnWidths: [2200, 1400, 1600, 1400, 1200, 1600, 1040],
+      columnWidths: [1700, 1000, 1300, 1200, 1050, 1300, 1100, 1790],
       rows: [
-        new TableRow({ children: [
-          hCell('Callable', 2200, C.SLATE), hCell('Kind', 1400, C.SLATE),
-          hCell('Event', 1600, C.SLATE), hCell('ActiveX', 1400, C.SLATE),
-          hCell('SQL IDs', 1200, C.SLATE), hCell('Tables', 1600, C.SLATE),
-          hCell('Status', 1040, C.SLATE),
-        ]}),
+        hRow([
+          hCell('Callable', 1700, C.SLATE), hCell('Kind', 1000, C.SLATE),
+          hCell('Event', 1300, C.SLATE), hCell('ActiveX', 1200, C.SLATE),
+          hCell('SQL IDs', 1050, C.SLATE), hCell('Tables', 1300, C.SLATE),
+          hCell('Status', 1100, C.SLATE), hCell('TRACE_GAP Rationale', 1790, C.SLATE),
+        ]),
         ...formTraces.map(t => new TableRow({ children: [
-          codeCell(t.callable, 2200),
-          badgeCell(t.kind, 1400),
-          codeCell(t.event, 1600),
-          cell(t.activex || '—', 1400, {
-            sz: 15,
+          codeCell(t.callable, 1700),
+          badgeCell(t.kind, 1000),
+          codeCell(t.event, 1300),
+          cell(t.activex || '—', 1200, {
+            sz: 14,
             color: (t.activex && t.activex !== 'n/a') ? C.AMBR : C.DGREY,
           }),
-          codeCell(t.sql_ids || '—', 1200),
-          codeCell(t.tables || '—', 1600),
-          badgeCell(t.status, 1040, {
+          codeCell(t.sql_ids || '—', 1050),
+          codeCell(t.tables || '—', 1300),
+          badgeCell(t.status, 1100, {
             ok:        { fill: C.LGRN, color: C.GREEN },
             trace_gap: { fill: C.LRED, color: C.RED   },
           }),
+          cell(
+            String(t.status || '').toUpperCase() === 'TRACE_GAP'
+              ? reasonText(t.trace_gap_reason)
+              : '—',
+            1790,
+            { sz: 14, color: C.DGREY }
+          ),
         ]})),
       ],
     }));
@@ -505,7 +567,7 @@ function buildDepMap(data) {
 
   const navTable = mkDepTable(
     navDeps.map(d => new TableRow({ children: [
-          codeCell(displayFormLabel(d.from), 2800), codeCell(displayFormLabel(d.to), 1800),
+          codeCell(displayFormLabel(d.from), 2800), codeCell(displayFormLabel(d.to), 2200),
       (() => {
         const t = String(d.type || '').toLowerCase();
         let label = t.replace(/_/g, ' ');
@@ -522,24 +584,22 @@ function buildDepMap(data) {
           fill = C.LRED;
           color = C.RED;
         }
-        return cell(label, 1600, { fill, color, sz: 15, align: AlignmentType.CENTER });
+        return cell(label, 1700, { fill, color, sz: 15, align: AlignmentType.CENTER });
       })(),
-          codeCell(displayFormLabel(d.evidence), 3000, C.GREY),
-      cell(d.blocks || '—', 1240, { sz: 15, color: C.DGREY }),
+          codeCell(displayFormLabel(d.evidence), 3740, C.GREY),
     ]})),
-    [2800, 1800, 1600, 3000, 1240],
-    ['From', 'To', 'Link Type', 'Evidence', 'Blocks Sprint']
+    [2800, 2200, 1700, 3740],
+    ['From', 'To', 'Link Type', 'Evidence']
   );
 
   const sharedTable = mkDepTable(
     sharedDeps.map(d => new TableRow({ children: [
-          codeCell(displayFormLabel(d.from), 2800), codeCell(displayFormLabel(d.to), 1800),
-      cell('shared module call', 1600, { fill: C.LAMB, color: C.AMBR, sz: 15, align: AlignmentType.CENTER }),
-          codeCell(displayFormLabel(d.evidence), 3000, C.GREY),
-      cell(d.blocks || '—', 1240, { sz: 15, color: C.DGREY }),
+          codeCell(displayFormLabel(d.from), 2800), codeCell(displayFormLabel(d.to), 2200),
+      cell('shared module call', 1700, { fill: C.LAMB, color: C.AMBR, sz: 15, align: AlignmentType.CENTER }),
+          codeCell(displayFormLabel(d.evidence), 3740, C.GREY),
     ]})),
-    [2800, 1800, 1600, 3000, 1240],
-    ['From', 'To', 'Link Type', 'Evidence', 'Blocks Sprint']
+    [2800, 2200, 1700, 3740],
+    ['From', 'To', 'Link Type', 'Evidence']
   );
 
   const conflictTable = mkDepTable(
@@ -642,6 +702,9 @@ async function generateTechWb(data, outputPath) {
     : {};
   const mdSqlTotal = Number(appendixCounts.sql_catalog_rows || 0);
   const docSqlRows = Array.isArray(data.sql_entries) ? data.sql_entries.length : 0;
+  const mdbNote = data?.meta?.mdb_detected
+    ? " MDB/ACCDB schema signals were detected and included in source schema interpretation and traceability context."
+    : "";
   const sqlCatalogNote = (mdSqlTotal > docSqlRows)
     ? ` SQL catalog view note: document renders ${docSqlRows} attributed/usable SQL rows from ${mdSqlTotal} total catalog rows in the MD artifact.`
     : '';
@@ -672,7 +735,14 @@ async function generateTechWb(data, outputPath) {
         ...buildCover(data),
 
         h1('1. Project Inventory'),
-        para('Project variants analysed from the repository. Member counts include forms and modules. Forms count reflects active .frm members in the .vbp project file only.'),
+        para(
+          `Project variants analysed from the repository. Member counts include forms and modules. `
+          + `Source LOC scanned: ${Number(data.meta?.source_loc_total || 0).toLocaleString()} `
+          + `(forms: ${Number(data.meta?.source_loc_forms || 0).toLocaleString()}, `
+          + `modules: ${Number(data.meta?.source_loc_modules || 0).toLocaleString()}) `
+          + `across ${Number(data.meta?.source_files_scanned || 0).toLocaleString()} files. `
+          + `Forms are shown as mapped/discovered to expose excluded/unresolved form files.`
+        ),
         sp(), projectTable, pb(),
 
         h1('2. Form Technical Profile (K-Tech)'),
@@ -684,15 +754,22 @@ async function generateTechWb(data, outputPath) {
         sp(), depsTable, pb(),
 
         h1('4. SQL Catalog'),
-        para(`All SQL operations discovered in source code, indexed by form and handler. Operations classified by type (SELECT/INSERT/UPDATE/DELETE). Basis for data access layer design in the migrated system.${sqlCatalogNote}`),
+        para(`All SQL operations discovered in source code, indexed by form and handler. Operations classified by type (SELECT/INSERT/UPDATE/DELETE). Basis for data access layer design in the migrated system.${sqlCatalogNote}${mdbNote}`),
         sp(), ...sqlContent, pb(),
 
         h1('5. Form Flow Traces (P)'),
-        para('Per-form callable trace: each event handler and procedure with its kind, triggering event, ActiveX dependency, SQL operations executed, and table touchpoints. TRACE_GAP = callable found but not fully resolved.'),
+        para(
+          `Per-form callable trace: each event handler and procedure with its kind, triggering event, ActiveX dependency, SQL operations executed, and table touchpoints. `
+          + `TRACE_GAP = callable found but not fully resolved.${
+            data?.meta?.mdb_detected
+              ? ' MDB-derived schema signals are included where available to improve table-level traceability.'
+              : ''
+          }`
+        ),
         sp(), ...traceContent, pb(),
 
         h1('6. Dependency Map (O)'),
-        para('Inter-form navigation links, shared module calls, and cross-variant schema conflicts. Blocks Sprint indicates which sprint group cannot proceed until this dependency is resolved.'),
+        para('Inter-form navigation links, shared module calls, and cross-variant schema conflicts used for technical dependency analysis and sequencing.'),
         sp(),
         h2('Navigation Links'),       sp(), navTable,      sp(),
         h2('Shared Module Calls'),    sp(), sharedTable,   sp(),

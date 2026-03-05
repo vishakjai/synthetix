@@ -92,8 +92,11 @@ def main() -> int:
         if risk_rows <= 0:
             failures.append("Technical risk register has no data rows.")
 
-    dep_map_header = ["From", "To", "Link Type", "Evidence", "Blocks Sprint"]
+    dep_map_header = ["From", "To", "Link Type", "Evidence"]
+    legacy_dep_map_header = ["From", "To", "Link Type", "Evidence", "Blocks Sprint"]
     dep_map_table = _find_table(doc, dep_map_header)
+    if dep_map_table is None:
+        dep_map_table = _find_table(doc, legacy_dep_map_header)
     if dep_map_table is None:
         failures.append("Dependency map table not found.")
     else:

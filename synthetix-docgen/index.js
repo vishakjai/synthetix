@@ -73,13 +73,23 @@ if (require.main === module) {
 
   const mdPath = get('--md');
   const outDir = get('--out') || path.join(process.cwd(), 'output');
+  const metaPath = get('--meta');
+  let meta = {};
+  if (metaPath && fs.existsSync(metaPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (parsed && typeof parsed === 'object') meta = parsed;
+    } catch (_err) {
+      // Ignore malformed meta sidecar and proceed with MD-derived metadata.
+    }
+  }
 
   if (!mdPath) {
     console.error('Usage: node index.js --md <analyst.md> [--out <output-dir>]');
     process.exit(1);
   }
 
-  generate({ mdPath, outDir })
+  generate({ mdPath, outDir, meta })
     .then(({ baPath, techPath, literalScanPath }) => {
       console.log('\n✓ Done');
       console.log(`  BA Brief:          ${baPath}`);

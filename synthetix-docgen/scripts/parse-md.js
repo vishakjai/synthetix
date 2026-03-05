@@ -66,6 +66,10 @@ function getSection(content, name, nextName) {
 }
 
 function gc(row, i) { return (row && row[i]) ? row[i] : ''; }
+function toIntLoose(value, fallback = 0) {
+  const n = parseInt(String(value == null ? '' : value).replace(/[^0-9-]/g, ''), 10);
+  return Number.isFinite(n) ? n : fallback;
+}
 function normHeader(v) { return String(v || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 function headerMap(headers) {
   const out = {};
@@ -264,18 +268,57 @@ function deriveDependencyReference(name, kind) {
   return 'n/a';
 }
 
+function parseSourceLocSummary(content) {
+  const text = String(content || '');
+  const patterns = [
+    /lines of code scanned\s*\|\s*(\d+)\s*total\s*loc\s*\(forms=(\d+),\s*modules=(\d+)\)\s*across\s*(\d+)\s*files/i,
+    /source loc:\s*(\d+)\s*total\s*\(forms=(\d+),\s*modules=(\d+)\)\s*across\s*(\d+)\s*file/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    return {
+      total: toIntLoose(m[1], 0),
+      forms: toIntLoose(m[2], 0),
+      modules: toIntLoose(m[3], 0),
+      files: toIntLoose(m[4], 0),
+    };
+  }
+  return { total: 0, forms: 0, modules: 0, files: 0 };
+}
+
+function parseMdbSummary(content) {
+  const text = String(content || '');
+  const lower = text.toLowerCase();
+  const mdbDetected = lower.includes('parsed with: mdbtools') || lower.includes('source database: microsoft access');
+  const route = mdbDetected ? 'mdb_direct_read' : '';
+  return { mdb_detected: mdbDetected, source_route: route };
+}
+
 // ── Section parsers ───────────────────────────────────────────────────────────
 
 function parseA(content) {
-  const { rows } = parseTableSection(getSection(content, 'A.', 'B.'));
-  return rows.map(r => ({
-    project:      gc(r,0),
-    type:         gc(r,1),
-    startup:      gc(r,2),
-    members:      gc(r,3),
-    forms:        gc(r,4),
-    dependencies: gc(r,5),
-    shared_tables:gc(r,6),
+  const { headers, rows } = parseTableSection(getSection(content, 'A.', 'B.'));
+  const hm = headerMap(headers);
+  const iProject = idxFirst(hm, ['project', 'variant'], 0);
+  const iType = idxFirst(hm, ['type'], 1);
+  const iStartup = idxFirst(hm, ['startup'], 2);
+  const iMembers = idxFirst(hm, ['members'], 3);
+  const iForms = idxFirst(hm, ['forms', 'formsmapped'], 4);
+  const iReports = idxFirst(hm, ['reports'], -1);
+  const iDependencies = idxFirst(hm, ['dependencies'], iReports >= 0 ? 6 : 5);
+  const iSourceLoc = idxFirst(hm, ['sourceloc', 'loc', 'linesofcode'], -1);
+  const iSharedTables = idxFirst(hm, ['sharedtables', 'tables'], iSourceLoc >= 0 ? iSourceLoc + 1 : 7);
+  return rows.map((r) => ({
+    project:       gc(r, iProject),
+    type:          gc(r, iType),
+    startup:       gc(r, iStartup),
+    members:       gc(r, iMembers),
+    forms:         gc(r, iForms),
+    reports:       iReports >= 0 ? gc(r, iReports) : '',
+    dependencies:  gc(r, iDependencies),
+    source_loc:    iSourceLoc >= 0 ? gc(r, iSourceLoc) : '',
+    shared_tables: gc(r, iSharedTables),
   }));
 }
 
@@ -1013,6 +1056,21 @@ function parseO(content) {
 function parseP(content) {
   const text = getSection(content, 'P.', 'Q.');
   const traces = {};
+  const deriveGapReason = (row) => {
+    const status = String(row?.status || '').trim().toUpperCase();
+    if (status !== 'TRACE_GAP') return '';
+    const callable = String(row?.callable || '').trim().toLowerCase();
+    const event = String(row?.event || '').trim().toLowerCase();
+    const sql = String(row?.sql_ids || '').trim().toLowerCase();
+    const tables = String(row?.tables || '').trim().toLowerCase();
+    const hasSql = !!sql && sql !== 'n/a';
+    const hasTables = !!tables && tables !== 'n/a';
+    if ((!callable || callable === 'n/a') && (!event || event === 'n/a')) return 'no_callable_discovered';
+    if (!hasSql && !hasTables) return 'missing_sql_and_tables';
+    if (!hasSql) return 'missing_sql_ids';
+    if (!hasTables) return 'missing_tables';
+    return 'unresolved_handler_mapping';
+  };
   let current = null;
   for (const line of text.split('\n')) {
     if (line.startsWith('#### ')) {
@@ -1021,12 +1079,15 @@ function parseP(content) {
     } else if (current && line.includes('|') && !line.includes('---') && !line.includes('Callable')) {
       const cols = line.split('|').map(c => c.trim()).filter(Boolean);
       if (cols.length >= 6) {
-        traces[current].push({
+        const row = {
           callable: gc(cols,0), kind:     gc(cols,1),
           event:    gc(cols,2), activex:  gc(cols,3),
           sql_ids:  gc(cols,4), tables:   gc(cols,5),
           status:   gc(cols,6),
-        });
+          trace_gap_reason: gc(cols,7),
+        };
+        if (!row.trace_gap_reason) row.trace_gap_reason = deriveGapReason(row);
+        traces[current].push(row);
       }
     }
   }
@@ -1403,6 +1464,8 @@ function parseMd(mdContent, meta = {}) {
   const firstSection = mdContent.indexOf('### A.');
   const preamble = firstSection > 0 ? mdContent.slice(0, firstSection) : '';
 
+  const sourceLoc = parseSourceLocSummary(mdContent);
+  const mdbSummary = parseMdbSummary(mdContent);
   // Extract header metadata
   const repoMatch   = mdContent.match(/Repo: (.+)/);
   const genAtMatch  = mdContent.match(/Generated At: (.+)/);
@@ -1412,6 +1475,12 @@ function parseMd(mdContent, meta = {}) {
     title:        meta.title        || titleMatch?.[1]?.trim()  || 'VB6 Modernization Analysis',
     repo_url:     meta.repoUrl      || repoMatch?.[1]?.trim()   || '',
     generated_at: meta.generatedAt  || genAtMatch?.[1]?.trim()  || new Date().toISOString().slice(0,10),
+    source_loc_total: Number(meta.source_loc_total || sourceLoc.total || 0),
+    source_loc_forms: Number(meta.source_loc_forms || sourceLoc.forms || 0),
+    source_loc_modules: Number(meta.source_loc_modules || sourceLoc.modules || 0),
+    source_files_scanned: Number(meta.source_files_scanned || sourceLoc.files || 0),
+    mdb_detected: Boolean(meta.mdb_detected != null ? meta.mdb_detected : mdbSummary.mdb_detected),
+    source_schema_route: String(meta.source_schema_route || mdbSummary.source_route || ''),
   };
 
   const qaBlock = parseQaBlock(preamble);
