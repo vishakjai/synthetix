@@ -270,6 +270,8 @@ function buildProjectInventory(data) {
   };
   const mappedByProject = new Map();
   const excludedByProject = new Map();
+  const formLocByProject = new Map();
+  const activeLocByProject = new Map();
   const add = (bucket, project, form) => {
     const pk = projectKey(project);
     const fk = shortForm(form);
@@ -277,11 +279,26 @@ function buildProjectInventory(data) {
     if (!bucket.has(pk)) bucket.set(pk, new Set());
     bucket.get(pk).add(fk);
   };
+  const addLoc = (project, status) => {
+    const pk = projectKey(project);
+    if (!pk) return;
+    formLocByProject.set(pk, (formLocByProject.get(pk) || 0) + 1);
+    const st = String(status || '').trim().toLowerCase();
+    if (st.includes('active') || st === 'mapped') {
+      activeLocByProject.set(pk, (activeLocByProject.get(pk) || 0) + 1);
+    }
+  };
   for (const f of (data.mapped_forms || [])) add(mappedByProject, f.project_display || f.project, f.form);
   for (const f of (data.excluded_forms || [])) add(excludedByProject, f.project_display || f.project, f.form);
+  for (const f of (data.form_loc_profile || [])) {
+    const projectBase = String(f?.project || '').split(' [')[0] || f?.project;
+    addLoc(displayProjectLabel(projectBase), f.active_or_orphan);
+  }
   const unmappedKeys = ['(unmapped)', 'n/a', '(project unresolved)'].map((v) => projectKey(v));
   const unmappedMapped = unmappedKeys.reduce((acc, k) => acc + ((mappedByProject.get(k) || new Set()).size), 0);
   const unmappedExcluded = unmappedKeys.reduce((acc, k) => acc + ((excludedByProject.get(k) || new Set()).size), 0);
+  const unmappedLocTotal = unmappedKeys.reduce((acc, k) => acc + (formLocByProject.get(k) || 0), 0);
+  const unmappedLocActive = unmappedKeys.reduce((acc, k) => acc + (activeLocByProject.get(k) || 0), 0);
   const resolvedProjectKeys = new Set(
     (data.projects || [])
       .map((p) => projectKey(p.project_display || p.project))
@@ -306,16 +323,21 @@ function buildProjectInventory(data) {
         const pKey = projectKey(pLabel);
         let mapped = (mappedByProject.get(pKey) || new Set()).size;
         let excluded = (excludedByProject.get(pKey) || new Set()).size;
+        let discovered = (formLocByProject.get(pKey) || 0);
+        let activeFromLoc = (activeLocByProject.get(pKey) || 0);
         // If only one resolved project exists, fold unmapped forms into that row
         // so the summary count reconciles with the form profile section.
         if (singleResolvedProjectKey && pKey === singleResolvedProjectKey) {
           mapped += unmappedMapped;
           excluded += unmappedExcluded;
+          discovered += unmappedLocTotal;
+          activeFromLoc += unmappedLocActive;
         }
-        const discovered = mapped + excluded;
+        if (discovered <= 0) discovered = mapped + excluded;
         const fallbackForms = toInt(p.forms);
+        const mappedDisplay = activeFromLoc > 0 ? activeFromLoc : mapped;
         const formsText = discovered > 0
-          ? (mapped > 0 && discovered !== mapped ? `${mapped} / ${discovered}` : `${discovered}`)
+          ? (mappedDisplay > 0 && discovered !== mappedDisplay ? `${mappedDisplay} / ${discovered}` : `${discovered}`)
           : String(fallbackForms || p.forms || '0');
         const sourceLoc = String(p.source_loc || '').trim() || '0';
         return new TableRow({ children: [
@@ -1033,7 +1055,9 @@ async function generateTechWb(data, outputPath) {
           `Project variants analysed from the repository. Member counts include forms and modules. `
           + `Source LOC scanned: ${Number(data.meta?.source_loc_total || 0).toLocaleString()} `
           + `(forms: ${Number(data.meta?.source_loc_forms || 0).toLocaleString()}, `
-          + `modules: ${Number(data.meta?.source_loc_modules || 0).toLocaleString()}) `
+          + `modules: ${Number(data.meta?.source_loc_modules || 0).toLocaleString()}, `
+          + `classes: ${Number(data.meta?.source_loc_classes || 0).toLocaleString()}, `
+          + `designers: ${Number(data.meta?.source_loc_designers || 0).toLocaleString()}) `
           + `across ${Number(data.meta?.source_files_scanned || 0).toLocaleString()} files. `
           + `Forms are shown as mapped/discovered to expose excluded/unresolved form files.`
         ),

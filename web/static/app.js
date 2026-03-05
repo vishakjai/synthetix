@@ -3628,6 +3628,7 @@ function wireAnalystDocActions(rootNode, run) {
   const exportFullBtn = rootNode.querySelector("[data-analyst-export-full]");
   const exportBaBriefDocxBtn = rootNode.querySelector("[data-analyst-export-ba-brief-docx]");
   const exportTechWorkbookDocxBtn = rootNode.querySelector("[data-analyst-export-tech-workbook-docx]");
+  const exportBrdDocxBtn = rootNode.querySelector("[data-analyst-export-brd-docx]");
   const exportBusinessDocxBtn = rootNode.querySelector("[data-analyst-export-business-docx]");
   const uploadTrigger = rootNode.querySelector("[data-analyst-upload-trigger]");
   const uploadInput = rootNode.querySelector("[data-analyst-upload-file]");
@@ -3706,6 +3707,12 @@ function wireAnalystDocActions(rootNode, run) {
   if (exportTechWorkbookDocxBtn) {
     exportTechWorkbookDocxBtn.addEventListener("click", async () => {
       await exportDocgenDocx("tech_workbook", exportTechWorkbookDocxBtn, "Tech Workbook DOCX");
+    });
+  }
+
+  if (exportBrdDocxBtn) {
+    exportBrdDocxBtn.addEventListener("click", async () => {
+      await exportDocgenDocx("brd", exportBrdDocxBtn, "BRD DOCX");
     });
   }
 
@@ -11157,6 +11164,7 @@ function renderCurrentAgentPanel() {
         <div class="flex flex-wrap items-center gap-2">
           <button data-analyst-export-ba-brief-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BA Brief</button>
           <button data-analyst-export-tech-workbook-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Workbook</button>
+          <button data-analyst-export-brd-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BRD</button>
           <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Legacy Business</button>
           <button data-analyst-export-summary class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Summary</button>
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
@@ -11235,11 +11243,12 @@ function renderAgentTabPanel() {
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
           <button data-analyst-export-ba-brief-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BA Brief</button>
           <button data-analyst-export-tech-workbook-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Workbook</button>
+          <button data-analyst-export-brd-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BRD</button>
           <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Legacy Business</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export BA Brief or Tech Workbook DOCX, or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export BA Brief / Tech Workbook / BRD DOCX, or upload an updated version.</p>
       </div>
     ` : ""}
     <div class="mt-2 rounded-lg border border-slate-300 bg-slate-50 p-2 text-xs text-slate-800">${renderReadableOutput(stage, result?.output || {}, runUseCase)}</div>
@@ -11711,11 +11720,12 @@ function openStageModal(stage) {
           <button data-analyst-export-full class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Full Evidence</button>
           <button data-analyst-export-ba-brief-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BA Brief</button>
           <button data-analyst-export-tech-workbook-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Tech Workbook</button>
+          <button data-analyst-export-brd-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export BRD</button>
           <button data-analyst-export-business-docx class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Legacy Business</button>
           <button data-analyst-upload-trigger class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Upload Modified</button>
           <input data-analyst-upload-file type="file" class="hidden" accept=".md,.txt,.json" />
         </div>
-        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export BA Brief or Tech Workbook DOCX, or upload an updated version.</p>
+        <p data-analyst-doc-status class="mt-1 text-[11px] text-slate-700">Export summary/full markdown, export BA Brief / Tech Workbook / BRD DOCX, or upload an updated version.</p>
       </div>
       <div class="mt-2">${renderReadableOutput(stage, result.output || {}, runUseCase)}</div>
     `;

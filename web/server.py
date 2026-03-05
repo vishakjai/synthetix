@@ -7740,7 +7740,7 @@ def _run_synthetix_docgen(
     run_id: str,
     analyst_output: dict[str, Any] | None = None,
 ) -> tuple[bytes, str]:
-    if doc_type not in {"ba_brief", "tech_workbook"}:
+    if doc_type not in {"ba_brief", "tech_workbook", "brd"}:
         raise RuntimeError(f"Unsupported doc type: {doc_type}")
     _ensure_synthetix_docgen_dependencies()
     node_bin = shutil.which("node")
@@ -7773,9 +7773,12 @@ def _run_synthetix_docgen(
                     "source_loc_total": int(inv.get("source_loc_total", 0) or 0),
                     "source_loc_forms": int(inv.get("source_loc_forms", 0) or 0),
                     "source_loc_modules": int(inv.get("source_loc_modules", 0) or 0),
+                    "source_loc_classes": int(inv.get("source_loc_classes", 0) or 0),
+                    "source_loc_designers": int(inv.get("source_loc_designers", 0) or 0),
                     "source_files_scanned": int(inv.get("source_files_scanned", 0) or 0),
                     "source_schema_route": route,
                     "mdb_detected": route == "mdb_direct_read",
+                    "run_id": str(run_id or ""),
                 }
             except Exception:
                 docgen_meta = {}
@@ -7804,7 +7807,11 @@ def _run_synthetix_docgen(
             detail = stderr or stdout or "docgen command failed"
             raise RuntimeError(f"synthetix-docgen failed: {detail[-800:]}")
 
-        file_name = "ba_brief.docx" if doc_type == "ba_brief" else "tech_workbook.docx"
+        file_name = (
+            "ba_brief.docx"
+            if doc_type == "ba_brief"
+            else ("tech_workbook.docx" if doc_type == "tech_workbook" else "brd.docx")
+        )
         target = out_dir / file_name
         if not target.exists():
             raise RuntimeError(f"Expected output not found: {target}")
@@ -7817,7 +7824,25 @@ def _run_synthetix_docgen(
             export_root.mkdir(parents=True, exist_ok=True)
 
             shutil.copy2(md_path, export_root / "analyst-output.md")
-            for name in ["data.json", "code_literal_scan.json", "ba_brief.docx", "tech_workbook.docx"]:
+            for name in [
+                "data.json",
+                "code_literal_scan.json",
+                "ba_brief.docx",
+                "tech_workbook.docx",
+                "brd.docx",
+                "brd_package_v1.json",
+                "brd_qa_report_v1.json",
+                "brd_render_manifest_v1.json",
+                "brd_project_meta_v1.json",
+                "brd_version_history_v1.json",
+                "brd_context_v1.json",
+                "brd_general_requirements_v1.json",
+                "brd_module_registry_v1.json",
+                "brd_module_dossier_v1.json",
+                "brd_appendices_v1.json",
+                "brd_process_map_v1.json",
+                "brd_template_anchor_map_v1.json",
+            ]:
                 src = out_dir / name
                 if src.exists():
                     shutil.copy2(src, export_root / name)
@@ -8100,8 +8125,8 @@ async def api_download_analyst_docgen_docx(request):
 
     query = request.query_params
     doc_type = str(query.get("type", "ba_brief")).strip().lower()
-    if doc_type not in {"ba_brief", "tech_workbook"}:
-        return JSONResponse({"ok": False, "error": "type must be ba_brief or tech_workbook"}, status_code=400)
+    if doc_type not in {"ba_brief", "tech_workbook", "brd"}:
+        return JSONResponse({"ok": False, "error": "type must be ba_brief, tech_workbook, or brd"}, status_code=400)
 
     pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
     analyst_output = _analyst_output_from_state(pipeline_state)
@@ -8130,7 +8155,7 @@ async def api_download_analyst_docgen_docx(request):
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe_run_id = safe_name(str(run_id or "run"))
-    file_stub = "ba-brief" if doc_type == "ba_brief" else "tech-workbook"
+    file_stub = "ba-brief" if doc_type == "ba_brief" else ("tech-workbook" if doc_type == "tech_workbook" else "brd")
     filename = f"analyst-{file_stub}-{safe_run_id}-{stamp}.docx"
     return StreamingResponse(
         io.BytesIO(docx_bytes),

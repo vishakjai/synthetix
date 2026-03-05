@@ -6,8 +6,11 @@
   "scripts": {
     "parse":     "node scripts/parse-md.js",
     "scan:literals": "node scripts/run-code-literal-scan.js",
+    "compose:brd": "node scripts/compose-brd.js",
+    "qa:brd": "node scripts/brd-qa.js",
     "ba-brief":  "node generators/ba-brief.js",
     "tech-wb":   "node generators/tech-workbook.js",
+    "brd":       "node generators/brd-doc.js",
     "generate":  "node index.js"
   },
   "dependencies": {

@@ -271,20 +271,25 @@ function deriveDependencyReference(name, kind) {
 function parseSourceLocSummary(content) {
   const text = String(content || '');
   const patterns = [
+    /lines of code scanned\s*\|\s*(\d+)\s*total\s*loc\s*\(forms=(\d+),\s*modules=(\d+),\s*classes=(\d+)(?:,\s*designers=(\d+))?\)\s*across\s*(\d+)\s*files/i,
+    /source loc:\s*(\d+)\s*total\s*\(forms=(\d+),\s*modules=(\d+),\s*classes=(\d+)(?:,\s*designers=(\d+))?\)\s*across\s*(\d+)\s*file/i,
     /lines of code scanned\s*\|\s*(\d+)\s*total\s*loc\s*\(forms=(\d+),\s*modules=(\d+)\)\s*across\s*(\d+)\s*files/i,
     /source loc:\s*(\d+)\s*total\s*\(forms=(\d+),\s*modules=(\d+)\)\s*across\s*(\d+)\s*file/i,
   ];
   for (const re of patterns) {
     const m = text.match(re);
     if (!m) continue;
+    const withClass = m.length >= 7;
     return {
       total: toIntLoose(m[1], 0),
       forms: toIntLoose(m[2], 0),
       modules: toIntLoose(m[3], 0),
-      files: toIntLoose(m[4], 0),
+      classes: withClass ? toIntLoose(m[4], 0) : 0,
+      designers: withClass ? toIntLoose(m[5], 0) : 0,
+      files: withClass ? toIntLoose(m[6], 0) : toIntLoose(m[4], 0),
     };
   }
-  return { total: 0, forms: 0, modules: 0, files: 0 };
+  return { total: 0, forms: 0, modules: 0, classes: 0, designers: 0, files: 0 };
 }
 
 function parseMdbSummary(content) {
@@ -521,7 +526,7 @@ function parseK(content) {
   for (const r of rows) {
     if (r.length < 5) continue;
     const status = String(gc(r,4) || '').trim().toLowerCase();
-    if (status !== 'mapped' && status !== 'excluded') continue;
+    if (status !== 'mapped' && status !== 'excluded' && status !== 'orphan') continue;
     const obj = {
       form:             gc(r,0), display_name:    gc(r,1),
       project:          gc(r,2), form_type:       gc(r,3),
@@ -534,7 +539,7 @@ function parseK(content) {
     const dedupeKey = [obj.form, canonicalProjectKey(obj.project), obj.status].join('||').toLowerCase();
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    (obj.status === 'mapped' ? mapped : excluded).push(obj);
+    (obj.status === 'excluded' ? excluded : mapped).push(obj);
   }
 
   // Build unique excluded set (deduplicated by filename)
@@ -1099,12 +1104,24 @@ function parseP(content) {
     } else if (current && line.includes('|') && !line.includes('---') && !line.includes('Callable')) {
       const cols = line.split('|').map(c => c.trim()).filter(Boolean);
       if (cols.length >= 6) {
+        let status = gc(cols,6);
+        let reason = gc(cols,7);
+        // Newer MD adds "Source line refs" before status; shift indexes accordingly.
+        if (
+          cols.length >= 8
+          && /^(ok|trace_gap)$/i.test(String(gc(cols,7) || '').trim())
+          && !/^(ok|trace_gap)$/i.test(String(gc(cols,6) || '').trim())
+        ) {
+          status = gc(cols,7);
+          reason = gc(cols,8);
+        }
         const row = {
           callable: gc(cols,0), kind:     gc(cols,1),
           event:    gc(cols,2), activex:  gc(cols,3),
           sql_ids:  gc(cols,4), tables:   gc(cols,5),
-          status:   gc(cols,6),
-          trace_gap_reason: gc(cols,7),
+          source_line_refs: gc(cols,6),
+          status:   status,
+          trace_gap_reason: reason,
         };
         if (!row.trace_gap_reason) row.trace_gap_reason = deriveGapReason(row);
         traces[current].push(row);
@@ -1694,6 +1711,18 @@ function parseMd(mdContent, meta = {}) {
   const deadFormRefs = parseW(mdContent);
   const dataenvironmentMappings = parseX(mdContent);
   const staticRiskDetectors = parseY(mdContent);
+
+  // Reconcile LOC components when source summary omits classes/designers.
+  const designerLocTotal = (designerLocProfile || []).reduce((acc, row) => acc + toIntLoose(row.loc, 0), 0);
+  let classLoc = Number(meta.source_loc_classes || sourceLoc.classes || 0);
+  if (!classLoc && projects.length) {
+    const projectSum = projects.reduce((acc, p) => acc + toIntLoose(p.source_loc, 0), 0);
+    const baseline = Number(sourceLoc.forms || 0) + Number(sourceLoc.modules || 0);
+    const inferred = projectSum > baseline ? (projectSum - baseline) : 0;
+    if (inferred > 0) classLoc = inferred;
+  }
+  headerMeta.source_loc_classes = classLoc;
+  headerMeta.source_loc_designers = Number(meta.source_loc_designers || sourceLoc.designers || designerLocTotal || 0);
 
   normalizeTraceabilitySqlCoverage(qData, sqlEntries);
 

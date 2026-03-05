@@ -160,6 +160,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     source_loc_total = _as_int(inventory.get("source_loc_total"), 0)
     source_loc_forms = _as_int(inventory.get("source_loc_forms"), 0)
     source_loc_modules = _as_int(inventory.get("source_loc_modules"), 0)
+    source_loc_classes = _as_int(inventory.get("source_loc_classes"), 0)
     source_files_scanned = _as_int(inventory.get("source_files_scanned"), 0)
     raw_for_loc = _as_dict(report.get("raw_artifacts")) or _as_dict(output.get("raw_artifacts"))
     raw_legacy_for_loc = _as_dict(raw_for_loc.get("legacy_inventory"))
@@ -173,6 +174,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         source_loc_forms = _as_int(legacy_counts_for_loc.get("source_loc_forms"), 0)
     if source_loc_modules <= 0:
         source_loc_modules = _as_int(legacy_counts_for_loc.get("source_loc_modules"), 0)
+    if source_loc_classes <= 0:
+        source_loc_classes = _as_int(legacy_counts_for_loc.get("source_loc_classes"), 0)
     if source_files_scanned <= 0:
         source_files_scanned = _as_int(legacy_counts_for_loc.get("source_files_scanned"), 0)
     if (
@@ -197,6 +200,10 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             source_loc_forms = project_loc_forms
         if source_loc_modules <= 0:
             source_loc_modules = project_loc_modules
+        if source_loc_classes <= 0:
+            inferred_classes = project_loc_total - (project_loc_forms + project_loc_modules)
+            if inferred_classes > 0:
+                source_loc_classes = inferred_classes
         if source_files_scanned <= 0:
             source_files_scanned = project_files_scanned
     if (source_loc_total <= 0 or source_files_scanned <= 0) and loc_rows_for_loc:
@@ -218,6 +225,11 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             source_loc_modules = sum(
                 loc for path, loc in loc_by_path.items()
                 if path.lower().endswith(".bas")
+            )
+        if source_loc_classes <= 0:
+            source_loc_classes = sum(
+                loc for path, loc in loc_by_path.items()
+                if path.lower().endswith(".cls")
             )
         if source_files_scanned <= 0:
             source_files_scanned = len(loc_by_path)
@@ -265,8 +277,21 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     int(loc or 0) for path, loc in line_hints.items()
                     if path.lower().endswith(".bas")
                 )
+            if source_loc_classes <= 0:
+                source_loc_classes = sum(
+                    int(loc or 0) for path, loc in line_hints.items()
+                    if path.lower().endswith(".cls")
+                )
             if source_files_scanned <= 0:
                 source_files_scanned = len(line_hints)
+    if source_loc_classes <= 0 and vb6_projects_for_loc:
+        project_loc_total = 0
+        for row in vb6_projects_for_loc[:200]:
+            rr = _as_dict(row)
+            project_loc_total += _as_int(rr.get("source_loc_total"), 0)
+        inferred_classes = project_loc_total - (source_loc_forms + source_loc_modules)
+        if inferred_classes > 0:
+            source_loc_classes = inferred_classes
     strategy = _as_dict(brief.get("recommended_strategy"))
     decisions = _as_dict(brief.get("decisions_required"))
     delivery_spec = _as_dict(report.get("delivery_spec"))
@@ -301,7 +326,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         f"| Modernization readiness | {_clean(glance.get('readiness_score') or 'n/a')}/100 |",
         f"| Risk tier | {_clean(glance.get('risk_tier') or 'n/a')} |",
         f"| Inventory | {_clean(inventory.get('projects') or 0)} project(s), {_clean(inventory.get('forms') or 0)} forms/usercontrols, {_clean(inventory.get('dependencies') or 0)} dependencies |",
-        f"| Lines of code scanned | {source_loc_total} total LOC ({source_loc_forms} form LOC, {source_loc_modules} module LOC) across {source_files_scanned} files |",
+        f"| Lines of code scanned | {source_loc_total} total LOC ({source_loc_forms} form LOC, {source_loc_modules} module LOC, {source_loc_classes} class LOC) across {source_files_scanned} files |",
         f"| Data touchpoints | {', '.join(_as_list(inventory.get('tables_touched')))} |",
         f"| Headline | {_escape_pipe(glance.get('headline'))} |",
         "",
@@ -1333,10 +1358,11 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     legacy_counts = _as_dict(_as_dict(raw.get("legacy_inventory")).get("summary")).get("counts", {})
     legacy_counts = _as_dict(legacy_counts)
     lines.append(
-        "- Source LOC: {} total (forms={}, modules={}) across {} file(s)".format(
+        "- Source LOC: {} total (forms={}, modules={}, classes={}) across {} file(s)".format(
             _as_int(legacy_counts.get("source_loc_total"), 0),
             _as_int(legacy_counts.get("source_loc_forms"), 0),
             _as_int(legacy_counts.get("source_loc_modules"), 0),
+            _as_int(legacy_counts.get("source_loc_classes"), source_loc_classes),
             _as_int(legacy_counts.get("source_files_scanned"), 0),
         )
     )
@@ -1359,10 +1385,11 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     lines.append(f"- Data touchpoints: {', '.join(_as_list(_as_dict(raw_legacy.get('summary')).get('data_touchpoints'))) or 'None detected'}")
     legacy_counts = _as_dict(_as_dict(raw_legacy.get("summary")).get("counts"))
     lines.append(
-        "- Source LOC: {} total (forms={}, modules={}) across {} file(s)".format(
+        "- Source LOC: {} total (forms={}, modules={}, classes={}) across {} file(s)".format(
             _as_int(legacy_counts.get("source_loc_total"), 0),
             _as_int(legacy_counts.get("source_loc_forms"), 0),
             _as_int(legacy_counts.get("source_loc_modules"), 0),
+            _as_int(legacy_counts.get("source_loc_classes"), source_loc_classes),
             _as_int(legacy_counts.get("source_files_scanned"), 0),
         )
     )
@@ -3245,7 +3272,7 @@ def _write_db_design_artifacts(
     return written
 
 
-def _generate_docx_bundle(md_path: Path, out_dir: Path) -> tuple[Path, Path, Path] | None:
+def _generate_docx_bundle(md_path: Path, out_dir: Path) -> tuple[Path, Path, Path, Path | None] | None:
     docgen_dir = ROOT / "synthetix-docgen"
     index_js = docgen_dir / "index.js"
     if not index_js.exists():
@@ -3280,10 +3307,11 @@ def _generate_docx_bundle(md_path: Path, out_dir: Path) -> tuple[Path, Path, Pat
     data_json = out_dir / "data.json"
     ba_doc = out_dir / "ba_brief.docx"
     tech_doc = out_dir / "tech_workbook.docx"
+    brd_doc = out_dir / "brd.docx"
     if not (data_json.exists() and ba_doc.exists() and tech_doc.exists()):
         print("[warn] doc generation completed but expected outputs not found")
         return None
-    return data_json, ba_doc, tech_doc
+    return data_json, ba_doc, tech_doc, (brd_doc if brd_doc.exists() else None)
 
 
 def run_and_export_api(args: argparse.Namespace) -> int:
@@ -3425,10 +3453,12 @@ def run_and_export_api(args: argparse.Namespace) -> int:
     if not args.skip_docgen:
         generated = _generate_docx_bundle(md_path, md_path.parent)
         if generated:
-            data_json, ba_doc, tech_doc = generated
+            data_json, ba_doc, tech_doc, brd_doc = generated
             print(f"[ok] docgen data: {data_json}")
             print(f"[ok] BA Brief: {ba_doc}")
             print(f"[ok] Tech Workbook: {tech_doc}")
+            if brd_doc:
+                print(f"[ok] BRD DOCX: {brd_doc}")
     return 0
 
 
@@ -3498,10 +3528,12 @@ def run_and_export_direct(args: argparse.Namespace) -> int:
         if not args.skip_docgen:
             generated = _generate_docx_bundle(md_path, md_path.parent)
             if generated:
-                data_json, ba_doc, tech_doc = generated
+                data_json, ba_doc, tech_doc, brd_doc = generated
                 print(f"[ok] docgen data: {data_json}")
                 print(f"[ok] BA Brief: {ba_doc}")
                 print(f"[ok] Tech Workbook: {tech_doc}")
+                if brd_doc:
+                    print(f"[ok] BRD DOCX: {brd_doc}")
         return 0
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
