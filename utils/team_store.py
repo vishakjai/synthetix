@@ -8,7 +8,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PREMADE_AGENTS: list[dict[str, Any]] = [
@@ -224,6 +224,8 @@ def _safe_json_write(path: Path, payload: Any) -> None:
 @dataclass
 class TeamStore:
     root_dir: str
+    state_reader: Callable[[], dict[str, Any]] | None = None
+    state_writer: Callable[[dict[str, Any]], None] | None = None
 
     def __post_init__(self) -> None:
         self.root = Path(self.root_dir)
@@ -235,9 +237,65 @@ class TeamStore:
         if not self.custom_teams_path.exists():
             _safe_json_write(self.custom_teams_path, [])
 
+    def _use_external_state(self) -> bool:
+        return callable(self.state_reader) and callable(self.state_writer)
+
+    def _read_external_state(self) -> dict[str, Any]:
+        if not self._use_external_state():
+            return {}
+        try:
+            payload = self.state_reader()  # type: ignore[misc]
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_external_state(self, payload: dict[str, Any]) -> None:
+        if not self._use_external_state():
+            return
+        try:
+            self.state_writer(payload)  # type: ignore[misc]
+        except Exception:
+            # Fallback to file persistence already handled by caller.
+            return
+
+    def _load_custom_agents(self) -> list[dict[str, Any]]:
+        if self._use_external_state():
+            payload = self._read_external_state()
+            rows = payload.get("custom_agents", [])
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        existing = _safe_json_load(self.custom_agents_path, [])
+        return existing if isinstance(existing, list) else []
+
+    def _save_custom_agents(self, rows: list[dict[str, Any]]) -> None:
+        cleaned = [row for row in rows if isinstance(row, dict)]
+        if self._use_external_state():
+            payload = self._read_external_state()
+            payload["custom_agents"] = cleaned
+            self._write_external_state(payload)
+            return
+        _safe_json_write(self.custom_agents_path, cleaned)
+
+    def _load_custom_teams(self) -> list[dict[str, Any]]:
+        if self._use_external_state():
+            payload = self._read_external_state()
+            rows = payload.get("custom_teams", [])
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        existing = _safe_json_load(self.custom_teams_path, [])
+        return existing if isinstance(existing, list) else []
+
+    def _save_custom_teams(self, rows: list[dict[str, Any]]) -> None:
+        cleaned = [row for row in rows if isinstance(row, dict)]
+        if self._use_external_state():
+            payload = self._read_external_state()
+            payload["custom_teams"] = cleaned
+            self._write_external_state(payload)
+            return
+        _safe_json_write(self.custom_teams_path, cleaned)
+
     def list_agents(self) -> dict[str, Any]:
-        custom = _safe_json_load(self.custom_agents_path, [])
-        custom_list = custom if isinstance(custom, list) else []
+        custom_list = self._load_custom_agents()
         all_agents = PREMADE_AGENTS + custom_list
         return {"premade": PREMADE_AGENTS, "custom": custom_list, "all": all_agents}
 
@@ -275,15 +333,13 @@ class TeamStore:
             if template:
                 cloned["requirements_pack_template"] = template
 
-        existing = _safe_json_load(self.custom_agents_path, [])
-        custom_agents = existing if isinstance(existing, list) else []
+        custom_agents = self._load_custom_agents()
         custom_agents.append(cloned)
-        _safe_json_write(self.custom_agents_path, custom_agents)
+        self._save_custom_agents(custom_agents)
         return cloned
 
     def list_teams(self) -> list[dict[str, Any]]:
-        custom = _safe_json_load(self.custom_teams_path, [])
-        custom_list = custom if isinstance(custom, list) else []
+        custom_list = self._load_custom_teams()
         return DEFAULT_TEAMS + custom_list
 
     def get_team(self, team_id: str) -> dict[str, Any] | None:
@@ -319,14 +375,13 @@ class TeamStore:
             "is_custom": True,
         }
 
-        existing = _safe_json_load(self.custom_teams_path, [])
-        custom_teams = existing if isinstance(existing, list) else []
+        custom_teams = self._load_custom_teams()
         idx = next((i for i, t in enumerate(custom_teams) if str(t.get("id", "")) == payload["id"]), -1)
         if idx >= 0:
             custom_teams[idx] = payload
         else:
             custom_teams.append(payload)
-        _safe_json_write(self.custom_teams_path, custom_teams)
+        self._save_custom_teams(custom_teams)
         return payload
 
     def duplicate_team(
@@ -356,10 +411,9 @@ class TeamStore:
             "is_custom": True,
         }
 
-        existing = _safe_json_load(self.custom_teams_path, [])
-        custom_teams = existing if isinstance(existing, list) else []
+        custom_teams = self._load_custom_teams()
         custom_teams.append(payload)
-        _safe_json_write(self.custom_teams_path, custom_teams)
+        self._save_custom_teams(custom_teams)
         return payload
 
     def delete_team(self, team_id: str) -> dict[str, Any]:
@@ -375,13 +429,12 @@ class TeamStore:
         if target in system_team_ids:
             raise ValueError("cannot delete a system team")
 
-        existing = _safe_json_load(self.custom_teams_path, [])
-        custom_teams = existing if isinstance(existing, list) else []
+        custom_teams = self._load_custom_teams()
         idx = next((i for i, t in enumerate(custom_teams) if str(t.get("id", "")).strip() == target), -1)
         if idx < 0:
             raise ValueError("team not found")
         deleted = custom_teams.pop(idx)
-        _safe_json_write(self.custom_teams_path, custom_teams)
+        self._save_custom_teams(custom_teams)
         return deleted
 
     def suggest_team(self, challenge_text: str) -> dict[str, Any]:

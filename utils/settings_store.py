@@ -809,6 +809,55 @@ class SettingsStore:
     def get_settings(self) -> dict[str, Any]:
         return self._sanitize(self._load())
 
+    def get_team_store_state(self) -> dict[str, Any]:
+        """
+        Shared persistence payload for TeamStore custom entities.
+        Stored inside settings state so it follows the configured settings backend
+        (GCS/local) and survives Cloud Run instance restarts.
+        """
+        data = self._load()
+        bucket = data.get("team_store", {})
+        if not isinstance(bucket, dict):
+            bucket = {}
+        custom_agents = bucket.get("custom_agents", [])
+        custom_teams = bucket.get("custom_teams", [])
+        if not isinstance(custom_agents, list):
+            custom_agents = []
+        if not isinstance(custom_teams, list):
+            custom_teams = []
+        return {
+            "custom_agents": [row for row in custom_agents if isinstance(row, dict)],
+            "custom_teams": [row for row in custom_teams if isinstance(row, dict)],
+        }
+
+    def save_team_store_state(self, payload: dict[str, Any], actor: str = "system") -> None:
+        data = self._load()
+        current = data.get("team_store", {})
+        if not isinstance(current, dict):
+            current = {}
+        incoming = payload if isinstance(payload, dict) else {}
+        custom_agents = incoming.get("custom_agents", current.get("custom_agents", []))
+        custom_teams = incoming.get("custom_teams", current.get("custom_teams", []))
+        if not isinstance(custom_agents, list):
+            custom_agents = []
+        if not isinstance(custom_teams, list):
+            custom_teams = []
+        data["team_store"] = {
+            "custom_agents": [row for row in custom_agents if isinstance(row, dict)],
+            "custom_teams": [row for row in custom_teams if isinstance(row, dict)],
+        }
+        self._append_audit(
+            data,
+            action="team_store_updated",
+            target="team_store",
+            actor=actor,
+            details={
+                "custom_agents": len(data["team_store"]["custom_agents"]),
+                "custom_teams": len(data["team_store"]["custom_teams"]),
+            },
+        )
+        self._save(data)
+
     def get_integration_config(self, provider: str) -> dict[str, Any]:
         key = str(provider or "").strip().lower()
         if key not in INTEGRATION_KEYS:

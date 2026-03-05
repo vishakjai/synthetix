@@ -118,8 +118,12 @@ TEAM_DATA_ROOT = Path(
 TEAM_DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 RUN_STORE = build_pipeline_run_store(str(ROOT / "pipeline_runs"))
-TEAM_STORE = TeamStore(str(TEAM_DATA_ROOT))
 SETTINGS_STORE = SettingsStore(str(TEAM_DATA_ROOT))
+TEAM_STORE = TeamStore(
+    str(TEAM_DATA_ROOT),
+    state_reader=SETTINGS_STORE.get_team_store_state,
+    state_writer=lambda payload: SETTINGS_STORE.save_team_store_state(payload, actor="system"),
+)
 WORK_ITEM_STORE = WorkItemStore(str(TEAM_DATA_ROOT))
 PERSONA_REGISTRY = PersonaRegistry(str(ROOT / "agent_personas"))
 KNOWLEDGE_GATEWAY = KnowledgeGateway(str(ROOT))
