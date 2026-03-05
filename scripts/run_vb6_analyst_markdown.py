@@ -36,7 +36,7 @@ DEFAULT_OBJECTIVE = (
     "Analyze this legacy VB6 repository, identify all projects/forms/modules/ActiveX dependencies/"
     "business rules/SQL behaviors, and produce a detailed modernization-ready analyst artifact."
 )
-VB6_EXTENSIONS = {".cls", ".frm", ".frx", ".bas", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca", ".dsr"}
+VB6_EXTENSIONS = {".cls", ".frm", ".frx", ".bas", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca", ".dsr", ".mdb", ".accdb"}
 VB6_TEXT_EXTENSIONS = {".cls", ".frm", ".bas", ".ctl", ".vbp", ".vbg", ".dca", ".dcx", ".dsr"}
 
 
@@ -86,6 +86,13 @@ def _as_list(value: Any) -> list[Any]:
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 
@@ -467,6 +474,25 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     raw_variant_inventory = _as_list(_as_dict(raw.get("variant_inventory")).get("variants"))
     raw_constitution = _as_list(_as_dict(raw.get("delivery_constitution")).get("principles"))
     raw_variant_diff = _as_dict(raw.get("variant_diff_report"))
+    raw_mdb_inventory = _as_dict(raw.get("mdb_inventory"))
+    raw_form_loc_profile = _as_dict(raw.get("form_loc_profile"))
+    raw_connection_variants = _as_dict(raw.get("connection_string_variants"))
+    raw_module_globals = _as_dict(raw.get("module_global_inventory"))
+    raw_dead_form_refs = _as_dict(raw.get("dead_form_refs"))
+    raw_de_report_map = _as_dict(raw.get("dataenvironment_report_mapping"))
+    raw_static_risk_detectors = _as_dict(raw.get("static_risk_detectors"))
+    raw_source_data_dictionary = _as_dict(raw.get("source_data_dictionary"))
+
+    mdb_rows = _as_list(raw_mdb_inventory.get("databases"))
+    form_loc_rows = _as_list(raw_form_loc_profile.get("forms"))
+    designer_loc_rows = _as_list(raw_form_loc_profile.get("designer_files"))
+    conn_variant_rows = _as_list(raw_connection_variants.get("variants"))
+    module_rows = _as_list(raw_module_globals.get("modules"))
+    module_global_rows = _as_list(raw_module_globals.get("globals"))
+    dead_form_ref_rows = _as_list(raw_dead_form_refs.get("references"))
+    de_report_rows = _as_list(raw_de_report_map.get("mappings"))
+    static_detector_rows = _as_list(raw_static_risk_detectors.get("findings"))
+    source_data_dictionary_rows = _as_list(raw_source_data_dictionary.get("rows"))
 
     def _base_form_name(value: Any) -> str:
         text = _clean(value)
@@ -1295,6 +1321,15 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     lines.append(f"- Repo landscape variants: {len(raw_landscape)}")
     lines.append(f"- Variant inventory rows: {len(raw_variant_inventory)}")
     lines.append(f"- Constitution principles: {len(raw_constitution)}")
+    lines.append(f"- MDB inventory rows: {len(mdb_rows)}")
+    lines.append(f"- Form LOC profile rows: {len(form_loc_rows)}")
+    lines.append(f"- Designer LOC rows: {len(designer_loc_rows)}")
+    lines.append(f"- Connection string variants: {len(conn_variant_rows)}")
+    lines.append(f"- Module global inventory rows: {len(module_global_rows)}")
+    lines.append(f"- Dead form references: {len(dead_form_ref_rows)}")
+    lines.append(f"- DataEnvironment report mappings: {len(de_report_rows)}")
+    lines.append(f"- Static risk detector findings: {len(static_detector_rows)}")
+    lines.append(f"- Source data dictionary rows: {len(source_data_dictionary_rows)}")
     legacy_counts = _as_dict(_as_dict(raw.get("legacy_inventory")).get("summary")).get("counts", {})
     legacy_counts = _as_dict(legacy_counts)
     lines.append(
@@ -1428,6 +1463,40 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             )
     else:
         lines.append("- No SQL rows available.")
+
+    lines.extend(["", "### D1. Source DB Column Schema"])
+    if source_data_dictionary_rows:
+        lines.append("| Table | Column | Type | FK Ref | Confidence | Access Evidence | Business Meaning | Evidence Ref |")
+        lines.append("|---|---|---|---|---:|---|---|---|")
+        sorted_rows = sorted(
+            [_as_dict(row) for row in source_data_dictionary_rows if isinstance(row, dict)],
+            key=lambda row: (_clean(row.get("table_name")).lower(), _clean(row.get("column_name")).lower()),
+        )
+        for row in sorted_rows[:4000]:
+            access = _as_dict(row.get("access_patterns"))
+            evidence_sql_ids = [_clean(x) for x in _as_list(row.get("evidence_sql_ids")) if _clean(x)]
+            if access:
+                access_text = (
+                    f"SELECT={_as_int(access.get('select_count'), 0)}, "
+                    f"INSERT={_as_int(access.get('insert_count'), 0)}, "
+                    f"UPDATE={_as_int(access.get('update_count'), 0)}"
+                )
+            else:
+                access_text = f"SQL refs={len(evidence_sql_ids)}"
+            lines.append(
+                "| {} | {} | {} | {} | {:.2f} | {} | {} | {} |".format(
+                    _escape_pipe(row.get("table_name") or row.get("table") or "n/a"),
+                    _escape_pipe(row.get("column_name") or row.get("column") or "n/a"),
+                    _escape_pipe(row.get("inferred_type") or "n/a"),
+                    _escape_pipe(row.get("fk_reference") or "n/a"),
+                    _as_float(row.get("confidence"), 0.0),
+                    _escape_pipe(access_text),
+                    _escape_pipe(row.get("business_meaning") or "n/a"),
+                    _escape_pipe(", ".join(_as_list(row.get("evidence_refs"))[:4]) or ", ".join(evidence_sql_ids[:4]) or "n/a"),
+                )
+            )
+    else:
+        lines.append("- No source data dictionary rows available.")
 
     lines.extend(["", "### E. Business Rules"])
     if rule_rows:
@@ -1875,20 +1944,46 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
 
     lines.extend(["", "### I. Handler and Procedure Summaries"])
     if raw_procedures:
-        lines.append("| Callable | Kind | Form | SQL IDs | Steps | Risks |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| Callable | Kind | Form | SQL IDs | Steps | Risks | Source line refs |")
+        lines.append("|---|---|---|---|---|---|---|")
         for row in raw_procedures[:700]:
             r = _as_dict(row)
             proc_name = _clean(r.get("procedure_name") or r.get("procedure_id") or "n/a")
             kind = _callable_kind(proc_name, r.get("form"), _clean(_as_dict(r.get("trigger")).get("event")))
+            line_refs: list[str] = []
+            for ev in _as_list(r.get("evidence")):
+                e = _as_dict(ev)
+                fs = _as_dict(e.get("file_span"))
+                path = _clean(fs.get("path"))
+                ln = _as_int(fs.get("line_start"), 0)
+                if path and ln > 0:
+                    ref = f"{path}:{ln}"
+                    if ref not in line_refs:
+                        line_refs.append(ref)
+            # Fallback from event map rows when procedure evidence is sparse.
+            form_name = _clean(r.get("form"))
+            form_project = _project_from_scoped(form_name)
+            form_base = _base_form_name(form_name)
+            for event_row in _lookup_rows(form_event_rows, form_project, form_base):
+                er = _as_dict(event_row)
+                symbol = _clean(_as_dict(er.get("handler")).get("symbol"))
+                if proc_name and proc_name not in symbol:
+                    continue
+                path = _clean(er.get("source_file"))
+                ln = _as_int(er.get("line"), 0)
+                if path and ln > 0:
+                    ref = f"{path}:{ln}"
+                    if ref not in line_refs:
+                        line_refs.append(ref)
             lines.append(
-                "| {} | {} | {} | {} | {} | {} |".format(
+                "| {} | {} | {} | {} | {} | {} | {} |".format(
                     _escape_pipe(proc_name),
                     _escape_pipe(kind),
                     _escape_pipe(r.get("form") or "n/a"),
                     _escape_pipe(", ".join(_as_list(r.get("sql_ids"))[:6]) or "n/a"),
                     _escape_pipe(" / ".join(_as_list(r.get("steps"))[:2]) or "n/a"),
                     _escape_pipe(", ".join(_as_list(r.get("risks"))[:5]) or "none"),
+                    _escape_pipe(", ".join(line_refs[:4]) or "n/a"),
                 )
             )
     else:
@@ -2260,6 +2355,86 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     else:
         lines.append("- No project dependency rows available.")
 
+    lines.extend(["", "### O1. Form User Flow (Spec-Kit Style)"])
+    known_forms: set[str] = set()
+    for d in discovered_forms:
+        name = _clean(_as_dict(d).get("form_name")).lower()
+        if name:
+            known_forms.add(name)
+    for row in raw_form_dossiers:
+        name = _clean(_as_dict(row).get("form_name")).lower()
+        if name:
+            known_forms.add(name)
+
+    flow_graph: dict[str, dict[str, set[str]]] = {}
+
+    def _flow_note(entry: dict[str, Any]) -> str:
+        trig = _as_dict(entry.get("trigger"))
+        parts = [
+            _clean(trig.get("control")),
+            _clean(trig.get("event")),
+            _clean(_as_dict(entry.get("handler")).get("symbol")),
+        ]
+        for p in parts:
+            if p:
+                return p
+        return ""
+
+    for entry in raw_event_map:
+        e = _as_dict(entry)
+        source = _clean(e.get("container") or e.get("form") or e.get("name")) or "n/a"
+        source_low = source.lower()
+        note = _flow_note(e)
+        calls = [_clean(c) for c in _as_list(e.get("calls")) if _clean(c)]
+        for call in calls:
+            target = _clean(call)
+            target_low = target.lower()
+            if not target:
+                continue
+            if target in shared_module_procs:
+                continue
+
+            nav_target = ""
+            if target_low in {"end", "quit", "app.end", "endapp"}:
+                nav_target = "End"
+            elif target_low in {"frm", "form"}:
+                nav_target = "frm [Unresolved]"
+            elif target_low.startswith(("rpt", "datareport")):
+                nav_target = target
+            elif target_low.startswith(("frm", "form")) or target_low == "main" or target_low in known_forms:
+                nav_target = target
+            else:
+                continue
+
+            if source_low == nav_target.lower():
+                continue
+            flow_graph.setdefault(source, {}).setdefault(nav_target, set())
+            if note:
+                flow_graph[source][nav_target].add(note)
+
+    if flow_graph:
+        def _sort_targets(values: list[str]) -> list[str]:
+            return sorted(
+                values,
+                key=lambda x: (
+                    2 if x == "End" else (1 if x.startswith("frm [Unresolved]") else 0),
+                    x.lower(),
+                ),
+            )
+
+        for source in sorted(flow_graph.keys(), key=lambda x: x.lower()):
+            lines.append(f"{source}")
+            targets = _sort_targets(list(flow_graph[source].keys()))
+            for idx, target in enumerate(targets):
+                is_last = idx == len(targets) - 1
+                branch = "'- ->" if is_last else "|- ->"
+                notes = sorted(flow_graph[source][target])
+                suffix = f" [via {notes[0]}]" if notes else ""
+                lines.append(f"  {branch} {target}{suffix}")
+            lines.append("")
+    else:
+        lines.append("- No explicit form-to-form navigation links detected.")
+
     lines.extend(["", "### P. Form Flow Traces"])
     if raw_form_dossiers:
         for row in raw_form_dossiers[:250]:
@@ -2285,14 +2460,14 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             lines.extend(
                 [
                     f"#### {form_name} ({_project_label(project_name, project_path_by_name)})",
-                    "| Callable | Kind | Event | ActiveX | SQL IDs | Tables | Trace status |",
-                    "|---|---|---|---|---|---|---|",
+                    "| Callable | Kind | Event | ActiveX | SQL IDs | Tables | Source line refs | Trace status |",
+                    "|---|---|---|---|---|---|---|---|",
                 ]
             )
 
             if not procedure_names:
                 lines.append(
-                    "| n/a | n/a | n/a | {} | n/a | {} | TRACE_GAP |".format(
+                    "| n/a | n/a | n/a | {} | n/a | {} | n/a | TRACE_GAP |".format(
                         "n/a",
                         _escape_pipe(", ".join(sorted(_lookup_set(form_db_tables, project_name, form_name))[:8]) or "n/a"),
                     )
@@ -2316,19 +2491,36 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     ctl_type = _clean(control_map.get(trigger_control.lower()))
                     if trigger_control and ctl_type and not ctl_type.upper().startswith("VB"):
                         activex_hits.append(f"{trigger_control}:{ctl_type}")
+                line_refs: list[str] = []
+                for e in related_events:
+                    source_file = _clean(_as_dict(e).get("source_file"))
+                    line_no = _as_int(_as_dict(e).get("line"), 0)
+                    if source_file and line_no > 0:
+                        ref = f"{source_file}:{line_no}"
+                        if ref not in line_refs:
+                            line_refs.append(ref)
+                    for ev in _as_list(_as_dict(_as_dict(e).get("handler")).get("evidence")):
+                        fs = _as_dict(_as_dict(ev).get("file_span"))
+                        path = _clean(fs.get("path"))
+                        ln = _as_int(fs.get("line_start"), 0)
+                        if path and ln > 0:
+                            ref = f"{path}:{ln}"
+                            if ref not in line_refs:
+                                line_refs.append(ref)
                 sql_ids = sorted({_clean(x.get("sql_id")) for x in related_sql if _clean(x.get("sql_id"))})
                 table_names: set[str] = set()
                 for sql_row in related_sql:
                     table_names.update(_clean(t) for t in _as_list(sql_row.get("tables")) if _clean(t))
                 trace_ok = bool(sql_ids) and bool(table_names)
                 lines.append(
-                    "| {} | {} | {} | {} | {} | {} | {} |".format(
+                    "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
                         _escape_pipe(proc_name),
                         _escape_pipe(_callable_kind(proc_name, form_name)),
                         _escape_pipe(", ".join(_clean(_as_dict(e.get("handler")).get("symbol")) for e in related_events[:3]) or "n/a"),
                         _escape_pipe(", ".join(sorted(set(activex_hits))[:5]) or "n/a"),
                         _escape_pipe(", ".join(sql_ids[:6]) or "n/a"),
                         _escape_pipe(", ".join(sorted(table_names)[:8]) or "n/a"),
+                        _escape_pipe(", ".join(line_refs[:4]) or "n/a"),
                         "OK" if trace_ok else "TRACE_GAP",
                     )
                 )
@@ -2457,6 +2649,228 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             )
     else:
         lines.append("- No sprint dependency rows available.")
+
+    lines.extend(["", "### S. MDB Inventory"])
+    if mdb_rows:
+        mdb_summary = _as_dict(raw_mdb_inventory.get("summary"))
+        lines.append(
+            "- Databases detected: {} | forms referenced: {} | module refs: {}".format(
+                _as_int(mdb_summary.get("database_files_detected"), len(mdb_rows)),
+                _as_int(mdb_summary.get("forms_with_db_refs"), 0),
+                _as_int(mdb_summary.get("module_refs"), 0),
+            )
+        )
+        lines.append("| DB ID | Path | Name | Ext | LOC proxy | Detected from | Referenced by forms | Referenced by modules | Evidence refs |")
+        lines.append("|---|---|---|---|---:|---|---|---|---|")
+        for row in mdb_rows[:500]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("db_id") or "n/a"),
+                    _escape_pipe(r.get("path") or "n/a"),
+                    _escape_pipe(r.get("name") or "n/a"),
+                    _escape_pipe(r.get("extension") or "n/a"),
+                    _as_int(r.get("source_loc_proxy"), 0),
+                    _escape_pipe(", ".join(_as_list(r.get("detected_from"))[:8]) or "n/a"),
+                    _escape_pipe(", ".join(_as_list(r.get("referenced_by_forms"))[:8]) or "n/a"),
+                    _escape_pipe(", ".join(_as_list(r.get("referenced_by_modules"))[:8]) or "n/a"),
+                    _escape_pipe(", ".join(_as_list(r.get("evidence_refs"))[:6]) or "n/a"),
+                )
+            )
+    else:
+        lines.append("- No MDB/ACCDB files detected in this run.")
+
+    lines.extend(["", "### T. Form LOC Profile"])
+    if form_loc_rows:
+        loc_summary = _as_dict(raw_form_loc_profile.get("summary"))
+        lines.append(
+            "- Forms discovered: {} | active: {} | orphan: {} | forms LOC total: {} | designer LOC total: {}".format(
+                _as_int(loc_summary.get("forms_discovered"), len(form_loc_rows)),
+                _as_int(loc_summary.get("forms_active"), 0),
+                _as_int(loc_summary.get("forms_orphan"), 0),
+                _as_int(loc_summary.get("forms_loc_total"), 0),
+                _as_int(loc_summary.get("designer_loc_total"), 0),
+            )
+        )
+        lines.append("| Form ID | Form | Base form | Project | Source file | LOC | In VBP | Active/Orphan | Confidence |")
+        lines.append("|---|---|---|---|---|---:|---|---|---:|")
+        for row in form_loc_rows[:2000]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("form_id") or "n/a"),
+                    _escape_pipe(r.get("form") or "n/a"),
+                    _escape_pipe(r.get("base_form") or "n/a"),
+                    _escape_pipe(r.get("project") or "n/a"),
+                    _escape_pipe(r.get("source_file") or "n/a"),
+                    _as_int(r.get("loc"), 0),
+                    "yes" if bool(r.get("in_vbp")) else "no",
+                    _escape_pipe(r.get("active_or_orphan") or "n/a"),
+                    "{:.2f}".format(_as_float(r.get("confidence"), 0.0)),
+                )
+            )
+    else:
+        lines.append("- No form LOC profile rows available.")
+
+    lines.extend(["", "### T1. Designer LOC Profile"])
+    if designer_loc_rows:
+        lines.append("| File | Kind | LOC |")
+        lines.append("|---|---|---:|")
+        for row in designer_loc_rows[:2000]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} |".format(
+                    _escape_pipe(r.get("file") or "n/a"),
+                    _escape_pipe(r.get("kind") or "designer"),
+                    _as_int(r.get("loc"), 0),
+                )
+            )
+    else:
+        lines.append("- No designer LOC rows available.")
+
+    lines.extend(["", "### U. Connection String Variants"])
+    if conn_variant_rows:
+        conn_summary = _as_dict(raw_connection_variants.get("summary"))
+        lines.append(
+            "- Variants: {} | relative-path risks: {} | embedded-credential risks: {}".format(
+                _as_int(conn_summary.get("variant_count"), len(conn_variant_rows)),
+                _as_int(conn_summary.get("relative_path_risks"), 0),
+                _as_int(conn_summary.get("embedded_credential_risks"), 0),
+            )
+        )
+        lines.append("| Variant ID | Normalized pattern | Risk flags | Source refs | Example |")
+        lines.append("|---|---|---|---|---|")
+        for row in conn_variant_rows[:600]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("variant_id") or "n/a"),
+                    _escape_pipe(r.get("normalized_pattern") or "n/a"),
+                    _escape_pipe(", ".join(_as_list(r.get("risk_flags"))[:6]) or "none"),
+                    _escape_pipe(", ".join(_as_list(r.get("source_refs"))[:8]) or "n/a"),
+                    _escape_pipe(_as_list(r.get("examples"))[0] if _as_list(r.get("examples")) else "n/a"),
+                )
+            )
+    else:
+        lines.append("- No connection-string variants detected.")
+
+    lines.extend(["", "### V. Module Global Inventory"])
+    if module_global_rows:
+        globals_summary = _as_dict(raw_module_globals.get("summary"))
+        lines.append(
+            "- Modules: {} | global candidates: {} | extraction status: {}".format(
+                _as_int(globals_summary.get("module_count"), len(module_rows)),
+                _as_int(globals_summary.get("global_candidates"), len(module_global_rows)),
+                _clean(globals_summary.get("extraction_status") or "unknown"),
+            )
+        )
+        lines.append("| Symbol | Declared type | Scope | Inferred purpose | Evidence refs |")
+        lines.append("|---|---|---|---|---|")
+        for row in module_global_rows[:1500]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("symbol") or "n/a"),
+                    _escape_pipe(r.get("declared_type") or "n/a"),
+                    _escape_pipe(r.get("scope") or "n/a"),
+                    _escape_pipe(r.get("inferred_purpose") or "n/a"),
+                    _escape_pipe(", ".join(_as_list(r.get("evidence_refs"))[:8]) or "n/a"),
+                )
+            )
+    else:
+        lines.append("- No module global inventory rows available.")
+
+    lines.extend(["", "### V1. Module Inventory"])
+    if module_rows:
+        lines.append("| Module |")
+        lines.append("|---|")
+        for row in module_rows[:1500]:
+            r = _as_dict(row)
+            lines.append(f"| {_escape_pipe(r.get('module') or 'n/a')} |")
+    else:
+        lines.append("- No module inventory rows available.")
+
+    lines.extend(["", "### W. Dead Form References"])
+    if dead_form_ref_rows:
+        dead_summary = _as_dict(raw_dead_form_refs.get("summary"))
+        lines.append(
+            "- Unresolved references: {} | callers impacted: {}".format(
+                _as_int(dead_summary.get("unresolved_reference_count"), len(dead_form_ref_rows)),
+                _as_int(dead_summary.get("callers_impacted"), 0),
+            )
+        )
+        lines.append("| Ref ID | Caller form | Caller handler | Target token | Status | Rationale | Evidence ref |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for row in dead_form_ref_rows[:1500]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("ref_id") or "n/a"),
+                    _escape_pipe(r.get("caller_form") or "n/a"),
+                    _escape_pipe(r.get("caller_handler") or "n/a"),
+                    _escape_pipe(r.get("target_token") or "n/a"),
+                    _escape_pipe(r.get("status") or "n/a"),
+                    _escape_pipe(r.get("rationale") or "n/a"),
+                    _escape_pipe(r.get("evidence_ref") or "n/a"),
+                )
+            )
+    else:
+        lines.append("- No dead-form references detected.")
+
+    lines.extend(["", "### X. DataEnvironment Report Mapping"])
+    if de_report_rows:
+        de_summary = _as_dict(raw_de_report_map.get("summary"))
+        designer_assets = _as_dict(raw_de_report_map.get("designer_assets"))
+        lines.append(
+            "- DataEnvironments: {} | reports: {} | mapped calls: {}".format(
+                _as_int(de_summary.get("dataenvironment_count"), len(_as_list(designer_assets.get("dataenvironments")))),
+                _as_int(de_summary.get("report_object_count"), len(_as_list(designer_assets.get("reports")))),
+                _as_int(de_summary.get("mapped_calls"), len(de_report_rows)),
+            )
+        )
+        lines.append("| Mapping ID | Caller form | Caller handler | Report object | DataEnvironment | Kind | Confidence | Evidence ref |")
+        lines.append("|---|---|---|---|---|---|---:|---|")
+        for row in de_report_rows[:1500]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("mapping_id") or "n/a"),
+                    _escape_pipe(r.get("caller_form") or "n/a"),
+                    _escape_pipe(r.get("caller_handler") or "n/a"),
+                    _escape_pipe(r.get("report_object") or "n/a"),
+                    _escape_pipe(r.get("dataenvironment_object") or "n/a"),
+                    _escape_pipe(r.get("mapping_kind") or "n/a"),
+                    "{:.2f}".format(_as_float(r.get("confidence"), 0.0)),
+                    _escape_pipe(r.get("evidence_ref") or "n/a"),
+                )
+            )
+    else:
+        lines.append("- No DataEnvironment/report mappings detected.")
+
+    lines.extend(["", "### Y. Static Risk Detectors"])
+    if static_detector_rows:
+        static_summary = _as_dict(raw_static_risk_detectors.get("summary"))
+        lines.append(
+            "- Detector checks: {} | findings: {} | high severity: {}".format(
+                _as_int(static_summary.get("detector_count"), 0),
+                _as_int(static_summary.get("findings_count"), len(static_detector_rows)),
+                _as_int(static_summary.get("high_findings"), 0),
+            )
+        )
+        lines.append("| Detector ID | Severity | Summary | Evidence |")
+        lines.append("|---|---|---|---|")
+        for row in static_detector_rows[:1200]:
+            r = _as_dict(row)
+            lines.append(
+                "| {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("detector_id") or "n/a"),
+                    _escape_pipe(r.get("severity") or "n/a"),
+                    _escape_pipe(r.get("summary") or "n/a"),
+                    _escape_pipe(json.dumps(_as_dict(r.get("evidence")), ensure_ascii=True)),
+                )
+            )
+    else:
+        lines.append("- No static detector findings were emitted.")
 
     return "\n".join(lines)
 

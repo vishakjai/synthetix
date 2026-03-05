@@ -3696,6 +3696,1883 @@ def _build_variant_inventory(
     }
 
 
+def _estimate_proc_complexity(proc: dict[str, Any]) -> int:
+    text = " ".join(
+        [
+            _clean(_as_dict(proc).get("procedure_name")),
+            _clean(_as_dict(proc).get("summary")),
+            " ".join(_clean(x) for x in _as_list(_as_dict(proc).get("steps")) if _clean(x)),
+        ]
+    ).lower()
+    if not text:
+        return 1
+    # Bound analysis to keep deterministic scan cost stable on very large procedure summaries.
+    text = text[:4000]
+    tokens = [tok for tok in re.split(r"[^a-z0-9_]+", text) if tok]
+    token_count = {
+        "if": 0,
+        "elseif": 0,
+        "case": 0,
+        "for": 0,
+        "while": 0,
+        "do": 0,
+    }
+    for tok in tokens:
+        if tok in token_count:
+            token_count[tok] += 1
+    branch_hits = (
+        token_count["if"]
+        + token_count["elseif"]
+        + token_count["case"]
+        + token_count["for"]
+        + token_count["while"]
+    )
+    # Handle simple two-token constructs.
+    lowered = " ".join(tokens)
+    branch_hits += lowered.count("select case")
+    branch_hits += lowered.count("for each")
+    branch_hits += lowered.count("do while")
+    branch_hits += lowered.count("do until")
+    return max(1, min(50, 1 + branch_hits))
+
+
+def _is_event_handler_name(name: str) -> bool:
+    token = _clean(name).lower()
+    if not token:
+        return False
+    return bool(
+        re.search(
+            r"_(click|dblclick|change|load|initialize|keypress|keydown|keyup|gotfocus|lostfocus|timer|buttonclick|buttonmenuclick)$",
+            token,
+        )
+    )
+
+
+def _build_engineering_quality_baseline(
+    *,
+    metadata_common: dict[str, Any],
+    run_id: str,
+    generated_at: str,
+    repo: str,
+    branch: str,
+    commit_sha: str,
+    projects: list[dict[str, Any]],
+    forms: list[Any],
+    event_entries: list[dict[str, Any]],
+    sql_statements: list[dict[str, Any]],
+    sql_map_entries: list[dict[str, Any]],
+    procedure_summaries: list[dict[str, Any]],
+    dependencies: list[dict[str, Any]],
+    form_coverage_rows: list[dict[str, Any]],
+    source_loc_by_file: dict[str, int],
+    orphan_analysis: dict[str, Any],
+    form_dossier: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    project_forms: dict[str, set[str]] = {}
+    project_members: dict[str, list[str]] = {}
+    for p in projects:
+        if not isinstance(p, dict):
+            continue
+        pname = _clean(p.get("name") or p.get("project_id")) or "n/a"
+        forms_in_project = {
+            _normalize_form_name_token(x)
+            for x in _as_list(p.get("forms"))
+            if _normalize_form_name_token(x)
+        }
+        project_forms[pname] = forms_in_project
+        project_members[pname] = [_clean(x) for x in _as_list(p.get("member_files")) if _clean(x)]
+
+    form_rows: list[dict[str, Any]] = [row for row in forms if isinstance(row, dict)]
+    known_form_norms: set[str] = set()
+    form_project_by_norm: dict[str, str] = {}
+    form_source_loc: dict[tuple[str, str], int] = {}
+    form_controls: dict[tuple[str, str], list[str]] = {}
+    form_event_handlers: dict[tuple[str, str], list[str]] = {}
+    for row in form_rows:
+        form_name = _clean(row.get("base_form_name") or row.get("form_name") or row.get("name"))
+        norm = _normalize_form_name_token(form_name)
+        if not norm:
+            continue
+        project_name = _clean(row.get("project_name")) or next(
+            (p for p, fset in project_forms.items() if norm in fset),
+            "n/a",
+        )
+        key = (project_name, norm)
+        known_form_norms.add(norm)
+        form_project_by_norm.setdefault(norm, project_name)
+        form_source_loc[key] = int(row.get("source_loc", 0) or 0)
+        form_controls[key] = [_clean(x) for x in _as_list(row.get("controls")) if _clean(x)]
+        form_event_handlers[key] = [_clean(x) for x in _as_list(row.get("event_handlers")) if _clean(x)]
+
+    def _project_for_form(norm: str, scoped: str = "") -> str:
+        scoped_project, scoped_form = _split_variant_form(scoped)
+        scoped_norm = _normalize_form_name_token(scoped_form)
+        if scoped_project and scoped_norm == norm:
+            return scoped_project
+        return form_project_by_norm.get(norm, "n/a")
+
+    proc_by_form: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    called_proc_names: set[str] = set()
+    for proc in procedure_summaries[:4000]:
+        if not isinstance(proc, dict):
+            continue
+        form_ref = _clean(proc.get("form"))
+        _, base = _split_variant_form(form_ref)
+        norm = _normalize_form_name_token(base or form_ref)
+        if not norm:
+            continue
+        project_name = _project_for_form(norm, form_ref)
+        proc_by_form.setdefault((project_name, norm), []).append(proc)
+        pname = _clean(proc.get("procedure_name")).lower()
+        if pname:
+            for nav in _as_list(proc.get("navigation_side_effects")):
+                nav_token = _clean(nav).lower()
+                if nav_token and nav_token == pname:
+                    called_proc_names.add(nav_token)
+
+    event_trigger_controls: dict[tuple[str, str], set[str]] = {}
+    shared_module_calls: set[str] = {
+        _clean(proc.get("procedure_name")).lower()
+        for proc in procedure_summaries
+        if isinstance(proc, dict) and _normalize_form_name_token(proc.get("form")) in {"sharedmodule", "module", "shared_module"}
+    }
+    for entry in event_entries[:5000]:
+        if not isinstance(entry, dict):
+            continue
+        source = _clean(entry.get("container") or entry.get("form") or _clean(_as_dict(entry.get("handler")).get("symbol")).rsplit("::", 1)[0])
+        _, base = _split_variant_form(source)
+        src_norm = _normalize_form_name_token(base or source)
+        if not src_norm:
+            continue
+        src_project = _project_for_form(src_norm, source)
+        key = (src_project, src_norm)
+        control = _clean(_as_dict(entry.get("trigger")).get("control")).lower()
+        if control:
+            event_trigger_controls.setdefault(key, set()).add(control)
+        for call in [_clean(c) for c in _as_list(entry.get("calls")) if _clean(c)]:
+            call_l = call.lower()
+            if call_l in shared_module_calls:
+                called_proc_names.add(call_l)
+
+    sql_by_form: dict[tuple[str, str], dict[str, set[str]]] = {}
+    for row in sql_map_entries[:6000]:
+        if not isinstance(row, dict):
+            continue
+        form_ref = _clean(row.get("form"))
+        _, base = _split_variant_form(form_ref)
+        norm = _normalize_form_name_token(base or form_ref)
+        if not norm:
+            continue
+        project_name = _project_for_form(norm, form_ref)
+        key = (project_name, norm)
+        bucket = sql_by_form.setdefault(key, {"sql_ids": set(), "tables": set()})
+        sid = _clean(row.get("sql_id"))
+        if sid:
+            bucket["sql_ids"].add(sid)
+        for t in _as_list(row.get("tables")):
+            clean_t = _clean(t)
+            if clean_t:
+                bucket["tables"].add(clean_t)
+
+    type_dependency_edges: list[dict[str, Any]] = []
+    runtime_dependency_edges: list[dict[str, Any]] = []
+    dep_seen: set[str] = set()
+    runtime_seen: set[str] = set()
+
+    def _add_type_edge(source: str, target: str, dep_class: str, evidence: str, confidence: float = 0.78) -> None:
+        if not source or not target:
+            return
+        key = f"{source}|{target}|{dep_class}|{evidence}".lower()
+        if key in dep_seen:
+            return
+        dep_seen.add(key)
+        type_dependency_edges.append(
+            {
+                "edge_id": f"tdep:{len(type_dependency_edges) + 1}",
+                "from_type": source,
+                "to_type": target,
+                "dependency_class": dep_class,
+                "evidence": evidence,
+                "confidence": round(max(0.0, min(1.0, confidence)), 3),
+            }
+        )
+
+    for entry in event_entries[:5000]:
+        if not isinstance(entry, dict):
+            continue
+        source = _clean(entry.get("container") or entry.get("form") or _clean(_as_dict(entry.get("handler")).get("symbol")).rsplit("::", 1)[0])
+        src_proj, src_base = _split_variant_form(source)
+        src_norm = _normalize_form_name_token(src_base or source)
+        if not src_norm:
+            continue
+        project_name = src_proj or _project_for_form(src_norm, source)
+        src_type = f"{project_name}::{src_norm}"
+        evidence = _clean(_as_dict(entry.get("handler")).get("symbol")) or f"{source}::event"
+        for call in [_clean(c) for c in _as_list(entry.get("calls")) if _clean(c)]:
+            call_low = call.lower()
+            if call_low in {"end", "quit", "app.end", "endapp"}:
+                _add_type_edge(src_type, "runtime::end", "navigation_termination", evidence, 0.82)
+                continue
+            if call_low in {"frm", "form"}:
+                _add_type_edge(src_type, "runtime::unresolved_form_ref", "navigation_unresolved", evidence, 0.6)
+                continue
+            if call_low in shared_module_calls:
+                _add_type_edge(src_type, f"shared_module::{call}", "shared_module_call", evidence, 0.86)
+                continue
+            if call_low.startswith(("rpt", "datareport")):
+                _add_type_edge(src_type, f"report::{call}", "report_navigation", evidence, 0.8)
+                continue
+            target_norm = _normalize_form_name_token(call)
+            if target_norm and (target_norm in known_form_norms or call_low.startswith(("frm", "form")) or call_low == "main"):
+                target_project = _project_for_form(target_norm, call)
+                _add_type_edge(src_type, f"{target_project}::{target_norm}", "form_navigation", evidence, 0.82)
+
+    for dep in dependencies[:1200]:
+        if not isinstance(dep, dict):
+            continue
+        dep_name = _clean(dep.get("name"))
+        if not dep_name:
+            continue
+        dep_kind = _clean(dep.get("kind")) or "dependency"
+        forms_mapped = [_clean(x) for x in _as_list(_as_dict(dep.get("usage")).get("used_by")) if _clean(x)]
+        for mapped in forms_mapped:
+            p, base = _split_variant_form(mapped)
+            norm = _normalize_form_name_token(base or mapped)
+            if not norm:
+                continue
+            src_project = p or _project_for_form(norm, mapped)
+            src_type = f"{src_project}::{norm}"
+            key = f"{src_type}|{dep_name}|{dep_kind}".lower()
+            if key in runtime_seen:
+                continue
+            runtime_seen.add(key)
+            runtime_dependency_edges.append(
+                {
+                    "edge_id": f"rdep:{len(runtime_dependency_edges) + 1}",
+                    "from_type": src_type,
+                    "to_runtime": dep_name,
+                    "runtime_class": dep_kind,
+                    "confidence": 0.82,
+                }
+            )
+
+    dossiers = _as_list(_as_dict(form_dossier).get("dossiers"))
+    for d in dossiers[:1200]:
+        if not isinstance(d, dict):
+            continue
+        form_name = _clean(d.get("form_name"))
+        norm = _normalize_form_name_token(form_name)
+        if not norm:
+            continue
+        project_name = _clean(d.get("project_name")) or _project_for_form(norm, form_name)
+        src_type = f"{project_name}::{norm}"
+        for dep_name in [_clean(x) for x in _clean(d.get("activex")).split(",") if _clean(x)]:
+            key = f"{src_type}|{dep_name}|activex".lower()
+            if key in runtime_seen:
+                continue
+            runtime_seen.add(key)
+            runtime_dependency_edges.append(
+                {
+                    "edge_id": f"rdep:{len(runtime_dependency_edges) + 1}",
+                    "from_type": src_type,
+                    "to_runtime": dep_name,
+                    "runtime_class": "activex_dependency",
+                    "confidence": 0.84,
+                }
+            )
+        for table in [_clean(x) for x in _clean(d.get("db_tables")).split(",") if _clean(x)]:
+            key = f"{src_type}|{table}|database_table".lower()
+            if key in runtime_seen:
+                continue
+            runtime_seen.add(key)
+            runtime_dependency_edges.append(
+                {
+                    "edge_id": f"rdep:{len(runtime_dependency_edges) + 1}",
+                    "from_type": src_type,
+                    "to_runtime": table,
+                    "runtime_class": "database_table",
+                    "confidence": 0.86,
+                }
+            )
+
+    inbound_edges: dict[str, set[str]] = {}
+    outbound_edges: dict[str, set[str]] = {}
+    for edge in type_dependency_edges:
+        src = _clean(edge.get("from_type"))
+        dst = _clean(edge.get("to_type"))
+        if not src or not dst:
+            continue
+        outbound_edges.setdefault(src, set()).add(dst)
+        inbound_edges.setdefault(dst, set()).add(src)
+
+    type_metrics_rows: list[dict[str, Any]] = []
+    for key, loc in sorted(form_source_loc.items()):
+        project_name, norm = key
+        controls = form_controls.get(key, [])
+        handlers = form_event_handlers.get(key, [])
+        related_procs = proc_by_form.get(key, [])
+        method_count = max(len(set([x.lower() for x in handlers if x])), len({_clean(p.get("procedure_name")).lower() for p in related_procs if _clean(p.get("procedure_name"))}))
+        method_count = max(method_count, len(related_procs))
+        sql_bucket = sql_by_form.get(key, {"sql_ids": set(), "tables": set()})
+        sql_touch_count = len(sql_bucket.get("sql_ids", set()))
+        table_touch_count = len(sql_bucket.get("tables", set()))
+        complexities = [_estimate_proc_complexity(p) for p in related_procs]
+        cyclomatic = max(1, int(round(sum(complexities) / float(len(complexities))))) if complexities else 1
+        field_count = len(controls)
+        lcom = 0.0
+        if method_count > 1:
+            if table_touch_count <= 0 and field_count > 0:
+                lcom = 0.95
+            else:
+                lcom = max(0.0, min(1.0, 1.0 - (min(table_touch_count, method_count) / float(max(1, method_count)))))
+        type_key = f"{project_name}::{norm}"
+        aff = len(inbound_edges.get(type_key, set()))
+        eff = len(outbound_edges.get(type_key, set()))
+        dep_count = eff + len([e for e in runtime_dependency_edges if _clean(e.get("from_type")) == type_key])
+        type_metrics_rows.append(
+            {
+                "type_id": f"type:{len(type_metrics_rows) + 1}",
+                "project": project_name,
+                "type_name": norm,
+                "kind": "form",
+                "loc": int(loc or 0),
+                "comment_lines": 0,
+                "comment_percentage": 0.0,
+                "cyclomatic_complexity": cyclomatic,
+                "afferent_coupling": aff,
+                "efferent_coupling": eff,
+                "field_count": field_count,
+                "method_count": method_count,
+                "lack_of_cohesion": round(lcom, 3),
+                "dependency_count": dep_count,
+                "ui_control_count": field_count,
+                "sql_touch_count": sql_touch_count,
+                "table_touch_count": table_touch_count,
+            }
+        )
+
+    for project_name, members in project_members.items():
+        for member in members:
+            lower = member.lower()
+            if not (lower.endswith(".bas") or lower.endswith(".cls")):
+                continue
+            base = member.replace("\\", "/").split("/")[-1]
+            kind = "module" if lower.endswith(".bas") else "class"
+            module_name = re.sub(r"\.(bas|cls)$", "", base, flags=re.IGNORECASE)
+            loc = int(source_loc_by_file.get(member, source_loc_by_file.get(base, 0)) or 0)
+            norm = _normalize_form_name_token(module_name) or module_name.lower()
+            related_procs = [p for p in procedure_summaries if isinstance(p, dict) and _normalize_form_name_token(_clean(p.get("form"))) == norm]
+            complexities = [_estimate_proc_complexity(p) for p in related_procs]
+            cyclomatic = max(1, int(round(sum(complexities) / float(len(complexities))))) if complexities else 1
+            type_key = f"{project_name}::{norm}"
+            aff = len(inbound_edges.get(type_key, set()))
+            eff = len(outbound_edges.get(type_key, set()))
+            type_metrics_rows.append(
+                {
+                    "type_id": f"type:{len(type_metrics_rows) + 1}",
+                    "project": project_name,
+                    "type_name": norm,
+                    "kind": kind,
+                    "loc": loc,
+                    "comment_lines": 0,
+                    "comment_percentage": 0.0,
+                    "cyclomatic_complexity": cyclomatic,
+                    "afferent_coupling": aff,
+                    "efferent_coupling": eff,
+                    "field_count": 0,
+                    "method_count": len(related_procs),
+                    "lack_of_cohesion": 0.0,
+                    "dependency_count": eff,
+                    "ui_control_count": 0,
+                    "sql_touch_count": 0,
+                    "table_touch_count": 0,
+                }
+            )
+
+    dead_type_candidates: list[dict[str, Any]] = []
+    for row in _as_list(form_coverage_rows):
+        if not isinstance(row, dict):
+            continue
+        coverage = _to_float(row.get("coverage_score"), 0.0)
+        sql_touched = int(row.get("sql_touched_count", 0) or 0)
+        loc = int(row.get("source_loc", 0) or 0)
+        if coverage <= 0.05 and sql_touched == 0 and loc > 0:
+            dead_type_candidates.append(
+                {
+                    "name": _clean(row.get("form_name")),
+                    "project": _clean(row.get("project_name")) or "n/a",
+                    "reason": "No extracted handlers or SQL touchpoints at near-zero traceability coverage.",
+                    "confidence": 0.72,
+                }
+            )
+    for orphan in _as_list(_as_dict(orphan_analysis).get("orphans"))[:120]:
+        if not isinstance(orphan, dict):
+            continue
+        rec = _clean(orphan.get("recommendation")).lower()
+        if rec not in {"exclude_or_defer", "reconcile_project_membership", "verify"}:
+            continue
+        dead_type_candidates.append(
+            {
+                "name": _clean(orphan.get("form") or orphan.get("path")),
+                "project": "n/a",
+                "reason": _clean(orphan.get("reason")) or "Orphaned/not mapped to active project members.",
+                "confidence": 0.64 if rec == "verify" else 0.78,
+            }
+        )
+    dedup_dead_types: list[dict[str, Any]] = []
+    seen_dead_type: set[str] = set()
+    for row in dead_type_candidates:
+        key = f"{_clean(row.get('project'))}|{_clean(row.get('name')).lower()}"
+        if not key or key in seen_dead_type:
+            continue
+        seen_dead_type.add(key)
+        dedup_dead_types.append(row)
+
+    dead_method_candidates: list[dict[str, Any]] = []
+    for proc in procedure_summaries[:3000]:
+        if not isinstance(proc, dict):
+            continue
+        pname = _clean(proc.get("procedure_name"))
+        if not pname:
+            continue
+        pl = pname.lower()
+        if _is_event_handler_name(pname):
+            continue
+        if pl in called_proc_names:
+            continue
+        if _as_list(proc.get("sql_ids")) or _as_list(proc.get("tables_touched")):
+            continue
+        if _as_list(proc.get("navigation_side_effects")):
+            continue
+        dead_method_candidates.append(
+            {
+                "name": pname,
+                "form": _clean(proc.get("form")),
+                "reason": "No inbound call evidence and no SQL/navigation side effects.",
+                "confidence": 0.66,
+            }
+        )
+
+    dead_field_candidates: list[dict[str, Any]] = []
+    for key, controls in form_controls.items():
+        project_name, norm = key
+        triggers = event_trigger_controls.get(key, set())
+        if not controls:
+            continue
+        for ctl in controls:
+            ctl_low = _clean(ctl).lower()
+            if not ctl_low:
+                continue
+            if ctl_low in triggers:
+                continue
+            dead_field_candidates.append(
+                {
+                    "name": ctl,
+                    "form": norm,
+                    "project": project_name,
+                    "reason": "Control not observed in event trigger map; verify designer-only/unused field.",
+                    "confidence": 0.55,
+                }
+            )
+            if len(dead_field_candidates) >= 240:
+                break
+
+    third_party_rows: list[dict[str, Any]] = []
+    runtime_by_dep: dict[str, set[str]] = {}
+    for edge in runtime_dependency_edges:
+        dep_name = _clean(edge.get("to_runtime"))
+        src = _clean(edge.get("from_type"))
+        if not dep_name or not src:
+            continue
+        runtime_by_dep.setdefault(dep_name.lower(), set()).add(src)
+
+    for dep in dependencies[:1200]:
+        if not isinstance(dep, dict):
+            continue
+        dep_name = _clean(dep.get("name"))
+        if not dep_name:
+            continue
+        kind = _clean(dep.get("kind")) or "dependency"
+        forms_using = sorted(runtime_by_dep.get(dep_name.lower(), set()))
+        methods_using = 0
+        for entry in event_entries[:5000]:
+            if not isinstance(entry, dict):
+                continue
+            source = _clean(entry.get("container") or entry.get("form"))
+            src_proj, src_base = _split_variant_form(source)
+            src_norm = _normalize_form_name_token(src_base or source)
+            if not src_norm:
+                continue
+            src_project = src_proj or _project_for_form(src_norm, source)
+            if f"{src_project}::{src_norm}" in forms_using:
+                methods_using += 1
+        replaceability = 0.8
+        if kind in {"ocx", "activex", "com_typelib", "dca", "dcx"}:
+            replaceability = 0.45
+        elif kind == "dll":
+            replaceability = 0.62
+        if len(forms_using) > 8:
+            replaceability -= 0.15
+        elif len(forms_using) > 3:
+            replaceability -= 0.08
+        replaceability = max(0.1, min(0.95, replaceability))
+        runtime_critical = any("::main" in f.lower() or "::login" in f.lower() for f in forms_using) or methods_using >= 6
+        usage_intensity = round((len(forms_using) * 1.0) + (methods_using * 0.15), 2)
+        third_party_rows.append(
+            {
+                "dependency": dep_name,
+                "kind": kind,
+                "forms_using_count": len(forms_using),
+                "methods_using_count": methods_using,
+                "runtime_critical": runtime_critical,
+                "replaceability_score": round(replaceability, 3),
+                "usage_intensity": usage_intensity,
+                "forms_sample": forms_using[:10],
+            }
+        )
+
+    quality_rules = [
+        {"rule_id": "CQ-R001", "title": "High cyclomatic complexity", "severity": "high", "threshold": "cyclomatic_complexity > 15"},
+        {"rule_id": "CQ-R002", "title": "High coupling", "severity": "medium", "threshold": "afferent_coupling + efferent_coupling > 12"},
+        {"rule_id": "CQ-R003", "title": "Low cohesion", "severity": "medium", "threshold": "lack_of_cohesion > 0.9"},
+        {"rule_id": "CQ-R004", "title": "Mega form / god module", "severity": "high", "threshold": "ui_control_count > 25 or method_count > 40"},
+        {"rule_id": "CQ-R005", "title": "SQL string concatenation risk", "severity": "high", "threshold": "sql.risk_flags includes string_concatenation"},
+        {"rule_id": "CQ-R006", "title": "Default form instance usage", "severity": "medium", "threshold": "detector/default_instance_refs > 0"},
+        {"rule_id": "CQ-R007", "title": "Control array complexity", "severity": "medium", "threshold": "detector/control_array_index_markers > 0"},
+        {"rule_id": "CQ-R008", "title": "Manual ID generation", "severity": "medium", "threshold": "query contains MAX(id)+1 style pattern"},
+    ]
+
+    violations: list[dict[str, Any]] = []
+    for row in type_metrics_rows[:6000]:
+        if not isinstance(row, dict):
+            continue
+        name = f"{_clean(row.get('project'))}::{_clean(row.get('type_name'))}"
+        if int(row.get("cyclomatic_complexity", 0) or 0) > 15:
+            violations.append({"violation_id": f"qv:{len(violations)+1}", "rule_id": "CQ-R001", "severity": "high", "subject": name, "detail": f"Cyclomatic complexity={int(row.get('cyclomatic_complexity', 0) or 0)}"})
+        coupling = int(row.get("afferent_coupling", 0) or 0) + int(row.get("efferent_coupling", 0) or 0)
+        if coupling > 12:
+            violations.append({"violation_id": f"qv:{len(violations)+1}", "rule_id": "CQ-R002", "severity": "medium", "subject": name, "detail": f"Coupling score={coupling}"})
+        if _to_float(row.get("lack_of_cohesion"), 0.0) > 0.9:
+            violations.append({"violation_id": f"qv:{len(violations)+1}", "rule_id": "CQ-R003", "severity": "medium", "subject": name, "detail": f"Lack of cohesion={_to_float(row.get('lack_of_cohesion'), 0.0):.2f}"})
+        if int(row.get("ui_control_count", 0) or 0) > 25 or int(row.get("method_count", 0) or 0) > 40:
+            violations.append({"violation_id": f"qv:{len(violations)+1}", "rule_id": "CQ-R004", "severity": "high", "subject": name, "detail": "High control/method density indicates mega-form or god-module risk."})
+
+    for stmt in sql_statements[:4000]:
+        if not isinstance(stmt, dict):
+            continue
+        flags = {_clean(x).lower() for x in _as_list(stmt.get("risk_flags")) if _clean(x)}
+        sid = _clean(stmt.get("sql_id")) or "sql"
+        if "string_concatenation" in flags or "possible_injection" in flags:
+            violations.append({"violation_id": f"qv:{len(violations)+1}", "rule_id": "CQ-R005", "severity": "high", "subject": sid, "detail": "SQL statement uses concatenation/injection-prone pattern."})
+        raw = _clean(stmt.get("raw")).lower()
+        if re.search(r"\bmax\s*\([^)]*id[^)]*\)\s*\+\s*1\b", raw):
+            violations.append({"violation_id": f"qv:{len(violations)+1}", "rule_id": "CQ-R008", "severity": "medium", "subject": sid, "detail": "Manual ID generation pattern detected."})
+
+    high_violation_count = sum(1 for v in violations if _clean(v.get("severity")).lower() == "high")
+    max_complexity = max((int(r.get("cyclomatic_complexity", 0) or 0) for r in type_metrics_rows), default=0)
+    avg_complexity = (
+        round(sum(int(r.get("cyclomatic_complexity", 0) or 0) for r in type_metrics_rows) / float(max(1, len(type_metrics_rows))), 3)
+        if type_metrics_rows
+        else 0.0
+    )
+    dead_volume = len(dedup_dead_types) + len(dead_method_candidates) + len(dead_field_candidates)
+    active_x_usage = sum(1 for row in third_party_rows if _clean(row.get("kind")).lower() in {"ocx", "activex", "com_typelib"} and int(row.get("forms_using_count", 0) or 0) > 0)
+
+    project_metrics_rows: list[dict[str, Any]] = []
+    for project_name in sorted(project_forms.keys() or {"n/a"}):
+        rows = [r for r in type_metrics_rows if _clean(_as_dict(r).get("project")) == project_name]
+        forms_count = len([r for r in rows if _clean(_as_dict(r).get("kind")) == "form"])
+        modules_count = len([r for r in rows if _clean(_as_dict(r).get("kind")) in {"module", "class"}])
+        types_count = len(rows)
+        loc_total = sum(int(_as_dict(r).get("loc", 0) or 0) for r in rows)
+        comment_total = sum(int(_as_dict(r).get("comment_lines", 0) or 0) for r in rows)
+        comment_pct = 0.0 if loc_total <= 0 else round((comment_total / float(loc_total)) * 100.0, 3)
+        avg_complex = round(sum(int(_as_dict(r).get("cyclomatic_complexity", 0) or 0) for r in rows) / float(max(1, len(rows))), 3) if rows else 0.0
+        max_complex = max((int(_as_dict(r).get("cyclomatic_complexity", 0) or 0) for r in rows), default=0)
+        project_type_keys = {f"{project_name}::{_clean(_as_dict(r).get('type_name'))}" for r in rows}
+        eff = len([e for e in type_dependency_edges if _clean(_as_dict(e).get("from_type")) in project_type_keys and _clean(_as_dict(e).get("to_type")) not in project_type_keys])
+        aff = len([e for e in type_dependency_edges if _clean(_as_dict(e).get("to_type")) in project_type_keys and _clean(_as_dict(e).get("from_type")) not in project_type_keys])
+        internal_edges = len([e for e in type_dependency_edges if _clean(_as_dict(e).get("from_type")) in project_type_keys and _clean(_as_dict(e).get("to_type")) in project_type_keys])
+        density = 0.0 if types_count <= 1 else round(internal_edges / float(types_count * (types_count - 1)), 4)
+        dep_count = len({_clean(_as_dict(d).get("name")).lower() for d in dependencies if _clean(_as_dict(d).get("name"))})
+        dead_count = len([d for d in dedup_dead_types if _clean(_as_dict(d).get("project")) in {project_name, "", "n/a"}])
+        third_party_count = len([t for t in third_party_rows if int(_as_dict(t).get("forms_using_count", 0) or 0) > 0])
+        project_metrics_rows.append(
+            {
+                "project": project_name,
+                "loc": loc_total,
+                "comment_lines": comment_total,
+                "comment_percentage": comment_pct,
+                "types_count": types_count,
+                "forms_count": forms_count,
+                "modules_count": modules_count,
+                "afferent_coupling": aff,
+                "efferent_coupling": eff,
+                "dependency_density": density,
+                "avg_complexity": avg_complex,
+                "max_complexity": max_complex,
+                "dead_code_candidates": dead_count,
+                "third_party_dependency_count": third_party_count if third_party_count > 0 else dep_count,
+            }
+        )
+
+    snapshot = {
+        "snapshot_id": f"trend:{generated_at}",
+        "run_id": run_id,
+        "repo": repo,
+        "branch": branch,
+        "commit_sha": commit_sha,
+        "captured_at": generated_at,
+        "metrics": {
+            "loc_total": sum(int(_as_dict(r).get("loc", 0) or 0) for r in type_metrics_rows),
+            "max_complexity": max_complexity,
+            "avg_complexity": avg_complexity,
+            "quality_violations": len(violations),
+            "critical_violations": high_violation_count,
+            "dead_code_volume": dead_volume,
+            "activex_usage": active_x_usage,
+            "third_party_dependencies": len(third_party_rows),
+            "dependency_edges": len(type_dependency_edges),
+            "hotspot_count": len([r for r in type_metrics_rows if int(_as_dict(r).get("cyclomatic_complexity", 0) or 0) > 15]),
+        },
+    }
+
+    return {
+        "project_metrics": {
+            "artifact_type": "project_metrics",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "rows": project_metrics_rows[:120],
+        },
+        "type_metrics": {
+            "artifact_type": "type_metrics",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "rows": type_metrics_rows[:2400],
+        },
+        "type_dependency_matrix": {
+            "artifact_type": "type_dependency_matrix",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "edges": type_dependency_edges[:6000],
+        },
+        "runtime_dependency_matrix": {
+            "artifact_type": "runtime_dependency_matrix",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "edges": runtime_dependency_edges[:6000],
+        },
+        "dead_code_report": {
+            "artifact_type": "dead_code_report",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "summary": {
+                "dead_type_candidates": len(dedup_dead_types),
+                "dead_method_candidates": len(dead_method_candidates),
+                "dead_field_candidates": len(dead_field_candidates),
+            },
+            "probable_dead_types": dedup_dead_types[:300],
+            "probable_dead_methods": dead_method_candidates[:600],
+            "probable_dead_fields": dead_field_candidates[:300],
+            "verify_needed": [
+                "VB6 event handlers are excluded from dead-method candidates unless corroborated by stronger evidence.",
+            ],
+        },
+        "third_party_usage": {
+            "artifact_type": "third_party_usage",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "rows": sorted(third_party_rows, key=lambda r: float(_as_dict(r).get("usage_intensity", 0.0)), reverse=True)[:600],
+        },
+        "code_quality_rules": {
+            "artifact_type": "code_quality_rules",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "rules": quality_rules,
+        },
+        "quality_violation_report": {
+            "artifact_type": "quality_violation_report",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "summary": {
+                "total_violations": len(violations),
+                "critical_violations": high_violation_count,
+            },
+            "violations": violations[:2000],
+        },
+        "trend_snapshot": {
+            "artifact_type": "trend_snapshot",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "snapshot": snapshot,
+        },
+        "trend_series": {
+            "artifact_type": "trend_series",
+            "artifact_version": "1.0",
+            "metadata": metadata_common,
+            "series": [snapshot],
+        },
+    }
+
+
+def _build_static_forensics_layer(
+    *,
+    metadata_common: dict[str, Any],
+    project_metrics: dict[str, Any],
+    type_metrics: dict[str, Any],
+    type_dependency_matrix: dict[str, Any],
+    runtime_dependency_matrix: dict[str, Any],
+    dead_code_report: dict[str, Any],
+    code_quality_rules: dict[str, Any],
+    quality_violation_report: dict[str, Any],
+    trend_snapshot: dict[str, Any],
+    trend_series: dict[str, Any],
+) -> dict[str, Any]:
+    project_rows = _as_list(_as_dict(project_metrics).get("rows"))
+    type_rows = _as_list(_as_dict(type_metrics).get("rows"))
+    type_edges = _as_list(_as_dict(type_dependency_matrix).get("edges"))
+    runtime_edges = _as_list(_as_dict(runtime_dependency_matrix).get("edges"))
+    dead_summary = _as_dict(_as_dict(dead_code_report).get("summary"))
+    rule_rows = _as_list(_as_dict(code_quality_rules).get("rules"))
+    violation_rows = _as_list(_as_dict(quality_violation_report).get("violations"))
+    trend_snap = _as_dict(_as_dict(trend_snapshot).get("snapshot"))
+    trend_metrics = _as_dict(trend_snap.get("metrics"))
+    trend_points = _as_list(_as_dict(trend_series).get("series"))
+    dead_total = (
+        int(dead_summary.get("dead_type_candidates", 0) or 0)
+        + int(dead_summary.get("dead_method_candidates", 0) or 0)
+        + int(dead_summary.get("dead_field_candidates", 0) or 0)
+    )
+    checks = [
+        {
+            "id": "sf_project_metrics",
+            "label": "Project metrics baseline",
+            "status": "pass" if len(project_rows) > 0 else "warn",
+            "detail": f"Rows={len(project_rows)}",
+        },
+        {
+            "id": "sf_type_metrics",
+            "label": "Type metrics baseline",
+            "status": "pass" if len(type_rows) > 0 else "warn",
+            "detail": f"Rows={len(type_rows)}",
+        },
+        {
+            "id": "sf_dependency_matrix",
+            "label": "Dependency matrix coverage",
+            "status": "pass" if (len(type_edges) + len(runtime_edges)) > 0 else "warn",
+            "detail": f"Type edges={len(type_edges)} | Runtime edges={len(runtime_edges)}",
+        },
+        {
+            "id": "sf_dead_code",
+            "label": "Dead-code candidates",
+            "status": "pass" if dead_summary else "warn",
+            "detail": f"Candidates={dead_total}",
+        },
+        {
+            "id": "sf_quality_rules",
+            "label": "Quality rules loaded",
+            "status": "pass" if len(rule_rows) > 0 else "warn",
+            "detail": f"Rules={len(rule_rows)}",
+        },
+        {
+            "id": "sf_violations",
+            "label": "Quality violations analyzed",
+            "status": "pass" if _as_dict(quality_violation_report) else "warn",
+            "detail": f"Violations={len(violation_rows)}",
+        },
+        {
+            "id": "sf_trends",
+            "label": "Trend baseline",
+            "status": "pass" if trend_snap else "warn",
+            "detail": f"Snapshots={len(trend_points) or (1 if trend_snap else 0)} | LOC={int(trend_metrics.get('loc_total', 0) or 0)}",
+        },
+    ]
+    fail_count = len([c for c in checks if _clean(_as_dict(c).get("status")).lower() == "fail"])
+    warn_count = len([c for c in checks if _clean(_as_dict(c).get("status")).lower() == "warn"])
+    overall_status = "PASS" if fail_count == 0 and warn_count == 0 else ("WARN" if fail_count == 0 else "FAIL")
+    return {
+        "artifact_type": "static_forensics_layer",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "scope": "discover_baseline",
+        "summary": {
+            "overall_status": overall_status,
+            "projects": len(project_rows),
+            "types": len(type_rows),
+            "type_dependency_edges": len(type_edges),
+            "runtime_dependency_edges": len(runtime_edges),
+            "dead_code_candidates": dead_total,
+            "quality_rules": len(rule_rows),
+            "quality_violations": len(violation_rows),
+            "trend_points": len(trend_points) or (1 if trend_snap else 0),
+            "loc_total": int(trend_metrics.get("loc_total", 0) or 0),
+        },
+        "checks": checks,
+    }
+
+
+def _normalize_repo_path(value: Any) -> str:
+    path = _clean(value).replace("\\", "/")
+    path = re.sub(r"/+", "/", path).lstrip("./")
+    return path
+
+
+def _extract_project_member_path(value: Any) -> str:
+    raw = _clean(value)
+    if not raw:
+        return ""
+    if ":" in raw and not re.match(r"^[A-Za-z]:[\\/]", raw):
+        prefix, remainder = raw.split(":", 1)
+        if _clean(prefix).lower() in {"form", "module", "class", "designer", "mdiform", "control"} and _clean(remainder):
+            raw = remainder
+    return _normalize_repo_path(raw)
+
+
+def _basename_without_ext(path: Any) -> str:
+    name = _normalize_repo_path(path).split("/")[-1]
+    if "." in name:
+        return name.rsplit(".", 1)[0]
+    return name
+
+
+def _extract_db_paths(text: Any) -> list[str]:
+    blob = _clean(text)
+    if not blob:
+        return []
+    matches = re.findall(r"([A-Za-z0-9_./\\:-]+\.(?:mdb|accdb))", blob, flags=re.IGNORECASE)
+    out: list[str] = []
+    for value in matches:
+        norm = _normalize_repo_path(value)
+        if norm and norm.lower() not in {x.lower() for x in out}:
+            out.append(norm)
+    return out
+
+
+def _looks_like_connection_string(text: Any) -> bool:
+    token = _clean(text).lower()
+    if not token:
+        return False
+    markers = (
+        "provider=",
+        "jet.oledb",
+        "dbq=",
+        "data source=",
+        "datasource=",
+        "driver=",
+        ".mdb",
+        ".accdb",
+        "user id=",
+        "uid=",
+        "password=",
+        "pwd=",
+    )
+    return any(marker in token for marker in markers)
+
+
+def _normalize_connection_pattern(text: Any) -> str:
+    blob = _clean(text)
+    if not blob:
+        return ""
+    blob = re.sub(r"'[^']*'", "':value'", blob)
+    blob = re.sub(r"\b\d+\b", ":num", blob)
+    blob = re.sub(r"([A-Za-z0-9_./\\:-]+\.(?:mdb|accdb))", "<db-file>", blob, flags=re.IGNORECASE)
+    blob = re.sub(r"\s+", " ", blob).strip()
+    return blob
+
+
+def _connection_variant_risks(text: Any) -> list[str]:
+    token = _clean(text).lower()
+    risks: list[str] = []
+    if "jet.oledb" in token or "dao" in token:
+        risks.append("legacy_access_provider")
+    if any(k in token for k in ("password=", "pwd=", "user id=", "uid=")):
+        risks.append("embedded_credentials")
+    if re.search(r"(?i)(?:\.\.[\\/]|[A-Za-z0-9._-]+\.mdb\b|[A-Za-z0-9._-]+\.accdb\b)", token):
+        if not re.search(r"^[a-z]:[\\/]", token):
+            risks.append("relative_db_path")
+    return risks
+
+
+def _build_mdb_inventory(
+    *,
+    metadata_common: dict[str, Any],
+    source_loc_rows: list[Any],
+    project_members: list[Any],
+    sql_rows: list[Any],
+    ui_event_rows: list[Any],
+    forms: list[Any],
+    db_ref_rows: list[Any] | None = None,
+    connection_string_rows: list[Any] | None = None,
+    binary_companion_rows: list[Any] | None = None,
+) -> dict[str, Any]:
+    known_forms = {
+        _normalize_form_name_token(_as_dict(f).get("form_name") or _as_dict(f).get("base_form_name") or _as_dict(f).get("name"))
+        for f in forms
+        if isinstance(f, dict)
+    }
+    known_forms = {x for x in known_forms if x}
+    db_rows: dict[str, dict[str, Any]] = {}
+
+    def _resolve_db_key(norm_path: str) -> str:
+        norm_low = norm_path.lower()
+        base = norm_low.split("/")[-1]
+        # Prefer existing keyed path when basename matches a previously-seen entry.
+        matches = [k for k, row in db_rows.items() if _clean(_as_dict(row).get("name")).lower() == base]
+        if norm_low in db_rows:
+            return norm_low
+        if matches:
+            if len(matches) == 1:
+                return matches[0]
+            # If one match is bare filename and another is fully qualified, prefer qualified key.
+            qualified = [m for m in matches if "/" in m]
+            if qualified:
+                return sorted(qualified, key=len, reverse=True)[0]
+            return matches[0]
+        return norm_low
+
+    def upsert_path(path: str, *, detected_from: str, evidence: str = "", source_loc: int = 0) -> None:
+        norm = _normalize_repo_path(path)
+        if not norm or not norm.lower().endswith((".mdb", ".accdb")):
+            return
+        key = _resolve_db_key(norm)
+        row = db_rows.setdefault(
+            key,
+            {
+                "db_id": f"mdb:{len(db_rows) + 1}",
+                "path": norm,
+                "name": norm.split("/")[-1],
+                "extension": ".accdb" if norm.lower().endswith(".accdb") else ".mdb",
+                "source_loc_proxy": 0,
+                "detected_from": [],
+                "referenced_by_forms": [],
+                "referenced_by_modules": [],
+                "evidence_refs": [],
+            },
+        )
+        # Prefer fully qualified repo-relative path over bare filename aliases.
+        if "/" in norm and ("/" not in _clean(row.get("path")) or len(norm) > len(_clean(row.get("path")))):
+            row["path"] = norm
+            row["name"] = norm.split("/")[-1]
+        if detected_from and detected_from not in _as_list(row.get("detected_from")):
+            row["detected_from"] = [*_as_list(row.get("detected_from")), detected_from]
+        if evidence and evidence not in _as_list(row.get("evidence_refs")):
+            row["evidence_refs"] = [*_as_list(row.get("evidence_refs")), evidence]
+        if source_loc > 0:
+            row["source_loc_proxy"] = max(int(row.get("source_loc_proxy", 0) or 0), int(source_loc))
+
+    for row in source_loc_rows[:12000]:
+        if not isinstance(row, dict):
+            continue
+        upsert_path(
+            _clean(row.get("path")),
+            detected_from="source_loc_by_file",
+            evidence=_clean(row.get("path")),
+            source_loc=int(row.get("loc", 0) or 0),
+        )
+
+    for member in project_members[:12000]:
+        path = _extract_project_member_path(member)
+        upsert_path(path, detected_from="project_member", evidence=_clean(member))
+
+    for row in (db_ref_rows or [])[:12000]:
+        if isinstance(row, dict):
+            db_path = _clean(row.get("path") or row.get("db_path") or row.get("database"))
+            evidence = _clean(row.get("evidence") or row.get("source") or row.get("handler"))
+            form_token = _normalize_form_name_token(row.get("form"))
+            module_token = _clean(row.get("module") or row.get("handler"))
+        else:
+            db_path = _clean(row)
+            evidence = _clean(row)
+            form_token = ""
+            module_token = ""
+        if not db_path:
+            continue
+        upsert_path(db_path, detected_from="db_reference", evidence=evidence)
+        current = db_rows.get(_normalize_repo_path(db_path).lower())
+        if not current:
+            continue
+        if form_token and form_token in known_forms:
+            forms_ref = _as_list(current.get("referenced_by_forms"))
+            if form_token not in forms_ref:
+                current["referenced_by_forms"] = [*forms_ref, form_token]
+        elif module_token:
+            modules_ref = _as_list(current.get("referenced_by_modules"))
+            if module_token not in modules_ref:
+                current["referenced_by_modules"] = [*modules_ref, module_token]
+
+    for idx, row in enumerate(sql_rows[:12000], start=1):
+        raw = _clean(_as_dict(row).get("raw") or _as_dict(row).get("sql") or _as_dict(row).get("statement") or row)
+        if not raw:
+            continue
+        for db_path in _extract_db_paths(raw):
+            upsert_path(db_path, detected_from="sql_catalog", evidence=f"sql:{idx}")
+
+    for idx, value in enumerate((connection_string_rows or [])[:12000], start=1):
+        record = _as_dict(value)
+        raw = _clean(record.get("raw") or record.get("connection_string") or value)
+        if not raw:
+            continue
+        form_token = _normalize_form_name_token(record.get("form"))
+        module_token = _clean(record.get("module") or record.get("handler") or record.get("source_file"))
+        for db_path in _extract_db_paths(raw):
+            upsert_path(db_path, detected_from="connection_string", evidence=f"conn:{idx}")
+            current = db_rows.get(_resolve_db_key(_normalize_repo_path(db_path)))
+            if not current:
+                continue
+            if form_token and form_token in known_forms:
+                forms_ref = _as_list(current.get("referenced_by_forms"))
+                if form_token not in forms_ref:
+                    current["referenced_by_forms"] = [*forms_ref, form_token]
+            elif module_token:
+                modules_ref = _as_list(current.get("referenced_by_modules"))
+                if module_token not in modules_ref:
+                    current["referenced_by_modules"] = [*modules_ref, module_token]
+
+    for idx, row in enumerate(ui_event_rows[:12000], start=1):
+        if not isinstance(row, dict):
+            continue
+        form_token = _normalize_form_name_token(row.get("form"))
+        handler = _clean(row.get("event_handler"))
+        refs = [*_as_list(row.get("sql_touches")), *_as_list(row.get("procedure_calls"))]
+        for ref in refs:
+            text = _clean(ref)
+            if not text:
+                continue
+            for db_path in _extract_db_paths(text):
+                upsert_path(db_path, detected_from="ui_event_map", evidence=f"event:{idx}:{handler or 'handler'}")
+                current = db_rows.get(_normalize_repo_path(db_path).lower())
+                if not current:
+                    continue
+                if form_token and form_token in known_forms:
+                    forms_ref = _as_list(current.get("referenced_by_forms"))
+                    if form_token not in forms_ref:
+                        current["referenced_by_forms"] = [*forms_ref, form_token]
+                elif handler:
+                    modules_ref = _as_list(current.get("referenced_by_modules"))
+                    if handler not in modules_ref:
+                        current["referenced_by_modules"] = [*modules_ref, handler]
+
+    for row in (binary_companion_rows or [])[:12000]:
+        if not isinstance(row, dict):
+            continue
+        ext = _clean(row.get("extension")).lower()
+        if ext not in {".mdb", ".accdb"}:
+            continue
+        path = _clean(row.get("path"))
+        if not path:
+            continue
+        upsert_path(path, detected_from="binary_companion", evidence=path)
+
+    rows = sorted(db_rows.values(), key=lambda x: _clean(x.get("path")).lower())
+    return {
+        "artifact_type": "mdb_inventory",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "database_files_detected": len(rows),
+            "forms_with_db_refs": len({f for r in rows for f in _as_list(_as_dict(r).get("referenced_by_forms")) if _clean(f)}),
+            "module_refs": sum(len(_as_list(_as_dict(r).get("referenced_by_modules"))) for r in rows),
+        },
+        "databases": rows[:300],
+    }
+
+
+def _build_form_loc_profile(
+    *,
+    metadata_common: dict[str, Any],
+    forms: list[Any],
+    vb6_projects: list[Any],
+    source_loc_by_file: dict[str, int],
+) -> dict[str, Any]:
+    project_forms: dict[str, set[str]] = {}
+    member_paths: set[str] = set()
+    for project in vb6_projects[:500]:
+        if not isinstance(project, dict):
+            continue
+        pname = _clean(project.get("project_name")).lower()
+        forms_set = project_forms.setdefault(pname, set())
+        for token in _as_list(project.get("forms")):
+            clean_token = _clean(token)
+            if ":" in clean_token:
+                clean_token = clean_token.split(":", 1)[1]
+            clean_token = _strip_form_extension(clean_token).lower()
+            if clean_token:
+                forms_set.add(clean_token)
+        for path in _as_list(project.get("member_files")):
+            norm = _normalize_repo_path(path).lower()
+            if norm:
+                member_paths.add(norm)
+
+    loc_candidates: list[tuple[str, int]] = sorted(
+        (_normalize_repo_path(path), int(loc or 0)) for path, loc in source_loc_by_file.items()
+    )
+    designer_rows: list[dict[str, Any]] = []
+    designer_loc_total = 0
+    designer_loc_script_total = 0
+    designer_loc_definition_total = 0
+    for path, loc in loc_candidates:
+        norm = _normalize_repo_path(path)
+        low = norm.lower()
+        if low.endswith((".dca", ".dcx", ".dsr")):
+            if low.endswith(".dsr"):
+                kind = "designer_script"
+                designer_loc_script_total += int(loc or 0)
+            else:
+                kind = "designer_definition"
+                designer_loc_definition_total += int(loc or 0)
+            designer_rows.append(
+                {
+                    "file": norm,
+                    "kind": kind,
+                    "loc": int(loc or 0),
+                }
+            )
+            designer_loc_total += int(loc or 0)
+
+    rows: list[dict[str, Any]] = []
+    represented_source_files: set[str] = set()
+    for idx, form in enumerate(forms[:1500], start=1):
+        if not isinstance(form, dict):
+            continue
+        form_name = _clean(form.get("form_name") or form.get("name"))
+        if not form_name:
+            continue
+        project_name = _clean(form.get("project_name")) or _split_variant_form(form_name)[0] or "n/a"
+        _, base_form = _split_variant_form(form_name)
+        base_form = base_form or _clean(form.get("base_form_name")) or form_name
+        base_form_name = _strip_form_extension(base_form)
+        source_loc = int(form.get("source_loc", 0) or 0)
+        expected_file = f"{base_form_name}.frm".lower()
+        matched_path = ""
+        matched_loc = 0
+        for path, loc in loc_candidates:
+            norm = _normalize_repo_path(path)
+            if not norm.lower().endswith(".frm"):
+                continue
+            if norm.split("/")[-1].lower() != expected_file:
+                continue
+            matched_path = norm
+            matched_loc = int(loc or 0)
+            project_hint = project_name.lower()
+            if project_hint and project_hint not in {"n/a", "unknown"} and project_hint in norm.lower():
+                break
+        effective_loc = source_loc or matched_loc
+        project_forms_set = project_forms.get(project_name.lower(), set())
+        in_vbp = bool(
+            (matched_path and matched_path.lower() in member_paths)
+            or (base_form_name.lower() in project_forms_set)
+        )
+        if project_name.lower() in {"(unmapped)", "unmapped", "n/a", "unknown"} and not (
+            matched_path and matched_path.lower() in member_paths
+        ):
+            in_vbp = False
+        if matched_path:
+            represented_source_files.add(matched_path.lower())
+        rows.append(
+            {
+                "form_id": f"form_loc:{idx}",
+                "form": form_name,
+                "base_form": base_form_name,
+                "project": project_name,
+                "source_file": matched_path or "",
+                "loc": int(effective_loc or 0),
+                "in_vbp": in_vbp,
+                "active_or_orphan": "active" if in_vbp else "orphan",
+                "confidence": round(_to_float(form.get("confidence_score"), 0.6), 2),
+            }
+        )
+
+    # Ensure every discovered .frm file is represented, even if form dossiers missed one.
+    next_id = len(rows) + 1
+    all_project_forms = {token for tokens in project_forms.values() for token in tokens}
+    for path, loc in loc_candidates:
+        norm = _normalize_repo_path(path)
+        low = norm.lower()
+        if not low.endswith(".frm"):
+            continue
+        if low in represented_source_files:
+            continue
+        base = _strip_form_extension(norm.split("/")[-1]).strip()
+        if not base:
+            continue
+        base_low = base.lower()
+        in_vbp = bool(low in member_paths or base_low in all_project_forms)
+        project_guess = "(unmapped)"
+        if in_vbp:
+            for pname, forms_set in project_forms.items():
+                if base_low in forms_set:
+                    project_guess = pname or "n/a"
+                    break
+        scoped_name = f"{project_guess}::{base}" if project_guess not in {"", "n/a"} else base
+        rows.append(
+            {
+                "form_id": f"form_loc:{next_id}",
+                "form": scoped_name,
+                "base_form": base,
+                "project": project_guess or "n/a",
+                "source_file": norm,
+                "loc": int(loc or 0),
+                "in_vbp": in_vbp,
+                "active_or_orphan": "active" if in_vbp else "orphan",
+                "confidence": 0.45,
+            }
+        )
+        next_id += 1
+
+    # Deduplicate by concrete source file path first, then by form token.
+    deduped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_file = _clean(row.get("source_file")).lower()
+        form_name = _clean(row.get("form")).lower()
+        key = source_file or form_name
+        if not key:
+            continue
+        existing = deduped.get(key)
+        if not existing:
+            deduped[key] = row
+            continue
+        if int(row.get("loc", 0) or 0) > int(existing.get("loc", 0) or 0):
+            deduped[key] = row
+    rows = list(deduped.values())
+    frm_file_locs = {
+        _normalize_repo_path(path): int(loc or 0)
+        for path, loc in loc_candidates
+        if _normalize_repo_path(path).lower().endswith(".frm")
+    }
+    all_project_forms = {token for tokens in project_forms.values() for token in tokens}
+    normalized_rows: list[dict[str, Any]] = []
+    for path in sorted(frm_file_locs.keys(), key=lambda x: x.lower()):
+        low_path = path.lower()
+        base = _strip_form_extension(path.split("/")[-1]).strip()
+        base_low = base.lower()
+        candidates = [
+            _as_dict(r)
+            for r in rows
+            if _normalize_repo_path(_as_dict(r).get("source_file")).lower() == low_path
+        ]
+        if not candidates:
+            candidates = [
+                _as_dict(r)
+                for r in rows
+                if _strip_form_extension(_clean(_as_dict(r).get("base_form"))).lower() == base_low
+                or _strip_form_extension(_clean(_as_dict(r).get("form")).split("::", 1)[-1]).lower() == base_low
+            ]
+        if candidates:
+            pick = sorted(
+                candidates,
+                key=lambda r: (
+                    1 if bool(r.get("in_vbp")) else 0,
+                    _to_float(r.get("confidence"), 0.0),
+                    int(r.get("loc", 0) or 0),
+                ),
+                reverse=True,
+            )[0]
+            row = dict(pick)
+        else:
+            inferred_in_vbp = bool(low_path in member_paths or base_low in all_project_forms)
+            inferred_project = "(unmapped)"
+            if inferred_in_vbp:
+                for pname, forms_set in project_forms.items():
+                    if base_low in forms_set:
+                        inferred_project = pname or "n/a"
+                        break
+            scoped_name = f"{inferred_project}::{base}" if inferred_project not in {"", "n/a"} else base
+            row = {
+                "form_id": f"form_loc:auto:{len(normalized_rows) + 1}",
+                "form": scoped_name,
+                "base_form": base,
+                "project": inferred_project or "n/a",
+                "in_vbp": inferred_in_vbp,
+                "active_or_orphan": "active" if inferred_in_vbp else "orphan",
+                "confidence": 0.45,
+            }
+        row["source_file"] = path
+        row["loc"] = int(frm_file_locs.get(path, 0) or 0)
+        row["base_form"] = _clean(row.get("base_form")) or base
+        in_vbp = bool(low_path in member_paths or _strip_form_extension(_clean(row.get("base_form"))).lower() in all_project_forms)
+        row["in_vbp"] = in_vbp
+        row["active_or_orphan"] = "active" if in_vbp else "orphan"
+        normalized_rows.append(row)
+    rows = normalized_rows
+    rows.sort(key=lambda r: (_clean(_as_dict(r).get("project")).lower(), _clean(_as_dict(r).get("source_file")).lower()))
+
+    active_count = len([r for r in rows if bool(_as_dict(r).get("in_vbp"))])
+    orphan_count = max(0, len(rows) - active_count)
+    return {
+        "artifact_type": "form_loc_profile",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "forms_discovered": len(rows),
+            "forms_active": active_count,
+            "forms_orphan": orphan_count,
+            "forms_loc_total": sum(int(_as_dict(r).get("loc", 0) or 0) for r in rows),
+            "designer_loc_total": designer_loc_total,
+            "designer_loc_script_total": designer_loc_script_total,
+            "designer_loc_definition_total": designer_loc_definition_total,
+            "designer_file_count": len(designer_rows),
+        },
+        "forms": rows[:2000],
+        "designer_files": designer_rows[:2000],
+    }
+
+
+def _build_connection_string_variants(
+    *,
+    metadata_common: dict[str, Any],
+    sql_rows: list[Any],
+    ui_event_rows: list[Any],
+    connection_string_rows: list[Any] | None = None,
+) -> dict[str, Any]:
+    variants: dict[str, dict[str, Any]] = {}
+
+    def add_variant(raw: str, source_ref: str) -> None:
+        if not _looks_like_connection_string(raw):
+            return
+        normalized = _normalize_connection_pattern(raw)
+        if not normalized:
+            return
+        key = normalized.lower()
+        row = variants.setdefault(
+            key,
+            {
+                "variant_id": f"conn:{len(variants) + 1}",
+                "normalized_pattern": normalized,
+                "risk_flags": [],
+                "examples": [],
+                "source_refs": [],
+            },
+        )
+        for risk in _connection_variant_risks(raw):
+            if risk not in _as_list(row.get("risk_flags")):
+                row["risk_flags"] = [*_as_list(row.get("risk_flags")), risk]
+        if raw and raw not in _as_list(row.get("examples")):
+            row["examples"] = [*_as_list(row.get("examples")), raw]
+        if source_ref and source_ref not in _as_list(row.get("source_refs")):
+            row["source_refs"] = [*_as_list(row.get("source_refs")), source_ref]
+
+    for idx, row in enumerate(sql_rows[:12000], start=1):
+        raw = _clean(_as_dict(row).get("raw") or _as_dict(row).get("sql") or _as_dict(row).get("statement") or row)
+        if raw:
+            add_variant(raw, f"sql:{idx}")
+
+    for idx, row in enumerate(ui_event_rows[:12000], start=1):
+        if not isinstance(row, dict):
+            continue
+        handler = _clean(row.get("event_handler")) or f"event:{idx}"
+        for candidate in [*_as_list(row.get("sql_touches")), *_as_list(row.get("procedure_calls"))]:
+            raw = _clean(candidate)
+            if raw:
+                add_variant(raw, handler)
+
+    for idx, row in enumerate((connection_string_rows or [])[:12000], start=1):
+        raw = _clean(_as_dict(row).get("raw") or _as_dict(row).get("connection_string") or row)
+        if raw:
+            add_variant(raw, f"conn:{idx}")
+
+    rows = sorted(variants.values(), key=lambda x: len(_as_list(_as_dict(x).get("source_refs"))), reverse=True)
+    return {
+        "artifact_type": "connection_string_variants",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "variant_count": len(rows),
+            "relative_path_risks": len([r for r in rows if "relative_db_path" in _as_list(_as_dict(r).get("risk_flags"))]),
+            "embedded_credential_risks": len([r for r in rows if "embedded_credentials" in _as_list(_as_dict(r).get("risk_flags"))]),
+        },
+        "variants": rows[:400],
+    }
+
+
+def _build_module_global_inventory(
+    *,
+    metadata_common: dict[str, Any],
+    bas_module_summary: dict[str, Any],
+    ui_event_rows: list[Any],
+    bas_global_rows: list[Any] | None = None,
+) -> dict[str, Any]:
+    modules = [_clean(m) for m in _as_list(_as_dict(bas_module_summary).get("modules")) if _clean(m)]
+    symbol_rows: dict[str, dict[str, Any]] = {}
+    likely_types = {
+        "rs": "ADODB.Recordset",
+        "con": "ADODB.Connection",
+        "cn": "ADODB.Connection",
+        "cnbank": "ADODB.Connection",
+        "db": "DAO.Database",
+        "cmd": "ADODB.Command",
+    }
+    for row in (bas_global_rows or [])[:12000]:
+        if not isinstance(row, dict):
+            continue
+        symbol = _clean(row.get("symbol"))
+        if not symbol:
+            continue
+        row_key = symbol.lower()
+        declared_type = _clean(row.get("declared_type")) or "Variant"
+        scope = _clean(row.get("scope")) or "module_shared_candidate"
+        source_file = _normalize_repo_path(row.get("source_file"))
+        line_no = int(row.get("line", 0) or 0)
+        declaration = _clean(row.get("declaration"))
+        entry = symbol_rows.setdefault(
+            row_key,
+            {
+                "symbol": symbol,
+                "declared_type": declared_type,
+                "scope": scope,
+                "inferred_purpose": "Global/module-level declaration extracted from .bas module.",
+                "evidence_refs": [],
+            },
+        )
+        if declared_type and _clean(entry.get("declared_type")) in {"", "Variant"}:
+            entry["declared_type"] = declared_type
+        evidence = source_file
+        if line_no > 0 and source_file:
+            evidence = f"{source_file}:{line_no}"
+        elif declaration:
+            evidence = declaration
+        if evidence and evidence not in _as_list(entry.get("evidence_refs")):
+            entry["evidence_refs"] = [*_as_list(entry.get("evidence_refs")), evidence]
+    for idx, row in enumerate(ui_event_rows[:12000], start=1):
+        if not isinstance(row, dict):
+            continue
+        handler = _clean(row.get("event_handler")) or f"event:{idx}"
+        calls = [_clean(c) for c in _as_list(row.get("procedure_calls")) if _clean(c)]
+        for call in calls:
+            token = _clean(call).strip().strip("()")
+            if not token:
+                continue
+            low = token.lower()
+            is_candidate = (
+                token.isupper()
+                or low in {"rs", "rs1", "rs2", "con", "cn", "cnbank", "db", "cmd", "frm"}
+                or low.startswith("g_")
+                or low.startswith("global")
+            )
+            if not is_candidate:
+                continue
+            inferred_type = "Variant"
+            for key, dtype in likely_types.items():
+                if low == key or low.startswith(key):
+                    inferred_type = dtype
+                    break
+            row_key = low
+            entry = symbol_rows.setdefault(
+                row_key,
+                {
+                    "symbol": token,
+                    "declared_type": inferred_type,
+                    "scope": "module_shared_candidate",
+                    "inferred_purpose": "Shared state or helper object referenced from UI events.",
+                    "evidence_refs": [],
+                },
+            )
+            evidence = f"{handler}"
+            if evidence not in _as_list(entry.get("evidence_refs")):
+                entry["evidence_refs"] = [*_as_list(entry.get("evidence_refs")), evidence]
+
+    rows = sorted(symbol_rows.values(), key=lambda x: _clean(_as_dict(x).get("symbol")).lower())
+    return {
+        "artifact_type": "module_global_inventory",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "module_count": len(modules),
+            "global_candidates": len(rows),
+            "extraction_status": "declared_plus_inferred" if bas_global_rows else "partial_inferred",
+        },
+        "modules": [{"module": _normalize_repo_path(m)} for m in modules[:500]],
+        "globals": rows[:1200],
+        "notes": [
+            (
+                "Global inventory merges direct .bas declarations with inferred shared-module symbols from event call sites."
+                if bas_global_rows
+                else "Global declarations are inferred from shared-module call sites because direct .bas declaration blocks are not yet emitted in legacy inventory payloads."
+            )
+        ],
+    }
+
+
+def _build_dead_form_refs(
+    *,
+    metadata_common: dict[str, Any],
+    ui_event_rows: list[Any],
+    forms: list[Any],
+    form_profiles: list[dict[str, Any]],
+    handler_form_index: dict[str, set[str]],
+) -> dict[str, Any]:
+    known_forms: dict[str, str] = {}
+    for form in forms[:2000]:
+        if not isinstance(form, dict):
+            continue
+        scoped = _clean(form.get("form_name") or form.get("name") or form.get("base_form_name"))
+        canonical = _canonical_form_key(scoped)
+        if canonical and canonical not in known_forms:
+            known_forms[canonical] = scoped
+        base = _clean(form.get("base_form_name"))
+        if base:
+            known_forms.setdefault(_canonical_form_key(base), base)
+
+    unresolved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, row in enumerate(ui_event_rows[:12000], start=1):
+        if not isinstance(row, dict):
+            continue
+        handler = _clean(row.get("event_handler"))
+        inferred_form = _infer_form_for_event(
+            row=row,
+            handler=handler,
+            form_profiles=form_profiles,
+            handler_index=handler_form_index,
+        ) or _clean(row.get("form")) or "unknown"
+        for raw_target in _as_list(row.get("procedure_calls")):
+            token = _clean(raw_target)
+            if not token:
+                continue
+            token = re.sub(r"(?i)\.(show|hide|load|unload)$", "", token).strip()
+            token = token.split("(")[0].strip()
+            if not token:
+                continue
+            low = token.lower()
+            looks_formish = (
+                low == "frm"
+                or low.startswith("frm")
+                or low.startswith("form")
+                or low in {"main", "mdi", "login", "splash", "report"}
+            )
+            if not looks_formish:
+                continue
+            canonical = _canonical_form_key(token)
+            if canonical in known_forms:
+                continue
+            key = f"{inferred_form}|{handler}|{token}".lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unresolved.append(
+                {
+                    "ref_id": f"dead_form_ref:{len(unresolved) + 1}",
+                    "caller_form": inferred_form,
+                    "caller_handler": handler or f"event:{idx}",
+                    "target_token": token,
+                    "status": "unresolved",
+                    "rationale": "Target form token was referenced but no matching discovered form dossier exists.",
+                    "evidence_ref": f"event:{idx}",
+                }
+            )
+
+    return {
+        "artifact_type": "dead_form_refs",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "unresolved_reference_count": len(unresolved),
+            "callers_impacted": len({r.get("caller_form") for r in unresolved if _clean(_as_dict(r).get("caller_form"))}),
+        },
+        "references": unresolved[:1200],
+    }
+
+
+def _build_dataenvironment_report_mapping(
+    *,
+    metadata_common: dict[str, Any],
+    project_members: list[Any],
+    ui_event_rows: list[Any],
+    form_profiles: list[dict[str, Any]],
+    handler_form_index: dict[str, set[str]],
+) -> dict[str, Any]:
+    designer_members = [_extract_project_member_path(x) for x in project_members[:12000] if _extract_project_member_path(x)]
+    environment_names: list[str] = []
+    report_names: list[str] = []
+    for member in designer_members:
+        low = member.lower()
+        base = _basename_without_ext(member)
+        if low.endswith((".dsr", ".dca")):
+            if "dataenvironment" in low or base.lower().startswith("de"):
+                if base not in environment_names:
+                    environment_names.append(base)
+            if "datareport" in low or base.lower().startswith("rpt") or "report" in low:
+                if base not in report_names:
+                    report_names.append(base)
+
+    def guess_environment(report_name: str) -> str:
+        low = _clean(report_name).lower()
+        numeric = re.search(r"(\d+)$", low)
+        if numeric:
+            suffix = numeric.group(1)
+            for env in environment_names:
+                if _clean(env).lower().endswith(suffix):
+                    return env
+        for env in environment_names:
+            if _clean(env).lower().startswith("debank"):
+                return env
+        return environment_names[0] if environment_names else ""
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, row in enumerate(ui_event_rows[:12000], start=1):
+        if not isinstance(row, dict):
+            continue
+        handler = _clean(row.get("event_handler"))
+        inferred_form = _infer_form_for_event(
+            row=row,
+            handler=handler,
+            form_profiles=form_profiles,
+            handler_index=handler_form_index,
+        ) or _clean(row.get("form")) or "unknown"
+        for target in _as_list(row.get("procedure_calls")):
+            token = _clean(target).strip()
+            if not token:
+                continue
+            normalized = token.split("(")[0].strip()
+            low = normalized.lower()
+            is_report_target = low.startswith("rpt") or low.startswith("datareport")
+            if not is_report_target:
+                if normalized not in report_names and _basename_without_ext(normalized) not in report_names:
+                    continue
+            report_name = normalized
+            env_name = guess_environment(report_name)
+            key = f"{inferred_form}|{handler}|{report_name}|{env_name}".lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "mapping_id": f"de_map:{len(rows) + 1}",
+                    "caller_form": inferred_form,
+                    "caller_handler": handler or f"event:{idx}",
+                    "report_object": report_name,
+                    "dataenvironment_object": env_name or "n/a",
+                    "mapping_kind": "command_to_report",
+                    "confidence": 0.72 if env_name else 0.55,
+                    "evidence_ref": f"event:{idx}",
+                }
+            )
+
+    return {
+        "artifact_type": "dataenvironment_report_mapping",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "dataenvironment_count": len(environment_names),
+            "report_object_count": len(report_names),
+            "mapped_calls": len(rows),
+        },
+        "designer_assets": {
+            "dataenvironments": environment_names[:200],
+            "reports": report_names[:400],
+        },
+        "mappings": rows[:2000],
+    }
+
+
+def _build_static_risk_detectors(
+    *,
+    metadata_common: dict[str, Any],
+    sql_statements: list[dict[str, Any]],
+    business_rules: list[dict[str, Any]],
+    ui_event_rows: list[Any] | None = None,
+) -> dict[str, Any]:
+    def _contains_word(text: str, term: str) -> bool:
+        return bool(re.search(rf"(?i)\b{re.escape(term)}\b", text))
+
+    def _contains_phrase(text: str, phrase: str) -> bool:
+        parts = [re.escape(chunk) for chunk in phrase.split() if chunk]
+        if not parts:
+            return False
+        pattern = r"(?i)\b" + r"\s+".join(parts) + r"\b"
+        return bool(re.search(pattern, text))
+
+    def _matches_any(text: str, words: list[str], phrases: list[str] | None = None) -> bool:
+        if any(_contains_word(text, word) for word in words):
+            return True
+        return any(_contains_phrase(text, phrase) for phrase in (phrases or []))
+
+    findings: list[dict[str, Any]] = []
+    rule_statements = [
+        _clean(_as_dict(rule).get("statement")).lower()
+        for rule in business_rules
+        if isinstance(rule, dict) and _clean(_as_dict(rule).get("statement"))
+    ]
+    write_statements = [
+        _as_dict(stmt) for stmt in sql_statements
+        if _clean(_as_dict(stmt).get("kind")).lower() in {"insert", "update", "delete"}
+    ]
+    write_tables = sorted(
+        {
+            _clean(tbl).lower()
+            for stmt in write_statements
+            for tbl in _as_list(_as_dict(stmt).get("tables"))
+            if _clean(tbl)
+        }
+    )
+    has_txn_control = any(
+        re.search(r"(?i)\b(begin\s+trans|begintransaction|commit|rollback)\b", _clean(_as_dict(stmt).get("raw")))
+        for stmt in sql_statements
+        if isinstance(stmt, dict)
+    ) or any(
+        _matches_any(text, ["commit", "rollback"], ["begin transaction", "begin trans"])
+        for text in rule_statements
+    )
+    event_tokens = [
+        _clean(token).lower()
+        for row in (ui_event_rows or [])[:12000]
+        if isinstance(row, dict)
+        for token in [*_as_list(row.get("procedure_calls")), *_as_list(row.get("side_effects"))]
+        if _clean(token)
+    ]
+    has_txn_control = has_txn_control or any(
+        any(k in token for k in ("begintrans", "begin transaction", "commit", "rollback"))
+        for token in event_tokens
+    )
+    multi_write_rule_signals = sum(
+        1
+        for text in rule_statements
+        if _matches_any(
+            text,
+            [],
+            [
+                "balance updated",
+                "balance recalculated",
+                "transaction recorded",
+                "transaction history updated",
+                "deposit transaction",
+                "withdrawal transaction",
+            ],
+        )
+    )
+    multi_write_sql_signals = len(write_statements) >= 2 or len(write_tables) > 1
+    write_event_tokens = [
+        token
+        for token in event_tokens
+        if any(
+            marker in token
+            for marker in ("save", "addnew", "insert", "update", "deposit", "withdraw", "delete", "remove")
+        )
+    ]
+    unique_write_event_tokens = sorted(set(write_event_tokens))
+    multi_write_event_signals = len(unique_write_event_tokens)
+
+    if (
+        multi_write_sql_signals
+        or (multi_write_rule_signals >= 2)
+        or (len(write_statements) >= 1 and multi_write_event_signals >= 4)
+    ) and not has_txn_control:
+        findings.append(
+            {
+                "detector_id": "no_rollback_on_multi_write",
+                "severity": "high",
+                "summary": "Multiple write operations were detected without explicit transaction/rollback guards.",
+                "evidence": {
+                    "write_statement_count": len(write_statements),
+                    "write_table_count": len(write_tables),
+                    "write_tables": write_tables[:20],
+                    "rule_signals": multi_write_rule_signals,
+                    "event_write_signals": multi_write_event_signals,
+                    "event_write_signal_samples": unique_write_event_tokens[:10],
+                },
+            }
+        )
+
+    delete_stmts = [
+        _as_dict(stmt) for stmt in sql_statements
+        if _clean(_as_dict(stmt).get("kind")).lower() == "delete"
+    ]
+    # Capture delete statements that failed strict kind classification (e.g., quoted/fragmented SQL).
+    for stmt in sql_statements:
+        if not isinstance(stmt, dict):
+            continue
+        if _clean(_as_dict(stmt).get("kind")).lower() == "delete":
+            continue
+        raw = _clean(_as_dict(stmt).get("raw"))
+        if raw and re.search(r"""(?i)^\s*["']?\s*delete\b""", raw):
+            delete_stmts.append(_as_dict(stmt))
+    archival_keywords = {"archive", "audit", "history", "log", "backup"}
+    archival_writes = [
+        tbl for tbl in write_tables if any(k in tbl for k in archival_keywords)
+    ]
+    delete_rule_signals = [
+        text for text in rule_statements
+        if _matches_any(text, ["delete", "deleted", "remove", "deactivate"], ["close account"])
+    ]
+    delete_event_signals = [
+        token for token in event_tokens
+        if "delete" in token or "remove" in token or "closeaccount" in token
+    ]
+    ado_delete_call_count = sum(1 for token in event_tokens if "delete" in token)
+    archival_rule_signals = [
+        text for text in rule_statements
+        if _matches_any(text, ["archive", "audit", "history", "log", "backup"])
+    ]
+    has_delete_like = bool(delete_stmts) or bool(delete_rule_signals) or bool(delete_event_signals)
+    if has_delete_like and not archival_writes and not archival_rule_signals:
+        findings.append(
+            {
+                "detector_id": "delete_without_archival",
+                "severity": "high",
+                "summary": "DELETE operations were found without corresponding archival/audit write patterns.",
+                "evidence": {
+                    "delete_count": len(delete_stmts) + ado_delete_call_count,
+                    "sql_delete_count": len(delete_stmts),
+                    "ado_delete_call_count": ado_delete_call_count,
+                    "delete_sql_ids": [_clean(stmt.get("sql_id")) for stmt in delete_stmts[:20] if _clean(stmt.get("sql_id"))],
+                    "delete_rule_signals": len(delete_rule_signals),
+                    "delete_event_signals": len(delete_event_signals),
+                },
+            }
+        )
+
+    max_id_patterns = [
+        _clean(_as_dict(stmt).get("sql_id"))
+        for stmt in sql_statements
+        if isinstance(stmt, dict) and re.search(r"(?i)\bselect\s+max\s*\(", _clean(_as_dict(stmt).get("raw")))
+    ]
+    if max_id_patterns:
+        findings.append(
+            {
+                "detector_id": "manual_id_generation_concurrency_risk",
+                "severity": "medium",
+                "summary": "Manual ID generation pattern (SELECT MAX(...)) detected; this can cause concurrency collisions.",
+                "evidence": {
+                    "sql_ids": [x for x in max_id_patterns[:40] if x],
+                },
+            }
+        )
+
+    caption_driven = [
+        _clean(_as_dict(rule).get("rule_id"))
+        for rule in business_rules
+        if isinstance(rule, dict) and (
+            "caption" in _clean(_as_dict(rule).get("statement")).lower()
+            or "displayed balance label" in _clean(_as_dict(rule).get("statement")).lower()
+        )
+    ]
+    if caption_driven:
+        findings.append(
+            {
+                "detector_id": "ui_caption_as_system_of_record",
+                "severity": "medium",
+                "summary": "Business logic appears to rely on UI caption/label state as a data source.",
+                "evidence": {
+                    "rule_ids": [x for x in caption_driven[:40] if x],
+                },
+            }
+        )
+
+    return {
+        "artifact_type": "static_risk_detectors",
+        "artifact_version": "1.0",
+        "metadata": metadata_common,
+        "summary": {
+            "detector_count": 4,
+            "findings_count": len(findings),
+            "high_findings": len([f for f in findings if _clean(_as_dict(f).get("severity")).lower() == "high"]),
+        },
+        "findings": findings,
+    }
+
+
 def _build_data_access_map(
     *,
     metadata_common: dict[str, Any],
@@ -4452,12 +6329,35 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     }
 
     vb6_projects = _as_list(legacy_inventory.get("vb6_projects"))
+    project_members = _as_list(legacy_inventory.get("project_members"))
     forms = _as_list(legacy_inventory.get("forms"))
     controls = _as_list(legacy_inventory.get("controls"))
     event_handlers = _as_list(legacy_inventory.get("event_handlers"))
+    bas_module_summary = _as_dict(legacy_inventory.get("bas_module_summary")) or _as_dict(vb6_analysis.get("bas_module_summary"))
     database_tables = [_clean(x) for x in _as_list(legacy_inventory.get("database_tables")) if _clean(x)]
     sql_catalog_rows = _as_list(legacy_inventory.get("sql_query_catalog")) or _as_list(vb6_analysis.get("sql_query_catalog"))
     sql_catalog_rows = _coalesce_sql_catalog_rows(sql_catalog_rows)
+    connection_string_rows = (
+        _as_list(legacy_inventory.get("connection_string_rows"))
+        or _as_list(vb6_analysis.get("connection_string_rows"))
+        or _as_list(legacy_inventory.get("connection_strings"))
+        or _as_list(vb6_analysis.get("connection_strings"))
+    )
+    db_ref_rows = (
+        _as_list(legacy_inventory.get("database_file_reference_rows"))
+        or _as_list(vb6_analysis.get("database_file_reference_rows"))
+        or _as_list(legacy_inventory.get("database_file_references"))
+        or _as_list(vb6_analysis.get("database_file_references"))
+        or _as_list(vb6_analysis.get("database_file_refs"))
+    )
+    bas_global_rows = (
+        _as_list(legacy_inventory.get("module_global_declarations"))
+        or _as_list(vb6_analysis.get("module_global_declarations"))
+    )
+    binary_companion_rows = (
+        _as_list(legacy_inventory.get("binary_companion_files"))
+        or _as_list(vb6_analysis.get("binary_companion_files"))
+    )
     ui_event_rows = _as_list(legacy_inventory.get("ui_event_map")) or _as_list(vb6_analysis.get("ui_event_map"))
     readiness = _as_dict(legacy_inventory.get("modernization_readiness")) or _as_dict(vb6_analysis.get("modernization_readiness"))
     database_schema_text = _clean(safe.get("database_schema_input") or safe.get("database_schema"))
@@ -4558,6 +6458,8 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         if not isinstance(row, dict):
             continue
         handler = _clean(row.get("event_handler"))
+        source_file = _clean(row.get("source_file"))
+        line_no = int(row.get("line", 0) or 0)
         form = _infer_form_for_event(
             row=row,
             handler=handler,
@@ -4628,8 +6530,27 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
                 "entry_kind": "ui_event",
                 "name": f"{form or 'form'}:{event or 'event'}",
                 "container": form,
+                "source_file": source_file,
+                "line": line_no,
                 "trigger": {"control": control, "event": event},
-                "handler": {"symbol": symbol, "evidence": []},
+                "handler": {
+                    "symbol": symbol,
+                    "evidence": (
+                        [
+                            {
+                                "type": "file_span",
+                                "file_span": {
+                                    "path": source_file,
+                                    "line_start": line_no,
+                                    "line_end": line_no,
+                                },
+                                "confidence": 0.95,
+                            }
+                        ]
+                        if source_file and line_no > 0
+                        else []
+                    ),
+                },
                 "calls": [_clean(x) for x in _as_list(row.get("procedure_calls")) if _clean(x)],
                 "side_effects": {
                     "sql_ids": sql_ids,
@@ -4684,7 +6605,22 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
                             "description": "ui_event_map linkage",
                         },
                         "confidence": 0.8,
-                    }
+                    },
+                    *(
+                        [
+                            {
+                                "type": "file_span",
+                                "file_span": {
+                                    "path": source_file,
+                                    "line_start": line_no,
+                                    "line_end": line_no,
+                                },
+                                "confidence": 0.95,
+                            }
+                        ]
+                        if source_file and line_no > 0
+                        else []
+                    ),
                 ],
             }
         )
@@ -4880,6 +6816,12 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
                 "tags": [_clean(x) for x in _as_list(row.get("tags")) if _clean(x)],
             }
         )
+    static_risk_detectors_artifact = _build_static_risk_detectors(
+        metadata_common=metadata_common,
+        sql_statements=sql_statements,
+        business_rules=rules,
+        ui_event_rows=ui_event_rows,
+    )
 
     pitfall_detectors = _as_list(legacy_inventory.get("pitfall_detectors")) or _as_list(vb6_analysis.get("pitfall_detectors"))
     error_profile = _as_dict(legacy_inventory.get("error_handling_profile")) or _as_dict(vb6_analysis.get("error_handling_profile"))
@@ -4974,6 +6916,49 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         legacy_inventory.get("source_files_scanned", 0)
         or vb6_analysis.get("source_files_scanned", 0)
         or len(source_loc_by_file)
+    )
+    mdb_inventory_artifact = _build_mdb_inventory(
+        metadata_common=metadata_common,
+        source_loc_rows=source_loc_rows,
+        project_members=project_members,
+        sql_rows=sql_catalog_rows,
+        ui_event_rows=ui_event_rows,
+        forms=forms,
+        db_ref_rows=db_ref_rows,
+        connection_string_rows=connection_string_rows,
+        binary_companion_rows=binary_companion_rows,
+    )
+    form_loc_profile_artifact = _build_form_loc_profile(
+        metadata_common=metadata_common,
+        forms=forms,
+        vb6_projects=vb6_projects,
+        source_loc_by_file=source_loc_by_file,
+    )
+    connection_string_variants_artifact = _build_connection_string_variants(
+        metadata_common=metadata_common,
+        sql_rows=sql_catalog_rows,
+        ui_event_rows=ui_event_rows,
+        connection_string_rows=connection_string_rows,
+    )
+    module_global_inventory_artifact = _build_module_global_inventory(
+        metadata_common=metadata_common,
+        bas_module_summary=bas_module_summary,
+        ui_event_rows=ui_event_rows,
+        bas_global_rows=bas_global_rows,
+    )
+    dead_form_refs_artifact = _build_dead_form_refs(
+        metadata_common=metadata_common,
+        ui_event_rows=ui_event_rows,
+        forms=forms,
+        form_profiles=form_profiles,
+        handler_form_index=handler_form_index,
+    )
+    dataenvironment_report_mapping_artifact = _build_dataenvironment_report_mapping(
+        metadata_common=metadata_common,
+        project_members=project_members,
+        ui_event_rows=ui_event_rows,
+        form_profiles=form_profiles,
+        handler_form_index=handler_form_index,
     )
 
     projects_out: list[dict[str, Any]] = []
@@ -5371,6 +7356,47 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         sql_map_entries=sql_map_entries,
         procedure_summaries=procedure_summaries,
     )
+    engineering_quality_artifacts = _build_engineering_quality_baseline(
+        metadata_common=metadata_common,
+        run_id=run_id,
+        generated_at=generated,
+        repo=repo,
+        branch=branch,
+        commit_sha=commit_sha,
+        projects=projects_out,
+        forms=forms,
+        event_entries=event_entries,
+        sql_statements=sql_statements,
+        sql_map_entries=sql_map_entries,
+        procedure_summaries=procedure_summaries,
+        dependencies=dependencies,
+        form_coverage_rows=form_coverage_rows,
+        source_loc_by_file=source_loc_by_file,
+        orphan_analysis=orphan_analysis_artifact,
+        form_dossier=form_dossier_artifact,
+    )
+    project_metrics_artifact = _as_dict(engineering_quality_artifacts.get("project_metrics"))
+    type_metrics_artifact = _as_dict(engineering_quality_artifacts.get("type_metrics"))
+    type_dependency_matrix_artifact = _as_dict(engineering_quality_artifacts.get("type_dependency_matrix"))
+    runtime_dependency_matrix_artifact = _as_dict(engineering_quality_artifacts.get("runtime_dependency_matrix"))
+    dead_code_report_artifact = _as_dict(engineering_quality_artifacts.get("dead_code_report"))
+    third_party_usage_artifact = _as_dict(engineering_quality_artifacts.get("third_party_usage"))
+    code_quality_rules_artifact = _as_dict(engineering_quality_artifacts.get("code_quality_rules"))
+    quality_violation_report_artifact = _as_dict(engineering_quality_artifacts.get("quality_violation_report"))
+    trend_snapshot_artifact = _as_dict(engineering_quality_artifacts.get("trend_snapshot"))
+    trend_series_artifact = _as_dict(engineering_quality_artifacts.get("trend_series"))
+    static_forensics_layer_artifact = _build_static_forensics_layer(
+        metadata_common=metadata_common,
+        project_metrics=project_metrics_artifact,
+        type_metrics=type_metrics_artifact,
+        type_dependency_matrix=type_dependency_matrix_artifact,
+        runtime_dependency_matrix=runtime_dependency_matrix_artifact,
+        dead_code_report=dead_code_report_artifact,
+        code_quality_rules=code_quality_rules_artifact,
+        quality_violation_report=quality_violation_report_artifact,
+        trend_snapshot=trend_snapshot_artifact,
+        trend_series=trend_series_artifact,
+    )
     canonical_project = _clean(_as_dict(projects_out[0]).get("name")) if projects_out else "Project 1"
     artifact_context = {
         "repo": repo,
@@ -5402,6 +7428,24 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "detector_findings": "artifact://analyst/raw/detector_findings/v1",
         "risk_register": "artifact://analyst/raw/risk_register/v1",
         "orphan_analysis": "artifact://analyst/raw/orphan_analysis/v1",
+        "project_metrics": "artifact://analyst/raw/project_metrics/v1",
+        "static_forensics_layer": "artifact://analyst/raw/static_forensics_layer/v1",
+        "type_metrics": "artifact://analyst/raw/type_metrics/v1",
+        "type_dependency_matrix": "artifact://analyst/raw/type_dependency_matrix/v1",
+        "runtime_dependency_matrix": "artifact://analyst/raw/runtime_dependency_matrix/v1",
+        "dead_code_report": "artifact://analyst/raw/dead_code_report/v1",
+        "third_party_usage": "artifact://analyst/raw/third_party_usage/v1",
+        "code_quality_rules": "artifact://analyst/raw/code_quality_rules/v1",
+        "quality_violation_report": "artifact://analyst/raw/quality_violation_report/v1",
+        "trend_snapshot": "artifact://analyst/raw/trend_snapshot/v1",
+        "trend_series": "artifact://analyst/raw/trend_series/v1",
+        "mdb_inventory": "artifact://analyst/raw/mdb_inventory/v1",
+        "form_loc_profile": "artifact://analyst/raw/form_loc_profile/v1",
+        "connection_string_variants": "artifact://analyst/raw/connection_string_variants/v1",
+        "module_global_inventory": "artifact://analyst/raw/module_global_inventory/v1",
+        "dead_form_refs": "artifact://analyst/raw/dead_form_refs/v1",
+        "dataenvironment_report_mapping": "artifact://analyst/raw/dataenvironment_report_mapping/v1",
+        "static_risk_detectors": "artifact://analyst/raw/static_risk_detectors/v1",
         "delivery_constitution": "artifact://analyst/raw/delivery_constitution/v1",
         "source_db_profile": "artifact://analyst/raw/source_db_profile/v1",
         "source_schema_model": "artifact://analyst/raw/source_schema_model/v1",
@@ -5450,6 +7494,24 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
             {"type": "detector_findings", "ref": refs["detector_findings"]},
             {"type": "risk_register", "ref": refs["risk_register"]},
             {"type": "orphan_analysis", "ref": refs["orphan_analysis"]},
+            {"type": "project_metrics", "ref": refs["project_metrics"]},
+            {"type": "static_forensics_layer", "ref": refs["static_forensics_layer"]},
+            {"type": "type_metrics", "ref": refs["type_metrics"]},
+            {"type": "type_dependency_matrix", "ref": refs["type_dependency_matrix"]},
+            {"type": "runtime_dependency_matrix", "ref": refs["runtime_dependency_matrix"]},
+            {"type": "dead_code_report", "ref": refs["dead_code_report"]},
+            {"type": "third_party_usage", "ref": refs["third_party_usage"]},
+            {"type": "code_quality_rules", "ref": refs["code_quality_rules"]},
+            {"type": "quality_violation_report", "ref": refs["quality_violation_report"]},
+            {"type": "trend_snapshot", "ref": refs["trend_snapshot"]},
+            {"type": "trend_series", "ref": refs["trend_series"]},
+            {"type": "mdb_inventory", "ref": refs["mdb_inventory"]},
+            {"type": "form_loc_profile", "ref": refs["form_loc_profile"]},
+            {"type": "connection_string_variants", "ref": refs["connection_string_variants"]},
+            {"type": "module_global_inventory", "ref": refs["module_global_inventory"]},
+            {"type": "dead_form_refs", "ref": refs["dead_form_refs"]},
+            {"type": "dataenvironment_report_mapping", "ref": refs["dataenvironment_report_mapping"]},
+            {"type": "static_risk_detectors", "ref": refs["static_risk_detectors"]},
             {"type": "delivery_constitution", "ref": refs["delivery_constitution"]},
             {"type": "source_db_profile", "ref": refs["source_db_profile"]},
             {"type": "source_schema_model", "ref": refs["source_schema_model"]},
@@ -5492,6 +7554,24 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "detector_findings": detector_findings_artifact,
         "risk_register": risk_register_artifact,
         "orphan_analysis": orphan_analysis_artifact,
+        "project_metrics": project_metrics_artifact,
+        "static_forensics_layer": static_forensics_layer_artifact,
+        "type_metrics": type_metrics_artifact,
+        "type_dependency_matrix": type_dependency_matrix_artifact,
+        "runtime_dependency_matrix": runtime_dependency_matrix_artifact,
+        "dead_code_report": dead_code_report_artifact,
+        "third_party_usage": third_party_usage_artifact,
+        "code_quality_rules": code_quality_rules_artifact,
+        "quality_violation_report": quality_violation_report_artifact,
+        "trend_snapshot": trend_snapshot_artifact,
+        "trend_series": trend_series_artifact,
+        "mdb_inventory": mdb_inventory_artifact,
+        "form_loc_profile": form_loc_profile_artifact,
+        "connection_string_variants": connection_string_variants_artifact,
+        "module_global_inventory": module_global_inventory_artifact,
+        "dead_form_refs": dead_form_refs_artifact,
+        "dataenvironment_report_mapping": dataenvironment_report_mapping_artifact,
+        "static_risk_detectors": static_risk_detectors_artifact,
         "delivery_constitution": delivery_constitution_artifact,
         "source_db_profile": source_db_profile_artifact,
         "source_schema_model": source_schema_model_artifact,
@@ -5537,7 +7617,7 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     return {
         **artifacts,
         "artifact_refs": refs,
-        "raw_compiler_version": "2.5.0",
+        "raw_compiler_version": "2.7.0",
     }
 
 
@@ -5554,7 +7634,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     prebuilt_is_current = (
         _clean(prebuilt.get("artifact_type")) == "analyst_report"
         and _clean(prebuilt.get("artifact_version")) == "2.0"
-        and prebuilt_compiler == "2.5.0"
+        and prebuilt_compiler == "2.7.0"
     )
     prebuilt_qa = _as_dict(prebuilt.get("qa_report_v1"))
     prebuilt_qa_is_current = _clean(prebuilt_qa.get("qa_runtime_version")) == QA_RUNTIME_VERSION
@@ -5574,7 +7654,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
         skill = _as_dict(req_pack.get("legacy_skill_profile"))
 
     raw_artifacts = _as_dict(safe.get("raw_artifacts"))
-    if _clean(raw_artifacts.get("raw_compiler_version")) != "2.5.0":
+    if _clean(raw_artifacts.get("raw_compiler_version")) != "2.7.0":
         raw_artifacts = build_raw_artifact_set_v1(safe, generated_at=generated_at)
     if prebuilt_is_current:
         return _attach_qa_report_v1(
@@ -6319,7 +8399,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
             },
         },
         "metadata": {
-            "compiler_version": "2.5.0",
+            "compiler_version": "2.7.0",
             "project": {
                 "name": project_name,
                 "objective": objective,

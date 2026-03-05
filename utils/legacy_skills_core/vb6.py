@@ -19,6 +19,8 @@ _VB6_FILE_TYPE_LABELS = {
     ".ocx": "activex_binary",
     ".dcx": "db_query_definition",
     ".dca": "db_connection_definition",
+    ".mdb": "access_database",
+    ".accdb": "access_database",
 }
 
 
@@ -29,7 +31,7 @@ def vb6_skill_pack_manifest() -> dict[str, Any]:
     return {
         "skill_pack_id": "legacy-vb6",
         "version": "0.1.0",
-        "supported_inputs": [".vbp", ".vbg", ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca"],
+        "supported_inputs": [".vbp", ".vbg", ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"],
         "extractors": [
             "vb6_project_inventory",
             "vb6_call_graph_builder",
@@ -161,6 +163,108 @@ def _extract_sql_candidates_from_lines(lines: list[str]) -> list[str]:
     return queries[:200]
 
 
+def _extract_connection_strings_from_lines(lines: list[str]) -> tuple[list[str], list[str]]:
+    connection_strings: list[str] = []
+    db_refs: list[str] = []
+    seen_conn: set[str] = set()
+    seen_db: set[str] = set()
+    for raw in lines:
+        line = _strip_vb_comment(raw)
+        if not line:
+            continue
+        lower = line.lower()
+        has_conn_marker = (
+            "connectionstring" in lower
+            or ".open " in lower
+            or "provider=" in lower
+            or "data source=" in lower
+            or ".mdb" in lower
+            or ".accdb" in lower
+        )
+        if not has_conn_marker:
+            continue
+
+        quote_candidates = re.findall(r'"([^"]+)"', line)
+        candidates: list[str] = []
+        if quote_candidates:
+            joined = " ".join(str(x or "").strip() for x in quote_candidates if str(x or "").strip()).strip()
+            if joined:
+                candidates.append(joined)
+            candidates.extend(quote_candidates)
+        if not candidates and "=" in line:
+            _, rhs = line.split("=", 1)
+            candidates = [rhs.strip()]
+        if not candidates:
+            candidates = [line.strip()]
+
+        for c in candidates:
+            token = " ".join(str(c or "").split()).strip()
+            if not token:
+                continue
+            token_l = token.lower()
+            if (
+                "provider=" in token_l
+                or "data source=" in token_l
+                or "datasource=" in token_l
+                or ".mdb" in token_l
+                or ".accdb" in token_l
+            ):
+                if token_l not in seen_conn:
+                    seen_conn.add(token_l)
+                    connection_strings.append(token[:500])
+            for ref in re.findall(r"([A-Za-z0-9_./\\:-]+\.(?:mdb|accdb))", token, flags=re.IGNORECASE):
+                norm = str(ref).replace("\\", "/").strip()
+                if norm and norm.lower() not in seen_db:
+                    seen_db.add(norm.lower())
+                    db_refs.append(norm)
+    return connection_strings[:200], db_refs[:200]
+
+
+def _extract_module_global_declarations(*, path: str, suffix: str, lines: list[str]) -> list[dict[str, Any]]:
+    if suffix != ".bas":
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    decl_rx = re.compile(
+        r"(?im)^\s*(Public|Global|Dim)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+As\s+((?:New\s+)?[A-Za-z_][A-Za-z0-9_\.]*))?"
+    )
+    for idx, raw in enumerate(lines, start=1):
+        line = _strip_vb_comment(raw)
+        if not line:
+            continue
+        m = decl_rx.match(line)
+        if not m:
+            continue
+        scope = str(m.group(1) or "").strip().lower() or "dim"
+        symbol = str(m.group(2) or "").strip()
+        declared_type = str(m.group(3) or "").strip() or "Variant"
+        if not symbol:
+            continue
+        if symbol.lower() in {"function", "sub", "property", "type", "enum", "const"}:
+            continue
+        if declared_type.lower() == "new":
+            as_new = re.search(r"(?i)\bAs\s+New\s+([A-Za-z_][A-Za-z0-9_\.]*)", line)
+            if as_new:
+                declared_type = str(as_new.group(1) or "").strip() or "Variant"
+        key = (symbol.lower(), idx)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "symbol": symbol,
+                "declared_type": declared_type,
+                "scope": scope,
+                "source_file": str(path or "").strip(),
+                "line": idx,
+                "declaration": line[:320],
+            }
+        )
+        if len(rows) >= 600:
+            break
+    return rows
+
+
 def _extract_procedure_blocks(text: str) -> dict[str, Any]:
     procedure_bodies: dict[str, list[str]] = {}
     procedure_lines: dict[str, int] = {}
@@ -216,6 +320,7 @@ def _extract_procedure_blocks(text: str) -> dict[str, Any]:
             ("insert ", "insert"),
             ("update ", "update"),
             ("delete ", "delete"),
+            (".delete", "delete"),
             ("createobject(", "createobject"),
             ("save", "save_operation"),
             ("print #", "file_write"),
@@ -453,7 +558,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
     if "." in lower_path:
         suffix = "." + lower_path.rsplit(".", 1)[1]
     lowered = str(text or "").lower()
-    is_vb6_path = suffix in {".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca"}
+    is_vb6_path = suffix in {".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"}
     is_vb6_text = (
         "attribute vb_name" in lowered
         or "begin vb.form" in lowered
@@ -465,8 +570,17 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
 
     file_path = str(path or "").strip()
     vb6_file_type = _VB6_FILE_TYPE_LABELS.get(suffix, "unknown")
-    is_binary_companion = suffix in {".frx", ".ctx", ".res", ".ocx"}
+    is_binary_companion = suffix in {".frx", ".ctx", ".res", ".ocx", ".mdb", ".accdb"}
     if is_binary_companion:
+        companion_note = (
+            "Access database file detected; analyzed as structural data dependency."
+            if suffix in {".mdb", ".accdb"}
+            else (
+                "ActiveX binary component detected; analyzed as structural dependency."
+                if suffix == ".ocx"
+                else "Binary companion file detected; analyzed as structural dependency."
+            )
+        )
         return {
             "forms": [],
             "controls": [],
@@ -475,6 +589,9 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             "event_handler_keys": [],
             "procedures": [],
             "sql_queries": [],
+            "connection_strings": [],
+            "database_file_refs": [file_path] if suffix in {".mdb", ".accdb"} and file_path else [],
+            "module_global_declarations": [],
             "ui_event_map": [],
             "project_members": [],
             "com_surface_map": {
@@ -502,11 +619,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             "binary_companion_info": {
                 "path": file_path,
                 "extension": suffix,
-                "note": (
-                    "ActiveX binary component detected; analyzed as structural dependency."
-                    if suffix == ".ocx"
-                    else "Binary companion file detected; analyzed as structural dependency."
-                ),
+                "note": companion_note,
             },
         }
     forms: set[str] = set()
@@ -530,6 +643,7 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
     registry_ops = 0
     project_definition: dict[str, Any] = {}
     procedure_meta = _extract_procedure_blocks(text)
+    procedure_lines = procedure_meta.get("procedure_lines", {}) if isinstance(procedure_meta.get("procedure_lines", {}), dict) else {}
     procedure_calls = procedure_meta.get("procedure_calls", {}) if isinstance(procedure_meta.get("procedure_calls", {}), dict) else {}
     procedure_sql = procedure_meta.get("procedure_sql", {}) if isinstance(procedure_meta.get("procedure_sql", {}), dict) else {}
     procedure_effects = procedure_meta.get("procedure_effects", {}) if isinstance(procedure_meta.get("procedure_effects", {}), dict) else {}
@@ -726,6 +840,25 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
             sql_queries.append(query[:360])
         if len(sql_queries) >= 200:
             break
+    connection_strings, database_file_refs = _extract_connection_strings_from_lines(source_lines)
+    module_global_declarations = _extract_module_global_declarations(
+        path=file_path,
+        suffix=suffix,
+        lines=source_lines,
+    )
+    if suffix in {".mdb", ".accdb"} and file_path:
+        database_file_refs = [file_path, *database_file_refs]
+    # Normalize and deduplicate DB file refs while preserving order.
+    db_refs_out: list[str] = []
+    db_seen: set[str] = set()
+    for ref in database_file_refs:
+        norm = str(ref or "").replace("\\", "/").strip()
+        if not norm:
+            continue
+        if norm.lower() in db_seen:
+            continue
+        db_seen.add(norm.lower())
+        db_refs_out.append(norm)
 
     ui_event_map: list[dict[str, Any]] = []
     control_to_form: dict[str, str] = {}
@@ -749,12 +882,15 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
         evt = event_name.split("_", 1)[1].strip() if "_" in event_name else ""
         mapped_form = control_to_form.get(control_name.lower(), "")
         sql_touches = procedure_sql.get(event_name, []) if isinstance(procedure_sql.get(event_name, []), list) else []
+        source_line = int(procedure_lines.get(event_name, 0) or 0)
         ui_event_map.append(
             {
                 "event_handler": event_name,
                 "form": mapped_form,
                 "control": control_name,
                 "event": evt,
+                "source_file": str(file_path or "").strip(),
+                "line": source_line,
                 "procedure_calls": procedure_calls.get(event_name, []) if isinstance(procedure_calls.get(event_name, []), list) else [],
                 "sql_touches": sql_touches[:8],
                 "side_effects": procedure_effects.get(event_name, []) if isinstance(procedure_effects.get(event_name, []), list) else [],
@@ -780,6 +916,9 @@ def extract_vb6_signals(path: str, text: str) -> dict[str, Any]:
         "event_handler_keys": sorted(event_handler_keys)[:1200],
         "procedures": sorted(procedures)[:160],
         "sql_queries": sql_queries[:120],
+        "connection_strings": connection_strings[:120],
+        "database_file_refs": db_refs_out[:120],
+        "module_global_declarations": module_global_declarations[:300],
         "ui_event_map": ui_event_map[:200],
         "project_members": sorted(project_members),
         "com_surface_map": {

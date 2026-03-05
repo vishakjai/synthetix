@@ -2550,6 +2550,8 @@ def _guess_language(path: str) -> str:
         ".ocx": "vb6_activex_binary",
         ".dcx": "vb6_query_definition",
         ".dca": "vb6_connection_definition",
+        ".mdb": "ms_access_db",
+        ".accdb": "ms_access_db",
         ".sql": "sql",
         ".yaml": "yaml",
         ".yml": "yaml",
@@ -2718,6 +2720,11 @@ def _analyze_source_bundle(
     vb6_by_path: dict[str, dict[str, Any]] = {}
     vb6_project_defs: list[dict[str, Any]] = []
     vb6_sql_queries: set[str] = set()
+    vb6_connection_strings: set[str] = set()
+    vb6_database_file_refs: set[str] = set()
+    vb6_connection_string_rows: list[dict[str, Any]] = []
+    vb6_database_file_reference_rows: list[dict[str, Any]] = []
+    vb6_module_global_declarations: list[dict[str, Any]] = []
     vb6_win32_declares: set[str] = set()
     vb6_com_progids: set[str] = set()
     vb6_com_references: set[str] = set()
@@ -2817,6 +2824,58 @@ def _analyze_source_bundle(
                 vb6.get("project_members", []) if isinstance(vb6.get("project_members", []), list) else []
             )
             vb6_sql_queries.update(vb6.get("sql_queries", []) if isinstance(vb6.get("sql_queries", []), list) else [])
+            source_file_norm = str(path).replace("\\", "/")
+            sig_forms = vb6.get("forms", []) if isinstance(vb6.get("forms", []), list) else []
+            form_hint = ""
+            if sig_forms:
+                form_hint = str(sig_forms[0]).split(":", 1)[-1].strip()
+            module_hint = Path(str(path)).stem if str(path).lower().endswith(".bas") else ""
+            vb6_connection_strings.update(
+                vb6.get("connection_strings", [])
+                if isinstance(vb6.get("connection_strings", []), list)
+                else []
+            )
+            for conn in vb6.get("connection_strings", []) if isinstance(vb6.get("connection_strings", []), list) else []:
+                token = str(conn or "").strip()
+                if token:
+                    vb6_connection_string_rows.append(
+                        {
+                            "connection_string": token,
+                            "source_file": source_file_norm,
+                            "form": form_hint,
+                            "module": module_hint,
+                            "evidence": source_file_norm,
+                        }
+                    )
+            for db_ref in vb6.get("database_file_refs", []) if isinstance(vb6.get("database_file_refs", []), list) else []:
+                token = str(db_ref or "").strip().replace("\\", "/")
+                if token:
+                    vb6_database_file_refs.add(token)
+                    vb6_database_file_reference_rows.append(
+                        {
+                            "path": token,
+                            "source_file": source_file_norm,
+                            "form": form_hint,
+                            "module": module_hint,
+                            "evidence": source_file_norm,
+                        }
+                    )
+            for gdecl in vb6.get("module_global_declarations", []) if isinstance(vb6.get("module_global_declarations", []), list) else []:
+                if not isinstance(gdecl, dict):
+                    continue
+                symbol = str(gdecl.get("symbol", "")).strip()
+                if not symbol:
+                    continue
+                vb6_module_global_declarations.append(
+                    {
+                        "symbol": symbol,
+                        "declared_type": str(gdecl.get("declared_type", "Variant")).strip() or "Variant",
+                        "scope": str(gdecl.get("scope", "dim")).strip() or "dim",
+                        "source_file": str(gdecl.get("source_file", "")).strip() or source_file_norm,
+                        "line": int(gdecl.get("line", 0) or 0),
+                        "declaration": str(gdecl.get("declaration", "")).strip()[:320],
+                    }
+                )
             vb6_win32_declares.update(vb6.get("win32_declares", []) if isinstance(vb6.get("win32_declares", []), list) else [])
             for row in vb6.get("ui_event_map", []) if isinstance(vb6.get("ui_event_map", []), list) else []:
                 if not isinstance(row, dict):
@@ -3293,6 +3352,11 @@ def _analyze_source_bundle(
             "note": "Standard module (.bas) files are treated as primary business-logic sources.",
         },
         "binary_companion_files": vb6_binary_companions[:120],
+        "connection_strings": sorted(vb6_connection_strings)[:200],
+        "database_file_references": sorted(vb6_database_file_refs)[:200],
+        "connection_string_rows": vb6_connection_string_rows[:800],
+        "database_file_reference_rows": vb6_database_file_reference_rows[:800],
+        "module_global_declarations": vb6_module_global_declarations[:1000],
         "vb6_analysis": {
             "project_count": len(vb6_projects),
             "projects": vb6_projects,
@@ -3306,6 +3370,11 @@ def _analyze_source_bundle(
             "project_members": sorted(vb6_project_members)[:1200],
             "ui_event_map": list(vb6_ui_event_map.values())[:1200],
             "sql_query_catalog": sorted(vb6_sql_queries)[:160],
+            "connection_strings": sorted(vb6_connection_strings)[:200],
+            "database_file_references": sorted(vb6_database_file_refs)[:200],
+            "connection_string_rows": vb6_connection_string_rows[:800],
+            "database_file_reference_rows": vb6_database_file_reference_rows[:800],
+            "module_global_declarations": vb6_module_global_declarations[:1000],
             "com_surface_map": {
                 "late_bound_progids": sorted(vb6_com_progids)[:120],
                 "call_by_name_sites": vb6_callbyname_sites,
@@ -3342,6 +3411,8 @@ def _analyze_source_bundle(
             "vb6_bas_modules": len(vb6_bas_modules),
             "vb6_bas_procedures": vb6_bas_procedure_count,
             "vb6_binary_companion_files": len(vb6_binary_companions),
+            "vb6_connection_string_variants": len(vb6_connection_strings),
+            "vb6_database_file_references": len(vb6_database_file_refs),
         },
     }
 
@@ -3369,9 +3440,14 @@ def _fetch_github_file_content(
     if encoding == "base64":
         try:
             raw_bytes = base64.b64decode(raw_content.encode("utf-8"), validate=False)
-            if suffix in {".frx", ".ctx", ".res", ".ocx"}:
+            if suffix in {".frx", ".ctx", ".res", ".ocx", ".mdb", ".accdb"}:
                 digest = hashlib.sha1(raw_bytes).hexdigest()[:16]
-                note = "ActiveX binary component detected." if suffix == ".ocx" else "Companion binary/resource file detected."
+                if suffix == ".ocx":
+                    note = "ActiveX binary component detected."
+                elif suffix in {".mdb", ".accdb"}:
+                    note = "MS Access database file detected."
+                else:
+                    note = "Companion binary/resource file detected."
                 return (
                     f"[BINARY_COMPANION] file={path} ext={suffix or 'unknown'} bytes={len(raw_bytes)} "
                     f"sha1={digest} note={note}"
@@ -3389,6 +3465,7 @@ def _allowed_source_extensions() -> set[str]:
         ".py", ".js", ".ts", ".tsx", ".go", ".java", ".cs", ".rb", ".php",
         ".asp", ".aspx", ".asa", ".vb", ".vbs",
         ".bas", ".cls", ".frm", ".frx", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca",
+        ".mdb", ".accdb",
         ".sql", ".md", ".yaml", ".yml", ".json",
     }
 
@@ -3446,7 +3523,7 @@ def _select_source_entries_for_analysis(
 
     vb6_file_hits = sum(
         1 for entry in candidate_entries
-        if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca"))
+        if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
     )
     effective_limit = max(limit, 220) if vb6_file_hits >= 8 else limit
 
@@ -3464,7 +3541,7 @@ def _select_source_entries_for_analysis(
             rank = 1
         elif path.endswith(".frm") or path.endswith(".ctl") or path.endswith(".cls"):
             rank = 2
-        elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res") or path.endswith(".ocx"):
+        elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res") or path.endswith(".ocx") or path.endswith(".mdb") or path.endswith(".accdb"):
             # Keep binary companions in scope, but prioritize code-bearing files first for accurate decomposition.
             rank = 8
         elif any(tok in path for tok in ["/main.", "/app.", "/index.", "/server."]):
@@ -3680,7 +3757,7 @@ def _repo_snapshot_save(snapshot_id: str, payload: dict[str, Any]) -> None:
 
 def _path_language_hint(path: str) -> str:
     suffix = Path(path).suffix.lower()
-    if suffix in {".frm", ".bas", ".cls", ".vbp", ".vbg", ".frx", ".ctl", ".ctx", ".dca", ".dcx"}:
+    if suffix in {".frm", ".bas", ".cls", ".vbp", ".vbg", ".frx", ".ctl", ".ctx", ".dca", ".dcx", ".mdb", ".accdb"}:
         return "vb6"
     if suffix in {".py"}:
         return "python"
@@ -3961,7 +4038,7 @@ def _resolve_legacy_code_from_repo_scan(
                     "ext": ext,
                     "depth": int(entry.get("depth", 0) or 0),
                     "language": _path_language_hint(path),
-                    "is_binary": ext in {".frx", ".ctx", ".res", ".ocx"},
+                    "is_binary": ext in {".frx", ".ctx", ".res", ".ocx", ".mdb", ".accdb"},
                 }
             )
 
@@ -8145,6 +8222,7 @@ async def api_download_discover_artifact(request):
     artifact_type = str(query.get("type", "project_metrics")).strip().lower()
     allowlist: dict[str, tuple[str, str]] = {
         "project_metrics": ("project_metrics", "project_metrics"),
+        "static_forensics": ("static_forensics_layer", "static_forensics"),
         "quality_rules": ("code_quality_rules", "quality_rules"),
         "quality_violations": ("quality_violation_report", "quality_violations"),
         "dead_code": ("dead_code_report", "dead_code"),
@@ -8153,15 +8231,24 @@ async def api_download_discover_artifact(request):
         "third_party_usage": ("third_party_usage", "third_party_usage"),
         "trend_snapshot": ("trend_snapshot", "trend_snapshot"),
         "trend_series": ("trend_series", "trend_series"),
+        "mdb_inventory": ("mdb_inventory", "mdb_inventory"),
+        "form_loc_profile": ("form_loc_profile", "form_loc_profile"),
+        "connection_string_variants": ("connection_string_variants", "connection_string_variants"),
+        "module_global_inventory": ("module_global_inventory", "module_global_inventory"),
+        "dead_form_refs": ("dead_form_refs", "dead_form_refs"),
+        "dataenvironment_report_mapping": ("dataenvironment_report_mapping", "dataenvironment_report_mapping"),
+        "static_risk_detectors": ("static_risk_detectors", "static_risk_detectors"),
     }
     if artifact_type not in allowlist:
         return JSONResponse(
             {
                 "ok": False,
                 "error": (
-                    "type must be one of: project_metrics, quality_rules, quality_violations, "
+                    "type must be one of: project_metrics, static_forensics, quality_rules, quality_violations, "
                     "dead_code, type_dependency_matrix, runtime_dependency_matrix, "
-                    "third_party_usage, trend_snapshot, trend_series"
+                    "third_party_usage, trend_snapshot, trend_series, mdb_inventory, form_loc_profile, "
+                    "connection_string_variants, module_global_inventory, dead_form_refs, "
+                    "dataenvironment_report_mapping, static_risk_detectors"
                 ),
             },
             status_code=400,

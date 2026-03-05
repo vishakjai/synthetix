@@ -223,10 +223,12 @@ const el = {
   discoverResultsState: document.getElementById("discover-results-state"),
   discoverResultsIntegrations: document.getElementById("discover-results-integrations"),
   discoverResultsScan: document.getElementById("discover-results-scan"),
+  discoverResultsForensics: document.getElementById("discover-results-forensics"),
   discoverOpenCityMap: document.getElementById("discover-open-city-map"),
   discoverOpenSystemMap: document.getElementById("discover-open-system-map"),
   discoverOpenHealthDebt: document.getElementById("discover-open-health-debt"),
   discoverOpenConventions: document.getElementById("discover-open-conventions"),
+  discoverOpenStaticForensics: document.getElementById("discover-open-static-forensics"),
   discoverOpenCodeQuality: document.getElementById("discover-open-code-quality"),
   discoverOpenDeadCode: document.getElementById("discover-open-dead-code"),
   discoverOpenDependencyMatrix: document.getElementById("discover-open-dependency-matrix"),
@@ -237,6 +239,7 @@ const el = {
   discoverSystemMapPanel: document.getElementById("discover-system-map-panel"),
   discoverHealthPanel: document.getElementById("discover-health-panel"),
   discoverConventionsPanel: document.getElementById("discover-conventions-panel"),
+  discoverStaticForensicsPanel: document.getElementById("discover-static-forensics-panel"),
   discoverCodeQualityPanel: document.getElementById("discover-code-quality-panel"),
   discoverDeadCodePanel: document.getElementById("discover-dead-code-panel"),
   discoverDependencyMatrixPanel: document.getElementById("discover-dependency-matrix-panel"),
@@ -246,6 +249,7 @@ const el = {
   discoverExportSourceErd: document.getElementById("discover-export-source-erd"),
   discoverExportDataDictionary: document.getElementById("discover-export-data-dictionary"),
   discoverExportProjectMetrics: document.getElementById("discover-export-project-metrics"),
+  discoverExportStaticForensics: document.getElementById("discover-export-static-forensics"),
   discoverExportQualityRules: document.getElementById("discover-export-quality-rules"),
   discoverExportQualityViolations: document.getElementById("discover-export-quality-violations"),
   discoverExportDeadCode: document.getElementById("discover-export-dead-code"),
@@ -258,6 +262,7 @@ const el = {
   discoverSystemMapContent: document.getElementById("discover-system-map-content"),
   discoverHealthContent: document.getElementById("discover-health-content"),
   discoverConventionsContent: document.getElementById("discover-conventions-content"),
+  discoverStaticForensicsContent: document.getElementById("discover-static-forensics-content"),
   discoverCodeQualityContent: document.getElementById("discover-code-quality-content"),
   discoverDeadCodeContent: document.getElementById("discover-dead-code-content"),
   discoverDependencyMatrixContent: document.getElementById("discover-dependency-matrix-content"),
@@ -3929,6 +3934,7 @@ function renderDiscoverResultsView() {
     system: el.discoverSystemMapPanel,
     health: el.discoverHealthPanel,
     conventions: el.discoverConventionsPanel,
+    static_forensics: el.discoverStaticForensicsPanel,
     code_quality: el.discoverCodeQualityPanel,
     dead_code: el.discoverDeadCodePanel,
     dependency_matrix: el.discoverDependencyMatrixPanel,
@@ -4765,6 +4771,40 @@ function renderDiscoverInsights() {
   const cqTrendMetrics = (cqTrendSnapshot.snapshot && typeof cqTrendSnapshot.snapshot === "object" && typeof cqTrendSnapshot.snapshot.metrics === "object")
     ? cqTrendSnapshot.snapshot.metrics
     : {};
+  const staticForensics = (rawArtifacts.static_forensics_layer && typeof rawArtifacts.static_forensics_layer === "object")
+    ? rawArtifacts.static_forensics_layer
+    : {};
+
+  if (el.discoverStaticForensicsContent) {
+    const summary = (staticForensics.summary && typeof staticForensics.summary === "object") ? staticForensics.summary : {};
+    const checks = Array.isArray(staticForensics.checks) ? staticForensics.checks : [];
+    const checkRows = checks.slice(0, 12).map((row) => {
+      const status = String(row?.status || "warn").toUpperCase();
+      const badgeClassName = status === "PASS"
+        ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+        : (status === "FAIL" ? "border-rose-300 bg-rose-50 text-rose-900" : "border-amber-300 bg-amber-50 text-amber-900");
+      return `
+        <div class="rounded border px-2 py-1 ${badgeClassName}">
+          <strong>${escapeHtml(status)}</strong> · ${escapeHtml(String(row?.label || row?.id || "check"))}
+          <div class="mt-0.5 text-[10px]">${escapeHtml(String(row?.detail || ""))}</div>
+        </div>
+      `;
+    }).join("");
+    el.discoverStaticForensicsContent.innerHTML = `
+      <div class="grid gap-2 sm:grid-cols-6">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Status</strong><br/>${escapeHtml(String(summary.overall_status || "PENDING"))}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Projects</strong><br/>${Number(summary.projects || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Types</strong><br/>${Number(summary.types || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Type Edges</strong><br/>${Number(summary.type_dependency_edges || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Runtime Edges</strong><br/>${Number(summary.runtime_dependency_edges || 0)}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Violations</strong><br/>${Number(summary.quality_violations || 0)}</div>
+      </div>
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <p class="mb-1 font-semibold text-slate-900">Coverage checks</p>
+        <div class="grid gap-1">${checkRows || `<p class="text-[11px] text-slate-700">No static-forensics checks generated yet.</p>`}</div>
+      </div>
+    `;
+  }
 
   if (el.discoverCodeQualityContent) {
     const hotspotRows = [...cqTypeMetrics]
@@ -7471,6 +7511,18 @@ function renderDiscoverStepper() {
         ? (integration.custom_domain_pack?.id || "custom")
         : String(integration.domain_pack_id || integration.domain_pack_selection || "auto"));
     el.discoverResultsScan.textContent = `Scan profile: ${integration.scan_scope.analysis_depth} | telemetry=${integration.scan_scope.telemetry_mode} | domain_pack=${domainLabel} | include=${includeCount} | exclude=${excludeCount}`;
+    if (el.discoverResultsForensics) {
+      const rawArtifacts = _discoverRawArtifacts();
+      const sf = (rawArtifacts.static_forensics_layer && typeof rawArtifacts.static_forensics_layer === "object")
+        ? rawArtifacts.static_forensics_layer
+        : {};
+      const summary = (sf.summary && typeof sf.summary === "object") ? sf.summary : {};
+      const status = String(summary.overall_status || "PENDING").toUpperCase();
+      const projectCount = Number(summary.projects || 0);
+      const typeCount = Number(summary.types || 0);
+      const violations = Number(summary.quality_violations || 0);
+      el.discoverResultsForensics.textContent = `Static forensics: ${status} | projects=${projectCount} | types=${typeCount} | violations=${violations}`;
+    }
   }
   renderDiscoverAnalystBrief();
   renderDiscoverIntegrationPreviews();
@@ -9516,6 +9568,7 @@ async function downloadDiscoverDbArtifact(kind) {
 async function downloadDiscoverArtifact(kind) {
   const validKinds = new Set([
     "project_metrics",
+    "static_forensics",
     "quality_rules",
     "quality_violations",
     "dead_code",
@@ -9531,6 +9584,7 @@ async function downloadDiscoverArtifact(kind) {
   const rawArtifacts = _discoverRawArtifacts();
   const localKeyByType = {
     project_metrics: "project_metrics",
+    static_forensics: "static_forensics_layer",
     quality_rules: "code_quality_rules",
     quality_violations: "quality_violation_report",
     dead_code: "dead_code_report",
@@ -9571,6 +9625,7 @@ async function downloadDiscoverArtifact(kind) {
   const match = header.match(/filename=\"?([^\";]+)\"?/i);
   const fallbackByType = {
     project_metrics: `project_metrics-${runId}.json`,
+    static_forensics: `static_forensics-${runId}.json`,
     quality_rules: `quality_rules-${runId}.json`,
     quality_violations: `quality_violations-${runId}.json`,
     dead_code: `dead_code-${runId}.json`,
@@ -12560,6 +12615,7 @@ function bindEvents() {
   el.discoverOpenSystemMap?.addEventListener("click", () => setDiscoverResultsView("system"));
   el.discoverOpenHealthDebt?.addEventListener("click", () => setDiscoverResultsView("health"));
   el.discoverOpenConventions?.addEventListener("click", () => setDiscoverResultsView("conventions"));
+  el.discoverOpenStaticForensics?.addEventListener("click", () => setDiscoverResultsView("static_forensics"));
   el.discoverOpenCodeQuality?.addEventListener("click", () => setDiscoverResultsView("code_quality"));
   el.discoverOpenDeadCode?.addEventListener("click", () => setDiscoverResultsView("dead_code"));
   el.discoverOpenDependencyMatrix?.addEventListener("click", () => setDiscoverResultsView("dependency_matrix"));
@@ -12631,6 +12687,14 @@ function bindEvents() {
       setGlobalSearchStatus("Project metrics exported.");
     } catch (err) {
       setGlobalSearchStatus(`Project metrics export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportStaticForensics?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("static_forensics");
+      setGlobalSearchStatus("Static forensics exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Static forensics export failed: ${err.message || err}`, true);
     }
   });
   el.discoverExportQualityRules?.addEventListener("click", async () => {

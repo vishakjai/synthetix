@@ -591,6 +591,171 @@ def build_qa_report_v1(
             refs=["analyst_report_v2.appendix.artifact_refs"],
         )
 
+    # Static forensics rollout checks: new deterministic extractor artifacts and LOC rollups.
+    rollout_required = [
+        "mdb_inventory",
+        "form_loc_profile",
+        "connection_string_variants",
+        "module_global_inventory",
+        "dead_form_refs",
+        "dataenvironment_report_mapping",
+        "static_risk_detectors",
+    ]
+    missing_rollout = [key for key in rollout_required if not isinstance(raw_artifacts.get(key), dict) or not raw_artifacts.get(key)]
+    if missing_rollout:
+        add_check(
+            check_id="struct_rollout_artifacts_present",
+            title="Static forensics rollout artifacts are present",
+            result="warn",
+            detail=f"Missing rollout artifacts: {', '.join(missing_rollout[:10])}",
+            refs=["raw_artifacts"],
+        )
+    else:
+        add_check(
+            check_id="struct_rollout_artifacts_present",
+            title="Static forensics rollout artifacts are present",
+            result="pass",
+            detail=f"{len(rollout_required)} rollout artifacts detected.",
+            refs=["raw_artifacts"],
+        )
+
+    form_loc_profile = _as_dict(raw_artifacts.get("form_loc_profile"))
+    form_loc_summary = _as_dict(form_loc_profile.get("summary"))
+    forms_discovered = int(form_loc_summary.get("forms_discovered", 0) or 0)
+    forms_active = int(form_loc_summary.get("forms_active", 0) or 0)
+    forms_orphan = int(form_loc_summary.get("forms_orphan", 0) or 0)
+    if forms_discovered > 0:
+        if forms_discovered != forms_active + forms_orphan:
+            add_check(
+                check_id="cross_form_active_orphan_reconciliation",
+                title="Form active/orphan counts reconcile",
+                result="fail",
+                detail=(
+                    f"forms_discovered={forms_discovered} but forms_active+forms_orphan="
+                    f"{forms_active + forms_orphan}."
+                ),
+                blocking=True,
+                refs=["raw_artifacts.form_loc_profile.summary"],
+            )
+        else:
+            add_check(
+                check_id="cross_form_active_orphan_reconciliation",
+                title="Form active/orphan counts reconcile",
+                result="pass",
+                detail=(
+                    f"forms_discovered={forms_discovered}, forms_active={forms_active}, "
+                    f"forms_orphan={forms_orphan}."
+                ),
+                refs=["raw_artifacts.form_loc_profile.summary"],
+            )
+    else:
+        add_check(
+            check_id="cross_form_active_orphan_reconciliation",
+            title="Form active/orphan counts reconcile",
+            result="warn",
+            detail="Form LOC profile is unavailable or empty; reconciliation skipped.",
+            refs=["raw_artifacts.form_loc_profile.summary"],
+        )
+
+    legacy_counts = _as_dict(_as_dict(_as_dict(raw_artifacts.get("legacy_inventory")).get("summary")).get("counts"))
+    loc_total = int(legacy_counts.get("source_loc_total", 0) or 0)
+    loc_forms = int(legacy_counts.get("source_loc_forms", 0) or 0)
+    loc_modules = int(legacy_counts.get("source_loc_modules", 0) or 0)
+    loc_classes = int(legacy_counts.get("source_loc_classes", 0) or 0)
+    profile_forms_loc = int(form_loc_summary.get("forms_loc_total", 0) or 0)
+    profile_designer_loc = int(form_loc_summary.get("designer_loc_total", 0) or 0)
+    loc_sum_basic = loc_forms + loc_modules + loc_classes
+    if loc_total > 0:
+        loc_errors: list[str] = []
+        if loc_sum_basic > loc_total:
+            loc_errors.append(f"forms+modules+classes={loc_sum_basic} > total={loc_total}")
+        if profile_forms_loc > 0 and profile_forms_loc > loc_total:
+            loc_errors.append(f"form_loc_profile.forms_loc_total={profile_forms_loc} > total={loc_total}")
+        if profile_designer_loc > 0 and (loc_sum_basic + profile_designer_loc) > (loc_total * 1.5):
+            loc_errors.append(
+                f"designer_loc_total={profile_designer_loc} is disproportionately high versus total={loc_total}"
+            )
+        if loc_errors:
+            add_check(
+                check_id="cross_loc_rollup_reconciliation",
+                title="LOC rollups reconcile across inventory and form profile",
+                result="warn",
+                detail="; ".join(loc_errors[:3]),
+                refs=["raw_artifacts.legacy_inventory.summary.counts", "raw_artifacts.form_loc_profile.summary"],
+            )
+        else:
+            add_check(
+                check_id="cross_loc_rollup_reconciliation",
+                title="LOC rollups reconcile across inventory and form profile",
+                result="pass",
+                detail=(
+                    f"total={loc_total}, forms={loc_forms}, modules={loc_modules}, classes={loc_classes}, "
+                    f"profile_forms={profile_forms_loc}, profile_designer={profile_designer_loc}."
+                ),
+                refs=["raw_artifacts.legacy_inventory.summary.counts", "raw_artifacts.form_loc_profile.summary"],
+            )
+    else:
+        add_check(
+            check_id="cross_loc_rollup_reconciliation",
+            title="LOC rollups reconcile across inventory and form profile",
+            result="warn",
+            detail="source_loc_total is missing; LOC reconciliation skipped.",
+            refs=["raw_artifacts.legacy_inventory.summary.counts"],
+        )
+
+    # Every unresolved form-like navigation token should be registered in dead_form_refs.
+    known_form_tokens = _collect_known_forms(raw_artifacts)
+    unresolved_candidates: set[str] = set()
+    for event in _as_list(_as_dict(raw_artifacts.get("event_map")).get("entries")):
+        if not isinstance(event, dict):
+            continue
+        for call in _as_list(event.get("calls")):
+            token = _clean(call).split("(")[0].strip()
+            if not token:
+                continue
+            token = re.sub(r"(?i)\.(show|hide|load|unload)$", "", token).strip()
+            low = _norm_token(token)
+            looks_formish = low == "frm" or low.startswith("frm") or low.startswith("form") or low in {"main", "mdi", "login", "splash", "report"}
+            if not looks_formish:
+                continue
+            if _norm_form_name(token) in known_form_tokens:
+                continue
+            unresolved_candidates.add(low)
+    dead_form_tokens = {
+        _norm_token(_as_dict(ref).get("target_token"))
+        for ref in _as_list(_as_dict(raw_artifacts.get("dead_form_refs")).get("references"))
+        if isinstance(ref, dict) and _clean(_as_dict(ref).get("target_token"))
+    }
+    orphan_hints = {
+        _norm_form_name(path)
+        for row in _as_list(_as_dict(raw_artifacts.get("orphan_analysis")).get("orphans"))
+        if isinstance(row, dict)
+        for path in _as_list(row.get("candidate_paths"))
+        if _clean(path)
+    }
+    missing_unresolved = sorted(
+        token
+        for token in unresolved_candidates
+        if token and token not in dead_form_tokens and token not in orphan_hints
+    )
+    if missing_unresolved:
+        add_check(
+            check_id="cross_unresolved_nav_registration",
+            title="Unresolved form navigation refs are registered",
+            result="fail",
+            detail=f"Unregistered unresolved nav targets: {', '.join(missing_unresolved[:8])}",
+            blocking=True,
+            refs=["raw_artifacts.event_map.entries", "raw_artifacts.dead_form_refs.references", "raw_artifacts.orphan_analysis.orphans"],
+        )
+    else:
+        add_check(
+            check_id="cross_unresolved_nav_registration",
+            title="Unresolved form navigation refs are registered",
+            result="pass",
+            detail=f"Unresolved nav targets tracked: {len(unresolved_candidates)}.",
+            refs=["raw_artifacts.event_map.entries", "raw_artifacts.dead_form_refs.references", "raw_artifacts.orphan_analysis.orphans"],
+        )
+
     # DB archaeology artifact integrity (new Discover->Plan capability).
     db_required = [
         "source_db_profile",

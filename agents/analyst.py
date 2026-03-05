@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .base import BaseAgent, AgentResult
@@ -1654,6 +1655,11 @@ Analyze this code chunk and extract behavior compactly.
         event_handler_keys_set: set[str] = set()
         project_members_set: set[str] = set()
         sql_query_set: set[str] = set()
+        connection_strings_set: set[str] = set()
+        database_file_refs_set: set[str] = set()
+        connection_string_rows: list[dict[str, Any]] = []
+        database_file_reference_rows: list[dict[str, Any]] = []
+        module_global_declarations: list[dict[str, Any]] = []
         win32_declares_set: set[str] = set()
         com_progids_set: set[str] = set()
         com_references_set: set[str] = set()
@@ -1740,6 +1746,56 @@ Analyze this code chunk and extract behavior compactly.
                 text_query = str(query).strip()
                 if text_query:
                     sql_query_set.add(text_query)
+            source_file_norm = self._normalize_legacy_path(path)
+            form_hint = ""
+            if sig_forms:
+                form_hint = str(sig_forms[0]).split(":", 1)[-1].strip()
+            module_hint = ""
+            if str(path).lower().endswith(".bas"):
+                module_hint = Path(str(path)).stem
+            for conn in sig.get("connection_strings", []) if isinstance(sig.get("connection_strings", []), list) else []:
+                text_conn = str(conn).strip()
+                if text_conn:
+                    connection_strings_set.add(text_conn)
+                    connection_string_rows.append(
+                        {
+                            "connection_string": text_conn,
+                            "source_file": source_file_norm,
+                            "form": form_hint,
+                            "module": module_hint,
+                            "evidence": source_file_norm,
+                        }
+                    )
+            for db_ref in sig.get("database_file_refs", []) if isinstance(sig.get("database_file_refs", []), list) else []:
+                text_ref = str(db_ref).strip()
+                if text_ref:
+                    ref_norm = self._normalize_legacy_path(text_ref)
+                    database_file_refs_set.add(ref_norm)
+                    database_file_reference_rows.append(
+                        {
+                            "path": ref_norm,
+                            "source_file": source_file_norm,
+                            "form": form_hint,
+                            "module": module_hint,
+                            "evidence": source_file_norm,
+                        }
+                    )
+            for gdecl in sig.get("module_global_declarations", []) if isinstance(sig.get("module_global_declarations", []), list) else []:
+                if not isinstance(gdecl, dict):
+                    continue
+                symbol = str(gdecl.get("symbol", "")).strip()
+                if not symbol:
+                    continue
+                module_global_declarations.append(
+                    {
+                        "symbol": symbol,
+                        "declared_type": str(gdecl.get("declared_type", "Variant")).strip() or "Variant",
+                        "scope": str(gdecl.get("scope", "dim")).strip() or "dim",
+                        "source_file": self._normalize_legacy_path(str(gdecl.get("source_file", "")).strip() or source_file_norm),
+                        "line": int(gdecl.get("line", 0) or 0),
+                        "declaration": str(gdecl.get("declaration", "")).strip()[:320],
+                    }
+                )
             for entry in sig.get("ui_event_map", []) if isinstance(sig.get("ui_event_map", []), list) else []:
                 if not isinstance(entry, dict):
                     continue
@@ -1752,6 +1808,10 @@ Analyze this code chunk and extract behavior compactly.
                         "form": str(entry.get("form", "")).strip(),
                         "control": str(entry.get("control", "")).strip(),
                         "event": str(entry.get("event", "")).strip(),
+                        "source_file": self._normalize_legacy_path(
+                            str(entry.get("source_file", "")).strip() or source_file_norm
+                        ),
+                        "line": int(entry.get("line", 0) or 0),
                         "procedure_calls": entry.get("procedure_calls", [])[:20]
                         if isinstance(entry.get("procedure_calls", []), list)
                         else [],
@@ -2174,6 +2234,11 @@ Analyze this code chunk and extract behavior compactly.
             "side_effect_patterns": sorted(side_effects_set)[:40],
             "ui_event_map": ui_event_map,
             "sql_query_catalog": sorted(sql_query_set)[:160],
+            "connection_strings": sorted(connection_strings_set)[:200],
+            "database_file_references": sorted(database_file_refs_set)[:200],
+            "connection_string_rows": connection_string_rows[:800],
+            "database_file_reference_rows": database_file_reference_rows[:800],
+            "module_global_declarations": module_global_declarations[:1000],
             "com_surface_map": {
                 "late_bound_progids": sorted(com_progids_set)[:120],
                 "call_by_name_sites": call_by_name_sites_total,
@@ -2277,6 +2342,11 @@ Analyze this code chunk and extract behavior compactly.
                 "project_members": sorted(project_members_set)[: self.LEGACY_MAX_CONTROLS],
                 "ui_event_map": ui_event_map[:160],
                 "sql_query_catalog": sorted(sql_query_set)[:120],
+                "connection_strings": sorted(connection_strings_set)[:200],
+                "database_file_references": sorted(database_file_refs_set)[:200],
+                "connection_string_rows": connection_string_rows[:800],
+                "database_file_reference_rows": database_file_reference_rows[:800],
+                "module_global_declarations": module_global_declarations[:1000],
                 "com_surface_map": {
                     "late_bound_progids": sorted(com_progids_set)[:120],
                     "call_by_name_sites": call_by_name_sites_total,
@@ -2345,6 +2415,42 @@ Analyze this code chunk and extract behavior compactly.
         win32_declares = vb6.get("win32_declares", []) if isinstance(vb6.get("win32_declares", []), list) else []
         error_profile = vb6.get("error_handling_profile", {}) if isinstance(vb6.get("error_handling_profile", {}), dict) else {}
         pitfall_detectors = vb6.get("pitfall_detectors", []) if isinstance(vb6.get("pitfall_detectors", []), list) else []
+        connection_strings = vb6.get("connection_strings", []) if isinstance(vb6.get("connection_strings", []), list) else []
+        connection_string_rows = (
+            vb6.get("connection_string_rows", [])
+            if isinstance(vb6.get("connection_string_rows", []), list)
+            else []
+        )
+        database_file_references = (
+            vb6.get("database_file_references", [])
+            if isinstance(vb6.get("database_file_references", []), list)
+            else (
+                vb6.get("database_file_refs", [])
+                if isinstance(vb6.get("database_file_refs", []), list)
+                else []
+            )
+        )
+        normalized_db_refs: list[str] = []
+        for value in database_file_references[:200]:
+            if isinstance(value, dict):
+                token = str(value.get("path", "") or value.get("db_path", "") or value.get("database", "")).strip()
+            else:
+                token = str(value).strip()
+            if not token:
+                continue
+            normalized = self._normalize_legacy_path(token)
+            if normalized and normalized not in normalized_db_refs:
+                normalized_db_refs.append(normalized)
+        database_file_reference_rows = (
+            vb6.get("database_file_reference_rows", [])
+            if isinstance(vb6.get("database_file_reference_rows", []), list)
+            else []
+        )
+        module_global_declarations = (
+            vb6.get("module_global_declarations", [])
+            if isinstance(vb6.get("module_global_declarations", []), list)
+            else []
+        )
         readiness = vb6.get("modernization_readiness", {}) if isinstance(vb6.get("modernization_readiness", {}), dict) else {}
         source_target_profile = (
             vb6.get("source_target_modernization_profile", {})
@@ -2677,6 +2783,11 @@ Analyze this code chunk and extract behavior compactly.
             "side_effect_patterns": [],
             "ui_event_map": ui_event_map[:160],
             "sql_query_catalog": sql_catalog[:120],
+            "connection_strings": connection_strings[:200],
+            "database_file_references": normalized_db_refs,
+            "connection_string_rows": connection_string_rows[:800],
+            "database_file_reference_rows": database_file_reference_rows[:800],
+            "module_global_declarations": module_global_declarations[:1000],
             "com_surface_map": com_surface,
             "win32_declares": win32_declares[:120],
             "error_handling_profile": error_profile,
@@ -2710,6 +2821,11 @@ Analyze this code chunk and extract behavior compactly.
                 "project_members": vb6.get("project_members", []) if isinstance(vb6.get("project_members", []), list) else [],
                 "ui_event_map": ui_event_map[:160],
                 "sql_query_catalog": sql_catalog[:120],
+                "connection_strings": connection_strings[:200],
+                "database_file_references": normalized_db_refs,
+                "connection_string_rows": connection_string_rows[:800],
+                "database_file_reference_rows": database_file_reference_rows[:800],
+                "module_global_declarations": module_global_declarations[:1000],
                 "com_surface_map": com_surface,
                 "win32_declares": win32_declares[:120],
                 "error_handling_profile": error_profile,

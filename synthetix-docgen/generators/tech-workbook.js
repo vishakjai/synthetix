@@ -752,6 +752,232 @@ function buildFindings(data) {
   })];
 }
 
+// ── Section 9: Static Forensics ──────────────────────────────────────────
+function buildStaticForensics(data) {
+  const mkEmpty = (msg) => para(msg, { color: C.DGREY, italics: true });
+
+  const mdbRows = Array.isArray(data.mdb_inventory) ? data.mdb_inventory : [];
+  const mdbTable = mdbRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [700, 2400, 900, 900, 700, 1500, 1700, 1640],
+      rows: [
+        hRow([
+          hCell('DB ID', 700, C.SLATE), hCell('Path', 2400, C.SLATE),
+          hCell('Name', 900, C.SLATE), hCell('Ext', 900, C.SLATE),
+          hCell('LOC', 700, C.SLATE), hCell('Detected From', 1500, C.SLATE),
+          hCell('Referenced By Forms', 1700, C.SLATE), hCell('Evidence', 1640, C.SLATE),
+        ]),
+        ...mdbRows.map((r) => new TableRow({ children: [
+          codeCell(r.db_id || 'n/a', 700),
+          codeCell(r.path || 'n/a', 2400),
+          cell(r.name || 'n/a', 900),
+          cell(r.extension || 'n/a', 900, { align: AlignmentType.CENTER }),
+          cell(String(r.source_loc_proxy || 0), 700, { align: AlignmentType.CENTER }),
+          cell(r.detected_from || 'n/a', 1500, { sz: 15 }),
+          cell(r.referenced_by_forms || 'n/a', 1700, { sz: 15 }),
+          cell(r.evidence_refs || 'n/a', 1640, { sz: 14, color: C.DGREY }),
+        ]})),
+      ],
+    })
+    : null;
+
+  const formLocRows = Array.isArray(data.form_loc_profile) ? data.form_loc_profile : [];
+  const formLocTable = formLocRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [2000, 1800, 1700, 2200, 600, 640, 800, 700],
+      rows: [
+        hRow([
+          hCell('Form', 2000, C.SLATE), hCell('Base Form', 1800, C.SLATE),
+          hCell('Project', 1700, C.SLATE), hCell('Source File', 2200, C.SLATE),
+          hCell('LOC', 600, C.SLATE), hCell('In VBP', 640, C.SLATE),
+          hCell('Status', 800, C.SLATE), hCell('Conf', 700, C.SLATE),
+        ]),
+        ...formLocRows.map((r) => new TableRow({ children: [
+          cell(displayFormLabel(r.form || 'n/a'), 2000, { bold: true }),
+          cell(r.base_form || 'n/a', 1800, { sz: 15 }),
+          cell(displayProjectLabel(r.project || 'n/a'), 1700, { sz: 15 }),
+          codeCell(r.source_file || 'n/a', 2200),
+          cell(String(r.loc || 0), 600, { align: AlignmentType.CENTER }),
+          badgeCell((String(r.in_vbp || '').toLowerCase() === 'yes' || String(r.in_vbp || '').toLowerCase() === 'true') ? 'yes' : 'no', 640),
+          cell(r.active_or_orphan || 'n/a', 800, { align: AlignmentType.CENTER }),
+          cell(String(r.confidence || '0'), 700, { align: AlignmentType.CENTER }),
+        ]})),
+      ],
+    })
+    : null;
+
+  const designerRows = Array.isArray(data.designer_loc_profile) ? data.designer_loc_profile : [];
+  const designerTable = designerRows.length
+    ? new Table({
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [7000, 1600, 1840],
+      rows: [
+        hRow([hCell('Designer File', 7000, C.SLATE), hCell('Kind', 1600, C.SLATE), hCell('LOC', 1840, C.SLATE)]),
+        ...designerRows.map((r) => new TableRow({ children: [
+          codeCell(r.file || 'n/a', 7000),
+          cell(r.kind || 'designer', 1600, { align: AlignmentType.CENTER }),
+          cell(String(r.loc || 0), 1840, { align: AlignmentType.CENTER }),
+        ]})),
+      ],
+    })
+    : null;
+
+  const connRows = Array.isArray(data.connection_string_variants) ? data.connection_string_variants : [];
+  const connTable = connRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [1000, 3300, 1800, 2000, 2340],
+      rows: [
+        hRow([
+          hCell('Variant ID', 1000, C.SLATE), hCell('Normalized Pattern', 3300, C.SLATE),
+          hCell('Risk Flags', 1800, C.SLATE), hCell('Source Refs', 2000, C.SLATE),
+          hCell('Example', 2340, C.SLATE),
+        ]),
+        ...connRows.map((r) => new TableRow({ children: [
+          codeCell(r.variant_id || 'n/a', 1000),
+          codeCell(r.normalized_pattern || 'n/a', 3300),
+          cell(r.risk_flags || 'none', 1800, { sz: 15 }),
+          cell(r.source_refs || 'n/a', 2000, { sz: 15 }),
+          codeCell(r.example || 'n/a', 2340),
+        ]})),
+      ],
+    })
+    : null;
+
+  const globalRows = Array.isArray(data.module_global_inventory) ? data.module_global_inventory : [];
+  const globalTable = globalRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [1300, 1700, 1300, 3540, 2600],
+      rows: [
+        hRow([
+          hCell('Symbol', 1300, C.SLATE), hCell('Declared Type', 1700, C.SLATE),
+          hCell('Scope', 1300, C.SLATE), hCell('Inferred Purpose', 3540, C.SLATE),
+          hCell('Evidence Refs', 2600, C.SLATE),
+        ]),
+        ...globalRows.map((r) => new TableRow({ children: [
+          codeCell(r.symbol || 'n/a', 1300),
+          cell(r.declared_type || 'n/a', 1700),
+          cell(r.scope || 'n/a', 1300, { align: AlignmentType.CENTER }),
+          cell(r.inferred_purpose || 'n/a', 3540, { sz: 15 }),
+          cell(r.evidence_refs || 'n/a', 2600, { sz: 15 }),
+        ]})),
+      ],
+    })
+    : null;
+
+  const moduleRows = Array.isArray(data.module_inventory) ? data.module_inventory : [];
+  const moduleTable = moduleRows.length
+    ? new Table({
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [W],
+      rows: [
+        hRow([hCell('Modules', W, C.SLATE)]),
+        ...moduleRows.map((r) => new TableRow({ children: [codeCell(r.module || 'n/a', W)] })),
+      ],
+    })
+    : null;
+
+  const deadRows = Array.isArray(data.dead_form_refs) ? data.dead_form_refs : [];
+  const deadTable = deadRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [900, 1700, 1900, 1300, 1000, 3640],
+      rows: [
+        hRow([
+          hCell('Ref ID', 900, C.SLATE), hCell('Caller Form', 1700, C.SLATE),
+          hCell('Caller Handler', 1900, C.SLATE), hCell('Target', 1300, C.SLATE),
+          hCell('Status', 1000, C.SLATE), hCell('Rationale', 3640, C.SLATE),
+        ]),
+        ...deadRows.map((r) => new TableRow({ children: [
+          codeCell(r.ref_id || 'n/a', 900),
+          cell(displayFormLabel(r.caller_form || 'n/a'), 1700),
+          codeCell(r.caller_handler || 'n/a', 1900),
+          codeCell(displayFormLabel(r.target_token || 'n/a'), 1300),
+          cell(r.status || 'n/a', 1000, { align: AlignmentType.CENTER }),
+          cell(r.rationale || 'n/a', 3640, { sz: 15 }),
+        ]})),
+      ],
+    })
+    : null;
+
+  const deRows = Array.isArray(data.dataenvironment_report_mapping) ? data.dataenvironment_report_mapping : [];
+  const deTable = deRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [900, 1700, 1800, 1700, 1700, 740, 1600],
+      rows: [
+        hRow([
+          hCell('Map ID', 900, C.SLATE), hCell('Caller Form', 1700, C.SLATE),
+          hCell('Caller Handler', 1800, C.SLATE), hCell('Report', 1700, C.SLATE),
+          hCell('DataEnvironment', 1700, C.SLATE), hCell('Conf', 740, C.SLATE),
+          hCell('Evidence', 1600, C.SLATE),
+        ]),
+        ...deRows.map((r) => new TableRow({ children: [
+          codeCell(r.mapping_id || 'n/a', 900),
+          cell(displayFormLabel(r.caller_form || 'n/a'), 1700),
+          codeCell(r.caller_handler || 'n/a', 1800),
+          codeCell(r.report_object || 'n/a', 1700),
+          codeCell(r.dataenvironment_object || 'n/a', 1700),
+          cell(String(r.confidence || '0'), 740, { align: AlignmentType.CENTER }),
+          codeCell(r.evidence_ref || 'n/a', 1600),
+        ]})),
+      ],
+    })
+    : null;
+
+  const detectorRows = Array.isArray(data.static_risk_detectors) ? data.static_risk_detectors : [];
+  const detectorTable = detectorRows.length
+    ? new Table({
+      layout: TableLayoutType.FIXED,
+      width: { size: W, type: WidthType.DXA },
+      columnWidths: [1800, 1000, 4000, 3640],
+      rows: [
+        hRow([
+          hCell('Detector', 1800, C.SLATE), hCell('Severity', 1000, C.SLATE),
+          hCell('Summary', 4000, C.SLATE), hCell('Evidence', 3640, C.SLATE),
+        ]),
+        ...detectorRows.map((r) => new TableRow({ children: [
+          codeCell(r.detector_id || 'n/a', 1800),
+          sevCell(r.severity || 'medium', 1000),
+          cell(r.summary || 'n/a', 4000, { sz: 15 }),
+          codeCell(r.evidence || 'n/a', 3640),
+        ]})),
+      ],
+    })
+    : null;
+
+  return [
+    h1('9. Static Forensics Addendum'),
+    para('Deterministic static-analysis outputs from Discover used to support schema archaeology, traceability, and migration planning.'),
+    h2('MDB / Access Inventory'),
+    sp(), ...(mdbTable ? [mdbTable] : [mkEmpty('No MDB/ACCDB files detected.')]),
+    h2('Form LOC Profile'),
+    sp(), ...(formLocTable ? [formLocTable] : [mkEmpty('No form LOC profile rows detected.')]),
+    ...(designerTable ? [sp(), h3('Designer LOC (DSR/DCA/DCX)'), designerTable] : []),
+    h2('Connection String Variants'),
+    sp(), ...(connTable ? [connTable] : [mkEmpty('No connection-string variants detected.')]),
+    h2('Module Global Inventory'),
+    sp(), ...(globalTable ? [globalTable] : [mkEmpty('No inferred module globals detected.')]),
+    ...(moduleTable ? [sp(), h3('Module List'), moduleTable] : []),
+    h2('Dead Form References'),
+    sp(), ...(deadTable ? [deadTable] : [mkEmpty('No unresolved form references detected.')]),
+    h2('DataEnvironment / Report Mapping'),
+    sp(), ...(deTable ? [deTable] : [mkEmpty('No DataEnvironment/report mappings detected.')]),
+    h2('Static Risk Detectors'),
+    sp(), ...(detectorTable ? [detectorTable] : [mkEmpty('No static detector findings emitted.')]),
+    sp(),
+  ];
+}
+
 // ── Main export ────────────────────────────────────────────────────────────
 async function generateTechWb(data, outputPath) {
   const docTitle    = data.meta.title || 'VB6 Banking System';
@@ -763,6 +989,7 @@ async function generateTechWb(data, outputPath) {
   const { navTable, sharedTable, conflictTable } = buildDepMap(data);
   const riskTable    = buildRiskRegister(data);
   const findingsContent = buildFindings(data);
+  const staticForensicsContent = buildStaticForensics(data);
   const qaAlerts = buildQaAlerts(data);
   const appendixCounts = (data && typeof data === 'object' && data.appendix_counts && typeof data.appendix_counts === 'object')
     ? data.appendix_counts
@@ -850,6 +1077,8 @@ async function generateTechWb(data, outputPath) {
         h1('8. Detector Findings'),
         para('Automated detector findings from the analysis platform — patterns flagged for engineering review.'),
         sp(), ...findingsContent, sp(),
+
+        pb(), ...staticForensicsContent,
       ],
     }],
   });

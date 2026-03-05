@@ -1185,7 +1185,7 @@ function normalizeTraceabilitySqlCoverage(qData, sqlEntries) {
 }
 
 function parseR(content) {
-  const { rows } = parseTableSection(getSection(content, 'R.'));
+  const { rows } = parseTableSection(getSection(content, 'R.', 'S.'));
   return rows
     .filter(r => !gc(r,0).endsWith('.frm'))
     .map(r => ({
@@ -1193,6 +1193,169 @@ function parseR(content) {
       depends_on: gc(r,2), shared:      gc(r,3),
       rationale:  gc(r,4),
     }));
+}
+
+function parseS(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'S.', 'T.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['dbid', 'id'], 0);
+  const iPath = idxFirst(hm, ['path'], 1);
+  const iName = idxFirst(hm, ['name'], 2);
+  const iExt = idxFirst(hm, ['ext', 'extension'], 3);
+  const iLoc = idxFirst(hm, ['locproxy', 'loc'], 4);
+  const iDetected = idxFirst(hm, ['detectedfrom'], 5);
+  const iForms = idxFirst(hm, ['referencedbyforms'], 6);
+  const iModules = idxFirst(hm, ['referencedbymodules'], 7);
+  const iEvidence = idxFirst(hm, ['evidencerefs', 'evidence'], 8);
+  return rows.map((r) => ({
+    db_id: gc(r, iId),
+    path: gc(r, iPath),
+    name: gc(r, iName),
+    extension: gc(r, iExt),
+    source_loc_proxy: toIntLoose(gc(r, iLoc), 0),
+    detected_from: gc(r, iDetected),
+    referenced_by_forms: gc(r, iForms),
+    referenced_by_modules: gc(r, iModules),
+    evidence_refs: gc(r, iEvidence),
+  }));
+}
+
+function parseT(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'T.', 'T1.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['formid', 'id'], 0);
+  const iForm = idxFirst(hm, ['form'], 1);
+  const iBase = idxFirst(hm, ['baseform', 'base'], 2);
+  const iProject = idxFirst(hm, ['project'], 3);
+  const iSourceFile = idxFirst(hm, ['sourcefile', 'file'], 4);
+  const iLoc = idxFirst(hm, ['loc'], 5);
+  const iInVbp = idxFirst(hm, ['invbp'], 6);
+  const iStatus = idxFirst(hm, ['activeororphan', 'status'], 7);
+  const iConfidence = idxFirst(hm, ['confidence'], 8);
+  return rows.map((r) => ({
+    form_id: gc(r, iId),
+    form: gc(r, iForm),
+    base_form: gc(r, iBase),
+    project: gc(r, iProject),
+    source_file: gc(r, iSourceFile),
+    loc: toIntLoose(gc(r, iLoc), 0),
+    in_vbp: gc(r, iInVbp),
+    active_or_orphan: gc(r, iStatus),
+    confidence: gc(r, iConfidence),
+  }));
+}
+
+function parseT1(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'T1.', 'U.'));
+  const hm = headerMap(headers);
+  const iFile = idxFirst(hm, ['file'], 0);
+  const iKind = idxFirst(hm, ['kind'], 1);
+  const iLoc = idxFirst(hm, ['loc'], 2);
+  return rows.map((r) => ({
+    file: gc(r, iFile),
+    kind: gc(r, iKind),
+    loc: toIntLoose(gc(r, iLoc), 0),
+  }));
+}
+
+function parseU(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'U.', 'V.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['variantid', 'id'], 0);
+  const iPattern = idxFirst(hm, ['normalizedpattern', 'pattern'], 1);
+  const iRisk = idxFirst(hm, ['riskflags', 'risks'], 2);
+  const iRefs = idxFirst(hm, ['sourcerefs', 'refs'], 3);
+  const iExample = idxFirst(hm, ['example'], 4);
+  return rows.map((r) => ({
+    variant_id: gc(r, iId),
+    normalized_pattern: gc(r, iPattern),
+    risk_flags: gc(r, iRisk),
+    source_refs: gc(r, iRefs),
+    example: gc(r, iExample),
+  }));
+}
+
+function parseV(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'V.', 'V1.'));
+  const hm = headerMap(headers);
+  const iSymbol = idxFirst(hm, ['symbol'], 0);
+  const iType = idxFirst(hm, ['declaredtype', 'type'], 1);
+  const iScope = idxFirst(hm, ['scope'], 2);
+  const iPurpose = idxFirst(hm, ['inferredpurpose', 'purpose'], 3);
+  const iEvidence = idxFirst(hm, ['evidencerefs', 'evidence'], 4);
+  return rows.map((r) => ({
+    symbol: gc(r, iSymbol),
+    declared_type: gc(r, iType),
+    scope: gc(r, iScope),
+    inferred_purpose: gc(r, iPurpose),
+    evidence_refs: gc(r, iEvidence),
+  }));
+}
+
+function parseV1(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'V1.', 'W.'));
+  const hm = headerMap(headers);
+  const iModule = idxFirst(hm, ['module'], 0);
+  return rows.map((r) => ({ module: gc(r, iModule) }));
+}
+
+function parseW(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'W.', 'X.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['refid', 'id'], 0);
+  const iCallerForm = idxFirst(hm, ['callerform'], 1);
+  const iCallerHandler = idxFirst(hm, ['callerhandler'], 2);
+  const iTarget = idxFirst(hm, ['targettoken', 'target'], 3);
+  const iStatus = idxFirst(hm, ['status'], 4);
+  const iRationale = idxFirst(hm, ['rationale'], 5);
+  const iEvidence = idxFirst(hm, ['evidenceref', 'evidence'], 6);
+  return rows.map((r) => ({
+    ref_id: gc(r, iId),
+    caller_form: gc(r, iCallerForm),
+    caller_handler: gc(r, iCallerHandler),
+    target_token: gc(r, iTarget),
+    status: gc(r, iStatus),
+    rationale: gc(r, iRationale),
+    evidence_ref: gc(r, iEvidence),
+  }));
+}
+
+function parseX(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'X.', 'Y.'));
+  const hm = headerMap(headers);
+  const iId = idxFirst(hm, ['mappingid', 'id'], 0);
+  const iCallerForm = idxFirst(hm, ['callerform'], 1);
+  const iCallerHandler = idxFirst(hm, ['callerhandler'], 2);
+  const iReport = idxFirst(hm, ['reportobject', 'report'], 3);
+  const iEnv = idxFirst(hm, ['dataenvironment', 'dataenvironmentobject'], 4);
+  const iKind = idxFirst(hm, ['kind', 'mappingkind'], 5);
+  const iConfidence = idxFirst(hm, ['confidence'], 6);
+  const iEvidence = idxFirst(hm, ['evidenceref', 'evidence'], 7);
+  return rows.map((r) => ({
+    mapping_id: gc(r, iId),
+    caller_form: gc(r, iCallerForm),
+    caller_handler: gc(r, iCallerHandler),
+    report_object: gc(r, iReport),
+    dataenvironment_object: gc(r, iEnv),
+    mapping_kind: gc(r, iKind),
+    confidence: gc(r, iConfidence),
+    evidence_ref: gc(r, iEvidence),
+  }));
+}
+
+function parseY(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'Y.'));
+  const hm = headerMap(headers);
+  const iDetector = idxFirst(hm, ['detectorid', 'id'], 0);
+  const iSeverity = idxFirst(hm, ['severity'], 1);
+  const iSummary = idxFirst(hm, ['summary'], 2);
+  const iEvidence = idxFirst(hm, ['evidence'], 3);
+  return rows.map((r) => ({
+    detector_id: gc(r, iDetector),
+    severity: gc(r, iSeverity),
+    summary: gc(r, iSummary),
+    evidence: gc(r, iEvidence),
+  }));
 }
 
 function sprintBlockLabel(value) {
@@ -1522,6 +1685,15 @@ function parseMd(mdContent, meta = {}) {
   const formTraces = parseP(mdContent);
   const qData = parseQ(mdContent);
   const rRaw = parseR(mdContent);
+  const mdbInventory = parseS(mdContent);
+  const formLocProfile = parseT(mdContent);
+  const designerLocProfile = parseT1(mdContent);
+  const connectionStringVariants = parseU(mdContent);
+  const moduleGlobalInventory = parseV(mdContent);
+  const moduleInventory = parseV1(mdContent);
+  const deadFormRefs = parseW(mdContent);
+  const dataenvironmentMappings = parseX(mdContent);
+  const staticRiskDetectors = parseY(mdContent);
 
   normalizeTraceabilitySqlCoverage(qData, sqlEntries);
 
@@ -1633,6 +1805,15 @@ function parseMd(mdContent, meta = {}) {
     active_q:        qData,          // alias used by generators
     sprints:         rData,
     active_sprints:  rData,          // alias used by generators
+    mdb_inventory: mdbInventory,
+    form_loc_profile: formLocProfile,
+    designer_loc_profile: designerLocProfile,
+    connection_string_variants: connectionStringVariants,
+    module_global_inventory: moduleGlobalInventory,
+    module_inventory: moduleInventory,
+    dead_form_refs: deadFormRefs,
+    dataenvironment_report_mapping: dataenvironmentMappings,
+    static_risk_detectors: staticRiskDetectors,
   };
 }
 
