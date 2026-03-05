@@ -13,7 +13,7 @@ const fs = require('fs');
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, AlignmentType, HeadingLevel, BorderStyle, WidthType,
-  ShadingType, VerticalAlign, PageNumber, PageBreak, TabStopType, TableLayoutType,
+  ShadingType, VerticalAlign, PageNumber, PageBreak, TabStopType, TableLayoutType, TableOfContents,
 } = require('docx');
 
 // ── Palette (darker, engineering feel) ────────────────────────────────────
@@ -335,7 +335,7 @@ function buildProjectInventory(data) {
         }
         if (discovered <= 0) discovered = mapped + excluded;
         const fallbackForms = toInt(p.forms);
-        const mappedDisplay = activeFromLoc > 0 ? activeFromLoc : mapped;
+        const mappedDisplay = Math.max(mapped, activeFromLoc);
         const formsText = discovered > 0
           ? (mappedDisplay > 0 && discovered !== mappedDisplay ? `${mappedDisplay} / ${discovered}` : `${discovered}`)
           : String(fallbackForms || p.forms || '0');
@@ -409,6 +409,38 @@ function buildKTech(data) {
         hCell('Confidence', 1440, C.SLATE),
       ]}),
       ...ktRows,
+    ],
+  });
+}
+
+function buildOrphanFormProfile(data) {
+  const rows = Array.isArray(data.form_loc_profile) ? data.form_loc_profile : [];
+  const orphanRows = rows.filter((r) => {
+    const status = String(r?.active_or_orphan || '').trim().toLowerCase();
+    return status.includes('orphan');
+  });
+  if (!orphanRows.length) return null;
+
+  return new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: [2200, 1700, 2200, 700, 700, 700, 2240],
+    rows: [
+      hRow([
+        hCell('Form', 2200, C.SLATE), hCell('Project', 1700, C.SLATE),
+        hCell('Source File', 2200, C.SLATE), hCell('LOC', 700, C.SLATE),
+        hCell('In VBP', 700, C.SLATE), hCell('Status', 700, C.SLATE),
+        hCell('Evidence', 2240, C.SLATE),
+      ]),
+      ...orphanRows.map((r) => new TableRow({ children: [
+        cell(displayFormLabel(r.form || 'n/a'), 2200, { bold: true }),
+        cell(displayProjectLabel(r.project || 'n/a'), 1700),
+        codeCell(r.source_file || 'n/a', 2200),
+        cell(String(r.loc || 0), 700, { align: AlignmentType.CENTER }),
+        badgeCell((String(r.in_vbp || '').toLowerCase() === 'yes' || String(r.in_vbp || '').toLowerCase() === 'true') ? 'yes' : 'no', 700),
+        cell(r.active_or_orphan || 'orphan', 700, { align: AlignmentType.CENTER }),
+        codeCell(r.evidence_refs || 'n/a', 2240),
+      ]})),
     ],
   });
 }
@@ -775,7 +807,9 @@ function buildFindings(data) {
 }
 
 // ── Section 9: Static Forensics ──────────────────────────────────────────
-function buildStaticForensics(data) {
+function buildStaticForensics(data, opts = {}) {
+  const includeSectionHeading = opts.includeSectionHeading !== false;
+  const sectionTitle = String(opts.sectionTitle || '9. Static Forensics Addendum');
   const mkEmpty = (msg) => para(msg, { color: C.DGREY, italics: true });
 
   const mdbRows = Array.isArray(data.mdb_inventory) ? data.mdb_inventory : [];
@@ -800,33 +834,6 @@ function buildStaticForensics(data) {
           cell(r.detected_from || 'n/a', 1500, { sz: 15 }),
           cell(r.referenced_by_forms || 'n/a', 1700, { sz: 15 }),
           cell(r.evidence_refs || 'n/a', 1640, { sz: 14, color: C.DGREY }),
-        ]})),
-      ],
-    })
-    : null;
-
-  const formLocRows = Array.isArray(data.form_loc_profile) ? data.form_loc_profile : [];
-  const formLocTable = formLocRows.length
-    ? new Table({
-      layout: TableLayoutType.FIXED,
-      width: { size: W, type: WidthType.DXA },
-      columnWidths: [2000, 1800, 1700, 2200, 600, 640, 800, 700],
-      rows: [
-        hRow([
-          hCell('Form', 2000, C.SLATE), hCell('Base Form', 1800, C.SLATE),
-          hCell('Project', 1700, C.SLATE), hCell('Source File', 2200, C.SLATE),
-          hCell('LOC', 600, C.SLATE), hCell('In VBP', 640, C.SLATE),
-          hCell('Status', 800, C.SLATE), hCell('Conf', 700, C.SLATE),
-        ]),
-        ...formLocRows.map((r) => new TableRow({ children: [
-          cell(displayFormLabel(r.form || 'n/a'), 2000, { bold: true }),
-          cell(r.base_form || 'n/a', 1800, { sz: 15 }),
-          cell(displayProjectLabel(r.project || 'n/a'), 1700, { sz: 15 }),
-          codeCell(r.source_file || 'n/a', 2200),
-          cell(String(r.loc || 0), 600, { align: AlignmentType.CENTER }),
-          badgeCell((String(r.in_vbp || '').toLowerCase() === 'yes' || String(r.in_vbp || '').toLowerCase() === 'true') ? 'yes' : 'no', 640),
-          cell(r.active_or_orphan || 'n/a', 800, { align: AlignmentType.CENTER }),
-          cell(String(r.confidence || '0'), 700, { align: AlignmentType.CENTER }),
         ]})),
       ],
     })
@@ -978,12 +985,10 @@ function buildStaticForensics(data) {
     : null;
 
   return [
-    h1('9. Static Forensics Addendum'),
+    ...(includeSectionHeading ? [h1(sectionTitle)] : []),
     para('Deterministic static-analysis outputs from Discover used to support schema archaeology, traceability, and migration planning.'),
     h2('MDB / Access Inventory'),
     sp(), ...(mdbTable ? [mdbTable] : [mkEmpty('No MDB/ACCDB files detected.')]),
-    h2('Form LOC Profile'),
-    sp(), ...(formLocTable ? [formLocTable] : [mkEmpty('No form LOC profile rows detected.')]),
     ...(designerTable ? [sp(), h3('Designer LOC (DSR/DCA/DCX)'), designerTable] : []),
     h2('Connection String Variants'),
     sp(), ...(connTable ? [connTable] : [mkEmpty('No connection-string variants detected.')]),
@@ -1005,13 +1010,14 @@ async function generateTechWb(data, outputPath) {
   const docTitle    = data.meta.title || 'VB6 Banking System';
   const projectTable = buildProjectInventory(data);
   const ktTable      = buildKTech(data);
+  const orphanTable  = buildOrphanFormProfile(data);
   const depsTable    = buildDependencies(data);
   const sqlContent   = buildSqlCatalog(data);
   const traceContent = buildFlowTraces(data);
   const { navTable, sharedTable, conflictTable } = buildDepMap(data);
   const riskTable    = buildRiskRegister(data);
   const findingsContent = buildFindings(data);
-  const staticForensicsContent = buildStaticForensics(data);
+  const staticForensicsContent = buildStaticForensics(data, { includeSectionHeading: false });
   const qaAlerts = buildQaAlerts(data);
   const appendixCounts = (data && typeof data === 'object' && data.appendix_counts && typeof data.appendix_counts === 'object')
     ? data.appendix_counts
@@ -1050,6 +1056,14 @@ async function generateTechWb(data, outputPath) {
       children: [
         ...buildCover(data),
 
+        h1('Index'),
+        para('Linked index for quick navigation across workbook sections.'),
+        new TableOfContents('Contents', {
+          hyperlink: true,
+          headingStyleRange: '1-3',
+        }),
+        pb(),
+
         h1('1. Project Inventory'),
         para(
           `Project variants analysed from the repository. Member counts include forms and modules. `
@@ -1064,8 +1078,13 @@ async function generateTechWb(data, outputPath) {
         sp(), projectTable, pb(),
 
         h1('2. Form Technical Profile (K-Tech)'),
-        para('Technical attributes for each active form: ActiveX dependencies, database table touchpoints, callables count, and analysis coverage score.'),
-        sp(), ktTable, pb(),
+        para('Technical attributes grouped by active and orphan forms. Includes static-forensics details consolidated into this section.'),
+        h2('Active Forms'),
+        sp(), ktTable,
+        h2('Orphan Forms'),
+        sp(), ...(orphanTable ? [orphanTable] : [para('No orphan forms detected.', { color: C.DGREY, italics: true })]),
+        h2('Static Forensics Addendum'),
+        sp(), ...staticForensicsContent, pb(),
 
         h1('3. Dependency Inventory'),
         para('All external dependencies (OCX, DLL, COM references) discovered across projects. GUID is used for COM registration lookup. Migration action indicates recommended replacement strategy.'),
@@ -1101,8 +1120,6 @@ async function generateTechWb(data, outputPath) {
         h1('8. Detector Findings'),
         para('Automated detector findings from the analysis platform — patterns flagged for engineering review.'),
         sp(), ...findingsContent, sp(),
-
-        pb(), ...staticForensicsContent,
       ],
     }],
   });

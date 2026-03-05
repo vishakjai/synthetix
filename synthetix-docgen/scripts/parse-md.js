@@ -58,6 +58,43 @@ function parseTableSection(text) {
   return { headers, rows };
 }
 
+function parseTableBlocks(text) {
+  const lines = String(text || '').split('\n');
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = String(lines[i] || '').trim();
+    const next = String(lines[i + 1] || '').trim();
+    if (!line.startsWith('|') || !next.startsWith('|')) {
+      i += 1;
+      continue;
+    }
+    const dividerCandidate = next
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map((c) => c.trim())
+      .filter(Boolean);
+    const isDivider = dividerCandidate.length > 0 && dividerCandidate.every((c) => /^:?-{3,}:?$/.test(c));
+    if (!isDivider) {
+      i += 1;
+      continue;
+    }
+
+    const tableLines = [line, next];
+    i += 2;
+    while (i < lines.length) {
+      const row = String(lines[i] || '').trim();
+      if (!row.startsWith('|')) break;
+      tableLines.push(row);
+      i += 1;
+    }
+    const parsed = parseTableSection(tableLines.join('\n'));
+    if (parsed.headers.length && parsed.rows.length) blocks.push(parsed);
+  }
+  return blocks;
+}
+
 function getSection(content, name, nextName) {
   const start = content.indexOf(`### ${name}`);
   if (start === -1) return '';
@@ -383,29 +420,39 @@ function parseC(content) {
 }
 
 function parseD(content) {
-  const { headers, rows } = parseTableSection(getSection(content, 'D.', 'E.'));
-  const hm = headerMap(headers);
-  const iId = idxFirst(hm, ['sqlid', 'id'], 0);
-  const iForm = idxFirst(hm, ['form', 'scope'], -1);
-  const iHandler = idxFirst(hm, ['handler', 'callable', 'entrypoint', 'query', 'sql'], -1);
-  const iOp = idxFirst(hm, ['operation', 'op', 'kind'], 1);
-  const iTables = idxFirst(hm, ['tables', 'tablestouched'], 2);
-  const iCols = idxFirst(hm, ['columns', 'fields'], -1);
   const sqlOps = /^(select|insert|update|delete|merge|create|alter|drop|truncate|ddl|unknown)$/i;
-  return rows
-    .map((r) => {
-      const handler = iHandler >= 0 ? gc(r, iHandler) : '';
-      const normalizedHandler = normalizeSqlSnippet(handler) || handler;
+  const blocks = parseTableBlocks(getSection(content, 'D.', 'E.'));
+  const parsedRows = [];
+  for (const block of blocks) {
+    const hm = headerMap(block.headers);
+    const iId = idxFirst(hm, ['sqlid', 'id'], 0);
+    const iForm = idxFirst(hm, ['form', 'scope'], -1);
+    const iHandler = idxFirst(hm, ['handler', 'callable', 'entrypoint', 'query', 'sqltext', 'statement'], -1);
+    const iOp = idxFirst(hm, ['operation', 'op', 'kind'], 1);
+    const iTables = idxFirst(hm, ['tables', 'tablestouched'], 2);
+    const iCols = idxFirst(hm, ['columns', 'fields'], -1);
+    const iNotes = idxFirst(hm, ['notes', 'constraints', 'remarks'], -1);
+
+    for (const r of block.rows) {
+      const handlerRaw = iHandler >= 0 ? gc(r, iHandler) : '';
+      const normalizedHandler = normalizeSqlSnippet(handlerRaw) || handlerRaw;
       const inferredOp = inferSqlOperation(gc(r, iOp), normalizedHandler);
-      return {
+      // If handler column is clearly not SQL text, recover from notes/constraints columns.
+      const looksSql = isLikelySqlQuery(normalizedHandler);
+      const notesCandidate = iNotes >= 0 ? normalizeSqlSnippet(gc(r, iNotes)) : '';
+      const handler = (!looksSql && isLikelySqlQuery(notesCandidate)) ? notesCandidate : normalizedHandler;
+      parsedRows.push({
         id: gc(r, iId),
         form: iForm >= 0 ? gc(r, iForm) : 'n/a',
-        handler: normalizedHandler,
-        op: inferredOp,
+        handler,
+        op: inferSqlOperation(inferredOp, handler),
         tables: gc(r, iTables),
         columns: iCols >= 0 ? gc(r, iCols) : '',
-      };
-    })
+      });
+    }
+  }
+
+  return parsedRows
     .map((r) => {
       const cols = String(r.columns || '').trim();
       if (!cols || cols === '-' || cols === '—') {
@@ -1096,37 +1143,43 @@ function parseP(content) {
     if (!hasTables) return 'missing_tables';
     return 'unresolved_handler_mapping';
   };
-  let current = null;
-  for (const line of text.split('\n')) {
-    if (line.startsWith('#### ')) {
-      current = line.slice(5).trim();
-      traces[current] = [];
-    } else if (current && line.includes('|') && !line.includes('---') && !line.includes('Callable')) {
-      const cols = line.split('|').map(c => c.trim()).filter(Boolean);
-      if (cols.length >= 6) {
-        let status = gc(cols,6);
-        let reason = gc(cols,7);
-        // Newer MD adds "Source line refs" before status; shift indexes accordingly.
-        if (
-          cols.length >= 8
-          && /^(ok|trace_gap)$/i.test(String(gc(cols,7) || '').trim())
-          && !/^(ok|trace_gap)$/i.test(String(gc(cols,6) || '').trim())
-        ) {
-          status = gc(cols,7);
-          reason = gc(cols,8);
-        }
-        const row = {
-          callable: gc(cols,0), kind:     gc(cols,1),
-          event:    gc(cols,2), activex:  gc(cols,3),
-          sql_ids:  gc(cols,4), tables:   gc(cols,5),
-          source_line_refs: gc(cols,6),
-          status:   status,
-          trace_gap_reason: reason,
-        };
-        if (!row.trace_gap_reason) row.trace_gap_reason = deriveGapReason(row);
-        traces[current].push(row);
-      }
-    }
+  const blocks = String(text || '').split(/^####\s+/m).slice(1);
+  for (const block of blocks) {
+    const nl = block.indexOf('\n');
+    const current = (nl >= 0 ? block.slice(0, nl) : block).trim();
+    if (!current) continue;
+    const sectionBody = nl >= 0 ? block.slice(nl + 1) : '';
+    const { headers, rows } = parseTableSection(sectionBody);
+    if (!headers.length || !rows.length) continue;
+    const hm = headerMap(headers);
+    const iCallable = idxFirst(hm, ['callable', 'procedure', 'handler'], 0);
+    const iKind = idxFirst(hm, ['kind'], 1);
+    const iEvent = idxFirst(hm, ['event'], 2);
+    const iActiveX = idxFirst(hm, ['activex'], 3);
+    const iSql = idxFirst(hm, ['sqlids', 'sqlid', 'sql'], 4);
+    const iTables = idxFirst(hm, ['tables'], 5);
+    const iStatus = idxFirst(hm, ['status'], -1);
+    const iReason = idxFirst(hm, ['tracegaprationale', 'tracegapreason', 'rationale', 'reason'], -1);
+    const iSourceLines = idxFirst(hm, ['sourcelinerefs', 'sourcelineref', 'linerefs', 'lines'], -1);
+    traces[current] = rows.map((r) => {
+      const tokenStatus = r.find((c) => /^(ok|trace_gap)$/i.test(String(c || '').trim()));
+      const statusCell = iStatus >= 0 ? gc(r, iStatus) : '';
+      const status = /^(ok|trace_gap)$/i.test(String(statusCell || '').trim()) ? statusCell : (tokenStatus || '');
+      const lineToken = r.find((c) => /(\.frm|\.bas|\.cls|\.vbp):\d+/i.test(String(c || '').trim()));
+      const row = {
+        callable: gc(r, iCallable),
+        kind: gc(r, iKind),
+        event: gc(r, iEvent),
+        activex: gc(r, iActiveX),
+        sql_ids: gc(r, iSql),
+        tables: gc(r, iTables),
+        source_line_refs: iSourceLines >= 0 ? gc(r, iSourceLines) : (lineToken || ''),
+        status,
+        trace_gap_reason: iReason >= 0 ? gc(r, iReason) : '',
+      };
+      if (!row.trace_gap_reason) row.trace_gap_reason = deriveGapReason(row);
+      return row;
+    });
   }
   return traces;
 }
