@@ -5416,6 +5416,18 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         response_payload["assistant_summary"] = str(aas_result.get("assistant_summary", "")).strip()
         if isinstance(aas_result.get("requirements_pack", {}), dict):
             response_payload["requirements_pack"] = aas_result.get("requirements_pack", {})
+            analysis_summary = (
+                response_payload.get("analyst_brief", {}).get("summary", {})
+                if isinstance(response_payload.get("analyst_brief", {}), dict)
+                else {}
+            )
+            if not isinstance(analysis_summary, dict):
+                analysis_summary = {}
+            vb6_from_analysis = (
+                analysis_summary.get("vb6_analysis", {})
+                if isinstance(analysis_summary.get("vb6_analysis", {}), dict)
+                else {}
+            )
             report_seed = {
                 "project_name": "Discover Analysis",
                 "analysis_walkthrough": {
@@ -5424,6 +5436,14 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
                 "requirements_pack": aas_result.get("requirements_pack", {}),
                 "quality_gates": aas_result.get("quality_gates", []),
                 "open_questions": aas_result.get("requirements_pack", {}).get("open_questions", []),
+                # Include source-bundle static analysis so Discover Result tabs
+                # (Code Quality, Dead Code, Dependency Matrix, Trends, Data)
+                # can render immediately without requiring a full Build run.
+                "vb6_analysis": vb6_from_analysis,
+                "legacy_code_inventory": {
+                    "summary": str(analysis_summary.get("overview", "")).strip(),
+                    "vb6_analysis": vb6_from_analysis,
+                },
             }
             response_payload["raw_artifacts"] = build_raw_artifact_set_v1(report_seed)
             response_payload["analyst_report_v2"] = build_analyst_report_v2(report_seed)
