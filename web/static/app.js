@@ -494,6 +494,12 @@ const el = {
   modalReadable: document.getElementById("modal-readable"),
   modalLogs: document.getElementById("modal-logs"),
   modalOutput: document.getElementById("modal-output"),
+  diagramModal: document.getElementById("diagram-modal"),
+  diagramModalTitle: document.getElementById("diagram-modal-title"),
+  diagramModalViewer: document.getElementById("diagram-modal-viewer"),
+  diagramClose: document.getElementById("diagram-close"),
+  diagramDownloadSvg: document.getElementById("diagram-download-svg"),
+  diagramDownloadMmd: document.getElementById("diagram-download-mmd"),
 };
 
 const state = {
@@ -7622,11 +7628,62 @@ function mermaidBlock(title, diagram) {
   const b64 = encodeMermaid(source);
   if (!b64) return "";
   return `
-    <div class="mt-2"><strong>${escapeHtml(title)}</strong></div>
-    <div class="mt-1 overflow-auto rounded-lg border border-slate-300 bg-white p-2">
-      <div data-mermaid-b64="${b64}" class="min-w-[320px]"></div>
+    <div class="mt-2">
+      <div class="flex items-center justify-between gap-3">
+        <strong>${escapeHtml(title)}</strong>
+        <button
+          type="button"
+          data-open-mermaid="1"
+          data-mermaid-title="${escapeHtml(title)}"
+          data-mermaid-b64-open="${b64}"
+          class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold"
+        >Open Full Diagram</button>
+      </div>
+    </div>
+    <div
+      class="mt-1 overflow-auto rounded-lg border border-slate-300 bg-white p-2 cursor-zoom-in"
+      data-open-mermaid="1"
+      data-mermaid-title="${escapeHtml(title)}"
+      data-mermaid-b64-open="${b64}"
+      title="Open full diagram"
+    >
+      <div data-mermaid-b64="${b64}" class="min-w-[320px] pointer-events-none"></div>
     </div>
   `;
+}
+
+function openDiagramModal(title, source) {
+  if (!el.diagramModal || !el.diagramModalViewer) return;
+  const diagramTitle = String(title || "Diagram Viewer").trim() || "Diagram Viewer";
+  const diagramSource = String(source || "").trim();
+  if (!diagramSource) return;
+  const b64 = encodeMermaid(diagramSource);
+  if (!b64) return;
+  el.diagramModal.dataset.diagramTitle = diagramTitle;
+  el.diagramModal.dataset.diagramSource = diagramSource;
+  if (el.diagramModalTitle) el.diagramModalTitle.textContent = diagramTitle;
+  el.diagramModalViewer.innerHTML = `
+    <div class="overflow-auto rounded-xl border border-slate-300 bg-white p-4">
+      <div data-mermaid-b64="${b64}" class="min-w-[960px]"></div>
+    </div>
+  `;
+  el.diagramModal.showModal();
+  setTimeout(() => renderMermaidBlocks(el.diagramModalViewer), 0);
+}
+
+function bindMermaidDiagramActions(scope = document) {
+  scope.querySelectorAll("[data-open-mermaid]").forEach((node) => {
+    if (node.getAttribute("data-mermaid-bound") === "1") return;
+    node.setAttribute("data-mermaid-bound", "1");
+    node.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const title = node.getAttribute("data-mermaid-title") || "Diagram Viewer";
+      const b64 = node.getAttribute("data-mermaid-b64-open") || "";
+      const source = decodeMermaid(b64);
+      openDiagramModal(title, source);
+    });
+  });
 }
 
 function sanitizeMermaidErDiagram(source) {
@@ -7696,6 +7753,7 @@ async function renderMermaidBlocks(scope = document) {
       host.setAttribute("data-rendered", "1");
     }
   }
+  bindMermaidDiagramActions(scope);
 }
 
 function stageAgentLookup(stage, agentId) {
@@ -13267,6 +13325,20 @@ function bindEvents() {
     });
   });
   el.closeModal.addEventListener("click", () => el.outputModal.close());
+  el.diagramClose?.addEventListener("click", () => el.diagramModal?.close());
+  el.diagramDownloadMmd?.addEventListener("click", () => {
+    const source = String(el.diagramModal?.dataset?.diagramSource || "").trim();
+    const title = String(el.diagramModal?.dataset?.diagramTitle || "diagram").trim() || "diagram";
+    if (!source) return;
+    _downloadBlobContent(`${source}\n`, `${safeName(title)}.mmd`, "text/plain;charset=utf-8");
+  });
+  el.diagramDownloadSvg?.addEventListener("click", () => {
+    const title = String(el.diagramModal?.dataset?.diagramTitle || "diagram").trim() || "diagram";
+    const svg = el.diagramModalViewer?.querySelector("svg");
+    if (!svg) return;
+    const content = `<?xml version="1.0" encoding="UTF-8"?>\n${svg.outerHTML}\n`;
+    _downloadBlobContent(content, `${safeName(title)}.svg`, "image/svg+xml;charset=utf-8");
+  });
 }
 
 async function init() {

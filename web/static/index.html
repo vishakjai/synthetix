@@ -1759,6 +1759,22 @@
       </div>
     </dialog>
 
+    <dialog id="diagram-modal" class="w-[min(1320px,98vw)] rounded-2xl border border-slate-300 p-0 shadow-2xl">
+      <div class="border-b border-slate-300 bg-slate-50 px-4 py-3">
+        <div class="flex items-center justify-between gap-3">
+          <h3 id="diagram-modal-title" class="text-base font-semibold text-ink-950">Diagram Viewer</h3>
+          <div class="flex items-center gap-2">
+            <button id="diagram-download-svg" class="btn-light rounded-md px-3 py-1 text-xs font-semibold">Download SVG</button>
+            <button id="diagram-download-mmd" class="btn-light rounded-md px-3 py-1 text-xs font-semibold">Download Mermaid</button>
+            <button id="diagram-close" class="btn-light rounded-md px-3 py-1 text-xs font-semibold">Close</button>
+          </div>
+        </div>
+      </div>
+      <div class="p-4">
+        <div id="diagram-modal-viewer" class="max-h-[78vh] overflow-auto rounded-xl border border-slate-300 bg-white p-3"></div>
+      </div>
+    </dialog>
+
     <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
