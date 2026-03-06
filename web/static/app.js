@@ -5439,17 +5439,28 @@ function updateIntegrationForm(provider, integration) {
     const masked = String(data[`${refs.secretKey}_masked`] || "");
     const parts = [];
     if (provider === "github") {
+      const hasToken = !!masked;
       const readScope = "repo metadata, branches, pull requests";
       const writeScope = data.read_only ? "none (read-only mode)" : "pull requests + run artifact exports";
       parts.push(`Permissions: read scope=${readScope}; write scope=${writeScope}`);
+      parts.push(
+        hasToken
+          ? "Analysis source: saved GitHub token (public and private repos)"
+          : "Analysis source: public GitHub URL works without a saved token; token only required for private repos or higher GitHub rate limits"
+      );
       if (data.run_export_enabled) {
         const exportBranch = String(data.export_branch || "default branch");
         const exportPrefix = String(data.export_prefix || "synthetix");
         const targetOwner = String(data.export_owner || data.owner || "-");
         const targetRepo = String(data.export_repository || data.repository || "-");
-        parts.push(`Run export: enabled (${targetOwner}/${targetRepo} -> ${exportPrefix}/runs/<run_id> on ${exportBranch})`);
+        const targetMode = (String(data.export_owner || "").trim() || String(data.export_repository || "").trim())
+          ? "configured repository"
+          : "source repository fallback";
+        parts.push(`Run export: enabled (${targetOwner}/${targetRepo} -> ${exportPrefix}/runs/<run_id> on ${exportBranch}; ${targetMode})`);
+        parts.push("Export target: local run artifacts + optional GitHub export");
       } else {
         parts.push("Run export: disabled");
+        parts.push("Export target: local run artifacts only");
       }
     } else if (provider === "jira") {
       parts.push("Permissions: read scope=issues/projects; write scope=issue updates (if token allows)");
@@ -6706,16 +6717,23 @@ function applyProjectStateResult(result) {
 function renderDiscoverGitHubTreePreview() {
   if (!el.bfGithubTreeStatus || !el.bfGithubTreePreview) return;
   const view = state.discoverGithubTree || {};
+  const githubCfg = (state.settings?.integrations?.github && typeof state.settings.integrations.github === "object")
+    ? state.settings.integrations.github
+    : {};
+  const githubTokenConfigured = !!String(githubCfg.token_masked || "").trim();
+  const accessModeText = githubTokenConfigured
+    ? "Analysis source: GitHub URL via saved GitHub token."
+    : "Analysis source: public GitHub URL (anonymous access).";
   if (view.loading) {
     el.bfGithubTreeStatus.textContent = "Loading repository tree...";
     el.bfGithubTreeStatus.className = "text-[11px] text-slate-700";
-    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">Fetching repository structure from GitHub API.</p>`;
+    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">${escapeHtml(accessModeText)} Fetching repository structure from GitHub API.</p>`;
     return;
   }
   if (view.error) {
     el.bfGithubTreeStatus.textContent = `Load failed: ${view.error}`;
     el.bfGithubTreeStatus.className = "text-[11px] text-rose-700";
-    el.bfGithubTreePreview.innerHTML = `<p class="text-rose-700">${escapeHtml(view.error)}</p>`;
+    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">${escapeHtml(accessModeText)}</p><p class="text-rose-700">${escapeHtml(view.error)}</p>`;
     return;
   }
   const tree = (view.tree && typeof view.tree === "object") ? view.tree : {};
@@ -6724,7 +6742,7 @@ function renderDiscoverGitHubTreePreview() {
   if (!entries.length) {
     el.bfGithubTreeStatus.textContent = "No repository tree loaded.";
     el.bfGithubTreeStatus.className = "text-[11px] text-slate-700";
-    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">Enter a GitHub repository URL and click <strong>Load repo tree</strong> to preview folders and files.</p>`;
+    el.bfGithubTreePreview.innerHTML = `<p class="text-slate-700">${escapeHtml(accessModeText)}</p><p class="text-slate-700">Enter a GitHub repository URL and click <strong>Load repo tree</strong> to preview folders and files.</p>`;
     return;
   }
   const owner = escapeHtml(repo.owner || "-");
@@ -6747,6 +6765,7 @@ function renderDiscoverGitHubTreePreview() {
   }).join("");
   const hiddenCount = Math.max(0, total - maxRender);
   el.bfGithubTreePreview.innerHTML = `
+    <div class="text-[11px] text-slate-700">${escapeHtml(accessModeText)}</div>
     <div class="text-[11px] text-slate-700">Showing ${Math.min(total, maxRender)} of ${total} entries.</div>
     <ul class="mt-1 font-mono text-[11px] text-slate-900">${rows}</ul>
     ${hiddenCount ? `<p class="mt-1 text-[11px] text-slate-700">${hiddenCount} more entries not shown.</p>` : ""}
@@ -10162,17 +10181,20 @@ function renderContextDrawer() {
     : `${savedPack.charAt(0).toUpperCase()}${savedPack.slice(1)} policy pack`;
   const runId = run?.run_id || "-";
   const status = run?.status || "idle";
-  let evidence = status === "completed" ? "Ready for export" : (status === "failed" ? "Run failed; partial evidence" : "In progress");
+  const localArtifactNote = "Local artifacts: run artifact folder";
+  let evidence = status === "completed"
+    ? `Ready for export | ${localArtifactNote}`
+    : (status === "failed" ? `Run failed; partial evidence | ${localArtifactNote}` : `In progress | ${localArtifactNote}`);
   const githubExport = (p.github_export && typeof p.github_export === "object") ? p.github_export : {};
   const exportStatus = String(githubExport.status || "").toLowerCase();
   if (exportStatus === "exported") {
-    evidence = `Exported to GitHub (${githubExport.base_path || "configured path"})`;
+    evidence = `${localArtifactNote} | GitHub export complete (${githubExport.base_path || "configured path"})`;
   } else if (exportStatus === "partial") {
-    evidence = `GitHub export partial (${Number(githubExport.exported_files || 0)} files exported)`;
+    evidence = `${localArtifactNote} | GitHub export partial (${Number(githubExport.exported_files || 0)} files exported)`;
   } else if (exportStatus === "failed") {
-    evidence = `GitHub export failed: ${String(githubExport.reason || "unknown error")}`;
+    evidence = `${localArtifactNote} | GitHub export failed: ${String(githubExport.reason || "unknown error")}`;
   } else if (exportStatus === "skipped") {
-    evidence = `GitHub export skipped: ${String(githubExport.reason || "disabled")}`;
+    evidence = `${localArtifactNote} | GitHub export skipped: ${String(githubExport.reason || "disabled")}`;
   }
 
   const runIntegration = (p.integration_context && typeof p.integration_context === "object")
