@@ -7629,6 +7629,44 @@ function mermaidBlock(title, diagram) {
   `;
 }
 
+function sanitizeMermaidErDiagram(source) {
+  const text = String(source || "").trim();
+  if (!text || !/^erDiagram\b/.test(text)) return text;
+  const safeToken = (value, fallback = "item") => {
+    let token = String(value || "").trim().replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+    if (!token) token = fallback;
+    if (/^[0-9]/.test(token)) token = `n_${token}`;
+    return token;
+  };
+  const safeLabel = (value) => String(value || "").replace(/"/g, "'");
+  let insideEntity = false;
+  return text.split("\n").map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    if (trimmed === "erDiagram") return "erDiagram";
+    const openMatch = line.match(/^(\s*)(.+?)\s*\{\s*$/);
+    if (openMatch) {
+      insideEntity = true;
+      return `${openMatch[1]}${safeToken(openMatch[2], "table")} {`;
+    }
+    if (/^\s*\}\s*$/.test(line)) {
+      insideEntity = false;
+      return line;
+    }
+    const relMatch = line.match(/^(\s*)(\S+)\s+([|o}{\-\.]+)\s+(\S+)\s*:\s*(.*)$/);
+    if (relMatch) {
+      return `${relMatch[1]}${safeToken(relMatch[2], "table")} ${relMatch[3]} ${safeToken(relMatch[4], "table")} : ${safeLabel(relMatch[5])}`;
+    }
+    if (insideEntity) {
+      const attrMatch = line.match(/^(\s*)(\S+)\s+(\S+)(\s+PK)?\s*$/);
+      if (attrMatch) {
+        return `${attrMatch[1]}${safeToken(attrMatch[2], "text")} ${safeToken(attrMatch[3], "column")}${attrMatch[4] || ""}`;
+      }
+    }
+    return line;
+  }).join("\n");
+}
+
 async function renderMermaidBlocks(scope = document) {
   ensureMermaid();
   if (!window.mermaid) return;
@@ -7644,6 +7682,16 @@ async function renderMermaidBlocks(scope = document) {
       host.innerHTML = result.svg;
       host.setAttribute("data-rendered", "1");
     } catch (_err) {
+      try {
+        const sanitized = sanitizeMermaidErDiagram(source);
+        if (sanitized && sanitized !== source) {
+          const retryId = `mmd-${Date.now()}-${i}-retry-${Math.floor(Math.random() * 100000)}`;
+          const retryResult = await window.mermaid.render(retryId, sanitized);
+          host.innerHTML = `${retryResult.svg}<p class="mt-1 text-[11px] text-amber-700">Rendered from sanitized ERD identifiers.</p>`;
+          host.setAttribute("data-rendered", "1");
+          continue;
+        }
+      } catch (_retryErr) {}
       host.innerHTML = `<pre class="mono text-[11px] text-slate-700">${escapeHtml(source)}</pre><p class="mt-1 text-[11px] text-rose-700">Diagram render failed</p>`;
       host.setAttribute("data-rendered", "1");
     }

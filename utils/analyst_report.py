@@ -43,6 +43,23 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _mermaid_safe_token(value: Any, *, default: str = "item") -> str:
+    raw = _clean(value)
+    if not raw:
+        return default
+    token = re.sub(r"[^A-Za-z0-9_]", "_", raw)
+    token = re.sub(r"_+", "_", token).strip("_")
+    if not token:
+        token = default
+    if token[0].isdigit():
+        token = f"n_{token}"
+    return token
+
+
+def _mermaid_safe_label(value: Any) -> str:
+    return _clean(value).replace('"', "'")
+
+
 def _attach_qa_report_v1(
     report: dict[str, Any],
     *,
@@ -1720,23 +1737,23 @@ def _build_source_erd(
     relationships = [_as_dict(x) for x in _as_list(source_schema_model.get("relationships")) if isinstance(x, dict)]
     lines: list[str] = ["erDiagram"]
     for table in tables[:600]:
-        tname = _clean(table.get("name"))
+        tname = _mermaid_safe_token(table.get("name"), default="table")
         if not tname:
             continue
         lines.append(f"    {tname} {{")
         for col in _as_list(table.get("columns"))[:160]:
             crow = _as_dict(col)
-            cname = _clean(crow.get("name"))
+            cname = _mermaid_safe_token(crow.get("name"), default="column")
             if not cname:
                 continue
-            ctype = _clean(crow.get("inferred_type")) or "text"
+            ctype = _mermaid_safe_token(crow.get("inferred_type"), default="text")
             lines.append(f"        {ctype} {cname}")
         lines.append("    }")
     for rel in relationships[:1600]:
-        ft = _clean(rel.get("from_table"))
-        fc = _clean(rel.get("from_column"))
-        tt = _clean(rel.get("to_table"))
-        tc = _clean(rel.get("to_column"))
+        ft = _mermaid_safe_token(rel.get("from_table"), default="table")
+        fc = _mermaid_safe_label(rel.get("from_column"))
+        tt = _mermaid_safe_token(rel.get("to_table"), default="table")
+        tc = _mermaid_safe_label(rel.get("to_column"))
         if not (ft and fc and tt and tc):
             continue
         lines.append(f"    {ft} ||--o{{ {tt} : \"{fc} -> {tc}\"")
@@ -2012,24 +2029,24 @@ def _build_target_erd(
     constraints = [_as_dict(x) for x in _as_list(target_schema_model.get("constraints")) if isinstance(x, dict)]
     lines: list[str] = ["erDiagram"]
     for table in tables[:180]:
-        tname = _clean(table.get("name"))
+        tname = _mermaid_safe_token(table.get("name"), default="table")
         if not tname:
             continue
         lines.append(f"  {tname} {{")
-        pk_set = { _clean(x) for x in _as_list(table.get("primary_key")) if _clean(x) }
+        pk_set = {_mermaid_safe_token(x, default="column") for x in _as_list(table.get("primary_key")) if _clean(x)}
         for col in _as_list(table.get("columns"))[:120]:
             if not isinstance(col, dict):
                 continue
-            cname = _clean(col.get("name"))
-            ctype = _clean(col.get("type")) or "text"
+            cname = _mermaid_safe_token(col.get("name"), default="column")
+            ctype = _mermaid_safe_token(col.get("type"), default="text")
             if not cname:
                 continue
             suffix = " PK" if cname in pk_set else ""
             lines.append(f"    {ctype} {cname}{suffix}")
         lines.append("  }")
     for fk in constraints[:300]:
-        ftable = _clean(fk.get("from_table"))
-        ttable = _clean(fk.get("to_table"))
+        ftable = _mermaid_safe_token(fk.get("from_table"), default="table")
+        ttable = _mermaid_safe_token(fk.get("to_table"), default="table")
         if not ftable or not ttable:
             continue
         lines.append(f"  {ttable} ||--o{{ {ftable} : references")
