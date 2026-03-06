@@ -1732,9 +1732,16 @@ def _build_source_erd(
     *,
     metadata_common: dict[str, Any],
     source_schema_model: dict[str, Any],
+    source_relationship_candidates: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tables = [_as_dict(x) for x in _as_list(source_schema_model.get("tables")) if isinstance(x, dict)]
-    relationships = [_as_dict(x) for x in _as_list(source_schema_model.get("relationships")) if isinstance(x, dict)]
+    base_relationships = [_as_dict(x) for x in _as_list(source_schema_model.get("relationships")) if isinstance(x, dict)]
+    candidate_relationships = [
+        _as_dict(x)
+        for x in _as_list(_as_dict(source_relationship_candidates).get("candidates"))
+        if isinstance(x, dict)
+    ]
+    relationships = base_relationships if base_relationships else candidate_relationships
     lines: list[str] = ["erDiagram"]
     for table in tables[:600]:
         tname = _mermaid_safe_token(table.get("name"), default="table")
@@ -7207,6 +7214,7 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     source_erd_artifact = _build_source_erd(
         metadata_common=metadata_common,
         source_schema_model=source_schema_model_artifact,
+        source_relationship_candidates=source_relationship_candidates_artifact,
     )
     source_data_dictionary_markdown_artifact = _build_source_data_dictionary_markdown(
         metadata_common=metadata_common,

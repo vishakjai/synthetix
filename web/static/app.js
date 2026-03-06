@@ -5018,6 +5018,9 @@ function renderDiscoverInsights() {
     const sourceDictionary = (rawArtifacts.source_data_dictionary && typeof rawArtifacts.source_data_dictionary === "object")
       ? rawArtifacts.source_data_dictionary
       : {};
+    const sourceRelationshipCandidates = (rawArtifacts.source_relationship_candidates && typeof rawArtifacts.source_relationship_candidates === "object")
+      ? rawArtifacts.source_relationship_candidates
+      : {};
     const mapping = (rawArtifacts.schema_mapping_matrix && typeof rawArtifacts.schema_mapping_matrix === "object")
       ? rawArtifacts.schema_mapping_matrix
       : {};
@@ -5046,13 +5049,15 @@ function renderDiscoverInsights() {
     const tableCount = Number(summary.tables || 0);
     const columnCount = Number(summary.columns || 0);
     const queryCount = Number(summary.queries || 0);
-    const relCount = Number(summary.relationships || 0);
+    const candidateRelationships = Array.isArray(sourceRelationshipCandidates.candidates) ? sourceRelationshipCandidates.candidates : [];
     const mappingRows = Array.isArray(mapping.mappings) ? mapping.mappings : [];
     const sourceTables = Array.isArray(sourceSchema.tables) ? sourceSchema.tables : [];
     const targetTables = Array.isArray(targetSchema.tables) ? targetSchema.tables : [];
     const sourceRelationships = Array.isArray(sourceSchema.relationships) ? sourceSchema.relationships : [];
+    const displayRelationships = sourceRelationships.length ? sourceRelationships : candidateRelationships;
+    const relCount = Number(summary.relationships || displayRelationships.length || 0);
     const sourceDictionaryRows = Array.isArray(sourceDictionary.rows) ? sourceDictionary.rows : [];
-    const sourceErdText = String(sourceErd.mermaid || "").trim();
+    const sourceErdText = buildSourceErdFallback(sourceTables, displayRelationships, String(sourceErd.mermaid || "").trim());
     const dbChecks = Array.isArray(dbQa.checks) ? dbQa.checks : [];
     const deadSummary = (deadCodeReport.summary && typeof deadCodeReport.summary === "object")
       ? deadCodeReport.summary
@@ -5113,7 +5118,7 @@ function renderDiscoverInsights() {
           <strong>${escapeHtml(String(check?.id || "db_check"))}</strong>: ${escapeHtml(String(check?.detail || ""))}
         </div>
       `).join("");
-      const relRows = sourceRelationships.slice(0, 10).map((rel) => `
+      const relRows = displayRelationships.slice(0, 10).map((rel) => `
         <tr>
           <td class="px-2 py-1">${escapeHtml(String(rel?.from_table || ""))}</td>
           <td class="px-2 py-1">${escapeHtml(String(rel?.from_column || ""))}</td>
@@ -7741,6 +7746,43 @@ function sanitizeMermaidErDiagram(source) {
     }
     return line;
   }).join("\n");
+}
+
+function buildSourceErdFallback(tables, relationships, existingDiagram = "") {
+  const existing = String(existingDiagram || "").trim();
+  const hasEdges = /\|\|--o\{|\|\|--\|\{|o\|--\|\{/.test(existing);
+  if (existing && hasEdges) return existing;
+  const safeToken = (value, fallback = "item") => {
+    let token = String(value || "").trim().replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+    if (!token) token = fallback;
+    if (/^[0-9]/.test(token)) token = `n_${token}`;
+    return token;
+  };
+  const lines = ["erDiagram"];
+  const tableRows = Array.isArray(tables) ? tables : [];
+  tableRows.slice(0, 600).forEach((table) => {
+    const tname = safeToken(table?.name, "table");
+    if (!tname) return;
+    lines.push(`    ${tname} {`);
+    const cols = Array.isArray(table?.columns) ? table.columns : [];
+    cols.slice(0, 160).forEach((col) => {
+      const cname = safeToken(col?.name, "column");
+      if (!cname) return;
+      const ctype = safeToken(col?.inferred_type || col?.type, "text");
+      lines.push(`        ${ctype} ${cname}`);
+    });
+    lines.push("    }");
+  });
+  const relRows = Array.isArray(relationships) ? relationships : [];
+  relRows.slice(0, 1600).forEach((rel) => {
+    const ft = safeToken(rel?.from_table, "table");
+    const tt = safeToken(rel?.to_table, "table");
+    const fc = String(rel?.from_column || "").replace(/"/g, "'");
+    const tc = String(rel?.to_column || "").replace(/"/g, "'");
+    if (!(ft && tt && fc && tc)) return;
+    lines.push(`    ${ft} ||--o{ ${tt} : "${fc} -> ${tc}"`);
+  });
+  return lines.join("\n");
 }
 
 async function renderMermaidBlocks(scope = document) {
