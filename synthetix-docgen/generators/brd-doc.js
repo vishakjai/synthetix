@@ -5,7 +5,7 @@ const { getTemplateAnchorMap } = require('../schema/brd-template-anchors');
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   Header, Footer, AlignmentType, HeadingLevel, BorderStyle, WidthType,
-  ShadingType, VerticalAlign, PageNumber, PageBreak,
+  ShadingType, VerticalAlign, PageNumber, PageBreak, Bookmark, InternalHyperlink,
 } = require('docx');
 
 const C = {
@@ -25,6 +25,7 @@ const C = {
 
 const W = 10440;
 const MG = { top: 80, bottom: 80, left: 120, right: 120 };
+const LINK_BLUE = '1D4ED8';
 
 const bdr = (c = 'CCCCCC') => ({ style: BorderStyle.SINGLE, size: 1, color: c });
 const allB = (c = 'CCCCCC') => ({ top: bdr(c), bottom: bdr(c), left: bdr(c), right: bdr(c) });
@@ -33,8 +34,31 @@ function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
 
+function toText(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map((v) => toText(v)).filter(Boolean).join(', ');
+  if (typeof value === 'object') {
+    const candidate = value.description
+      || value.statement
+      || value.text
+      || value.title
+      || value.name
+      || value.value
+      || value.id;
+    if (candidate != null) return toText(candidate);
+    try {
+      return JSON.stringify(value);
+    } catch (_err) {
+      return '';
+    }
+  }
+  return '';
+}
+
 function clean(v) {
-  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  return toText(v).replace(/\s+/g, ' ').trim();
 }
 
 function resolveAnchorMap(bundle) {
@@ -81,22 +105,37 @@ const hCell = (text, w, fill = C.NAV) => new TableCell({
   })],
 });
 
-const h1 = (t) => new Paragraph({
+function anchorId(raw) {
+  const value = clean(raw).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return value || 'section';
+}
+
+function headingTextRun(text, size, color) {
+  return new TextRun({ text, font: 'Arial', size, bold: true, color });
+}
+
+function headingChildren(text, size, color, anchor) {
+  const run = headingTextRun(text, size, color);
+  if (!clean(anchor)) return [run];
+  return [new Bookmark({ id: anchorId(anchor), children: [run] })];
+}
+
+const h1 = (t, anchor) => new Paragraph({
   heading: HeadingLevel.HEADING_1,
   spacing: { before: 280, after: 120 },
   border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: C.TEAL, space: 4 } },
-  children: [new TextRun({ text: t, font: 'Arial', size: 32, bold: true, color: C.NAV })],
+  children: headingChildren(t, 32, C.NAV, anchor),
 });
 
-const h2 = (t) => new Paragraph({
+const h2 = (t, anchor) => new Paragraph({
   heading: HeadingLevel.HEADING_2,
   spacing: { before: 220, after: 90 },
-  children: [new TextRun({ text: t, font: 'Arial', size: 24, bold: true, color: C.TEAL })],
+  children: headingChildren(t, 24, C.TEAL, anchor),
 });
 
-const h3 = (t) => new Paragraph({
+const h3 = (t, anchor) => new Paragraph({
   spacing: { before: 140, after: 70 },
-  children: [new TextRun({ text: t, font: 'Arial', size: 20, bold: true, color: C.DGREY })],
+  children: headingChildren(t, 20, C.DGREY, anchor),
 });
 
 const para = (t, o = {}) => new Paragraph({
@@ -108,6 +147,23 @@ const bullet = (t) => new Paragraph({
   spacing: { before: 30, after: 30 },
   bullet: { level: 0 },
   children: [new TextRun({ text: clean(t), font: 'Arial', size: 18, color: '2D2D2D' })],
+});
+
+const tocLink = (label, anchor) => new Paragraph({
+  spacing: { before: 30, after: 30 },
+  bullet: { level: 0 },
+  children: [
+    new InternalHyperlink({
+      anchor: anchorId(anchor),
+      children: [new TextRun({
+        text: clean(label),
+        font: 'Arial',
+        size: 18,
+        color: LINK_BLUE,
+        underline: {},
+      })],
+    }),
+  ],
 });
 
 const pb = () => new Paragraph({ children: [new PageBreak()] });
@@ -188,7 +244,7 @@ function sectionVersionHistory(versionHistory, anchors, meta) {
     ] });
   });
   return [
-    h1(title),
+    h1(title, 'sec_version_history'),
     new Table({
       width: { size: W, type: WidthType.DXA },
       rows: [
@@ -201,8 +257,9 @@ function sectionVersionHistory(versionHistory, anchors, meta) {
 
 function sectionContext(context, anchors) {
   const title = clean(anchors?.section_titles?.context || 'Introduction and Context');
+  const scopeNote = clean(context?.scope_note);
   return [
-    h1(title),
+    h1(title, 'sec_context'),
     h2('Purpose'), para(context?.purpose),
     h2('Intended Audience'), para(context?.intended_audience),
     h2('Current State'), para(context?.current_state_summary),
@@ -213,6 +270,7 @@ function sectionContext(context, anchors) {
     ...asArray(context?.scope_in).slice(0, 20).map((x) => bullet(x)),
     h2('Scope Out'),
     ...asArray(context?.scope_out).slice(0, 20).map((x) => bullet(x)),
+    ...(scopeNote ? [h2('Scope Clarification'), para(scopeNote)] : []),
     h2('Dependencies'),
     ...asArray(context?.dependencies).slice(0, 20).map((x) => bullet(x)),
     h2('Definitions and Acronyms'),
@@ -229,6 +287,29 @@ function sectionContext(context, anchors) {
   ];
 }
 
+function sectionToc(anchors, dossiers) {
+  const entries = [
+    { label: clean(anchors?.section_titles?.version_history || 'Version History'), anchor: 'sec_version_history' },
+    { label: clean(anchors?.section_titles?.module_inventory || 'Module Inventory'), anchor: 'sec_module_inventory' },
+    { label: clean(anchors?.section_titles?.context || 'Introduction and Context'), anchor: 'sec_context' },
+    { label: clean(anchors?.section_titles?.project_description || 'Project Description'), anchor: 'sec_project_description' },
+    { label: clean(anchors?.section_titles?.general_requirements || 'General Requirements'), anchor: 'sec_general_requirements' },
+    { label: clean(anchors?.section_titles?.modules || 'Module Details'), anchor: 'sec_modules' },
+    ...asArray(dossiers)
+      .map((d) => ({
+        label: clean(d.heading_title || d.module_id),
+        anchor: `mod_${clean(d.module_id || d.heading_title)}`,
+      }))
+      .filter((x) => x.label),
+    { label: clean(anchors?.section_titles?.appendices || 'Appendices'), anchor: 'sec_appendices' },
+  ].filter((x) => x.label);
+  return [
+    h1('Table of Contents', 'sec_toc'),
+    ...entries.map((e) => tocLink(e.label, e.anchor)),
+    pb(),
+  ];
+}
+
 function sectionModuleInventory(registry, anchors) {
   const title = clean(anchors?.section_titles?.module_inventory || 'Module Inventory');
   const headers = asArray(anchors?.table_headers?.module_inventory);
@@ -236,7 +317,7 @@ function sectionModuleInventory(registry, anchors) {
   if (headers.length === 4) {
     const widths = [2400, 1200, 2200, 4640];
     return [
-      h1(title),
+      h1(title, 'sec_module_inventory'),
       new Table({
         width: { size: W, type: WidthType.DXA },
         rows: [
@@ -252,7 +333,7 @@ function sectionModuleInventory(registry, anchors) {
     ];
   }
   return [
-    h1(title),
+    h1(title, 'sec_module_inventory'),
     new Table({
       width: { size: W, type: WidthType.DXA },
       rows: [
@@ -278,7 +359,7 @@ function sectionGeneral(general, anchors) {
   const title = clean(anchors?.section_titles?.general_requirements || 'General Requirements');
   const list = (title, items) => [h2(title), ...asArray(items).slice(0, 25).map((x) => bullet(x))];
   return [
-    h1(title),
+    h1(title, 'sec_general_requirements'),
     ...list('Common Business Rules', general?.business_rules),
     ...list('Common Display Requirements', general?.display_requirements),
     ...list('Common Validations', general?.validations),
@@ -290,17 +371,20 @@ function sectionGeneral(general, anchors) {
 
 function moduleSection(dossier, anchors) {
   const ruleHeaders = asArray(anchors?.table_headers?.business_rules);
+  const displayHeaders = asArray(anchors?.table_headers?.display_requirements);
   const fieldHeaders = asArray(anchors?.table_headers?.field_definitions);
   const storyHeaders = asArray(anchors?.table_headers?.user_stories);
   const acHeaders = asArray(anchors?.table_headers?.acceptance_criteria);
 
   const ruleRows = asArray(dossier.business_rules);
+  const displayRows = asArray(dossier.display_requirements);
   const fieldRows = asArray(dossier.field_definitions);
   const storyRows = asArray(dossier.user_stories);
   const acRows = asArray(dossier.acceptance_criteria);
+  const featureRows = asArray(dossier.features);
 
   return [
-    h1(dossier.heading_title || dossier.module_id),
+    h1(dossier.heading_title || dossier.module_id, `mod_${clean(dossier.module_id || dossier.heading_title)}`),
     h2('Narrative Overview'), para(dossier.narrative_overview),
     h2('Business Purpose'), para(dossier.business_purpose),
     h2('Primary Users'), ...asArray(dossier.primary_users).slice(0, 10).map((x) => bullet(x)),
@@ -308,20 +392,59 @@ function moduleSection(dossier, anchors) {
     h2('Postconditions'), ...asArray(dossier.postconditions).slice(0, 10).map((x) => bullet(x)),
     h2('Interactions'), ...asArray(dossier.interactions_with_other_modules).slice(0, 20).map((x) => bullet(x)),
 
+    h3('Features'),
+    new Table({
+      width: { size: W, type: WidthType.DXA },
+      rows: [
+        new TableRow({ children: [hCell('Feature ID', 2200), hCell('Title', 2800), hCell('Description', 5440)] }),
+        ...featureRows.slice(0, 20).map((f) => new TableRow({ children: [
+          cell(f.feature_id, 2200),
+          cell(f.title, 2800),
+          cell(f.description, 5440),
+        ] })),
+      ],
+    }),
+
     h3('Business Rules'),
     new Table({
       width: { size: W, type: WidthType.DXA },
       rows: [
         new TableRow({ children: [
-          hCell(ruleHeaders[0] || 'Rule ID', 1100), hCell(ruleHeaders[1] || 'Title', 1700), hCell(ruleHeaders[2] || 'Statement', 4600),
-          hCell(ruleHeaders[3] || 'Rationale', 2040), hCell(ruleHeaders[4] || 'Priority', 1000),
+          hCell(ruleHeaders[0] || 'Feature ID', 1100),
+          hCell(ruleHeaders[1] || 'Rule ID', 1200),
+          hCell(ruleHeaders[2] || 'Title', 1400),
+          hCell(ruleHeaders[3] || 'Statement', 3100),
+          hCell(ruleHeaders[4] || 'Error Message', 1500),
+          hCell(ruleHeaders[5] || 'Rationale', 1540),
+          hCell(ruleHeaders[6] || 'Priority', 600),
         ] }),
         ...ruleRows.slice(0, 50).map((r) => new TableRow({ children: [
-          cell(r.rule_id, 1100),
-          cell(r.title, 1700),
-          cell(r.statement, 4600),
-          cell(r.rationale, 2040),
-          cell(r.priority, 1000),
+          cell(r.feature_id, 1100),
+          cell(r.rule_id, 1200),
+          cell(r.title, 1400),
+          cell(r.statement, 3100),
+          cell(r.error_message, 1500),
+          cell(r.rationale, 1540),
+          cell(r.priority, 600),
+        ] })),
+      ],
+    }),
+
+    h3('Display Requirements'),
+    new Table({
+      width: { size: W, type: WidthType.DXA },
+      rows: [
+        new TableRow({ children: [
+          hCell(displayHeaders[0] || 'Feature ID', 1200),
+          hCell(displayHeaders[1] || 'Display ID', 1400),
+          hCell(displayHeaders[2] || 'Title', 2000),
+          hCell(displayHeaders[3] || 'Requirement', 5840),
+        ] }),
+        ...displayRows.slice(0, 40).map((d) => new TableRow({ children: [
+          cell(d.feature_id, 1200),
+          cell(d.display_id, 1400),
+          cell(d.title, 2000),
+          cell(d.requirement, 5840),
         ] })),
       ],
     }),
@@ -331,16 +454,22 @@ function moduleSection(dossier, anchors) {
       width: { size: W, type: WidthType.DXA },
       rows: [
         new TableRow({ children: [
-          hCell(fieldHeaders[0] || 'Field ID', 1000), hCell(fieldHeaders[1] || 'Label', 1600), hCell(fieldHeaders[2] || 'Business Meaning', 3000),
-          hCell(fieldHeaders[3] || 'Required', 900), hCell(fieldHeaders[4] || 'Validation', 2200), hCell(fieldHeaders[5] || 'Source', 1740),
+          hCell(fieldHeaders[0] || 'Feature ID', 1000),
+          hCell(fieldHeaders[1] || 'Field ID', 1000),
+          hCell(fieldHeaders[2] || 'Label', 1200),
+          hCell(fieldHeaders[3] || 'Business Meaning', 2200),
+          hCell(fieldHeaders[4] || 'Required', 800),
+          hCell(fieldHeaders[5] || 'Validation', 2000),
+          hCell(fieldHeaders[6] || 'Source', 2240),
         ] }),
         ...fieldRows.slice(0, 60).map((f) => new TableRow({ children: [
+          cell(f.feature_id, 1000),
           cell(f.field_id, 1000),
-          cell(f.label, 1600),
-          cell(f.business_meaning, 3000),
-          cell(String(f.required ? 'Yes' : 'No'), 900, { align: AlignmentType.CENTER }),
-          cell(f.validation_rule, 2200),
-          cell(asArray(f.source_refs).join(', '), 1740),
+          cell(f.label, 1200),
+          cell(f.business_meaning, 2200),
+          cell(String(f.required ? 'Yes' : 'No'), 800, { align: AlignmentType.CENTER }),
+          cell(f.validation_rule, 2000),
+          cell(asArray(f.source_refs).join(', '), 2240),
         ] })),
       ],
     }),
@@ -350,14 +479,18 @@ function moduleSection(dossier, anchors) {
       width: { size: W, type: WidthType.DXA },
       rows: [
         new TableRow({ children: [
-          hCell(storyHeaders[0] || 'Story ID', 1300), hCell(storyHeaders[1] || 'As a', 1400),
-          hCell(storyHeaders[2] || 'I want', 3200), hCell(storyHeaders[3] || 'So that', 4540),
+          hCell(storyHeaders[0] || 'Feature ID', 1200),
+          hCell(storyHeaders[1] || 'Story ID', 1200),
+          hCell(storyHeaders[2] || 'As a', 1300),
+          hCell(storyHeaders[3] || 'I want', 2800),
+          hCell(storyHeaders[4] || 'So that', 3940),
         ] }),
         ...storyRows.slice(0, 20).map((s) => new TableRow({ children: [
-          cell(s.story_id, 1300),
-          cell(s.as_a, 1400),
-          cell(s.i_want, 3200),
-          cell(s.so_that, 4540),
+          cell(s.feature_id, 1200),
+          cell(s.story_id, 1200),
+          cell(s.as_a, 1300),
+          cell(s.i_want, 2800),
+          cell(s.so_that, 3940),
         ] })),
       ],
     }),
@@ -367,12 +500,16 @@ function moduleSection(dossier, anchors) {
       width: { size: W, type: WidthType.DXA },
       rows: [
         new TableRow({ children: [
-          hCell(acHeaders[0] || 'AC ID', 1300), hCell(acHeaders[1] || 'Statement', 6600), hCell(acHeaders[2] || 'Linked Story', 2540),
+          hCell(acHeaders[0] || 'Feature ID', 1200),
+          hCell(acHeaders[1] || 'AC ID', 1200),
+          hCell(acHeaders[2] || 'Statement', 5640),
+          hCell(acHeaders[3] || 'Linked Story', 2400),
         ] }),
         ...acRows.slice(0, 30).map((a) => new TableRow({ children: [
-          cell(a.ac_id, 1300),
-          cell(a.statement, 6600),
-          cell(a.linked_story_id, 2540),
+          cell(a.feature_id, 1200),
+          cell(a.ac_id, 1200),
+          cell(a.statement, 5640),
+          cell(a.linked_story_id, 2400),
         ] })),
       ],
     }),
@@ -392,14 +529,28 @@ function moduleSection(dossier, anchors) {
 function sectionAppendices(appendices, anchors) {
   const title = clean(anchors?.section_titles?.appendices || 'Appendices');
   const list = (title, arr) => [h2(title), ...asArray(arr).slice(0, 60).map((x) => bullet(x))];
+  const dataEntities = asArray(appendices?.data_entities);
   return [
-    h1(title),
+    h1(title, 'sec_appendices'),
     ...list('Other Code Files to Rewrite', appendices?.other_code_files_to_rewrite),
     ...list('System Requirements', appendices?.system_requirements),
     ...list('Software Requirements', appendices?.software_requirements),
     ...list('Migration Notes', appendices?.migration_notes),
     ...list('Illustration Inventory', appendices?.illustration_inventory),
-    ...list('Supporting Tables', appendices?.supporting_tables),
+    h2('Data Entities'),
+    ...(dataEntities.length
+      ? [new Table({
+        width: { size: W, type: WidthType.DXA },
+        rows: [
+          new TableRow({ children: [hCell('Entity', 2600), hCell('Business Meaning', 7840)] }),
+          ...dataEntities.slice(0, 60).map((e) => new TableRow({ children: [
+            cell(e.entity, 2600),
+            cell(e.business_meaning, 7840),
+          ] })),
+        ],
+      })]
+      : [para('No data entities were inferred from the analyzed source set.')]),
+    para(clean(appendices?.data_entities_note)),
   ];
 }
 
@@ -425,14 +576,17 @@ async function generateBrdDoc(bundle, outputPath) {
       footers: { default: mkFooter() },
       children: [
         ...sectionCover(meta, anchors),
+        ...sectionToc(anchors, dossiers),
         ...sectionVersionHistory(versionHistory, anchors, meta),
         ...sectionModuleInventory(registry, anchors),
         ...sectionContext(context, anchors),
-        h1(clean(anchors?.section_titles?.project_description || 'Project Description')),
+        h1(clean(anchors?.section_titles?.project_description || 'Project Description'), 'sec_project_description'),
+        h2('Background'),
+        ...asArray(context?.project_background).slice(0, 3).map((x) => para(x)),
         h2('Current State'), para(context?.current_state_summary),
         h2('Target State'), para(context?.target_state_summary),
         ...sectionGeneral(general, anchors),
-        h1(clean(anchors?.section_titles?.modules || 'Module Details')),
+        h1(clean(anchors?.section_titles?.modules || 'Module Details'), 'sec_modules'),
         ...dossiers.flatMap((d) => moduleSection(d, anchors)),
         ...sectionAppendices(appendices, anchors),
       ],

@@ -16,10 +16,11 @@ const DEFAULT_ANCHOR_MAP = {
   table_headers: {
     version_history: ['Version', 'Date', 'Author', 'Summary', 'Status'],
     module_inventory: ['Module ID', 'Business Name', 'State Key', 'Kind', 'Description', 'Confidence', 'Source Forms'],
-    business_rules: ['Rule ID', 'Title', 'Statement', 'Rationale', 'Priority'],
-    field_definitions: ['Field ID', 'Label', 'Business Meaning', 'Required', 'Validation', 'Source'],
-    user_stories: ['Story ID', 'As a', 'I want', 'So that'],
-    acceptance_criteria: ['AC ID', 'Statement', 'Linked Story'],
+    business_rules: ['Feature ID', 'Rule ID', 'Title', 'Statement', 'Error Message', 'Rationale', 'Priority'],
+    display_requirements: ['Feature ID', 'Display ID', 'Title', 'Requirement'],
+    field_definitions: ['Feature ID', 'Field ID', 'Label', 'Business Meaning', 'Required', 'Validation', 'Source'],
+    user_stories: ['Feature ID', 'Story ID', 'As a', 'I want', 'So that'],
+    acceptance_criteria: ['Feature ID', 'AC ID', 'Statement', 'Linked Story'],
   },
 };
 
@@ -39,10 +40,11 @@ const JHA_OPENANYWHERE_ANCHOR_MAP = {
   table_headers: {
     version_history: ['Srl. No.', 'Version No.', 'Author / Owner', 'Date of Publishing', 'Description of Release/Change', 'Approved By'],
     module_inventory: ['Module Name from Code', 'Module ID', 'STATE KEY NAME', 'Module Description (Why & How?)'],
-    business_rules: ['Business Rule ID', 'Rule Title', 'Business Rule Statement', 'Rationale', 'Priority'],
-    field_definitions: ['Field ID', 'Field Label', 'Business Meaning', 'Required', 'Validation Rule', 'Source Refs'],
-    user_stories: ['Story ID', 'As a', 'I want', 'So that'],
-    acceptance_criteria: ['Acceptance ID', 'Statement', 'Linked Story'],
+    business_rules: ['Feature ID', 'Business Rule ID', 'Rule Title', 'Business Rule Statement', 'Error Message', 'Rationale', 'Priority'],
+    display_requirements: ['Feature ID', 'Display ID', 'Display Requirement', 'Details'],
+    field_definitions: ['Feature ID', 'Field ID', 'Field Label', 'Business Meaning', 'Required', 'Validation Rule', 'Source Refs'],
+    user_stories: ['Feature ID', 'Story ID', 'As a', 'I want', 'So that'],
+    acceptance_criteria: ['Feature ID', 'Acceptance ID', 'Statement', 'Linked Story'],
   },
 };
 

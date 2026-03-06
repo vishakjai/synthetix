@@ -161,6 +161,23 @@ Use `--execution-mode api` when you need CLI output to follow the same server pi
 
 Outputs are written under `run_artifacts/manual_exports/` by default.
 
+## CLI BRD Generation (No UI)
+
+Generate BRD artifacts directly from an existing Analyst markdown file:
+
+```bash
+python scripts/generate_brd_doc.py \
+  --md run_artifacts/<run-id>/docgen_exports/<timestamp>/analyst-output.md \
+  --out run_artifacts/manual_exports/brd_check \
+  --template-family JHA_OpenAnywhere_v1
+```
+
+This writes:
+- `brd.docx` (when BRD QA is not hard-blocked)
+- `brd_package_v1.json`
+- `brd_qa_report_v1.json`
+- `brd_render_manifest_v1.json`
+
 ## Architecture
 
 ```
