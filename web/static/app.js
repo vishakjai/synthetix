@@ -649,6 +649,23 @@ async function apiMultipart(path, formData, method = "POST") {
   return data;
 }
 
+async function apiWithNetworkRetry(path, payload, method = "POST", options = {}) {
+  const retries = Math.max(0, Number(options?.retries || 0));
+  const retryDelayMs = Math.max(0, Number(options?.retryDelayMs || 1000));
+  let attempt = 0;
+  while (true) {
+    try {
+      return await api(path, payload, method);
+    } catch (err) {
+      const message = String(err?.message || err || "");
+      const networkError = /failed to fetch|networkerror|load failed/i.test(message);
+      if (!networkError || attempt >= retries) throw err;
+      attempt += 1;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+}
+
 function setDbUploadStatus(message, isError = false) {
   if (!el.dbUploadStatus) return;
   el.dbUploadStatus.textContent = String(message || "").trim() || "Upload SQL/DDL text or Microsoft Access files (.mdb/.accdb).";
@@ -6982,7 +6999,7 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
   const runPromise = (async () => {
     const integration = getIntegrationContext();
     try {
-      const discoverData = await api("/api/discover/analyst-brief", {
+      const discoverData = await apiWithNetworkRetry("/api/discover/analyst-brief", {
         integration_context: integration,
         objectives: String(el.objectives?.value || "").trim(),
         use_case: currentUseCase(),
@@ -6992,7 +7009,7 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
         database_schema: String(el.dbSchema?.value || "").trim(),
         repo_provider: String(integration?.brownfield?.repo_provider || ""),
         repo_url: String(integration?.brownfield?.repo_url || "").trim(),
-      }, "POST");
+      }, "POST", { retries: 1, retryDelayMs: 1200 });
 
       const candidateThreadParts = [
         String(integration?.project_state_detected || ""),
@@ -7061,7 +7078,9 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
       }
       state.discoverAnalystBrief = {
         loading: false,
-        error: String(err?.message || err || "Failed to run analyst brief."),
+        error: /failed to fetch/i.test(String(err?.message || err || ""))
+          ? "Network fetch failed while loading the analyst brief. Retry once more; if the app was just deployed, do a hard refresh first."
+          : String(err?.message || err || "Failed to run analyst brief."),
         data: previousData,
         requestKey: reqKey,
         threadId: previousThreadId,
