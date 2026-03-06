@@ -2289,6 +2289,49 @@ def _http_json_request(
     raise ValueError("upstream returned unsupported JSON payload")
 
 
+def _github_request_context() -> tuple[str, dict[str, str], bool]:
+    github_cfg = SETTINGS_STORE.get_integration_config("github")
+    token = str(github_cfg.get("token", "")).strip()
+    base_url = str(github_cfg.get("base_url") or "https://api.github.com").rstrip("/")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "synthetix-discover/1.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return base_url, headers, bool(token)
+
+
+def _github_fetch_error_message(exc: ValueError, *, authenticated: bool) -> str:
+    msg = str(exc).strip()
+    lower = msg.lower()
+    if "rate limit" in lower:
+        if authenticated:
+            return f"GitHub API rate limit exceeded: {msg}"
+        return (
+            "GitHub anonymous API rate limit exceeded for this public repo. "
+            "Save a GitHub token in Settings > Integrations > GitHub and retry."
+        )
+    if "http 404" in lower or "not found" in lower:
+        if authenticated:
+            return f"GitHub fetch failed: {msg}"
+        return (
+            "GitHub repo was not accessible anonymously. "
+            "If the repo is private, save a GitHub token in Settings > Integrations > GitHub. "
+            f"Details: {msg}"
+        )
+    if "http 401" in lower or "http 403" in lower:
+        if authenticated:
+            return f"GitHub fetch failed: {msg}"
+        return (
+            "GitHub rejected anonymous access for this repo. "
+            "Save a GitHub token in Settings > Integrations > GitHub and retry. "
+            f"Details: {msg}"
+        )
+    return f"GitHub fetch failed: {msg}"
+
+
 def _parse_github_repo_url(repo_url: str) -> tuple[str, str]:
     raw = str(repo_url or "").strip()
     if not raw:
@@ -5342,23 +5385,7 @@ async def api_discover_github_tree(request):
     if sample_mode:
         return JSONResponse({"ok": True, **_sample_github_tree(owner, repository)})
 
-    token = str(github_cfg.get("token", "")).strip()
-    if not token:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "GitHub token is required. Save it in Settings > Integrations > GitHub, then retry.",
-            },
-            status_code=400,
-        )
-
-    base_url = str(github_cfg.get("base_url") or "https://api.github.com").rstrip("/")
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "synthetix-discover/1.0",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+    base_url, headers, authenticated = _github_request_context()
 
     try:
         repo_meta = _http_json_request(f"{base_url}/repos/{quote(owner)}/{quote(repository)}", headers=headers)
@@ -5371,7 +5398,7 @@ async def api_discover_github_tree(request):
             headers=headers,
         )
     except ValueError as exc:
-        return JSONResponse({"ok": False, "error": f"GitHub fetch failed: {exc}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": _github_fetch_error_message(exc, authenticated=authenticated)}, status_code=400)
 
     if not isinstance(tree_payload, dict):
         return JSONResponse({"ok": False, "error": "GitHub tree response is invalid."}, status_code=400)
@@ -5656,24 +5683,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         )
         return JSONResponse(response_payload)
 
-    github_cfg = SETTINGS_STORE.get_integration_config("github")
-    token = str(github_cfg.get("token", "")).strip()
-    if not token:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "GitHub token is required for analyst code understanding. Save it in Settings > Integrations > GitHub.",
-            },
-            status_code=400,
-        )
-
-    base_url = str(github_cfg.get("base_url") or "https://api.github.com").rstrip("/")
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "synthetix-discover/1.0",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+    base_url, headers, authenticated = _github_request_context()
 
     try:
         repo_meta = _http_json_request(f"{base_url}/repos/{quote(owner)}/{quote(repository)}", headers=headers)
@@ -5685,7 +5695,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             headers=headers,
         )
     except ValueError as exc:
-        return JSONResponse({"ok": False, "error": f"GitHub fetch failed: {exc}"}, status_code=400)
+        return JSONResponse({"ok": False, "error": _github_fetch_error_message(exc, authenticated=authenticated)}, status_code=400)
 
     if not isinstance(tree_payload, dict):
         return JSONResponse({"ok": False, "error": "GitHub tree response is invalid."}, status_code=400)
