@@ -6349,7 +6349,7 @@ function renderDeliveryDashboard(runs, tasks) {
 }
 
 function renderEngineeringDashboard(runs) {
-  const active = runs.filter((r) => r.status === "running");
+  const active = runs.filter((r) => isActiveRunStatus(r.status));
   const failed = runs.filter((r) => r.status === "failed");
   const waiting = runs.filter((r) => r.status === "waiting_approval");
   const strictExceptions = runs.filter((r) => r.status === "failed" && !!r?.config?.strict_security_mode);
@@ -10006,6 +10006,7 @@ async function cloneTaskToWorkbench(runId) {
 }
 
 function runStatusTone(status) {
+  if (status === "queued") return "border-indigo-400 bg-indigo-100 text-indigo-900";
   if (status === "running") return "border-sky-400 bg-sky-100 text-sky-900";
   if (status === "waiting_approval") return "border-amber-400 bg-amber-100 text-amber-900";
   if (status === "completed") return "border-emerald-400 bg-emerald-100 text-emerald-900";
@@ -10369,6 +10370,7 @@ function latestResultByStage(run, stage) {
 function statusLabel(status) {
   if (status === "success") return "SUCCESS";
   if (status === "warning") return "WARNING";
+  if (status === "queued") return "QUEUED";
   if (status === "running") return "RUNNING";
   if (status === "waiting_approval") return "WAITING APPROVAL";
   if (status === "skipped_team") return "NOT IN TEAM";
@@ -10379,6 +10381,7 @@ function statusLabel(status) {
 function statusTone(status) {
   if (status === "success") return "bg-emerald-100 text-emerald-900 border-emerald-300";
   if (status === "warning") return "bg-amber-100 text-amber-900 border-amber-300";
+  if (status === "queued") return "bg-indigo-100 text-indigo-900 border-indigo-300";
   if (status === "running") return "bg-sky-100 text-sky-900 border-sky-300";
   if (status === "waiting_approval") return "bg-amber-100 text-amber-900 border-amber-300";
   if (status === "skipped_team") return "bg-slate-100 text-slate-500 border-slate-300";
@@ -10388,7 +10391,7 @@ function statusTone(status) {
 
 function isActiveRunStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
-  return ["running", "pending", "waiting_approval", "paused"].includes(normalized);
+  return ["queued", "running", "pending", "waiting_approval", "paused"].includes(normalized);
 }
 
 function activeAgentsForRun(run) {
@@ -12073,7 +12076,7 @@ function startStreaming(runId) {
       const status = await fetchRunStatus(runId);
       applyRunStatus(status);
       renderRun();
-      if ((status?.status || "").toLowerCase() === "running") {
+      if (isActiveRunStatus(status?.status || "")) {
         setTimeout(() => startStreaming(runId), 1200);
       } else {
         await fetchRunSnapshot(runId);
@@ -12088,7 +12091,7 @@ async function syncRun(runId) {
   if (!runId) return;
   try {
     const run = await fetchRunSnapshot(runId);
-    if (run.status === "running") startStreaming(runId);
+    if (isActiveRunStatus(run.status)) startStreaming(runId);
     else stopStreaming();
     await refreshArtifactsList();
   } catch (err) {
