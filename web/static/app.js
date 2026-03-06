@@ -5232,8 +5232,9 @@ function renderDiscoverInsights() {
             </div>
           </div>
           <div class="rounded border border-slate-300 bg-white p-2">
-            <p class="mb-1 font-semibold text-slate-900">Source ERD (Mermaid)</p>
-            <pre class="max-h-64 overflow-auto rounded border border-slate-200 bg-slate-50 p-2 text-[10px] leading-relaxed">${escapeHtml(sourceErdText || "No source_erd artifact available.")}</pre>
+            ${sourceErdText
+              ? mermaidBlock("Source ERD (Mermaid)", sourceErdText)
+              : `<p class="mb-1 font-semibold text-slate-900">Source ERD (Mermaid)</p><p class="rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">No source_erd artifact available.</p>`}
           </div>
         </div>
         <div class="mt-2 rounded border border-slate-300 bg-white p-2">
@@ -5247,6 +5248,7 @@ function renderDiscoverInsights() {
         </div>
         ${qualitySectionHtml}
       `;
+      setTimeout(() => renderMermaidBlocks(el.discoverDataContent), 0);
     }
   }
 }
