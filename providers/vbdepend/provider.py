@@ -394,6 +394,15 @@ class VBDependProvider(BaseEvidenceProvider):
             },
             "checks": coverage.get("checks", []),
         }
+        compatibility = self._build_compatibility_payload(
+            extraction=extraction,
+            project_rows=project_rows,
+            type_rows=type_rows,
+            runtime_counter=runtime_counter,
+            dead=dead,
+            coverage=coverage,
+            evidence_banner=evidence_banner,
+        )
         return {
             "repo_landscape_v1": repo_landscape_v1,
             "component_inventory_v1": component_inventory_v1,
@@ -411,6 +420,7 @@ class VBDependProvider(BaseEvidenceProvider):
             "code_quality_rules": code_quality_rules,
             "static_forensics_layer": static_forensics_layer,
             "evidence_coverage_report_v1": coverage,
+            **compatibility,
         }
 
     def suggested_followups(self, coverage: dict[str, Any]) -> list[str]:
@@ -475,6 +485,310 @@ class VBDependProvider(BaseEvidenceProvider):
                 "VBDepend provides strong architecture/dependency insight but weak behavior/data coverage on its own.",
             ],
         }
+
+    def _build_compatibility_payload(
+        self,
+        *,
+        extraction: dict[str, Any],
+        project_rows: list[dict[str, Any]],
+        type_rows: list[dict[str, Any]],
+        runtime_counter: Counter[str],
+        dead: dict[str, Any],
+        coverage: dict[str, Any],
+        evidence_banner: str,
+    ) -> dict[str, Any]:
+        primary_project = str((project_rows[0] if project_rows else {}).get("project", "")).strip() or "Imported VB6 system"
+        bundle_id = str(extraction.get("bundle_id", "")).strip()
+        forms: list[dict[str, Any]] = []
+        reports: list[str] = []
+        module_names: list[str] = []
+        member_files: list[str] = [f"{self._slug(primary_project)}.vbp"]
+        source_loc_by_file: list[dict[str, Any]] = []
+        form_loc_total = 0
+        module_loc_total = 0
+        class_loc_total = 0
+
+        for row in type_rows:
+            type_name = str(row.get("type_name", "")).strip()
+            if not type_name:
+                continue
+            loc = int(row.get("loc", 0) or 0)
+            kind = self._compat_member_kind(type_name)
+            ext = ".frm" if kind == "form" else (".dsr" if kind == "report" else ".bas")
+            pseudo_path = f"{self._slug(primary_project)}/{type_name}{ext}"
+            member_files.append(pseudo_path)
+            source_loc_by_file.append(
+                {
+                    "path": pseudo_path,
+                    "loc": loc,
+                    "project_name": primary_project,
+                    "kind": kind,
+                    "evidence": "Imported VBDepend type metrics",
+                }
+            )
+            if kind == "form":
+                form_loc_total += loc
+                purpose = self._compat_form_purpose(type_name)
+                forms.append(
+                    {
+                        "form_name": type_name,
+                        "base_form_name": type_name,
+                        "name": type_name,
+                        "project_name": primary_project,
+                        "project": primary_project,
+                        "path": pseudo_path,
+                        "source_path": pseudo_path,
+                        "source_file": pseudo_path,
+                        "source_loc": loc,
+                        "purpose": purpose,
+                        "display_name": type_name,
+                        "controls": [],
+                        "event_handlers": [],
+                        "status": "mapped",
+                    }
+                )
+            elif kind == "report":
+                reports.append(type_name)
+            else:
+                module_loc_total += loc
+                module_names.append(type_name)
+
+        total_loc = sum(int(row.get("loc", 0) or 0) for row in type_rows)
+        if not module_loc_total:
+            module_loc_total = max(0, total_loc - form_loc_total - class_loc_total)
+        ocx_dependencies = [name for name, _ in runtime_counter.most_common() if name.lower().endswith("ocx")]
+        dll_dependencies = [name for name, _ in runtime_counter.most_common() if name.lower().endswith(("dll", "tlb"))]
+        dead_types = dead.get("types", []) if isinstance(dead.get("types", []), list) else []
+        pitfall_detectors: list[dict[str, Any]] = []
+        if any(int(row.get("cyclomatic_complexity", 0) or 0) >= 40 for row in type_rows):
+            hotspot = max(type_rows, key=lambda row: int(row.get("cyclomatic_complexity", 0) or 0))
+            pitfall_detectors.append(
+                {
+                    "id": "EVID-HOTSPOT-001",
+                    "severity": "medium",
+                    "title": "High-complexity type identified in imported evidence",
+                    "description": f"{str(hotspot.get('type_name', '')).strip() or 'A legacy type'} exceeds the hotspot threshold and should be prioritized for modernization planning.",
+                    "recommended_action": "Sequence hotspot remediation early and validate behavior with SMEs.",
+                    "evidence": "VBDepend type metrics",
+                }
+            )
+        if dead_types:
+            pitfall_detectors.append(
+                {
+                    "id": "EVID-DEADCODE-001",
+                    "severity": "low",
+                    "title": "Potential dead types detected",
+                    "description": f"Imported dead-code analysis identified {len(dead_types)} probable dead type(s).",
+                    "recommended_action": "Review dead code candidates before committing scope or parity assumptions.",
+                    "evidence": "VBDepend dead code report",
+                }
+            )
+        pitfall_detectors.append(
+            {
+                "id": "EVID-COVERAGE-001",
+                "severity": "high",
+                "title": "Behavior and data evidence remain incomplete",
+                "description": "Imported analysis supports architecture and dependency understanding but does not prove SQL, DB schema, or event-handler parity.",
+                "recommended_action": "Treat BRD and plan sections as evidence-backed with explicit verification gates before build commitments.",
+                "evidence": "Evidence coverage report",
+            }
+        )
+
+        readiness_score = round(
+            (
+                float(coverage.get("dimensions", {}).get("architecture", 0) or 0) * 0.45
+                + float(coverage.get("dimensions", {}).get("dependencies", 0) or 0) * 0.2
+                + float(coverage.get("dimensions", {}).get("code_quality", 0) or 0) * 0.15
+                + float(coverage.get("dimensions", {}).get("behavior", 0) or 0) * 0.1
+                + float(coverage.get("dimensions", {}).get("data", 0) or 0) * 0.1
+            )
+            / 100.0,
+            4,
+        )
+        modernization_readiness = {
+            "readiness_score": readiness_score,
+            "summary": "Evidence-backed planning is viable, but behavior and data parity remain unverified.",
+            "signals": [
+                "Architecture and dependency coverage are strong enough for planning.",
+                "Behavioral and data evidence require explicit SME validation before build commitments.",
+            ],
+        }
+
+        compatibility_context = {
+            "repo": "Imported analysis bundle",
+            "repo_url": "",
+            "branch": "imported",
+            "commit_sha": bundle_id or "evidence-bundle",
+            "version_id": bundle_id or "evidence-bundle",
+        }
+        vb6_projects = [
+            {
+                "project_name": primary_project,
+                "startup_object": forms[0]["form_name"] if forms else "",
+                "member_files": member_files[:4000],
+                "forms": [row["form_name"] for row in forms][:400],
+                "source_loc_total": total_loc,
+                "source_loc_forms": form_loc_total,
+                "source_loc_modules": module_loc_total,
+                "source_loc_classes": class_loc_total,
+                "members": len(member_files),
+            }
+        ]
+        legacy_inventory = {
+            "summary": {
+                "counts": {
+                    "vb6_projects": len(vb6_projects),
+                    "forms": len(forms),
+                    "modules": len(module_names),
+                    "reports": len(reports),
+                    "source_loc_total": total_loc,
+                    "source_loc_forms": form_loc_total,
+                    "source_loc_modules": module_loc_total,
+                    "source_loc_classes": class_loc_total,
+                    "source_files_scanned": len(source_loc_by_file),
+                },
+                "source_banner": evidence_banner,
+                "notes": [
+                    "Inventory synthesized from imported VBDepend outputs.",
+                    "Behavior, SQL, and DB evidence remain partial until additional artifacts are uploaded.",
+                ],
+            },
+            "vb6_projects": vb6_projects,
+            "project_members": member_files[:4000],
+            "forms": forms[:800],
+            "controls": [],
+            "event_handlers": [],
+            "bas_module_summary": {
+                "module_count": len(module_names),
+                "modules": module_names[:1200],
+                "procedure_count": 0,
+                "note": "Module inventory inferred from type metrics; procedure-level evidence not available in imported mode.",
+            },
+            "database_tables": [],
+            "sql_query_catalog": [],
+            "connection_strings": [],
+            "database_file_references": [],
+            "connection_string_rows": [],
+            "database_file_reference_rows": [],
+            "module_global_declarations": [],
+            "binary_companion_files": [],
+            "ui_event_map": [],
+            "pitfall_detectors": pitfall_detectors,
+            "error_handling_profile": {},
+            "modernization_readiness": modernization_readiness,
+            "source_loc_by_file": source_loc_by_file[:5000],
+            "source_loc_total": total_loc,
+            "source_loc_forms": form_loc_total,
+            "source_loc_modules": module_loc_total,
+            "source_loc_classes": class_loc_total,
+            "source_files_scanned": len(source_loc_by_file),
+            "form_count_discovered_files": len(forms),
+            "form_count_referenced": len(forms),
+            "form_count_unmapped_files": 0,
+            "ocx_dependencies": ocx_dependencies[:400],
+            "dll_dependencies": dll_dependencies[:400],
+        }
+        vb6_analysis = {
+            "project_count": len(vb6_projects),
+            "projects": vb6_projects,
+            "forms": [row["form_name"] for row in forms][:800],
+            "controls": [],
+            "activex_dependencies": ocx_dependencies[:400],
+            "dependency_references": [
+                {"source": dep.get("source"), "target": dep.get("target"), "kind": dep.get("kind")}
+                for dep in []
+            ],
+            "event_handlers": [],
+            "event_handler_keys": [],
+            "event_handler_count_exact": 0,
+            "project_members": member_files[:4000],
+            "ui_event_map": [],
+            "sql_query_catalog": [],
+            "connection_strings": [],
+            "database_file_references": [],
+            "connection_string_rows": [],
+            "database_file_reference_rows": [],
+            "module_global_declarations": [],
+            "com_surface_map": {
+                "late_bound_progids": [],
+                "call_by_name_sites": [],
+                "createobject_getobject_sites": [],
+                "references": ocx_dependencies[:120] + dll_dependencies[:120],
+            },
+            "win32_declares": [],
+            "error_handling_profile": {},
+            "pitfall_detectors": pitfall_detectors,
+            "modernization_readiness": modernization_readiness,
+            "bas_module_summary": legacy_inventory["bas_module_summary"],
+            "binary_companion_files": [],
+            "source_loc_by_file": source_loc_by_file[:5000],
+            "source_loc_total": total_loc,
+            "source_loc_forms": form_loc_total,
+            "source_loc_modules": module_loc_total,
+            "source_loc_classes": class_loc_total,
+            "source_files_scanned": len(source_loc_by_file),
+        }
+        return {
+            "project_name": primary_project,
+            "analysis_walkthrough": {
+                "business_objective_summary": "Imported analysis was used to establish architecture, dependencies, hotspots, and planning constraints without direct source-code access.",
+            },
+            "context_reference": compatibility_context,
+            "legacy_skill_profile": {
+                "selected_skill_id": "evidence_mode_pack",
+                "version": self.provider_version,
+                "confidence": 0.9,
+            },
+            "source_target_modernization_profile": {
+                "source": {
+                    "language": "VB6",
+                    "framework": "Imported analysis evidence",
+                    "repo": "Imported analysis bundle",
+                },
+                "target": {
+                    "language": "TBD",
+                    "framework": "TBD",
+                },
+            },
+            "legacy_code_inventory": legacy_inventory,
+            "vb6_analysis": vb6_analysis,
+            "open_questions": coverage.get("blockers", []),
+            "quality_gates": coverage.get("checks", []),
+        }
+
+    def _compat_member_kind(self, type_name: str) -> str:
+        low = str(type_name or "").strip().lower()
+        if low.startswith(("rpt", "report", "datareport")):
+            return "report"
+        if low in {"main", "menu", "mdi", "mdiform"} or low.startswith(("frm", "form", "mdi")):
+            return "form"
+        if any(token in low for token in ("login", "splash", "deposit", "withdraw", "customer", "account", "transaction", "search", "report")):
+            return "form"
+        return "module"
+
+    def _compat_form_purpose(self, type_name: str) -> str:
+        low = str(type_name or "").strip().lower()
+        if "login" in low:
+            return "Authentication and credential validation workflow."
+        if "splash" in low:
+            return "Startup readiness and application launch workflow."
+        if "deposit" in low:
+            return "Deposit capture and balance posting workflow."
+        if "withdraw" in low:
+            return "Withdrawal processing and balance deduction workflow."
+        if "customer" in low:
+            return "Customer onboarding and maintenance workflow."
+        if "account" in low and "type" in low:
+            return "Account type maintenance and configuration workflow."
+        if "transaction" in low:
+            return "Transaction ledger and posting workflow."
+        if "search" in low:
+            return "Record search and retrieval workflow."
+        if low in {"main", "menu", "mdiform"}:
+            return "Application navigation and workflow routing."
+        if low.startswith(("rpt", "report")):
+            return "Operational reporting workflow."
+        return "Evidence-backed legacy workflow inferred from imported analysis."
 
     def _parse_project_metrics(self, text: str) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []

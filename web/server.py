@@ -5866,6 +5866,51 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
                 "coverage": coverage,
             },
         }
+        compatibility_fields = {
+            "project_name": str(normalized_artifacts.get("project_name", "")).strip() or "Imported VB6 system",
+            "analysis_walkthrough": normalized_artifacts.get("analysis_walkthrough", {})
+            if isinstance(normalized_artifacts.get("analysis_walkthrough", {}), dict)
+            else {},
+            "context_reference": normalized_artifacts.get("context_reference", {})
+            if isinstance(normalized_artifacts.get("context_reference", {}), dict)
+            else {},
+            "legacy_skill_profile": normalized_artifacts.get("legacy_skill_profile", {})
+            if isinstance(normalized_artifacts.get("legacy_skill_profile", {}), dict)
+            else {},
+            "source_target_modernization_profile": normalized_artifacts.get("source_target_modernization_profile", {})
+            if isinstance(normalized_artifacts.get("source_target_modernization_profile", {}), dict)
+            else {},
+            "legacy_code_inventory": normalized_artifacts.get("legacy_code_inventory", {})
+            if isinstance(normalized_artifacts.get("legacy_code_inventory", {}), dict)
+            else {},
+            "vb6_analysis": normalized_artifacts.get("vb6_analysis", {})
+            if isinstance(normalized_artifacts.get("vb6_analysis", {}), dict)
+            else {},
+            "open_questions": normalized_artifacts.get("open_questions", [])
+            if isinstance(normalized_artifacts.get("open_questions", []), list)
+            else blockers,
+            "quality_gates": normalized_artifacts.get("quality_gates", [])
+            if isinstance(normalized_artifacts.get("quality_gates", []), list)
+            else coverage.get("checks", []),
+        }
+        report_seed = {
+            "ok": True,
+            "source": "imported_analysis",
+            "repo": {"owner": "", "repository": "", "default_branch": "", "url": ""},
+            "analyst_brief": {
+                "title": "Analyst functionality understanding",
+                "summary": analysis,
+            },
+            "evidence_bundle_v1": bundle_payload,
+            "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
+            "evidence_coverage_report_v1": coverage,
+            **compatibility_fields,
+        }
+        raw_artifacts = build_raw_artifact_set_v1(report_seed)
+        if not isinstance(raw_artifacts, dict):
+            raw_artifacts = {}
+        raw_artifacts.update(normalized_artifacts)
+        report_seed["raw_artifacts"] = raw_artifacts
         response_payload = {
             "ok": True,
             "source": "imported_analysis",
@@ -5874,10 +5919,12 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
                 "title": "Analyst functionality understanding",
                 "summary": analysis,
             },
-            "raw_artifacts": normalized_artifacts,
+            **compatibility_fields,
+            "raw_artifacts": raw_artifacts,
             "evidence_bundle_v1": bundle_payload,
             "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
             "evidence_coverage_report_v1": coverage,
+            "analyst_report_v2": build_analyst_report_v2(report_seed),
         }
         return JSONResponse(response_payload)
 
