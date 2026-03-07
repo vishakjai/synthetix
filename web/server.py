@@ -8471,6 +8471,20 @@ def _run_synthetix_docgen(
         )
         target = out_dir / file_name
         if not target.exists():
+            if doc_type == "brd":
+                manifest_path = out_dir / "brd_render_manifest_v1.json"
+                if manifest_path.exists():
+                    try:
+                        manifest = _get_json(manifest_path.read_bytes())
+                    except Exception:
+                        manifest = {}
+                    if isinstance(manifest, dict):
+                        placeholder_status = _clean_text(manifest.get("placeholder_fill_status")).lower()
+                        render_error = _clean_text(manifest.get("render_error"))
+                        if placeholder_status == "blocked_by_qa":
+                            raise RuntimeError(render_error or "BRD rendering was blocked by QA structural failures.")
+                        if render_error:
+                            raise RuntimeError(f"BRD DOCX export failed: {render_error}")
             raise RuntimeError(f"Expected output not found: {target}")
 
         # Persist a complete export bundle per request so MD/DOCX/DB design artifacts
