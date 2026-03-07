@@ -564,6 +564,14 @@ function buildSqlCatalog(data) {
     sqlByForm[s.form].push(s);
   }
 
+  const sourceMode = String(data?.meta?.source_mode || '').toLowerCase();
+  if (!Object.keys(sqlByForm).length) {
+    const msg = sourceMode === 'imported_analysis'
+      ? 'No SQL catalog rows were available from the imported analysis source. Upload source code, query exports, or schema evidence if SQL behavior must be reconstructed.'
+      : 'No SQL operations detected.';
+    return [para(msg, { color: C.DGREY, italics: true })];
+  }
+
   const sqlContent = [];
   for (const [formKey, entries] of Object.entries(sqlByForm)) {
     const fObj  = (data.mapped_forms || []).find(f =>
@@ -623,7 +631,6 @@ function buildFlowTraces(data) {
   };
   const traceContent = [];
   const traces = data.form_traces || {};
-  const seenTraceSignature = new Map();
   const activeKeys = new Set(
     (data.active_form_keys || [])
       .map((v) => String(v || '').trim().toLowerCase())
@@ -653,30 +660,6 @@ function buildFlowTraces(data) {
     const label    = fObj ? (fObj.display_name || fObj.form) : formKey;
     const okCount  = formTraces.filter(t => (t.status || '').toUpperCase() === 'OK').length;
     const gapCount = formTraces.filter(t => (t.status || '').toUpperCase() === 'TRACE_GAP').length;
-    const signature = JSON.stringify(
-      formTraces.map((t) => ({
-        callable: String(t.callable || '').trim().toLowerCase(),
-        kind: String(t.kind || '').trim().toLowerCase(),
-        event: String(t.event || '').trim().toLowerCase(),
-        activex: String(t.activex || '').trim().toLowerCase(),
-        sql_ids: String(t.sql_ids || '').trim().toLowerCase(),
-        tables: String(t.tables || '').trim().toLowerCase(),
-        status: String(t.status || '').trim().toLowerCase(),
-      }))
-    );
-
-    if (seenTraceSignature.has(signature)) {
-      const mirroredFrom = seenTraceSignature.get(signature);
-      traceContent.push(h3(label));
-      traceContent.push(para(
-        `Trace identical to ${mirroredFrom}. Mirrored reference only to avoid duplicated table output.`,
-        { color: C.DGREY, sz: 16 }
-      ));
-      traceContent.push(sp());
-      continue;
-    }
-    seenTraceSignature.set(signature, label);
-
     traceContent.push(h3(label));
     traceContent.push(para(
       `${formTraces.length} callables: ${okCount} traced · ${gapCount} gaps`,
@@ -1227,6 +1210,9 @@ async function generateTechWb(data, outputPath) {
   const thirdPartyContent = buildThirdPartySection(data);
   const uiControlContent = buildUiControlCoverage(data);
   const qaAlerts = buildQaAlerts(data);
+  const evidenceModeNote = String(data?.meta?.source_mode || '').toLowerCase() === 'imported_analysis'
+    ? (data?.meta?.source_banner || 'Imported analysis source: structural evidence is available, but behavioral, SQL, and DB-schema details may require additional uploads or SME confirmation.')
+    : '';
   const appendixCounts = (data && typeof data === 'object' && data.appendix_counts && typeof data.appendix_counts === 'object')
     ? data.appendix_counts
     : {};
@@ -1273,6 +1259,7 @@ async function generateTechWb(data, outputPath) {
         pb(),
 
         h1('1. Project Inventory'),
+        ...(evidenceModeNote ? [para(evidenceModeNote, { color: C.AMBR, bold: true })] : []),
         para(
           `Project variants analysed from the repository. Member counts include forms and modules. `
           + `Source LOC scanned: ${Number(data.meta?.source_loc_total || 0).toLocaleString()} `

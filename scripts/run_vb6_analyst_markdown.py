@@ -518,6 +518,17 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     de_report_rows = _as_list(raw_de_report_map.get("mappings"))
     static_detector_rows = _as_list(raw_static_risk_detectors.get("findings"))
     source_data_dictionary_rows = _as_list(raw_source_data_dictionary.get("rows"))
+    report_meta = _as_dict(report.get("metadata"))
+    context_ref = _as_dict(report_meta.get("context_reference"))
+    imported_analysis_mode = any(
+        "imported analysis bundle" in _clean(value).lower()
+        for value in [
+            report_meta.get("repo"),
+            context_ref.get("repo"),
+            output.get("run_context_bundle_ref"),
+            _as_dict(raw.get("legacy_inventory")).get("source_mode"),
+        ]
+    )
 
     def _base_form_name(value: Any) -> str:
         text = _clean(value)
@@ -1897,13 +1908,18 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         lines.append("|---|---|---:|---|---|")
         for row in detector_rows[:500]:
             r = _as_dict(row)
+            summary = _clean(r.get("summary") or "")
+            if imported_analysis_mode:
+                summary = _humanize_imported_evidence_summary(summary)
             actions = ", ".join(_as_list(r.get("required_actions"))[:4]) or "n/a"
+            if imported_analysis_mode:
+                actions = _humanize_imported_evidence_action(actions if actions != "n/a" else "", summary)
             lines.append(
                 "| {} | {} | {} | {} | {} |".format(
                     _escape_pipe(r.get("detector_id") or "n/a"),
                     _escape_pipe(r.get("severity") or "medium"),
                     int(r.get("count") or 0),
-                    _escape_pipe(r.get("summary") or ""),
+                    _escape_pipe(summary),
                     _escape_pipe(actions),
                 )
             )
@@ -2225,12 +2241,17 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         lines.append("|---|---|---|---|")
         for row in raw_risks[:700]:
             r = _as_dict(row)
+            description = _clean(r.get("description") or "")
+            action = _clean(r.get("recommended_action") or "")
+            if imported_analysis_mode:
+                description = _humanize_imported_evidence_summary(description)
+                action = _humanize_imported_evidence_action(action, description)
             lines.append(
                 "| {} | {} | {} | {} |".format(
                     _escape_pipe(r.get("risk_id") or "n/a"),
                     _escape_pipe(r.get("severity") or "medium"),
-                    _escape_pipe(r.get("description") or ""),
-                    _escape_pipe(r.get("recommended_action") or ""),
+                    _escape_pipe(description),
+                    _escape_pipe(action),
                 )
             )
     else:
@@ -2708,20 +2729,98 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         lines.append("- No MDB/ACCDB files detected in this run.")
 
     lines.extend(["", "### T. Form LOC Profile"])
-    if form_loc_rows:
+    if form_loc_rows or raw_form_dossiers:
         loc_summary = _as_dict(raw_form_loc_profile.get("summary"))
+
+        def _canon_project(value: Any) -> str:
+            text = _clean(value).strip().lower()
+            return text or "n/a"
+
+        def _canon_form(value: Any) -> str:
+            return _base_form_name(value) or "n/a"
+
+        active_loc_candidates = [
+            _as_dict(r) for r in form_loc_rows
+            if str(_as_dict(r).get("active_or_orphan") or "").strip().lower() == "active"
+            or bool(_as_dict(r).get("in_vbp"))
+        ]
+        orphan_loc_candidates = [
+            _as_dict(r) for r in form_loc_rows
+            if not (
+                str(_as_dict(r).get("active_or_orphan") or "").strip().lower() == "active"
+                or bool(_as_dict(r).get("in_vbp"))
+            )
+        ]
+
+        loc_by_exact: dict[tuple[str, str], dict[str, Any]] = {}
+        loc_by_form: dict[str, list[dict[str, Any]]] = {}
+        for row in active_loc_candidates + orphan_loc_candidates:
+            key = (_canon_project(row.get("project")), _canon_form(row.get("form") or row.get("base_form")))
+            loc_by_exact.setdefault(key, row)
+            loc_by_form.setdefault(key[1], []).append(row)
+
+        def _pick_loc_row(project_name: Any, form_name: Any) -> dict[str, Any]:
+            exact = loc_by_exact.get((_canon_project(project_name), _canon_form(form_name)))
+            if exact:
+                return exact
+            options = loc_by_form.get(_canon_form(form_name), [])
+            if not options:
+                return {}
+            resolved = [r for r in options if _canon_project(r.get("project")) not in {"n/a", "(unmapped)"}]
+            return resolved[0] if resolved else options[0]
+
+        canonical_active_loc_rows: list[dict[str, Any]] = []
+        for dossier in raw_form_dossiers:
+            d = _as_dict(dossier)
+            loc_row = _pick_loc_row(d.get("project_name"), d.get("form_name"))
+            loc_value = _as_int(d.get("source_loc"), _as_int(loc_row.get("loc"), 0))
+            confidence_value = _as_float(_as_dict(d.get("coverage")).get("confidence_score"), _as_float(loc_row.get("confidence"), 0.0))
+            canonical_active_loc_rows.append(
+                {
+                    "form_id": _clean(d.get("dossier_id")) or f"form_loc:{_clean(d.get('form_name'))}",
+                    "form": _qualified_form_name(d.get("project_name"), d.get("form_name")),
+                    "base_form": _clean(d.get("form_name")) or "n/a",
+                    "project": _clean(d.get("project_name")) or "n/a",
+                    "source_file": _clean(loc_row.get("source_file")) or "n/a",
+                    "loc": loc_value,
+                    "in_vbp": True,
+                    "active_or_orphan": "active",
+                    "confidence": confidence_value,
+                    "evidence": _clean(d.get("dossier_id")) or "n/a",
+                }
+            )
+
+        canonical_orphan_loc_rows: list[dict[str, Any]] = []
+        for row in orphan_loc_candidates:
+            r = _as_dict(row)
+            canonical_orphan_loc_rows.append(
+                {
+                    "form_id": _clean(r.get("form_id")) or f"form_loc:{_clean(r.get('form') or r.get('base_form'))}",
+                    "form": _clean(r.get("form")) or _clean(r.get("base_form")) or "n/a",
+                    "base_form": _clean(r.get("base_form")) or _clean(r.get("form")) or "n/a",
+                    "project": _clean(r.get("project")) or "n/a",
+                    "source_file": _clean(r.get("source_file")) or "n/a",
+                    "loc": _as_int(r.get("loc"), 0),
+                    "in_vbp": False,
+                    "active_or_orphan": "orphan",
+                    "confidence": _as_float(r.get("confidence"), 0.0),
+                    "evidence": _clean(r.get("form_id")) or "n/a",
+                }
+            )
+
+        canonical_form_loc_rows = canonical_active_loc_rows + canonical_orphan_loc_rows
         lines.append(
-            "- Forms discovered: {} | active: {} | orphan: {} | forms LOC total: {} | designer LOC total: {}".format(
-                _as_int(loc_summary.get("forms_discovered"), len(form_loc_rows)),
-                _as_int(loc_summary.get("forms_active"), 0),
-                _as_int(loc_summary.get("forms_orphan"), 0),
-                _as_int(loc_summary.get("forms_loc_total"), 0),
+            "- Forms discovered: {} | active: {} | orphan: {} | canonical active forms LOC total: {} | designer LOC total: {}".format(
+                len(canonical_form_loc_rows),
+                len(canonical_active_loc_rows),
+                len(canonical_orphan_loc_rows),
+                sum(_as_int(r.get("loc"), 0) for r in canonical_active_loc_rows),
                 _as_int(loc_summary.get("designer_loc_total"), 0),
             )
         )
         lines.append("| Form ID | Form | Base form | Project | Source file | LOC | In VBP | Active/Orphan | Confidence | Evidence |")
         lines.append("|---|---|---|---|---|---:|---|---|---:|---|")
-        for row in form_loc_rows[:2000]:
+        for row in canonical_form_loc_rows[:2000]:
             r = _as_dict(row)
             lines.append(
                 "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
@@ -3335,6 +3434,26 @@ def _write_db_design_artifacts(
         dict_alias.write_text(source_dict_text.rstrip() + "\n", encoding="utf-8")
         written.append(dict_alias)
     return written
+
+
+def _humanize_imported_evidence_summary(value: Any) -> str:
+    text = _clean(value)
+    low = text.lower()
+    if low == "vbdepend dead code report":
+        return "Imported structural analysis indicates potential dead code that may be removable or may hide undocumented legacy behavior."
+    if low == "evidence coverage report":
+        return "Imported analysis does not include enough behavioral or data evidence to guarantee functional parity without additional verification."
+    return text
+
+
+def _humanize_imported_evidence_action(value: Any, summary: str) -> str:
+    text = _clean(value)
+    low_summary = _clean(summary).lower()
+    if "dead code" in low_summary:
+        return "Review dead-code candidates with engineering and business owners before finalizing parity scope."
+    if "behavioral or data evidence" in low_summary or "functional parity" in low_summary:
+        return "Obtain SQL, schema, or SME walkthrough evidence before committing build scope."
+    return text or "Add targeted remediation task."
 
 
 def _generate_docx_bundle(md_path: Path, out_dir: Path) -> tuple[Path, Path, Path, Path | None] | None:

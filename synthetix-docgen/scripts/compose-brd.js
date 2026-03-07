@@ -391,7 +391,7 @@ function buildVersionHistory(meta) {
   };
 }
 
-function buildContext(data) {
+function buildContext(data, moduleRegistry = []) {
   const brief = data?.decision_brief || {};
   const glance = brief?.at_a_glance || {};
   const objectives = uniqueStrings([
@@ -419,9 +419,14 @@ function buildContext(data) {
     .map((x) => ({ raw: clean(x), token: scopeToken(x) }))
     .filter((x) => x.token && inTokens.has(x.token))
     .map((x) => x.raw);
-  const scopeNote = overlap.length
+  const deferredScopeNote = String(data?.meta?.source_mode || '').toLowerCase() === 'imported_analysis'
+    && asArray(moduleRegistry?._deferred_forms).length
+    ? `Some in-scope legacy forms remain included for discovery only because imported structural analysis was insufficient to derive full business-module coverage. These items are listed in the Issue and Decision Log for SME confirmation before design commitments.`
+    : '';
+  const overlapNote = overlap.length
     ? `Scope In covers active forms from analyzed project variants. Scope Out lists legacy/orphan stub files that are not carried forward. Similar names can appear in both when one artifact is active and another is superseded: ${uniqueStrings(overlap).join(', ')}.`
     : '';
+  const scopeNote = uniqueStrings([overlapNote, deferredScopeNote]).join(' ');
   const assumptions = uniqueStrings(asArray(data?.decisions)
     .filter((d) => String(d.id || '').toUpperCase().startsWith('Q-'))
     .map((d) => d.description));
@@ -518,7 +523,11 @@ function buildModuleRegistry(data) {
         display_name: clean(row.display_name || row.form),
         reason: isOrphanLike
           ? 'Low-confidence orphan form without rule or event evidence'
-          : 'Insufficient evidence for business-facing BRD module',
+          : (
+            String(data?.meta?.source_mode || '').toLowerCase() === 'imported_analysis'
+              ? 'Insufficient behavioral evidence from imported analysis for business-facing BRD module'
+              : 'Insufficient evidence for business-facing BRD module'
+          ),
       });
       continue;
     }
@@ -1413,8 +1422,8 @@ function buildProcessMaps(moduleRegistry, data) {
 function composeBrdPackage(data, options = {}) {
   const projectMeta = buildProjectMeta(data, options);
   const versionHistory = buildVersionHistory(projectMeta);
-  const context = buildContext(data);
   const moduleRegistry = buildModuleRegistry(data);
+  const context = buildContext(data, moduleRegistry);
   const generalRequirements = buildGeneralRequirements(data, moduleRegistry);
   const moduleDossiers = buildModuleDossiers(data, moduleRegistry);
   const processMaps = buildProcessMaps(moduleRegistry, data);

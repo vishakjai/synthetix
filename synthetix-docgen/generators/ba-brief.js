@@ -437,6 +437,18 @@ function buildFormInventory(data) {
     const isHost  = f.form_type === 'MDI_Host';
     const isLogin = f.form_type === 'Login';
     const formLabel = `${displayFormLabel(f.display_name || f.form)} (${f._project_label})`;
+    const importedAnalysis = String(data?.meta?.source_mode || '').toLowerCase() === 'imported_analysis';
+    const genericPurpose = /^Business workflow executed through event-driven UI controls\.?$/i.test(String(f.purpose || '').trim())
+      || /^Insufficient behavioral evidence from the available analysis source to derive a business-specific workflow\.?$/i.test(String(f.purpose || '').trim());
+    const purpose = (importedAnalysis && genericPurpose)
+      ? 'Insufficient behavioral evidence from imported analysis to derive a business-specific workflow. SME confirmation is required.'
+      : (f.purpose || '—');
+    const inputs = importedAnalysis && (!f.inputs || String(f.inputs).toLowerCase() === 'n/a')
+      ? 'Not available from imported structural analysis.'
+      : (f.inputs || '—');
+    const outputs = importedAnalysis && (!f.outputs || String(f.outputs).toLowerCase() === 'n/a')
+      ? 'Requires SME confirmation from workflow walkthroughs or source evidence.'
+      : (f.outputs || '—');
     kRows.push(new TableRow({ children: [
       cell(formLabel, 2200, { bold: isHost }),
       cell(f.form_type, 1100, {
@@ -444,9 +456,9 @@ function buildFormInventory(data) {
         color: isHost ? C.TEAL  : isLogin ? C.AMBR : C.DGREY,
         bold: true, align: AlignmentType.CENTER,
       }),
-      cell(f.purpose || '—', 2400),
-      cell(f.inputs  || '—', 2300, { italic: f.inputs === 'n/a', color: f.inputs === 'n/a' ? C.DGREY : '333333' }),
-      cell(f.outputs || '—', 2440, { italic: f.outputs === 'n/a', color: f.outputs === 'n/a' ? C.DGREY : '333333' }),
+      cell(purpose, 2400),
+      cell(inputs, 2300, { italic: /not available|n\/a/i.test(inputs), color: /not available|n\/a/i.test(inputs) ? C.DGREY : '333333' }),
+      cell(outputs, 2440, { italic: /requires sme confirmation|n\/a/i.test(outputs), color: /requires sme confirmation|n\/a/i.test(outputs) ? C.DGREY : '333333' }),
     ]}));
   }
 
@@ -655,6 +667,15 @@ function buildRulesSection(data) {
     ruleContent.push(sp());
   }
 
+  if (!ruleContent.length && String(data?.meta?.source_mode || '').toLowerCase() === 'imported_analysis') {
+    ruleContent.push(
+      para(
+        'No business-rule rows were available from the imported structural analysis source. Business rules require source-code behavior, SQL evidence, or SME walkthrough confirmation.',
+        { color: C.DGREY, italics: true }
+      )
+    );
+  }
+
   return ruleContent;
 }
 
@@ -836,6 +857,9 @@ async function generateBaBrief(data, outputPath) {
   const { sprintSummary, sprintTable } = buildSprintMap(data);
   const riskTable = buildRiskRegister(data);
   const qaAlerts = buildQaAlerts(data);
+  const evidenceModeNote = String(data?.meta?.source_mode || '').toLowerCase() === 'imported_analysis'
+    ? (data?.meta?.source_banner || 'Imported analysis source: structural evidence is available, but behavioral, SQL, and DB-schema details may require additional uploads or SME confirmation.')
+    : '';
 
   const numForms    = data.active_q.length;
   const numProjects = data.projects.length;
@@ -869,6 +893,10 @@ async function generateBaBrief(data, outputPath) {
         ...buildCover(data),
 
         h1('1. Executive Snapshot'), sp(), kpiTable, sp(),
+        ...(evidenceModeNote ? [
+          para(evidenceModeNote, { color: C.AMBR, bold: true }),
+          sp(),
+        ] : []),
         ...(qaAlerts.length ? [
           h2('Quality Gate Alerts'),
           ...qaAlerts.map((msg) => para(msg, { color: C.RED, bold: true })),

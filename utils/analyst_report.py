@@ -2760,7 +2760,7 @@ def _infer_form_purpose(
             return description
     if _clean(current_purpose):
         return current_purpose
-    return "Business workflow executed through event-driven UI controls."
+    return "Insufficient behavioral evidence from the available analysis source to derive a business-specific workflow."
 
 
 def _infer_form_alias(
@@ -6857,13 +6857,23 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         if severity not in {"low", "medium", "high"}:
             severity = "medium"
         evidence = _clean(row.get("evidence"))
+        summary = (
+            _clean(row.get("description"))
+            or _clean(row.get("title"))
+            or evidence
+            or "Detector finding"
+        )
+        recommended = _clean(row.get("recommended_action"))
         detector_findings.append(
             {
                 "detector_id": _clean(row.get("id")) or f"det:{idx}",
                 "severity": severity,
                 "count": int(row.get("count", 0) or 0),
-                "summary": evidence or "Detector finding",
-                "required_actions": [_clean(x) for x in _as_list(row.get("requires")) if _clean(x)],
+                "summary": summary,
+                "required_actions": (
+                    [_clean(x) for x in _as_list(row.get("requires")) if _clean(x)]
+                    or ([recommended] if recommended else [])
+                ),
                 "evidence": (
                     [
                         {

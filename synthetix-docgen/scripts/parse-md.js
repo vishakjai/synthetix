@@ -1842,24 +1842,22 @@ function buildCanonicalFormData(kData, formLocProfile) {
     }
   }
 
-  const activeProfileRows = profileRows
-    .filter((row) => toYesNo(row.in_vbp) === 'yes' || String(row.active_or_orphan || '').toLowerCase() === 'active')
-    .map((row) => ({
-      ...row,
-      project_display: prettyProjectLabel(row.project),
-      in_vbp: toYesNo(row.in_vbp),
-      active_or_orphan: 'active',
-      evidence: formProfileEvidence(row),
-    }));
-  const orphanProfileRows = profileRows
-    .filter((row) => !(toYesNo(row.in_vbp) === 'yes' || String(row.active_or_orphan || '').toLowerCase() === 'active'))
-    .map((row) => ({
-      ...row,
-      project_display: prettyProjectLabel(row.project),
-      in_vbp: toYesNo(row.in_vbp),
-      active_or_orphan: 'orphan',
-      evidence: formProfileEvidence(row),
-    }));
+  const toProfileRow = (row, status) => ({
+    form_id: String(row.form_id || '').trim() || `derived:${status}:${canonFormKey(row.form || row.display_name || row.base_form) || 'n-a'}`,
+    form: row.form || row.display_name || row.base_form || 'n/a',
+    base_form: shortFormName(row.form || row.display_name || row.base_form),
+    project: row.project || 'n/a',
+    project_display: row.project_display || prettyProjectLabel(row.project),
+    source_file: String(row.source_file || '').trim(),
+    loc: toIntLoose(row.loc, 0),
+    in_vbp: toYesNo(row.in_vbp || (status === 'active' ? 'yes' : 'no')),
+    active_or_orphan: status,
+    confidence: row.confidence || '',
+    evidence: row.evidence || formProfileEvidence(row),
+  });
+
+  const activeProfileRows = activeForms.map((row) => toProfileRow(row, 'active'));
+  const orphanProfileRows = orphanForms.map((row) => toProfileRow(row, 'orphan'));
 
   const orphanUnique = uniqueBy(
     [
@@ -1900,11 +1898,11 @@ function buildCanonicalFormData(kData, formLocProfile) {
     orphan_forms: uniqueBy(orphanForms, (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form || row.display_name)}`),
     active_form_profile: uniqueBy(
       (activeProfileRows.length ? activeProfileRows : fallbackProfile(activeForms, 'active')),
-      (row) => `${String(row.source_file || '').toLowerCase()}||${canonFormKey(row.form || row.base_form)}`
+      (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form || row.base_form)}`
     ),
     orphan_form_profile: uniqueBy(
       (orphanProfileRows.length ? orphanProfileRows : fallbackProfile(orphanForms, 'orphan')),
-      (row) => `${String(row.source_file || '').toLowerCase()}||${canonFormKey(row.form || row.base_form)}`
+      (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form || row.base_form)}`
     ),
     excluded_or_unresolved_unique: orphanUnique,
     active_form_keys: activeKeys,
@@ -2039,6 +2037,13 @@ function parseMd(mdContent, meta = {}) {
     mdb_detected: Boolean(meta.mdb_detected != null ? meta.mdb_detected : mdbSummary.mdb_detected),
     source_schema_route: String(meta.source_schema_route || mdbSummary.source_route || ''),
   };
+  const importedAnalysis = /Imported analysis bundle/i.test(headerMeta.repo_url)
+    || /evidence-backed/i.test(preamble)
+    || /behavior_coverage:\s*FAIL/i.test(preamble);
+  headerMeta.source_mode = importedAnalysis ? 'imported_analysis' : 'repo_scan';
+  headerMeta.source_banner = importedAnalysis
+    ? 'Imported analysis source: structural evidence is available, but behavioral, SQL, and DB-schema details may require additional uploads or SME confirmation.'
+    : '';
 
   const qaBlock = parseQaBlock(preamble);
   const parsedDecisions = parseDecisions(preamble);

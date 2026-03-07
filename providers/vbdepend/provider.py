@@ -577,9 +577,9 @@ class VBDependProvider(BaseEvidenceProvider):
                 {
                     "id": "EVID-DEADCODE-001",
                     "severity": "low",
-                    "title": "Potential dead types detected",
-                    "description": f"Imported dead-code analysis identified {len(dead_types)} probable dead type(s).",
-                    "recommended_action": "Review dead code candidates before committing scope or parity assumptions.",
+                    "title": "Potential dead code requires scope review",
+                    "description": f"Imported structural analysis identified {len(dead_types)} probable dead type(s) that may be unnecessary to modernize or may indicate undocumented legacy behavior.",
+                    "recommended_action": "Review dead code candidates with engineering and business owners before committing parity scope.",
                     "evidence": "VBDepend dead code report",
                 }
             )
@@ -587,9 +587,9 @@ class VBDependProvider(BaseEvidenceProvider):
             {
                 "id": "EVID-COVERAGE-001",
                 "severity": "high",
-                "title": "Behavior and data evidence remain incomplete",
-                "description": "Imported analysis supports architecture and dependency understanding but does not prove SQL, DB schema, or event-handler parity.",
-                "recommended_action": "Treat BRD and plan sections as evidence-backed with explicit verification gates before build commitments.",
+                "title": "Behavioral and data parity remain unverified",
+                "description": "Imported analysis supports architecture and dependency understanding but does not provide SQL catalogs, database schema, or event-handler evidence needed for high-confidence functional parity.",
+                "recommended_action": "Treat planning outputs as evidence-backed drafts and obtain SQL, schema, or SME walkthrough evidence before build commitments.",
                 "evidence": "Evidence coverage report",
             }
         )
