@@ -6867,16 +6867,16 @@ def _parse_iso_dt(value: Any) -> datetime | None:
 
 
 def _current_stage_from_status_map(stage_status: dict[int, str], pipeline_state: dict[str, Any] | None = None) -> int:
+    active_states = {"running", "completed", "failed", "waiting_approval", "paused"}
+    seen = [stage for stage, state in stage_status.items() if str(state).strip().lower() in active_states]
+    if seen:
+        return max(seen)
     current_stage = (
         int((pipeline_state or {}).get("current_stage", 0) or 0)
         if isinstance(pipeline_state, dict)
         else 0
     )
-    if current_stage > 0:
-        return current_stage
-    active_states = {"running", "completed", "failed", "waiting_approval", "paused"}
-    seen = [stage for stage, state in stage_status.items() if str(state).strip().lower() in active_states]
-    return max(seen) if seen else 0
+    return current_stage if current_stage > 0 else 0
 
 
 def _enqueue_run_worker_task(run_id: str) -> tuple[bool, str]:
