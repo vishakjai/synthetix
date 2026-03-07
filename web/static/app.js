@@ -7333,6 +7333,12 @@ async function uploadDiscoverEvidenceBundle() {
   try {
     const data = await apiMultipart("/api/evidence/bundles", form, "POST");
     state.discoverEvidenceBundle = { loading: false, error: "", data };
+    if (el.modernizationSourceMode) {
+      const currentMode = String(el.modernizationSourceMode.value || "manual").trim().toLowerCase();
+      if (currentMode === "manual") {
+        el.modernizationSourceMode.value = "evidence";
+      }
+    }
     if (el.projectStateMode && String(el.projectStateMode.value || "auto").toLowerCase() === "auto") {
       applyProjectStateResult({
         detected: "brownfield",
@@ -13456,10 +13462,23 @@ function bindEvents() {
   el.settingsAuditRefresh?.addEventListener("click", () => loadSettings(true).catch((err) => setSettingsMessage(err.message, true)));
 
   el.discoverStepConnect?.addEventListener("click", () => setDiscoverStep(1));
-  el.discoverStepLandscape?.addEventListener("click", () => setDiscoverStep(2));
-  el.discoverStepScope?.addEventListener("click", () => setDiscoverStep(3));
-  el.discoverStepScan?.addEventListener("click", () => setDiscoverStep(4));
-  el.discoverStepResults?.addEventListener("click", () => setDiscoverStep(5));
+  el.discoverStepLandscape?.addEventListener("click", () => {
+    if (state.discoverStep < 2 && !validateDiscoverStep(1)) return;
+    setDiscoverStep(2);
+  });
+  el.discoverStepScope?.addEventListener("click", () => {
+    const current = Math.min(state.discoverStep, 2);
+    if (current >= 1 && !validateDiscoverStep(1)) return;
+    setDiscoverStep(3);
+  });
+  el.discoverStepScan?.addEventListener("click", () => {
+    if (!validateDiscoverStep(1) || !validateDiscoverStep(3)) return;
+    setDiscoverStep(4);
+  });
+  el.discoverStepResults?.addEventListener("click", () => {
+    if (!validateDiscoverStep(1) || !validateDiscoverStep(3) || !validateDiscoverStep(4)) return;
+    setDiscoverStep(5);
+  });
   el.discoverRunAnalystBriefLandscape?.addEventListener("click", () => loadDiscoverAnalystBrief({ force: true }).catch((err) => {
     state.discoverAnalystBrief.error = err.message;
     renderDiscoverAnalystBrief();
