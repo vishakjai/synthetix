@@ -1692,7 +1692,8 @@ class PipelineRunManager:
         should_persist = (
             record.status in {"queued", "running", "waiting_approval", "paused"}
             and (
-                (now_mono - float(record.last_persist_monotonic or 0.0)) >= 1.25
+                str(os.getenv("RUN_STORE_BACKEND", "local")).strip().lower() == "firestore"
+                or (now_mono - float(record.last_persist_monotonic or 0.0)) >= 1.25
                 or len(record.progress_logs) <= 3
                 or len(record.progress_logs) % 20 == 0
             )
