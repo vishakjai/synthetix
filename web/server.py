@@ -2240,7 +2240,30 @@ def _get_json(body: bytes) -> dict[str, Any]:
 
 def _extract_integration_context(payload: dict[str, Any]) -> dict[str, Any]:
     context = payload.get("integration_context", {})
-    return context if isinstance(context, dict) else {}
+    context = copy.deepcopy(context) if isinstance(context, dict) else {}
+    if not context:
+        context = {}
+    if not isinstance(context.get("brownfield", {}), dict) and isinstance(payload.get("brownfield", {}), dict):
+        context["brownfield"] = copy.deepcopy(payload.get("brownfield", {}))
+    if not isinstance(context.get("greenfield", {}), dict) and isinstance(payload.get("greenfield", {}), dict):
+        context["greenfield"] = copy.deepcopy(payload.get("greenfield", {}))
+    if not isinstance(context.get("scan_scope", {}), dict) and isinstance(payload.get("scan_scope", {}), dict):
+        context["scan_scope"] = copy.deepcopy(payload.get("scan_scope", {}))
+    for key in (
+        "project_state_mode",
+        "project_state_detected",
+        "project_state_confidence",
+        "project_state_reason",
+        "domain_pack_id",
+        "custom_domain_pack",
+        "jurisdiction",
+        "data_classification",
+        "cloud_promotion_enabled",
+        "sample_dataset_enabled",
+    ):
+        if key not in context and key in payload:
+            context[key] = copy.deepcopy(payload.get(key))
+    return context
 
 
 def _http_json_request(
@@ -5457,7 +5480,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
     objectives = str(payload.get("objectives", "")).strip()
     use_case = str(payload.get("use_case", "business_objectives")).strip().lower() or "business_objectives"
     legacy_code = str(payload.get("legacy_code", "")).strip()
-    modernization_language = str(payload.get("modernization_language", "")).strip()
+    modernization_language = str(payload.get("modernization_language") or payload.get("target_language") or "").strip()
     target_platform = str(payload.get("target_platform", "")).strip()
     deployment_target = str(payload.get("deployment_target", "local")).strip().lower() or "local"
     database_source = str(payload.get("database_source", "")).strip()
@@ -5625,7 +5648,13 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             },
         }
 
-    if str(integration_ctx.get("project_state_detected", "")).strip().lower() == "greenfield" and not repo_url and not legacy_code:
+    project_state_detected = str(
+        integration_ctx.get("project_state_detected", "")
+        or payload.get("project_state_detected", "")
+        or ("greenfield" if greenfield else "")
+    ).strip().lower()
+
+    if project_state_detected == "greenfield" and not repo_url and not legacy_code:
         artifacts = build_greenfield_landscape_artifacts(
             objectives=objectives,
             use_case=use_case,
