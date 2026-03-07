@@ -8053,6 +8053,9 @@ function discoverStepCompletion() {
 
 function setDiscoverStep(step) {
   const target = Math.max(1, Math.min(5, Number(step || 1)));
+  if (target > 1 && !validateDiscoverStep(1)) return;
+  if (target > 3 && !validateDiscoverStep(3)) return;
+  if (target > 4 && !validateDiscoverStep(4)) return;
   state.discoverStep = target;
   const stepMap = [
     { btn: el.discoverStepConnect, panel: el.discoverConnectPanel, label: "Connect" },
