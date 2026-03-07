@@ -4266,6 +4266,38 @@ function _discoverRawArtifacts() {
   const briefRaw = (brief.raw_artifacts && typeof brief.raw_artifacts === "object") ? brief.raw_artifacts : {};
   const report = (brief.analyst_report_v2 && typeof brief.analyst_report_v2 === "object") ? brief.analyst_report_v2 : {};
   const reportRaw = (report.raw_artifacts && typeof report.raw_artifacts === "object") ? report.raw_artifacts : {};
+  const evidenceView = (state.discoverEvidenceBundle?.data && typeof state.discoverEvidenceBundle.data === "object")
+    ? state.discoverEvidenceBundle.data
+    : {};
+  const evidenceNormalized = (evidenceView.normalized_artifacts && typeof evidenceView.normalized_artifacts === "object")
+    ? evidenceView.normalized_artifacts
+    : {};
+  const evidenceDirect = {};
+  [
+    "repo_landscape_v1",
+    "component_inventory_v1",
+    "modernization_track_plan_v1",
+    "router_ruleset_v1",
+    "project_metrics",
+    "type_metrics",
+    "type_dependency_matrix",
+    "runtime_dependency_matrix",
+    "dead_code_report",
+    "third_party_usage",
+    "trend_snapshot",
+    "trend_series",
+    "code_quality_rules",
+    "static_forensics_layer",
+    "evidence_coverage_report_v1",
+    "quality_violation_report",
+    "source_schema_model",
+    "source_erd",
+    "source_data_dictionary",
+  ].forEach((key) => {
+    if (evidenceView && typeof evidenceView === "object" && evidenceView[key] != null) {
+      evidenceDirect[key] = evidenceView[key];
+    }
+  });
   const isMeaningful = (value) => {
     if (value == null) return false;
     if (Array.isArray(value)) return value.length > 0;
@@ -4293,7 +4325,7 @@ function _discoverRawArtifacts() {
     return incoming;
   };
   const merged = {};
-  [runRaw, briefRaw, reportRaw].forEach((source) => {
+  [evidenceNormalized, evidenceDirect, runRaw, briefRaw, reportRaw].forEach((source) => {
     if (!source || typeof source !== "object") return;
     Object.entries(source).forEach(([key, value]) => {
       merged[key] = mergeValues(merged[key], value);
