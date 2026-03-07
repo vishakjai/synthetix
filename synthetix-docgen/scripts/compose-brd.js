@@ -373,6 +373,7 @@ function buildProjectMeta(data, options = {}) {
     approver_names: uniqueStrings(options.approver_names || ['Project Approver']),
     template_family: clean(options.template_family || 'JHA_OpenAnywhere_v1'),
     generated_from_run_id: runId,
+    source_mode: clean(data?.meta?.source_mode || 'repo_scan'),
   };
 }
 

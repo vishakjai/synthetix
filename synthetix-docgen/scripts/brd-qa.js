@@ -53,11 +53,22 @@ function qaBrdPackage(bundle) {
   };
 
   const meta = bundle?.brd_project_meta_v1 || {};
+  const sourceMode = clean(meta.source_mode || 'repo_scan').toLowerCase();
+  const importedAnalysis = sourceMode === 'imported_analysis';
   const versionHistory = bundle?.brd_version_history_v1 || {};
   const context = bundle?.brd_context_v1 || {};
   const registry = asArray(bundle?.brd_module_registry_v1);
   const dossiers = asArray(bundle?.brd_module_dossier_v1);
   const pkg = bundle?.brd_package_v1 || {};
+  const softBlockers = [];
+
+  function pushBlocker(message, opts = {}) {
+    if (importedAnalysis && opts.importedAnalysisWarning) {
+      softBlockers.push(String(message));
+      return;
+    }
+    report.blocking_errors.push(String(message));
+  }
 
   const requiredMetaFields = [
     'document_title', 'document_id', 'classification', 'version', 'version_date',
@@ -65,28 +76,28 @@ function qaBrdPackage(bundle) {
   ];
   for (const field of requiredMetaFields) {
     if (!clean(meta[field])) {
-      report.blocking_errors.push(`Missing required project metadata field: ${field}`);
+      pushBlocker(`Missing required project metadata field: ${field}`);
     }
   }
 
   if (!asArray(versionHistory.rows).length) {
-    report.blocking_errors.push('Version history is empty.');
+    pushBlocker('Version history is empty.');
   }
   if (!clean(context.purpose)) {
-    report.blocking_errors.push('Context purpose is missing.');
+    pushBlocker('Context purpose is missing.', { importedAnalysisWarning: true });
   }
 
   if (!registry.length) {
-    report.blocking_errors.push('Module registry has no included modules.');
+    pushBlocker('Module registry has no included modules.', { importedAnalysisWarning: true });
   }
   if (!dossiers.length) {
-    report.blocking_errors.push('Module dossiers are missing.');
+    pushBlocker('Module dossiers are missing.', { importedAnalysisWarning: true });
   }
 
   const ids = registry.map((m) => clean(m.module_id)).filter(Boolean);
   const uniqueIds = new Set(ids);
   if (ids.length !== uniqueIds.size) {
-    report.blocking_errors.push('Duplicate module IDs found in module registry.');
+    pushBlocker('Duplicate module IDs found in module registry.');
   }
 
   const dossierMap = new Map(dossiers.map((d) => [clean(d.module_id), d]));
@@ -94,15 +105,15 @@ function qaBrdPackage(bundle) {
   for (const module of registry) {
     const id = clean(module.module_id);
     if (!dossierMap.has(id)) {
-      report.blocking_errors.push(`Registry module ${id} has no dossier.`);
+      pushBlocker(`Registry module ${id} has no dossier.`, { importedAnalysisWarning: true });
     }
   }
   if (registry.length !== dossiers.length) {
-    report.blocking_errors.push(`Module count mismatch: registry=${registry.length}, dossiers=${dossiers.length}.`);
+    pushBlocker(`Module count mismatch: registry=${registry.length}, dossiers=${dossiers.length}.`, { importedAnalysisWarning: true });
   }
 
   for (const section of ['project_meta_ref', 'version_history_ref', 'context_ref', 'module_registry_ref', 'appendices_ref']) {
-    if (!clean(pkg[section])) report.blocking_errors.push(`BRD package missing ${section}.`);
+    if (!clean(pkg[section])) pushBlocker(`BRD package missing ${section}.`);
   }
 
   const seenRuleIds = new Set();
@@ -187,7 +198,7 @@ function qaBrdPackage(bundle) {
       }
       seenRuleIds.add(rid);
       if (hasObjectLeak(rule.statement) || hasObjectLeak(rule.rationale) || hasObjectLeak(rule.error_message)) {
-        report.blocking_errors.push(`${moduleId}: object serialization leak found in business rule ${rid}.`);
+        pushBlocker(`${moduleId}: object serialization leak found in business rule ${rid}.`);
       }
       if (normalizeSentence(rule.rationale).includes('synthesized fallback rule')) {
         report.warnings.push(`${moduleId}: synthetic fallback rule is being rendered as a business rule.`);
@@ -203,12 +214,12 @@ function qaBrdPackage(bundle) {
       || blockers.some((b) => hasObjectLeak(b))
       || asArray(dossier.open_questions).some((q) => hasObjectLeak(q))
     ) {
-      report.blocking_errors.push(`${moduleId}: object serialization leak found in narrative/blockers/open questions.`);
+      pushBlocker(`${moduleId}: object serialization leak found in narrative/blockers/open questions.`);
     }
 
     for (const linked of asArray(dossier.interactions_with_module_ids)) {
       if (!uniqueIds.has(clean(linked))) {
-        report.blocking_errors.push(`${moduleId}: interaction references unknown module ${clean(linked)}.`);
+        pushBlocker(`${moduleId}: interaction references unknown module ${clean(linked)}.`, { importedAnalysisWarning: true });
       }
     }
   }
@@ -237,6 +248,10 @@ function qaBrdPackage(bundle) {
     actual: report.module_completeness_scores.filter((m) => m.score >= 45).length,
     status: report.module_completeness_scores.every((m) => m.score >= 45) ? 'PASS' : 'WARN',
   });
+
+  if (softBlockers.length) {
+    report.warnings.push(...softBlockers.map((msg) => `${msg} [imported analysis evidence limitation]`));
+  }
 
   if (report.blocking_errors.length) {
     report.status = 'FAIL';
