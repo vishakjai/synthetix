@@ -7728,7 +7728,7 @@ function setDiscoverStep(step) {
     const isActive = (idx + 1) === target;
     entry.panel?.classList.toggle("discover-panel-hidden", !isActive);
   });
-  if (target === 2) {
+  if (target === 2 || target === 3) {
     const hasAnalystData = !!(state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object" && Object.keys(state.discoverAnalystBrief.data).length);
     if (!hasAnalystData && !state.discoverAnalystBrief?.loading) {
       loadDiscoverAnalystBrief({ force: false }).catch(() => {});
@@ -7833,10 +7833,6 @@ function validateDiscoverStep(step) {
   const c = discoverStepCompletion();
   if (step === 1 && !c.connectComplete) {
     alert("Complete Connect sources to continue.");
-    return false;
-  }
-  if (step === 2 && !c.landscapeComplete) {
-    alert("Complete Landscape scan first.");
     return false;
   }
   if (step === 3 && !c.scopeComplete) {
