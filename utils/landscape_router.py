@@ -827,3 +827,380 @@ def build_landscape_artifacts(
         "modernization_track_plan_v1": modernization_track_plan_v1,
         "router_ruleset_v1": router_ruleset_v1,
     }
+
+
+def build_greenfield_landscape_artifacts(
+    *,
+    objectives: str,
+    use_case: str,
+    integration_context: dict[str, Any] | None = None,
+    target_language: str = "",
+    target_platform: str = "",
+    database_source: str = "",
+    database_target: str = "",
+) -> dict[str, Any]:
+    integration = integration_context if isinstance(integration_context, dict) else {}
+    greenfield = integration.get("greenfield", {}) if isinstance(integration.get("greenfield", {}), dict) else {}
+    domain_pack_id = _clean(integration.get("domain_pack_id"))
+    jurisdiction = _clean(integration.get("jurisdiction"))
+    data_classification = integration.get("data_classification", [])
+    if not isinstance(data_classification, list):
+        data_classification = []
+
+    objective_text = _clean(objectives)
+    objective_lower = objective_text.lower()
+    repo_target = _clean(greenfield.get("repo_target"))
+    repo_destination = _clean(greenfield.get("repo_destination")) or "local"
+    tracker_provider = _clean(greenfield.get("tracker_provider"))
+    tracker_project = _clean(greenfield.get("tracker_project"))
+    normalized_target_language = _clean(target_language) or "TBD"
+    normalized_target_platform = _clean(target_platform) or "TBD"
+    normalized_db_target = _clean(database_target)
+    normalized_db_source = _clean(database_source)
+
+    repo_hash = hashlib.sha1(
+        f"{objective_text}|{use_case}|{repo_target}|{normalized_target_language}|{normalized_db_target}".encode("utf-8")
+    ).hexdigest()[:10]
+    generated_at = ""
+
+    language_rows = []
+    if normalized_target_language and normalized_target_language != "TBD":
+        language_rows.append({
+            "language": normalized_target_language,
+            "stats": {"files": 0, "loc": 0, "blank_loc": 0, "comment_loc": 0, "estimated_tokens": 0},
+            "percent_loc": 100.0,
+            "confidence": 0.72,
+            "evidence": [{"type": "decision", "path": f"target_language={normalized_target_language}", "confidence": 0.72}],
+        })
+    if normalized_db_target:
+        language_rows.append({
+            "language": "SQL",
+            "stats": {"files": 0, "loc": 0, "blank_loc": 0, "comment_loc": 0, "estimated_tokens": 0},
+            "percent_loc": 0.0,
+            "confidence": 0.65,
+            "evidence": [{"type": "decision", "path": f"database_target={normalized_db_target}", "confidence": 0.65}],
+        })
+
+    build_rows = []
+    if repo_destination:
+        build_rows.append({
+            "kind": f"planned_repo_{_slug(repo_destination)}",
+            "paths": [repo_target or "(target repo pending)"],
+            "confidence": 0.7,
+            "evidence": [{"type": "decision", "build_file": repo_target or repo_destination, "confidence": 0.7}],
+        })
+
+    archetypes = []
+    if any(token in objective_lower for token in ["web", "portal", "ui", "screen", "frontend", "front end"]):
+        archetypes.append("planned_web_app")
+    if any(token in objective_lower for token in ["api", "service", "integration", "backend", "back end"]):
+        archetypes.append("planned_service")
+    if any(token in objective_lower for token in ["report", "dashboard", "analytics"]):
+        archetypes.append("planned_reporting")
+    if normalized_db_target or normalized_db_source or use_case == "database_conversion":
+        archetypes.append("planned_data_platform")
+    if not archetypes:
+        archetypes = ["planned_application"]
+    archetype_rows = [
+        {
+            "archetype": name,
+            "confidence": 0.68,
+            "primary_evidence": [{"type": "objective", "path": objective_text[:120] or "scope inputs pending", "confidence": 0.68}],
+            "notes": ["Derived from scope inputs rather than a legacy repo scan."],
+        }
+        for name in archetypes
+    ]
+
+    datastore_rows = []
+    if normalized_db_target:
+        datastore_rows.append({
+            "datastore": _slug(normalized_db_target, max_len=32),
+            "confidence": 0.74,
+            "evidence": [{"type": "decision", "path": f"target={normalized_db_target}", "confidence": 0.74}],
+            "notes": [f"Target datastore selected: {normalized_db_target}."],
+        })
+    elif normalized_db_source:
+        datastore_rows.append({
+            "datastore": _slug(normalized_db_source, max_len=32),
+            "confidence": 0.58,
+            "evidence": [{"type": "decision", "path": f"source={normalized_db_source}", "confidence": 0.58}],
+            "notes": [f"Source datastore mentioned: {normalized_db_source}. Target still needs confirmation."],
+        })
+
+    components: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    tracks: list[dict[str, Any]] = []
+
+    def add_component(
+        *,
+        component_id: str,
+        name: str,
+        component_kind: str,
+        lane: str,
+        suggested_target: str,
+        why: str,
+        risk_flags: list[str] | None = None,
+        gating_questions: list[str] | None = None,
+    ) -> None:
+        risk_flags = risk_flags or []
+        gating_questions = gating_questions or []
+        lang_mix = []
+        if component_kind in {"planned_ui", "planned_service"} and normalized_target_language and normalized_target_language != "TBD":
+            lang_mix.append({"language": normalized_target_language, "percent_loc": 100.0})
+        elif component_kind == "planned_data" and normalized_db_target:
+            lang_mix.append({"language": "SQL", "percent_loc": 100.0})
+        component = {
+            "component_id": component_id,
+            "name": name,
+            "component_kind": component_kind,
+            "root_paths": [repo_target or "(greenfield)"],
+            "project_files": [repo_target] if repo_target else [],
+            "language_mix": lang_mix,
+            "stats": {"files": 0, "loc": 0, "blank_loc": 0, "comment_loc": 0, "estimated_tokens": 0},
+            "archetypes": archetypes,
+            "datastore_touch": [row["datastore"] for row in datastore_rows[:1]] if component_kind == "planned_data" else [],
+            "dependency_footprint": {"ocx": 0, "com": 0, "nuget": 0, "npm": 0},
+            "risk_flags": risk_flags,
+            "variant_candidate": False,
+            "shared_foundation_candidate": component_kind == "planned_service",
+            "confidence": 0.66,
+            "evidence": [{"type": "objective", "path": objective_text[:160] or "No objective provided yet.", "confidence": 0.66}],
+            "recommended_skill_packs": [],
+            "recommended_agents": [],
+            "routing_rules_fired": [],
+            "chunking_profile": "greenfield_planning",
+        }
+        track = {
+            "track_id": f"TRK_{_slug(component_id)}_001",
+            "title": f"{name} planning",
+            "lane": lane,
+            "source_components": [component_id],
+            "suggested_target": suggested_target,
+            "recommended_skill_packs": [],
+            "quality_gates": ["Scope confirmed", "Architecture approved"],
+            "confidence": 0.66,
+            "why": why,
+            "risks": risk_flags,
+            "gating_questions": gating_questions,
+        }
+        component["suggested_tracks"] = [track]
+        components.append(component)
+        tracks.append(track)
+
+    add_component(
+        component_id="cmp_greenfield_ui",
+        name="User experience",
+        component_kind="planned_ui",
+        lane="web_modernization",
+        suggested_target=normalized_target_language if normalized_target_language != "TBD" else "Target UI stack to be confirmed",
+        why="Greenfield delivery will require a user-facing experience layer aligned to the chosen target stack.",
+        risk_flags=["target_ui_decision_pending"] if normalized_target_language == "TBD" else [],
+        gating_questions=["Confirm target UX strategy and primary user channels."],
+    )
+    add_component(
+        component_id="cmp_greenfield_services",
+        name="Application services",
+        component_kind="planned_service",
+        lane="service_modernization",
+        suggested_target=normalized_target_language if normalized_target_language != "TBD" else "Target service stack to be confirmed",
+        why="Business capabilities need an application service layer and API boundary even when no legacy repo exists.",
+        risk_flags=["service_boundary_review"],
+        gating_questions=["Confirm service boundaries and integration patterns."],
+    )
+    if normalized_db_target or use_case == "database_conversion":
+        add_component(
+            component_id="cmp_greenfield_data",
+            name="Data platform",
+            component_kind="planned_data",
+            lane="data_modernization",
+            suggested_target=normalized_db_target or "Target datastore to be confirmed",
+            why="Current scope includes a database concern that needs a target data platform plan.",
+            risk_flags=["target_datastore_pending"] if not normalized_db_target else [],
+            gating_questions=["Confirm target datastore and data governance requirements."],
+        )
+    if any(token in objective_lower for token in ["report", "dashboard", "analytics"]):
+        add_component(
+            component_id="cmp_greenfield_reporting",
+            name="Reporting and insights",
+            component_kind="planned_reporting",
+            lane="reporting_modernization",
+            suggested_target="Power BI / SSRS / reporting target to be confirmed",
+            why="Reporting and analytics needs to be planned as a separate workstream.",
+            risk_flags=["reporting_scope_decision"],
+            gating_questions=["Confirm whether reporting is in scope for the first release."],
+        )
+    if any(token in objective_lower for token in ["integration", "partner", "external", "api", "file exchange"]):
+        add_component(
+            component_id="cmp_greenfield_integrations",
+            name="Dependencies and integrations",
+            component_kind="planned_integration",
+            lane="component_assessment",
+            suggested_target="Integration contract and target systems to be confirmed",
+            why="The objective signals external dependencies or integration surfaces that need separate validation.",
+            risk_flags=["integration_scope_pending"],
+            gating_questions=["Confirm business-critical integrations and ownership boundaries."],
+        )
+
+    edge_defs = [
+        ("cmp_greenfield_ui", "cmp_greenfield_services", "planned_flow"),
+        ("cmp_greenfield_services", "cmp_greenfield_data", "planned_data_dependency"),
+        ("cmp_greenfield_services", "cmp_greenfield_integrations", "planned_integration_dependency"),
+        ("cmp_greenfield_reporting", "cmp_greenfield_data", "planned_reporting_dependency"),
+    ]
+    edge_id = 1
+    component_ids = {c["component_id"] for c in components}
+    for left, right, kind in edge_defs:
+        if left in component_ids and right in component_ids:
+            edges.append({
+                "edge_id": f"e{edge_id}",
+                "from_component": left,
+                "to_component": right,
+                "edge_kind": kind,
+                "confidence": 0.62,
+                "notes": ["Planned architecture dependency derived from greenfield scope inputs."],
+                "evidence": [{"type": "objective", "path": objective_text[:120] or "Scope inputs pending", "confidence": 0.62}],
+            })
+            edge_id += 1
+
+    risk_rows = []
+    if not objective_text:
+        risk_rows.append({
+            "signal_id": "SIG_SCOPE_001",
+            "severity": "medium",
+            "title": "Business objective is still sparse",
+            "description": "Greenfield landscape can render a starter view, but track confidence is low until a business objective is provided.",
+            "recommendation": "Enter the target business outcome and expected workflows in Define Scope.",
+            "evidence": [{"type": "objective", "path": "(empty)", "confidence": 0.8}],
+        })
+    if normalized_target_language == "TBD":
+        risk_rows.append({
+            "signal_id": "SIG_STACK_001",
+            "severity": "medium",
+            "title": "Target implementation stack is not confirmed",
+            "description": "The intended target language or platform has not been selected yet.",
+            "recommendation": "Confirm the target application stack before architecture planning continues.",
+            "evidence": [{"type": "decision", "path": "target_language=TBD", "confidence": 0.75}],
+        })
+    if not normalized_db_target and use_case in {"database_conversion", "code_modernization"}:
+        risk_rows.append({
+            "signal_id": "SIG_DATA_001",
+            "severity": "medium",
+            "title": "Target datastore is not confirmed",
+            "description": "Scope implies data design work, but the target database has not been locked yet.",
+            "recommendation": "Confirm the target datastore and governance constraints in Define Scope.",
+            "evidence": [{"type": "decision", "path": "database_target=TBD", "confidence": 0.72}],
+        })
+    if not jurisdiction and not data_classification:
+        risk_rows.append({
+            "signal_id": "SIG_POLICY_001",
+            "severity": "low",
+            "title": "Compliance posture is not yet specified",
+            "description": "No explicit jurisdiction or data-classification context was supplied for the greenfield scope.",
+            "recommendation": "Set compliance, jurisdiction, and data-classification expectations before planning controls.",
+            "evidence": [{"type": "decision", "path": "jurisdiction/data_classification missing", "confidence": 0.7}],
+        })
+
+    assumptions = [
+        "Greenfield landscape is derived from scope inputs and target selections rather than a legacy code scan.",
+        "Component and track definitions are planning scaffolds and should be refined during scope lock.",
+    ]
+    open_questions = []
+    if not objective_text:
+        open_questions.append("What business outcome should this greenfield solution deliver first?")
+    if normalized_target_language == "TBD":
+        open_questions.append("Which target language and platform should be used for the primary delivery track?")
+    if not normalized_db_target:
+        open_questions.append("What target datastore should back the solution data model?")
+    if tracker_provider == "none" or not tracker_project:
+        open_questions.append("Should delivery tracking be linked to Jira/Linear before planning starts?")
+
+    meta = {
+        "artifact_type": "repo_landscape",
+        "artifact_version": "1.0",
+        "artifact_id": f"art_landscape_greenfield_{repo_hash}",
+        "run_id": "discover",
+        "generated_at": generated_at,
+        "producer": {
+            "agent": "LandscapePlanner",
+            "skill_pack": "landscape_core",
+            "skill_version": "1.0",
+            "engine_version": "0.1.0",
+        },
+        "context": {"repo": repo_target or "(greenfield)", "branch": "", "commit_sha": "", "stage": "Discover"},
+    }
+
+    repo_landscape_v1 = {
+        "meta": meta,
+        "landscape_mode": "greenfield",
+        "solution_summary": {
+            "repo_destination": repo_destination,
+            "repo_target": repo_target,
+            "tracker_provider": tracker_provider,
+            "tracker_project": tracker_project,
+            "target_language": normalized_target_language,
+            "target_platform": normalized_target_platform,
+            "database_target": normalized_db_target,
+            "domain_pack_id": domain_pack_id,
+            "jurisdiction": jurisdiction,
+        },
+        "scan_summary": {
+            "root_paths_scanned": [],
+            "excluded_paths": [],
+            "included_paths": [],
+            "total_files": 0,
+            "binary_files": 0,
+            "total_loc": 0,
+            "estimated_tokens": 0,
+            "duration_ms": 0,
+            "largest_files": [],
+            "largest_directories": [],
+            "notes": [
+                "No legacy repo scan was required for this landscape.",
+                "View is synthesized from greenfield scope inputs and target decisions.",
+            ],
+        },
+        "languages": language_rows,
+        "build_systems": build_rows,
+        "archetypes": archetype_rows,
+        "datastore_signals": datastore_rows,
+        "dependency_footprint": {
+            "ocx_count": 0,
+            "com_dll_count": 0,
+            "nuget_package_count": 0,
+            "npm_package_count": 0,
+            "java_dependency_count": 0,
+            "python_dependency_count": 0,
+            "top_dependencies": [],
+        },
+        "high_risk_signals": risk_rows,
+    }
+
+    component_inventory_v1 = {
+        "meta": {**meta, "artifact_type": "component_inventory", "artifact_id": f"art_components_greenfield_{repo_hash}"},
+        "graph_summary": {
+            "component_count": len(components),
+            "edge_count": len(edges),
+            "cross_language_edges": 0,
+            "shared_db_edges": len([e for e in edges if e.get("edge_kind") == "planned_data_dependency"]),
+            "notes": ["Components are planned workstreams, not scanned legacy projects."],
+        },
+        "components": components,
+        "edges": edges,
+    }
+
+    modernization_track_plan_v1 = {
+        "meta": {**meta, "artifact_type": "modernization_track_plan", "artifact_id": f"art_tracks_greenfield_{repo_hash}"},
+        "tracks": tracks,
+        "assumptions": assumptions,
+        "open_questions": open_questions,
+    }
+
+    router_ruleset_v1 = default_router_ruleset(repo=repo_target or "greenfield", branch="", commit_sha="")
+    router_ruleset_v1["meta"]["generated_at"] = generated_at
+
+    return {
+        "repo_landscape_v1": repo_landscape_v1,
+        "component_inventory_v1": component_inventory_v1,
+        "modernization_track_plan_v1": modernization_track_plan_v1,
+        "router_ruleset_v1": router_ruleset_v1,
+    }

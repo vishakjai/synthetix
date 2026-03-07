@@ -97,7 +97,7 @@ from utils.analyst_aas import AnalystAASService  # noqa: E402
 from utils.analyst_docx import build_business_docx_bytes  # noqa: E402
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
-from utils.landscape_router import build_landscape_artifacts  # noqa: E402
+from utils.landscape_router import build_greenfield_landscape_artifacts, build_landscape_artifacts  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -5451,6 +5451,7 @@ async def api_discover_github_tree(request):
 async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> JSONResponse:
     integration_ctx = _extract_integration_context(payload)
     brownfield = integration_ctx.get("brownfield", {}) if isinstance(integration_ctx.get("brownfield", {}), dict) else {}
+    greenfield = integration_ctx.get("greenfield", {}) if isinstance(integration_ctx.get("greenfield", {}), dict) else {}
     sample_mode = bool(integration_ctx.get("sample_dataset_enabled", False) or payload.get("sample_dataset_enabled", False))
 
     objectives = str(payload.get("objectives", "")).strip()
@@ -5592,6 +5593,69 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             report["raw_artifacts"] = report_raw
             response_payload["analyst_report_v2"] = report
         return response_payload
+
+    def _greenfield_summary_from_landscape(artifacts: dict[str, Any]) -> dict[str, Any]:
+        landscape = artifacts.get("repo_landscape_v1", {}) if isinstance(artifacts.get("repo_landscape_v1", {}), dict) else {}
+        components = artifacts.get("component_inventory_v1", {}) if isinstance(artifacts.get("component_inventory_v1", {}), dict) else {}
+        tracks = artifacts.get("modernization_track_plan_v1", {}) if isinstance(artifacts.get("modernization_track_plan_v1", {}), dict) else {}
+        solution = landscape.get("solution_summary", {}) if isinstance(landscape.get("solution_summary", {}), dict) else {}
+        component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
+        track_rows = tracks.get("tracks", []) if isinstance(tracks.get("tracks", []), list) else []
+        risk_rows = landscape.get("high_risk_signals", []) if isinstance(landscape.get("high_risk_signals", []), list) else []
+        target_language_label = str(solution.get("target_language", "")).strip() or "the chosen target stack"
+        overview = (
+            str(objectives).strip()
+            or f"Greenfield solution landscape for {target_language_label} with {len(component_rows)} planned component(s) and {len(track_rows)} suggested delivery track(s)."
+        )
+        return {
+            "overview": overview,
+            "likely_capabilities": [str(row.get("title", "")).strip() for row in track_rows if str(row.get("title", "")).strip()][:8],
+            "input_output_contracts": [str(row.get("suggested_target", "")).strip() for row in track_rows if str(row.get("suggested_target", "")).strip()][:6],
+            "key_components": [str(row.get("name", "")).strip() for row in component_rows if str(row.get("name", "")).strip()][:8],
+            "interfaces": [str(row.get("title", "")).strip() for row in risk_rows if str(row.get("title", "")).strip()][:6],
+            "data_and_state": [str(row.get("datastore", "")).strip() for row in landscape.get("datastore_signals", []) if isinstance(row, dict) and str(row.get("datastore", "")).strip()][:6],
+            "domain_functions": [str(row.get("lane", "")).strip() for row in track_rows if str(row.get("lane", "")).strip()][:8],
+            "data_entities": [str(row.get("datastore", "")).strip() for row in landscape.get("datastore_signals", []) if isinstance(row, dict) and str(row.get("datastore", "")).strip()][:8],
+            "unknowns": [str(item).strip() for item in tracks.get("open_questions", []) if str(item).strip()][:8],
+            "evidence_files": [str(solution.get("repo_target", "")).strip()] if str(solution.get("repo_target", "")).strip() else [],
+            "stats": {
+                "sampled_files": 0,
+                "sampled_tree_entries": 0,
+                "route_hints": len(track_rows),
+            },
+        }
+
+    if str(integration_ctx.get("project_state_detected", "")).strip().lower() == "greenfield" and not repo_url and not legacy_code:
+        artifacts = build_greenfield_landscape_artifacts(
+            objectives=objectives,
+            use_case=use_case,
+            integration_context=integration_ctx,
+            target_language=modernization_language,
+            target_platform=target_platform,
+            database_source=database_source,
+            database_target=database_target,
+        )
+        analysis = _greenfield_summary_from_landscape(artifacts)
+        response_payload = {
+            "ok": True,
+            "source": "greenfield_landscape",
+            "repo": {
+                "owner": "",
+                "repository": "",
+                "default_branch": "",
+                "url": str(greenfield.get("repo_target", "")).strip(),
+            },
+            "analyst_brief": {
+                "title": "Analyst functionality understanding",
+                "summary": analysis,
+            },
+            "raw_artifacts": artifacts,
+        }
+        response_payload = _enrich_with_analyst_aas(
+            response_payload,
+            fallback_requirement=overview if (overview := str(analysis.get("overview", "")).strip()) else "Analyze greenfield scope and generate a solution landscape.",
+        )
+        return JSONResponse(response_payload)
 
     # Legacy modernization path: analyze provided code directly.
     if legacy_code and use_case == "code_modernization":

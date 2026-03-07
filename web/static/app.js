@@ -4302,6 +4302,8 @@ function _discoverLandscapeArtifacts() {
 function renderDiscoverScopeGuidance() {
   if (!el.discoverScopeGuidance) return;
   const { landscape, components, tracks } = _discoverLandscapeArtifacts();
+  const landscapeMode = String(landscape?.landscape_mode || "").trim().toLowerCase();
+  const solutionSummary = (landscape.solution_summary && typeof landscape.solution_summary === "object") ? landscape.solution_summary : {};
   const componentRows = Array.isArray(components.components) ? components.components : [];
   const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
   const riskRows = Array.isArray(landscape.high_risk_signals) ? landscape.high_risk_signals : [];
@@ -4317,17 +4319,35 @@ function renderDiscoverScopeGuidance() {
     ...Array.isArray(tracks.open_questions) ? tracks.open_questions : [],
   ].filter(Boolean).slice(0, 5);
   const bullets = [];
-  if (variantCandidates.length) {
-    bullets.push(`Confirm canonical project(s): <strong>${escapeHtml(variantCandidates.join(", "))}</strong>.`);
-  }
-  if (reporting.length) {
-    bullets.push(`Decide whether reporting components are in scope now or deferred: <strong>${escapeHtml(reporting.join(", "))}</strong>.`);
-  }
-  if (batch.length) {
-    bullets.push(`Review batch/automation workloads separately from UI modernization: <strong>${escapeHtml(batch.join(", "))}</strong>.`);
-  }
-  if (!bullets.length) {
-    bullets.push(`Synthetix detected <strong>${componentRows.length}</strong> candidate component(s) and <strong>${trackRows.length}</strong> suggested modernization track(s).`);
+  if (landscapeMode === "greenfield") {
+    const targetPlatform = String(solutionSummary.target_platform || "").trim();
+    const targetLanguage = String(solutionSummary.target_language || "").trim();
+    const targetDatastore = String(solutionSummary.database_target || "").trim();
+    if (targetPlatform || targetLanguage) {
+      bullets.push(`Confirm the primary delivery stack: <strong>${escapeHtml([targetLanguage, targetPlatform].filter(Boolean).join(" / ") || "TBD")}</strong>.`);
+    }
+    if (targetDatastore) {
+      bullets.push(`Validate the target data platform decision: <strong>${escapeHtml(targetDatastore)}</strong>.`);
+    }
+    if (trackRows.length) {
+      bullets.push(`Planned delivery has <strong>${trackRows.length}</strong> track(s) across <strong>${componentRows.length}</strong> intended component(s).`);
+    }
+    if (!bullets.length) {
+      bullets.push("Greenfield landscape has been synthesized from the current scope inputs. Confirm target platforms and delivery tracks before scope lock.");
+    }
+  } else {
+    if (variantCandidates.length) {
+      bullets.push(`Confirm canonical project(s): <strong>${escapeHtml(variantCandidates.join(", "))}</strong>.`);
+    }
+    if (reporting.length) {
+      bullets.push(`Decide whether reporting components are in scope now or deferred: <strong>${escapeHtml(reporting.join(", "))}</strong>.`);
+    }
+    if (batch.length) {
+      bullets.push(`Review batch/automation workloads separately from UI modernization: <strong>${escapeHtml(batch.join(", "))}</strong>.`);
+    }
+    if (!bullets.length) {
+      bullets.push(`Synthetix detected <strong>${componentRows.length}</strong> candidate component(s) and <strong>${trackRows.length}</strong> suggested modernization track(s).`);
+    }
   }
   el.discoverScopeGuidance.innerHTML = `
     <p class="font-semibold text-slate-900">Guided by Landscape</p>
@@ -4347,8 +4367,12 @@ function renderDiscoverLandscape() {
   if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
   const analystView = state.discoverAnalystBrief || {};
   const integration = getIntegrationContext();
+  const projectState = String(integration?.project_state_detected || state.projectState?.detected || "").trim().toLowerCase();
   const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+  const greenfieldTarget = String(integration?.greenfield?.repo_target || "").trim();
   const { landscape, components, tracks } = _discoverLandscapeArtifacts();
+  const landscapeMode = String(landscape.landscape_mode || (projectState === "greenfield" ? "greenfield" : "brownfield")).trim().toLowerCase();
+  const solutionSummary = (landscape.solution_summary && typeof landscape.solution_summary === "object") ? landscape.solution_summary : {};
   const scan = (landscape.scan_summary && typeof landscape.scan_summary === "object") ? landscape.scan_summary : {};
   const languageRows = Array.isArray(landscape.languages) ? landscape.languages : [];
   const buildRows = Array.isArray(landscape.build_systems) ? landscape.build_systems : [];
@@ -4360,7 +4384,7 @@ function renderDiscoverLandscape() {
   const edgeSummary = (components.graph_summary && typeof components.graph_summary === "object") ? components.graph_summary : {};
   const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
   const hasLandscapeData = !!componentRows.length || !!trackRows.length || !!languageRows.length || !!buildRows.length || !!riskRows.length;
-  if (!repoUrl) {
+  if (landscapeMode !== "greenfield" && projectState !== "greenfield" && !repoUrl) {
     const html = `
       <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
         Connect a public or private GitHub repository in <strong>Connect</strong> to generate the Landscape view.
@@ -4373,7 +4397,7 @@ function renderDiscoverLandscape() {
   if (analystView.loading && !hasLandscapeData) {
     const html = `
       <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
-        Landscape scan in progress for <strong>${escapeHtml(repoUrl)}</strong>. Repo MRI, components, and suggested tracks will appear here when the analyst brief returns.
+        Landscape scan in progress for <strong>${escapeHtml(landscapeMode === "greenfield" ? (greenfieldTarget || "greenfield scope") : repoUrl)}</strong>. Repo MRI or planned solution tracks will appear here when the analyst brief returns.
       </div>
     `;
     if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
@@ -4383,7 +4407,7 @@ function renderDiscoverLandscape() {
   if (!hasLandscapeData) {
     const html = `
       <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
-        No Landscape data is available yet. Open <strong>Landscape</strong> after connecting a repo, or click <strong>Refresh Landscape</strong> to run the deterministic repo scan now.
+        No Landscape data is available yet. ${landscapeMode === "greenfield" ? "Provide a business objective or target delivery context, then click <strong>Refresh Landscape</strong>." : "Open <strong>Landscape</strong> after connecting a repo, or click <strong>Refresh Landscape</strong> to run the deterministic repo scan now."}
       </div>
     `;
     if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
@@ -4391,6 +4415,14 @@ function renderDiscoverLandscape() {
     return;
   }
   const polyglot = languageRows.filter((row) => Number(row?.stats?.loc || 0) > 0).length > 1 || buildRows.length > 1;
+  const greenfieldSignals = [
+    ["Repo target", String(solutionSummary.repo_target || "").trim()],
+    ["Repo destination", String(solutionSummary.repo_destination || "").trim()],
+    ["Tracker", [String(solutionSummary.tracker_provider || "").trim(), String(solutionSummary.tracker_project || "").trim()].filter(Boolean).join(" / ")],
+    ["Target stack", [String(solutionSummary.target_language || "").trim(), String(solutionSummary.target_platform || "").trim()].filter(Boolean).join(" / ")],
+    ["Database target", String(solutionSummary.database_target || "").trim()],
+    ["Jurisdiction", String(solutionSummary.jurisdiction || "").trim()],
+  ].filter((row) => !!row[1]);
   const languageHtml = languageRows.slice(0, 8).map((row) => `
     <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">
       <strong>${escapeHtml(String(row?.language || "Unknown"))}</strong><br/>
@@ -4432,13 +4464,44 @@ function renderDiscoverLandscape() {
     </div>
   `).join("");
   const nextActions = [
-    componentRows.some((row) => !!row?.variant_candidate) ? "Confirm canonical component(s) before deep analysis." : "",
+    landscapeMode === "greenfield"
+      ? "Confirm target platform, delivery tracks, and business constraints before scope lock."
+      : componentRows.some((row) => !!row?.variant_candidate) ? "Confirm canonical component(s) before deep analysis." : "",
     trackRows.length ? "Choose a target stack per suggested modernization track." : "",
-    datastoreRows.length ? "Provide DB exports or docs to improve datastore confidence where possible." : "",
+    landscapeMode === "greenfield"
+      ? "Confirm ownership boundaries and integration expectations for each planned component."
+      : datastoreRows.length ? "Provide DB exports or docs to improve datastore confidence where possible." : "",
     riskRows.some((row) => String(row?.signal_id || "").includes("HUGE_FILES")) ? "Enable streaming/decomposed analysis for large files." : "",
+    landscapeMode === "greenfield" && !greenfieldSignals.length ? "Provide target repo, tracker, and platform details to improve route confidence." : "",
   ].filter(Boolean);
+  const detectionHeading = landscapeMode === "greenfield" ? "Planned solution view" : "What we detected";
+  const buildHeading = landscapeMode === "greenfield" ? "Planned targets" : "Build systems";
+  const archetypeHeading = landscapeMode === "greenfield" ? "Planned archetypes" : "Application archetypes";
+  const datastoreHeading = landscapeMode === "greenfield" ? "Planned datastores" : "Datastores";
+  const dependencyHeading = landscapeMode === "greenfield" ? "Planning signals" : "Dependency footprint";
+  const landscapeIntro = landscapeMode === "greenfield"
+    ? `Greenfield landscape derived from scope inputs${greenfieldTarget ? ` for ${escapeHtml(greenfieldTarget)}` : ""}.`
+    : "";
+  const greenfieldSummaryHtml = landscapeMode === "greenfield"
+    ? `
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <p class="font-semibold text-slate-900">Planning inputs</p>
+        <div class="mt-2 grid gap-1 sm:grid-cols-2">
+          ${greenfieldSignals.length
+            ? greenfieldSignals.map((row) => `
+              <div class="rounded border border-slate-300 bg-white px-2 py-1">
+                <strong>${escapeHtml(String(row[0]))}</strong><br/>
+                ${escapeHtml(String(row[1]))}
+              </div>
+            `).join("")
+            : `<p class="text-slate-700">No explicit planning inputs captured yet. Landscape is using default greenfield assumptions.</p>`}
+        </div>
+      </div>
+    `
+    : "";
 
   const landscapeHtml = `
+    ${landscapeIntro ? `<div class="mb-2 rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-700">${landscapeIntro}</div>` : ""}
     <div class="grid gap-2 sm:grid-cols-6">
       <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Total files</strong><br/>${escapeHtml(String(scan.total_files || 0))}</div>
       <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Estimated LOC</strong><br/>${escapeHtml(String(scan.total_loc || 0))}</div>
@@ -4449,24 +4512,25 @@ function renderDiscoverLandscape() {
     </div>
     <div class="mt-2 grid gap-2 lg:grid-cols-2">
       <div class="rounded border border-slate-300 bg-white p-2">
-        <p class="font-semibold text-slate-900">What we detected</p>
+        <p class="font-semibold text-slate-900">${detectionHeading}</p>
         <div class="mt-2 grid gap-1 sm:grid-cols-2">${languageHtml || `<p class="text-slate-700">No language signals detected yet. Check repo access and exclusions.</p>`}</div>
         <div class="mt-2">
-          <p class="font-semibold text-slate-900">Build systems</p>
+          <p class="font-semibold text-slate-900">${buildHeading}</p>
           <ul class="mt-1 list-disc pl-4 text-slate-700">${buildHtml || `<li>No build system files detected.</li>`}</ul>
         </div>
         <div class="mt-2">
-          <p class="font-semibold text-slate-900">Application archetypes</p>
+          <p class="font-semibold text-slate-900">${archetypeHeading}</p>
           <div class="mt-1 flex flex-wrap gap-1">${archetypeHtml || `<span class=\"text-slate-700\">No archetypes detected.</span>`}</div>
         </div>
         <div class="mt-2">
-          <p class="font-semibold text-slate-900">Datastores</p>
+          <p class="font-semibold text-slate-900">${datastoreHeading}</p>
           <div class="mt-1 flex flex-wrap gap-1">${datastoreHtml || `<span class=\"text-slate-700\">No datastore signals detected.</span>`}</div>
         </div>
         <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
-          <p class="font-semibold text-slate-900">Dependency footprint</p>
+          <p class="font-semibold text-slate-900">${dependencyHeading}</p>
           <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
         </div>
+        ${greenfieldSummaryHtml}
       </div>
       <div class="rounded border border-slate-300 bg-white p-2">
         <p class="font-semibold text-slate-900">Suggested modernization tracks</p>
