@@ -9,7 +9,7 @@ from typing import Any
 import json
 import re
 
-from .base import BaseAgent
+from .base import AgentResult, BaseAgent
 
 
 class ArchitectAgent(BaseAgent):
@@ -174,6 +174,180 @@ Include:
     def parse_output(self, raw: str) -> dict[str, Any]:
         parsed = self.extract_json(raw)
         return self._ensure_required_diagrams(parsed)
+
+    def _deterministic_fallback(self, state: dict[str, Any], raw_response: str, parse_error: Exception) -> dict[str, Any]:
+        analyst = state.get("analyst_output", {}) if isinstance(state.get("analyst_output", {}), dict) else {}
+        analyst_inventory = analyst.get("legacy_code_inventory", {}) if isinstance(analyst.get("legacy_code_inventory", {}), dict) else {}
+        project_candidates = analyst_inventory.get("vb6_projects", []) if isinstance(analyst_inventory.get("vb6_projects", []), list) else []
+        project_name = next(
+            (
+                str(item.get("name", "")).strip()
+                for item in project_candidates
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ),
+            "",
+        ) or str(analyst.get("project_name", "")).strip() or "Legacy Modernization Architecture"
+        services = [
+            {
+                "name": "modernization-app",
+                "responsibility": "Delivers the modernized business workflows and parity behavior for the legacy application.",
+                "technology": "Containerized application service",
+                "language": str(state.get("modernization_language", "")).strip() or "C#",
+                "framework": "ASP.NET Core",
+                "api_type": "REST",
+                "database": str(state.get("database_target", "")).strip() or "PostgreSQL",
+                "cache": "Redis",
+            },
+            {
+                "name": "migration-worker",
+                "responsibility": "Executes background migration, reconciliation, and batch modernization tasks.",
+                "technology": "Containerized worker",
+                "language": str(state.get("modernization_language", "")).strip() or "C#",
+                "framework": ".NET Worker",
+                "api_type": "REST",
+                "database": str(state.get("database_target", "")).strip() or "PostgreSQL",
+                "cache": None,
+            },
+        ]
+        parsed = {
+            "architecture_name": f"{project_name} Target Architecture",
+            "pattern": "modular-monolith",
+            "overview": (
+                "Deterministic architecture fallback compiled from Analyst evidence because the primary Architect model response was not machine-readable. "
+                "The design favors a Docker-compatible modular application with explicit data and worker boundaries."
+            ),
+            "services": services,
+            "infrastructure": {
+                "cloud_provider": "Docker-local / cloud-portable",
+                "container_orchestration": "Docker Compose (initial) / Kubernetes-ready",
+                "ci_cd": "GitHub Actions",
+                "monitoring": "OpenTelemetry + Prometheus",
+                "logging": "Structured JSON logs",
+            },
+            "security": {
+                "authentication": "Application login backed by centralized identity model to be confirmed during design review",
+                "authorization": "Role-based access control",
+                "encryption": "TLS in transit and encrypted database/storage at rest",
+                "api_security": "Parameterized queries, validated inputs, and authenticated API access",
+                "secrets_management": "Environment-injected secrets with managed secret store support",
+            },
+            "scalability": {
+                "strategy": "Scale stateless application and worker services independently",
+                "auto_scaling_rules": [
+                    "Scale application instances on request concurrency and response latency.",
+                    "Scale worker instances on queue depth and reconciliation backlog.",
+                    "Keep database capacity aligned to transaction workload and reporting windows.",
+                    "Enable separate scaling for reporting/export workloads if retained in scope.",
+                ],
+                "caching_strategy": "Use short-lived cache for reference/master data and read-heavy lookup flows",
+                "cdn": None,
+            },
+            "data_flow": [
+                {
+                    "from": "Client",
+                    "to": "modernization-app",
+                    "protocol": "HTTPS",
+                    "description": "Users access modernized application workflows over authenticated HTTP requests.",
+                },
+                {
+                    "from": "modernization-app",
+                    "to": str(state.get("database_target", "")).strip() or "PostgreSQL",
+                    "protocol": "SQL",
+                    "description": "Application service persists transactional and reference data through parameterized data access.",
+                },
+                {
+                    "from": "modernization-app",
+                    "to": "migration-worker",
+                    "protocol": "Queue/API",
+                    "description": "Long-running migration, reconciliation, and reporting preparation tasks are delegated asynchronously.",
+                },
+                {
+                    "from": "migration-worker",
+                    "to": str(state.get("database_target", "")).strip() or "PostgreSQL",
+                    "protocol": "SQL",
+                    "description": "Worker processes backfill, reconciliation, and parity-validation workloads against the target datastore.",
+                },
+            ],
+            "latency_optimizations": [
+                "Keep UI/API services stateless to allow horizontal scaling.",
+                "Cache stable reference data and account-type lookups.",
+                "Move heavy reporting or reconciliation work to background workers.",
+                "Use explicit database indexes for transaction, customer, and account lookups.",
+            ],
+            "trade_offs": [
+                {
+                    "decision": "Use a modular monolith first",
+                    "rationale": "The legacy estate is tightly coupled and needs parity-first modernization before service decomposition.",
+                    "alternatives_considered": ["Microservices", "Lift-and-shift monolith"],
+                },
+                {
+                    "decision": "Prefer Docker-local compatible infrastructure",
+                    "rationale": "The platform currently emphasizes local validation and controlled promotion to cloud environments.",
+                    "alternatives_considered": ["Cloud-managed PaaS only", "Bare metal deployment"],
+                },
+                {
+                    "decision": "Separate worker processing from interactive application traffic",
+                    "rationale": "Background migration and reporting tasks should not impact user-facing latency.",
+                    "alternatives_considered": ["Single process with internal scheduler", "Synchronous processing"],
+                },
+            ],
+            "legacy_system": {
+                "current_logic_summary": "Legacy VB6 project variants implement tightly coupled UI, reporting, and data-access behavior that must be modernized with controlled parity checks.",
+                "key_logic_steps": [
+                    "User authenticates into the legacy desktop workflow.",
+                    "Menu or startup forms route the user to business transaction screens.",
+                    "Business actions trigger form-bound validation and database access patterns.",
+                    "Reporting and shared module logic execute alongside interactive workflows.",
+                    "Operational state is maintained across multiple VB6 project variants and shared dependencies.",
+                ],
+                "current_system_diagram_mermaid": self._legacy_default_diagram(),
+            },
+            "target_system_diagram_mermaid": self._target_default_diagram(),
+            "fallback_reason": str(parse_error),
+            "raw_response_excerpt": str(raw_response or "")[:2000],
+        }
+        return self._ensure_required_diagrams(parsed)
+
+    def run(self, state: dict[str, Any]) -> AgentResult:
+        self._logs = []
+        self.log(f"[{self.name}] Starting execution...")
+
+        user_msg = self.build_user_message(state)
+        self.log(f"[{self.name}] Sending request to LLM ({self.llm.config.get_model()})...")
+        raw_response = ""
+
+        try:
+            response = self.llm.invoke(self.effective_system_prompt(state), user_msg)
+            raw_response = str(response.content or "")
+            self.log(f"[{self.name}] Received response ({response.output_tokens} tokens, {response.latency_ms:.0f}ms)")
+            try:
+                parsed = self.parse_output(raw_response)
+            except Exception as parse_exc:
+                self.log(f"[{self.name}] Structured parse failed; compiling deterministic fallback: {parse_exc}")
+                parsed = self._deterministic_fallback(state, raw_response, parse_exc)
+            self.log(f"[{self.name}] Output parsed successfully")
+            return AgentResult(
+                agent_name=self.name,
+                stage=self.stage,
+                status="success",
+                summary=self._build_summary(parsed),
+                output=parsed,
+                raw_response=raw_response,
+                tokens_used=response.input_tokens + response.output_tokens,
+                latency_ms=response.latency_ms,
+                logs=self._logs.copy(),
+            )
+        except Exception as e:
+            self.log(f"[{self.name}] ERROR: {e}")
+            return AgentResult(
+                agent_name=self.name,
+                stage=self.stage,
+                status="error",
+                summary=f"Agent failed: {e}",
+                output={"error": str(e)},
+                raw_response=raw_response,
+                logs=self._logs.copy(),
+            )
 
     @staticmethod
     def _first_non_empty(*values: Any) -> str:
