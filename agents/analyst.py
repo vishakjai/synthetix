@@ -505,6 +505,70 @@ OUTPUT REQUIREMENTS:
                 return repaired
             raise exc
 
+    def _deterministic_parsed_fallback(
+        self,
+        state: dict[str, Any],
+        deterministic: dict[str, Any],
+        raw_response: str,
+        parse_error: Exception,
+    ) -> dict[str, Any]:
+        legacy_compact = state.get("legacy_compact_context", {}) if isinstance(state.get("legacy_compact_context", {}), dict) else {}
+        compact_inventory = legacy_compact.get("inventory", {}) if isinstance(legacy_compact.get("inventory", {}), dict) else {}
+        if not compact_inventory:
+            compact_inventory = self._inventory_from_discover_cache(state)
+        project_candidates = compact_inventory.get("vb6_projects", []) if isinstance(compact_inventory.get("vb6_projects", []), list) else []
+        project_name = next(
+            (
+                str(item.get("name", "")).strip()
+                for item in project_candidates
+                if isinstance(item, dict) and str(item.get("name", "")).strip()
+            ),
+            "",
+        ) or str(state.get("project_name", "")).strip() or "Legacy Modernization Scope"
+        fallback_contract = legacy_compact.get("seed_legacy_contract", []) if isinstance(legacy_compact.get("seed_legacy_contract", []), list) else []
+        objective = str(deterministic.get("normalized_requirement", {}).get("raw_requirement", "")).strip()
+        summary = (
+            "Deterministic analyst fallback compiled from repository evidence because the primary model response was not machine-readable."
+        )
+        if objective:
+            summary = f"{summary} Objective: {objective[:400]}"
+        return {
+            "analysis_walkthrough": {
+                "business_objective_summary": objective or summary,
+                "requirements_understanding": [
+                    "Repository evidence was analyzed successfully, but the narrative LLM response could not be parsed into machine-readable JSON.",
+                    "Functional and non-functional requirements were reconstructed from deterministic inventory, traceability, and legacy contract signals.",
+                ],
+                "conversion_to_technical_requirements": [
+                    "Use deterministic inventory and traceability as the baseline for migration planning.",
+                    "Review generated artifacts where coverage is incomplete or evidence confidence is reduced.",
+                ],
+                "clarifications_requested": [str(x) for x in deterministic.get("open_questions", []) if str(x).strip()],
+            },
+            "project_name": project_name,
+            "executive_summary": summary,
+            "functional_requirements": [],
+            "non_functional_requirements": [],
+            "legacy_functional_contract": fallback_contract[:20],
+            "legacy_code_inventory": compact_inventory,
+            "assumptions": [
+                "Deterministic repository evidence is treated as authoritative for inventory, dependency, and traceability baseline details.",
+                "Narrative refinement may still be needed for business-language polish where the model response was not machine-readable.",
+            ],
+            "risks": [
+                {
+                    "id": "RISK-PARSE-001",
+                    "title": "Analyst output required deterministic fallback",
+                    "severity": "medium",
+                    "description": "The primary Analyst LLM response could not be parsed into valid JSON, so Synthetix compiled the requirements pack from deterministic evidence instead.",
+                    "mitigation": "Review the generated artifacts and rerun with a stricter output contract if additional narrative depth is required.",
+                    "evidence": str(parse_error),
+                }
+            ],
+            "open_questions": [str(x) for x in deterministic.get("open_questions", []) if str(x).strip()],
+            "raw_response_excerpt": str(raw_response or "")[:2000],
+        }
+
     def _repair_json_response(self, raw: str) -> dict[str, Any] | None:
         text = str(raw or "").strip()
         if not text:
@@ -4683,10 +4747,16 @@ BUSINESS OBJECTIVES:
         user_msg = self._build_user_message_with_context(state_for_prompt, deterministic)
         self.log(f"[{self.name}] Sending request to LLM ({self.llm.config.get_model()})...")
 
+        raw_response = ""
         try:
             response = self.llm.invoke(self.effective_system_prompt(state), user_msg)
+            raw_response = str(response.content or "")
             self.log(f"[{self.name}] Received response ({response.output_tokens} tokens, {response.latency_ms:.0f}ms)")
-            parsed = self.parse_output(response.content)
+            try:
+                parsed = self.parse_output(raw_response)
+            except Exception as parse_exc:
+                self.log(f"[{self.name}] Structured parse failed; compiling deterministic fallback: {parse_exc}")
+                parsed = self._deterministic_parsed_fallback(state_for_prompt, deterministic, raw_response, parse_exc)
             self.log(f"[{self.name}] LLM output parsed; compiling deterministic Requirements Pack...")
             finalized = self._finalize_output(parsed, deterministic, state_for_prompt)
             if (
@@ -4708,7 +4778,7 @@ BUSINESS OBJECTIVES:
                 status="success",
                 summary=self._build_summary(finalized),
                 output=finalized,
-                raw_response=response.content,
+                raw_response=raw_response,
                 tokens_used=response.input_tokens + response.output_tokens,
                 latency_ms=response.latency_ms,
                 logs=self._logs.copy(),
@@ -4721,7 +4791,7 @@ BUSINESS OBJECTIVES:
                 status="error",
                 summary=f"Agent failed: {e}",
                 output={"error": str(e)},
-                raw_response="",
+                raw_response=raw_response,
                 logs=self._logs.copy(),
             )
 
