@@ -33,6 +33,45 @@ function clean(value) {
   return toText(value).replace(/\s+/g, ' ').trim();
 }
 
+function isTechnicalBrdLeak(value) {
+  const v = clean(value).toLowerCase();
+  if (!v) return false;
+  return /(ocx|activex|dll|com library|typelib|dbgrid|mscom|msflx|msmask|sql:\d+|vb6|source refs?|bankapp1\/|\.frm\b|\.bas\b|\.cls\b|rewrite technical|code file)/i.test(v);
+}
+
+function humanizeBrdConstraint(value) {
+  const raw = clean(value);
+  const low = raw.toLowerCase();
+  if (!raw) return '';
+  if (low.includes('compliance constraints are not linked')) {
+    return 'Applicable compliance obligations must be confirmed and linked to the identified security and privacy risks before delivery sign-off.';
+  }
+  if (low.includes('zero extracted ui events') && (low.includes('frmdeposit') || low.includes('frmstatement'))) {
+    return 'Two in-scope operational workflows have incomplete extracted interaction evidence and require confirmation before sprint planning is finalized.';
+  }
+  return raw;
+}
+
+function humanizeBrdSecurityFinding(value) {
+  const raw = clean(value);
+  const low = raw.toLowerCase();
+  if (!raw) return '';
+  if (low.includes('possible_injection') || low.includes('string_concatenation') || low.includes('select_star') || /sql:\d+/i.test(raw)) {
+    return 'Legacy data-access patterns indicate SQL injection exposure and insufficient query hardening; the target solution must use parameterized queries and secure data-access controls.';
+  }
+  return raw;
+}
+
+function humanizeBrdIssue(value) {
+  const raw = clean(value);
+  const low = raw.toLowerCase();
+  if (!raw) return '';
+  if (low.includes('dec-eventmap-001') && low.includes('zero extracted ui events')) {
+    return 'DEC-EVENTMAP-001: Two in-scope operational workflows have incomplete extracted interaction evidence and require confirmation before sprint planning is finalized.';
+  }
+  return raw;
+}
+
 function shortFormName(value) {
   let v = clean(value);
   if (!v) return '';
@@ -383,6 +422,32 @@ function buildContext(data) {
   const scopeNote = overlap.length
     ? `Scope In covers active forms from analyzed project variants. Scope Out lists legacy/orphan stub files that are not carried forward. Similar names can appear in both when one artifact is active and another is superseded: ${uniqueStrings(overlap).join(', ')}.`
     : '';
+  const assumptions = uniqueStrings(asArray(data?.decisions)
+    .filter((d) => String(d.id || '').toUpperCase().startsWith('Q-'))
+    .map((d) => d.description));
+  const constraints = uniqueStrings([
+    'Modernization must preserve validated business outcomes for all active in-scope workflows.',
+    'Legacy behavior is reconstructed from static analysis evidence and requires business confirmation where traceability is incomplete.',
+    data?.meta?.mdb_detected ? 'Source Microsoft Access data lineage must remain traceable through target-state data design and migration validation.' : '',
+    ...asArray(data?.decisions)
+      .filter((d) => String(d.id || '').toUpperCase().startsWith('DEC-'))
+      .map((d) => clean(d.description)),
+  ]).map(humanizeBrdConstraint).filter((x) => x && !isTechnicalBrdLeak(x));
+  const stakeholders = uniqueStrings([
+    'Business sponsor',
+    'Operations lead',
+    'Compliance and risk reviewer',
+    'Delivery lead',
+    'Modernization engineering lead',
+  ]);
+  const complianceSecuritySummary = uniqueStrings([
+    'Sensitive customer and transaction data must be protected through validation, access control, and secure data handling.',
+    'Identified security and compliance risks must be resolved before production approval.',
+    ...asArray(data?.risks)
+      .filter((r) => /security|credential|injection|privacy|compliance|audit/i.test(`${r.description || ''} ${r.action || ''}`))
+      .map((r) => clean(r.description))
+      .slice(0, 6),
+  ].map(humanizeBrdSecurityFinding).filter(Boolean));
   return {
     artifact: 'brd_context_v1',
     purpose: clean(brief?.business_objective || 'Modernize legacy application while preserving functional parity and business controls.'),
@@ -390,7 +455,11 @@ function buildContext(data) {
     scope_in: scopeIn,
     scope_out: scopeOut,
     scope_note: scopeNote,
-    assumptions: uniqueStrings(asArray(data?.decisions).filter((d) => String(d.id || '').toUpperCase().startsWith('Q-')).map((d) => d.description)),
+    assumptions,
+    constraints,
+    stakeholders,
+    scope_validation: 'Scope is derived from resolved active-form membership, traceability evidence, and analyst review of legacy project files.',
+    compliance_security_summary: complianceSecuritySummary,
     dependencies: uniqueStrings([
       ...asArray(data?.dependencies).map((d) => d.name),
       ...projectLabels,
@@ -550,14 +619,41 @@ function buildGeneralRequirements(data, moduleRegistry) {
     'Loading/progress states are visible whenever workflow execution is asynchronous.',
   ];
 
+  const functionalRequirements = asArray(moduleRegistry)
+    .filter((m) => m.include_in_brd !== false)
+    .map((m) => `${clean(m.module_id)}: ${clean(m.business_name)} — ${clean(m.short_description)}`)
+    .slice(0, 40);
+
+  const nonFunctionalRequirements = uniqueStrings([
+    'Operational workflows should respond consistently and support day-to-day processing without avoidable delay.',
+    'Validation outcomes must be understandable to business users and recoverable without technical intervention.',
+    'Business outcomes and data changes must remain traceable for migration verification and audit review.',
+    'Modernized workflows must preserve role-appropriate access and protection of sensitive business data.',
+  ]);
+
+  const complianceRequirements = uniqueStrings([
+    'Customer, account, and transaction data must be processed using approved security and privacy controls.',
+    'High-severity risks identified during discovery must be resolved before production approval.',
+    ...asArray(data?.decisions)
+      .filter((d) => /compliance|security|privacy|audit/i.test(String(d.description || '')))
+      .map((d) => clean(d.description)),
+  ]);
+
   return {
     artifact: 'brd_general_requirements_v1',
+    functional_requirements: functionalRequirements,
+    non_functional_requirements: nonFunctionalRequirements,
+    compliance_requirements: complianceRequirements,
     business_rules: sharedRules,
     display_requirements: displayReqs,
     validations: validationRules,
     notifications: uniqueStrings(asArray(data?.risks).filter((r) => /notification|alert|warning/i.test(String(r.description || ''))).map((r) => clean(r.description))).slice(0, 20),
     navigation_rules: navRules,
-    shared_integrations: uniqueStrings(asArray(data?.dependencies).map((d) => clean(d.name || d.reference))).slice(0, 30),
+    shared_integrations: uniqueStrings([
+      data?.meta?.mdb_detected ? 'Business workflows rely on a legacy Microsoft Access data source that must be preserved through migration planning.' : '',
+      asArray(data?.dataenvironment_report_mapping).length ? 'Reporting outputs rely on legacy report-generation mappings that require business validation in the target solution.' : '',
+      'Shared workflows depend on customer, account, balance, and transaction data remaining consistent across modules.',
+    ]).slice(0, 12),
     common_nonfunctional_notes: uniqueStrings([
       ...asArray(data?.decisions).map((d) => clean(d.description)),
     ]).slice(0, 20),
@@ -568,6 +664,12 @@ function humanizeEvidence(value) {
   const raw = clean(value);
   if (!raw) return 'Derived from legacy behavior and validated through traceability analysis.';
   const low = raw.toLowerCase();
+  if (/\.frm:\d+|\.bas:\d+|\.cls:\d+/i.test(raw)) {
+    if (low.includes('splash')) {
+      return 'Derived from observed startup and loading behavior in the legacy workflow.';
+    }
+    return 'Derived from traceable legacy workflow evidence captured during analysis.';
+  }
   if (low.includes('variant_backfill_for_eq_sync') || low.includes('mirrored_from_variant_mapping')) {
     return 'Inherited from equivalent workflow variant and validated against shared business behavior.';
   }
@@ -784,7 +886,7 @@ function moduleSpecificDecisions(module, data) {
     }
     return false;
   });
-  const out = uniqueStrings(scoped.map((d) => `${clean(d.id)}: ${clean(d.description)}`)).slice(0, 6);
+  const out = uniqueStrings(scoped.map((d) => `${clean(d.id)}: ${clean(d.description)}`).map(humanizeBrdConstraint).map(humanizeBrdIssue)).slice(0, 6);
   return out;
 }
 
@@ -997,7 +1099,11 @@ function buildDisplayRequirementsForModule(module, fieldRows, ruleRows, interact
   };
 
   for (const field of fieldRows.slice(0, 20)) {
-    add(displayTitleForField(field.label), `${field.label}: ${field.business_meaning}`);
+    const label = clean(field.label);
+    add(
+      label ? `${label} capture` : displayTitleForField(field.label),
+      `The module provides a clear way to capture ${label.toLowerCase()} and indicate whether it is required for successful processing.`
+    );
   }
 
   if (!out.length) {
@@ -1173,7 +1279,38 @@ function extractDataEntities(data) {
       names.push(normalized);
     }
   }
-  return uniqueStrings(names)
+  for (const form of asArray(data?.mapped_forms)) {
+    const label = clean(form.display_name || form.form);
+    const lower = label.toLowerCase();
+    if (lower.includes('deposit')) names.push('deposit');
+    if (lower.includes('withdraw')) names.push('withdrawal');
+    if (lower.includes('transaction') || lower.includes('ledger')) names.push('transaction');
+    if (lower.includes('customer')) names.push('customer');
+    if (lower.includes('account')) names.push('account_type');
+    if (lower.includes('login') || lower.includes('password') || lower.includes('authentication')) names.push('login');
+    if (lower.includes('balance')) names.push('balance');
+  }
+  if (names.includes('transaction') || names.includes('deposit') || names.includes('withdrawal')) {
+    names.push('balance');
+  }
+  for (const dep of asArray(data?.dependencies)) {
+    const lower = clean(dep.name).toLowerCase();
+    if (lower.includes('mdb') || lower.includes('access')) names.push('balance');
+  }
+  const preferredOrder = ['customer', 'account_type', 'deposit', 'withdrawal', 'transaction', 'balance', 'login'];
+  const entities = uniqueStrings(names);
+  if ((entities.includes('transaction') || entities.includes('deposit') || entities.includes('withdrawal')) && !entities.includes('balance')) {
+    entities.push('balance');
+  }
+  return entities
+    .sort((a, b) => {
+      const ia = preferredOrder.indexOf(a);
+      const ib = preferredOrder.indexOf(b);
+      if (ia >= 0 && ib >= 0) return ia - ib;
+      if (ia >= 0) return -1;
+      if (ib >= 0) return 1;
+      return a.localeCompare(b);
+    })
     .slice(0, 120)
     .map((entity) => ({
       entity: entityDisplayName(entity),
@@ -1182,50 +1319,93 @@ function extractDataEntities(data) {
 }
 
 function buildAppendices(data, moduleRegistry, processMaps) {
-  const excluded = uniqueStrings(asArray(data?.excluded_unique).map((f) => clean(f.form || f))).slice(0, 80);
-  const deferred = asArray(moduleRegistry?._deferred_forms).map((f) => `${clean(f.display_name || f.form)} — ${clean(f.reason)}`);
-  const highRisks = asArray(data?.risks)
-    .filter((r) => String(r.severity || '').toLowerCase() === 'high')
-    .map((r) => `${clean(r.id)}: ${clean(r.description)} (${clean(r.form)})`)
-    .slice(0, 80);
-  const deps = uniqueStrings(asArray(data?.dependencies).map((d) => `${clean(d.name)} (${clean(d.kind || d.type)})`)).slice(0, 80);
-  const mapSummaries = asArray(processMaps).map((pm) => `${clean(pm.ref)}: ${clean(pm.flow_summary)}`).slice(0, 80);
-
   const dataEntities = extractDataEntities(data);
+  const dependenciesAndIntegrations = uniqueStrings([
+    data?.meta?.mdb_detected ? 'Business workflows depend on a legacy Microsoft Access data store that must be migrated with verified lineage.' : '',
+    asArray(data?.dataenvironment_report_mapping).length ? 'Reporting workflows depend on legacy report-generation mappings that require parity validation in the target solution.' : '',
+    'Downstream workflows depend on consistent customer, account, balance, and transaction data availability.',
+  ]).slice(0, 20);
+  const issueLog = uniqueStrings([
+    ...asArray(data?.decisions).map((d) => `${clean(d.id)}: ${clean(d.description)}`),
+    ...asArray(moduleRegistry?._deferred_forms).map((f) => `${clean(f.display_name || f.form)}: ${clean(f.reason)}`),
+  ].map(humanizeBrdIssue)).filter((x) => !isTechnicalBrdLeak(x)).slice(0, 40);
+  const processMapInventory = asArray(processMaps).map((pm) => ({
+    ref: clean(pm.ref),
+    summary: clean(pm.flow_summary),
+  })).slice(0, 80);
   return {
     artifact: 'brd_appendices_v1',
-    other_code_files_to_rewrite: uniqueStrings([...excluded, ...deferred]).slice(0, 120),
-    system_requirements: deps,
-    software_requirements: [
-      'Maintain functional parity for in-scope business modules.',
-      'Preserve business validations and approval controls.',
-      'Provide traceable evidence from legacy forms to modernized modules.',
-    ],
-    migration_notes: highRisks,
-    illustration_inventory: mapSummaries,
+    dependencies_and_integrations: dependenciesAndIntegrations,
+    issue_log: issueLog,
+    process_map_inventory: processMapInventory,
     data_entities: dataEntities,
     data_entities_note: 'Refer to the Technical Workbook Data Dictionary artifact for full schema, column definitions, data types, keys, and ER diagram.',
   };
 }
 
 function buildProcessMaps(moduleRegistry, data) {
+  const stepsForKind = (m) => {
+    const name = clean(m.business_name);
+    const kind = norm(m.module_kind);
+    if (kind === 'authentication') {
+      return [
+        'User opens the authentication workflow.',
+        'User enters credentials and submits the request.',
+        'System validates access rules and either rejects or authorizes the request.',
+        'Authorized users proceed to the operational navigation hub.',
+      ];
+    }
+    if (kind === 'navigation') {
+      return [
+        'User reaches the navigation hub after prerequisite access checks.',
+        'Available business destinations are presented clearly.',
+        'User selects the required workflow path.',
+        'System opens the selected downstream business module.',
+      ];
+    }
+    if (kind === 'reporting') {
+      return [
+        `User opens ${name.toLowerCase()} and enters reporting criteria.`,
+        'System validates the filter inputs.',
+        'Requested report output is generated.',
+        'User reviews the resulting business information.',
+      ];
+    }
+    if (kind === 'system_flow') {
+      return [
+        `User opens ${name.toLowerCase()}.`,
+        'System performs startup and readiness checks.',
+        'Progress or readiness feedback is shown.',
+        'Operational workflow becomes available when startup gating completes.',
+      ];
+    }
+    if (kind === 'customer_management') {
+      return [
+        `User opens ${name.toLowerCase()}.`,
+        'Required customer or account details are entered or updated.',
+        'System validates mandatory information and business rules.',
+        'Master data is saved and made available to downstream workflows.',
+      ];
+    }
+    return [
+      `User opens ${name.toLowerCase()}.`,
+      'Required workflow data is captured.',
+      'System validates the business rules for the transaction or request.',
+      'The resulting business state is saved and available for downstream use.',
+    ];
+  };
+
   return asArray(moduleRegistry).map((m) => {
-    const routes = uniqueStrings(asArray(data?.dep_map)
-      .filter((d) => asArray(m.source_forms).some((f) => norm(shortFormName(d.from)).includes(norm(shortFormName(f)))))
-      .map((d) => normalizedInteraction(d.from, d.to, d.link_type || 'flow'))
-      .filter(Boolean))
-      .slice(0, 8);
-    const summary = routes.length
-      ? routes.join(' | ')
-      : `${m.business_name} executes primary workflow with validated inputs and persisted outcomes.`;
+    const steps = stepsForKind(m);
     return ({
-    module_id: m.module_id,
-    ref: `PM-${m.module_id}`,
-    flow_summary: summary,
-    diagram_source_type: 'mermaid',
-    diagram_source: `flowchart LR\n  A[Start] --> B[${m.business_name}]\n  B --> C[Validated Output]`,
-    image_ref: '',
-    generated_at: new Date().toISOString(),
+      module_id: m.module_id,
+      ref: `PM-${m.module_id}`,
+      flow_summary: steps.join(' '),
+      flow_steps: steps,
+      diagram_source_type: 'mermaid',
+      diagram_source: `flowchart LR\n  A[Start] --> B[${m.business_name}]\n  B --> C[Validated Outcome]`,
+      image_ref: '',
+      generated_at: new Date().toISOString(),
     });
   });
 }

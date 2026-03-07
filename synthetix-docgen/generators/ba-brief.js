@@ -894,13 +894,13 @@ async function generateBaBrief(data, outputPath) {
         para('Each active form is scored across four dimensions: event map, SQL map, business rules, and risk register linkage. Score of 100 = fully covered. Score of 0 indicates no extracted traceability evidence for the current run; it should be reviewed as a coverage gap, not automatically interpreted as proof that the business flow does not exist.'),
         sp(), coverageTable, sp(), qTable, pb(),
 
-        h1('5. Sprint Dependency Map'),
-        para(`Sprint 0 = discovery closure required (${numGap} forms). Sprint 1 = risk-first migration of core transactional forms. Sprint 2 = parity hardening. Shared Components must be built before any form that lists them can be migrated.`),
-        sp(), sprintSummary, sp(), sprintTable, pb(),
-
-        h1('6. Risk Register'),
+        h1('5. Risk Register'),
         para('All risks extracted by the analysis platform. High severity risks must be resolved before go-live.'),
         sp(), riskTable, sp(),
+
+        h1('Appendix A. Delivery Sequencing'),
+        para(`Sprint sequencing is provided as a delivery appendix rather than core business scope. Sprint 0 = discovery closure required (${numGap} forms). Sprint 1 = risk-first migration of core transactional forms. Sprint 2 = parity hardening. Shared Components must be built before any form that lists them can be migrated.`),
+        sp(), sprintSummary, sp(), sprintTable, pb(),
       ],
     }],
   });

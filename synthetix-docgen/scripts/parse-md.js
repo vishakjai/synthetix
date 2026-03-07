@@ -281,6 +281,46 @@ function isUnknownSqlNoise(row) {
   return !likelySql && !hasTableSignal;
 }
 
+function looksLikeSchemaTypeToken(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return false;
+  return /^(integer|long|short|byte|double|single|currency|float|real|numeric(?:\([^)]+\))?|decimal(?:\([^)]+\))?|varchar(?:\([^)]+\))?|char(?:\([^)]+\))?|text|memo|timestamp|datetime|date|time|yes\/no|boolean)$/i.test(text);
+}
+
+function isSchemaArtifactSqlRow(row) {
+  const item = row && typeof row === 'object' ? row : {};
+  const id = String(item.id || '').trim();
+  const form = String(item.form || '').trim().toLowerCase();
+  const handler = normalizeSqlSnippet(item.handler || '');
+  const op = String(item.op || '').trim().toLowerCase();
+  const tables = String(item.tables || '').trim();
+  const columns = String(item.columns || '').trim();
+  const notes = `${id} ${tables} ${columns}`.toLowerCase();
+
+  if (/^sql:\d+$/i.test(id)) return false;
+  if (handler && isLikelySqlQuery(handler)) return false;
+  if (op && op !== 'unknown') return false;
+  if (form && form !== 'n/a' && form !== 'project-wide / unattributed sql') return false;
+  if (looksLikeSchemaTypeToken(tables)) return true;
+  if (!handler && !columns && /\b(integer|numeric|varchar|timestamp|text|date|datetime|currency)\b/.test(notes)) return true;
+  return false;
+}
+
+function isGarbageSqlRow(row) {
+  const item = row && typeof row === 'object' ? row : {};
+  const handler = normalizeSqlSnippet(item.handler || '');
+  const lower = handler.toLowerCase();
+  const tables = String(item.tables || '').trim().toLowerCase();
+  const columns = String(item.columns || '').trim().toLowerCase();
+  const likelySql = isLikelySqlQuery(handler);
+  if (likelySql) return false;
+  if (!handler && !tables && !columns) return true;
+  if (lower.includes('msgbox')) return true;
+  if (/please\s+select|todays\s+date|from\s+date\s+less\s+than\s+to\s+date/.test(lower)) return true;
+  if ((tables === 'date' || tables === 'status') && !columns) return true;
+  return false;
+}
+
 function deriveDependencyReference(name, kind) {
   const raw = String(name || '').trim();
   if (!raw) return 'n/a';
@@ -472,7 +512,9 @@ function parseD(content) {
       if (op === 'unknown') return likelySql || hasTableSignal;
       return likelySql || hasTableSignal || !!String(r.id || '').trim();
     })
-    .filter((r) => !isUnknownSqlNoise(r));
+    .filter((r) => !isUnknownSqlNoise(r))
+    .filter((r) => !isSchemaArtifactSqlRow(r))
+    .filter((r) => !isGarbageSqlRow(r));
 }
 
 function parseE(content) {

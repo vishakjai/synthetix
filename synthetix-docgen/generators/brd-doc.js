@@ -256,12 +256,14 @@ function sectionVersionHistory(versionHistory, anchors, meta) {
 }
 
 function sectionContext(context, anchors) {
-  const title = clean(anchors?.section_titles?.context || 'Introduction and Context');
+  const title = clean(anchors?.section_titles?.context || 'Introduction and Scope');
   const scopeNote = clean(context?.scope_note);
   return [
     h1(title, 'sec_context'),
     h2('Purpose'), para(context?.purpose),
     h2('Intended Audience'), para(context?.intended_audience),
+    h2('Stakeholders'),
+    ...asArray(context?.stakeholders).slice(0, 12).map((x) => bullet(x)),
     h2('Current State'), para(context?.current_state_summary),
     h2('Target State'), para(context?.target_state_summary),
     h2('Business Goals'),
@@ -271,8 +273,13 @@ function sectionContext(context, anchors) {
     h2('Scope Out'),
     ...asArray(context?.scope_out).slice(0, 20).map((x) => bullet(x)),
     ...(scopeNote ? [h2('Scope Clarification'), para(scopeNote)] : []),
-    h2('Dependencies'),
-    ...asArray(context?.dependencies).slice(0, 20).map((x) => bullet(x)),
+    ...(clean(context?.scope_validation) ? [h2('Scope Validation'), para(context?.scope_validation)] : []),
+    h2('Assumptions'),
+    ...asArray(context?.assumptions).slice(0, 12).map((x) => bullet(x)),
+    h2('Constraints'),
+    ...asArray(context?.constraints).slice(0, 12).map((x) => bullet(x)),
+    h2('Compliance and Security Context'),
+    ...asArray(context?.compliance_security_summary).slice(0, 12).map((x) => bullet(x)),
     h2('Definitions and Acronyms'),
     new Table({
       width: { size: W, type: WidthType.DXA },
@@ -294,6 +301,7 @@ function sectionToc(anchors, dossiers) {
     { label: clean(anchors?.section_titles?.context || 'Introduction and Context'), anchor: 'sec_context' },
     { label: clean(anchors?.section_titles?.project_description || 'Project Description'), anchor: 'sec_project_description' },
     { label: clean(anchors?.section_titles?.general_requirements || 'General Requirements'), anchor: 'sec_general_requirements' },
+    { label: 'Process Flows', anchor: 'sec_process_flows' },
     { label: clean(anchors?.section_titles?.modules || 'Module Details'), anchor: 'sec_modules' },
     ...asArray(dossiers)
       .map((d) => ({
@@ -301,7 +309,10 @@ function sectionToc(anchors, dossiers) {
         anchor: `mod_${clean(d.module_id || d.heading_title)}`,
       }))
       .filter((x) => x.label),
-    { label: clean(anchors?.section_titles?.appendices || 'Appendices'), anchor: 'sec_appendices' },
+    { label: 'Requirements Traceability Matrix', anchor: 'sec_rtm' },
+    { label: 'Issue and Decision Log', anchor: 'sec_issue_log' },
+    { label: 'Appendices', anchor: 'sec_appendices' },
+    { label: 'Approval Sign-Off', anchor: 'sec_approval' },
   ].filter((x) => x.label);
   return [
     h1('Table of Contents', 'sec_toc'),
@@ -338,17 +349,15 @@ function sectionModuleInventory(registry, anchors) {
       width: { size: W, type: WidthType.DXA },
       rows: [
         new TableRow({ children: [
-          hCell(headers[0] || 'Module ID', 1100), hCell(headers[1] || 'Business Name', 2200), hCell(headers[2] || 'State Key', 1700),
-          hCell(headers[3] || 'Kind', 1400), hCell(headers[4] || 'Description', 2340), hCell(headers[5] || 'Confidence', 900), hCell(headers[6] || 'Source Forms', 1800),
+          hCell(headers[0] || 'Module ID', 1200), hCell(headers[1] || 'Business Name', 2500), hCell(headers[2] || 'Business Domain', 1600),
+          hCell(headers[3] || 'Description', 4140), hCell(headers[4] || 'Confidence', 1000),
         ] }),
         ...rows.map((m) => new TableRow({ children: [
-          cell(m.module_id, 1100),
-          cell(m.business_name, 2200),
-          cell(m.state_key_name, 1700),
-          cell(m.module_kind, 1400),
-          cell(m.short_description, 2340),
-          cell(String(m.confidence), 900, { align: AlignmentType.CENTER }),
-          cell(asArray(m.source_forms).join(', '), 1800),
+          cell(m.module_id, 1200),
+          cell(m.business_name, 2500),
+          cell(m.module_kind, 1600),
+          cell(m.short_description, 4140),
+          cell(String(m.confidence), 1000, { align: AlignmentType.CENTER }),
         ] })),
       ],
     }),
@@ -360,28 +369,126 @@ function sectionGeneral(general, anchors) {
   const list = (title, items) => [h2(title), ...asArray(items).slice(0, 25).map((x) => bullet(x))];
   return [
     h1(title, 'sec_general_requirements'),
+    ...list('Functional Requirements', general?.functional_requirements),
+    ...list('Non-Functional Requirements', general?.non_functional_requirements),
+    ...list('Compliance and Security Requirements', general?.compliance_requirements),
     ...list('Common Business Rules', general?.business_rules),
     ...list('Common Display Requirements', general?.display_requirements),
     ...list('Common Validations', general?.validations),
     ...list('Common Notifications', general?.notifications),
-    ...list('Common Navigation Rules', general?.navigation_rules),
-    ...list('Shared Integrations', general?.shared_integrations),
+    ...list('Business-Level Integration Considerations', general?.shared_integrations),
   ];
 }
 
-function moduleSection(dossier, anchors) {
+function sectionProcessMaps(processMaps) {
+  const rows = asArray(processMaps);
+  return [
+    h1('Process Flows', 'sec_process_flows'),
+    para('The following summaries describe the expected end-to-end workflow behavior for each in-scope module at business level.'),
+    ...rows.slice(0, 40).flatMap((pm) => ([
+      h2(pm.ref || 'Process Flow'),
+      para(pm.flow_summary || ''),
+      ...asArray(pm.flow_steps).slice(0, 8).map((x) => bullet(x)),
+    ])),
+  ];
+}
+
+function sectionRequirementsTraceability(dossiers) {
+  const rows = asArray(dossiers).flatMap((d) => {
+    const feature = asArray(d.features)[0];
+    const firstRule = asArray(d.business_rules)[0];
+    const firstAc = asArray(d.acceptance_criteria)[0];
+    return [{
+      module_id: clean(d.module_id),
+      module_name: clean(d.heading_title || d.module_id),
+      feature_id: clean(feature?.feature_id),
+      requirement: clean(feature?.description || d.business_purpose || d.narrative_overview),
+      rule_id: clean(firstRule?.rule_id),
+      ac_id: clean(firstAc?.ac_id),
+    }];
+  });
+  return [
+    h1('Requirements Traceability Matrix', 'sec_rtm'),
+    para('This matrix links business requirements to module scope, rule coverage, and acceptance criteria for delivery traceability.'),
+    new Table({
+      width: { size: W, type: WidthType.DXA },
+      rows: [
+        new TableRow({ children: [
+          hCell('Module', 1300), hCell('Business Capability', 2500), hCell('Feature ID', 1300),
+          hCell('Requirement Summary', 3500), hCell('Rule ID', 900), hCell('AC ID', 940),
+        ] }),
+        ...rows.map((r) => new TableRow({ children: [
+          cell(r.module_id, 1300),
+          cell(r.module_name, 2500),
+          cell(r.feature_id, 1300),
+          cell(r.requirement, 3500),
+          cell(r.rule_id || '—', 900),
+          cell(r.ac_id || '—', 940),
+        ] })),
+      ],
+    }),
+  ];
+}
+
+function sectionOpenIssues(appendices) {
+  const issues = asArray(appendices?.issue_log);
+  return [
+    h1('Issue and Decision Log', 'sec_issue_log'),
+    ...(issues.length
+      ? [new Table({
+        width: { size: W, type: WidthType.DXA },
+        rows: [
+          new TableRow({ children: [hCell('ID / Topic', 2200), hCell('Description', 5840), hCell('Owner', 1200), hCell('Status', 1200)] }),
+          ...issues.slice(0, 40).map((item, idx) => {
+            const parts = clean(item).split(':');
+            const topic = parts.length > 1 ? clean(parts.shift()) : `ISS-${String(idx + 1).padStart(3, '0')}`;
+            const desc = parts.length ? clean(parts.join(':')) : clean(item);
+            return new TableRow({ children: [
+              cell(topic, 2200),
+              cell(desc, 5840),
+              cell('TBD', 1200),
+              cell('Open', 1200),
+            ] });
+          }),
+        ],
+      })]
+      : [para('No open issues or decisions were captured for this BRD package.')]),
+  ];
+}
+
+function sectionApproval(meta) {
+  const approvers = asArray(meta?.approver_names);
+  return [
+    h1('Approval Sign-Off', 'sec_approval'),
+    para('The following stakeholders must review and approve this BRD before publication and build execution.'),
+    new Table({
+      width: { size: W, type: WidthType.DXA },
+      rows: [
+        new TableRow({ children: [hCell('Approver', 3200), hCell('Role', 2400), hCell('Approval Date', 2400), hCell('Status', 2440)] }),
+        ...approvers.map((name) => new TableRow({ children: [
+          cell(name, 3200),
+          cell('Approver', 2400),
+          cell('TBD', 2400),
+          cell('Pending', 2440),
+        ] })),
+      ],
+    }),
+  ];
+}
+
+function moduleSection(dossier, anchors, processMap) {
   const ruleHeaders = asArray(anchors?.table_headers?.business_rules);
   const displayHeaders = asArray(anchors?.table_headers?.display_requirements);
   const fieldHeaders = asArray(anchors?.table_headers?.field_definitions);
-  const storyHeaders = asArray(anchors?.table_headers?.user_stories);
   const acHeaders = asArray(anchors?.table_headers?.acceptance_criteria);
 
   const ruleRows = asArray(dossier.business_rules);
   const displayRows = asArray(dossier.display_requirements);
   const fieldRows = asArray(dossier.field_definitions);
-  const storyRows = asArray(dossier.user_stories);
   const acRows = asArray(dossier.acceptance_criteria);
   const featureRows = asArray(dossier.features);
+  const openQuestions = asArray(dossier.open_questions);
+  const blockers = asArray(dossier.blockers);
 
   return [
     h1(dossier.heading_title || dossier.module_id, `mod_${clean(dossier.module_id || dossier.heading_title)}`),
@@ -390,7 +497,11 @@ function moduleSection(dossier, anchors) {
     h2('Primary Users'), ...asArray(dossier.primary_users).slice(0, 10).map((x) => bullet(x)),
     h2('Preconditions'), ...asArray(dossier.preconditions).slice(0, 10).map((x) => bullet(x)),
     h2('Postconditions'), ...asArray(dossier.postconditions).slice(0, 10).map((x) => bullet(x)),
-    h2('Interactions'), ...asArray(dossier.interactions_with_other_modules).slice(0, 20).map((x) => bullet(x)),
+    ...(processMap ? [
+      h2('Process Flow Summary'),
+      para(processMap.flow_summary),
+      ...asArray(processMap.flow_steps).slice(0, 8).map((x) => bullet(x)),
+    ] : []),
 
     h3('Features'),
     new Table({
@@ -454,43 +565,18 @@ function moduleSection(dossier, anchors) {
       width: { size: W, type: WidthType.DXA },
       rows: [
         new TableRow({ children: [
-          hCell(fieldHeaders[0] || 'Feature ID', 1000),
-          hCell(fieldHeaders[1] || 'Field ID', 1000),
-          hCell(fieldHeaders[2] || 'Label', 1200),
-          hCell(fieldHeaders[3] || 'Business Meaning', 2200),
-          hCell(fieldHeaders[4] || 'Required', 800),
-          hCell(fieldHeaders[5] || 'Validation', 2000),
-          hCell(fieldHeaders[6] || 'Source', 2240),
+          hCell(fieldHeaders[0] || 'Feature ID', 1200),
+          hCell(fieldHeaders[1] || 'Field ID', 1200),
+          hCell(fieldHeaders[2] || 'Label', 1800),
+          hCell(fieldHeaders[3] || 'Business Meaning', 4640),
+          hCell(fieldHeaders[4] || 'Required', 1600),
         ] }),
         ...fieldRows.slice(0, 60).map((f) => new TableRow({ children: [
-          cell(f.feature_id, 1000),
-          cell(f.field_id, 1000),
-          cell(f.label, 1200),
-          cell(f.business_meaning, 2200),
-          cell(String(f.required ? 'Yes' : 'No'), 800, { align: AlignmentType.CENTER }),
-          cell(f.validation_rule, 2000),
-          cell(asArray(f.source_refs).join(', '), 2240),
-        ] })),
-      ],
-    }),
-
-    h3('User Stories'),
-    new Table({
-      width: { size: W, type: WidthType.DXA },
-      rows: [
-        new TableRow({ children: [
-          hCell(storyHeaders[0] || 'Feature ID', 1200),
-          hCell(storyHeaders[1] || 'Story ID', 1200),
-          hCell(storyHeaders[2] || 'As a', 1300),
-          hCell(storyHeaders[3] || 'I want', 2800),
-          hCell(storyHeaders[4] || 'So that', 3940),
-        ] }),
-        ...storyRows.slice(0, 20).map((s) => new TableRow({ children: [
-          cell(s.feature_id, 1200),
-          cell(s.story_id, 1200),
-          cell(s.as_a, 1300),
-          cell(s.i_want, 2800),
-          cell(s.so_that, 3940),
+          cell(f.feature_id, 1200),
+          cell(f.field_id, 1200),
+          cell(f.label, 1800),
+          cell(f.business_meaning, 4640),
+          cell(String(f.required ? 'Yes' : 'No'), 1600, { align: AlignmentType.CENTER }),
         ] })),
       ],
     }),
@@ -514,29 +600,33 @@ function moduleSection(dossier, anchors) {
       ],
     }),
 
-    h3('Dependencies'),
-    ...asArray(dossier.dependencies).slice(0, 20).map((x) => bullet(x)),
-    h3('Blockers'),
-    ...asArray(dossier.blockers).slice(0, 20).map((x) => bullet(x)),
-    h3('Assumptions'),
-    ...asArray(dossier.assumptions).slice(0, 20).map((x) => bullet(x)),
+    h3('Business Constraints'),
+    ...(blockers.length ? blockers.slice(0, 20).map((x) => bullet(x)) : [para('No explicit business blockers were captured for this module.')]),
     h3('Open Questions'),
-    ...asArray(dossier.open_questions).slice(0, 20).map((x) => bullet(x)),
+    ...(openQuestions.length
+      ? [new Table({
+        width: { size: W, type: WidthType.DXA },
+        rows: [
+          new TableRow({ children: [hCell('Question', 6840), hCell('Owner', 1800), hCell('Status', 1800)] }),
+          ...openQuestions.slice(0, 12).map((q) => new TableRow({ children: [
+            cell(q, 6840),
+            cell('TBD', 1800),
+            cell('Open', 1800),
+          ] })),
+        ],
+      })]
+      : [para('No open questions were captured for this module.')]),
     pb(),
   ];
 }
 
 function sectionAppendices(appendices, anchors) {
-  const title = clean(anchors?.section_titles?.appendices || 'Appendices');
-  const list = (title, arr) => [h2(title), ...asArray(arr).slice(0, 60).map((x) => bullet(x))];
+  const title = 'Appendices';
   const dataEntities = asArray(appendices?.data_entities);
   return [
     h1(title, 'sec_appendices'),
-    ...list('Other Code Files to Rewrite', appendices?.other_code_files_to_rewrite),
-    ...list('System Requirements', appendices?.system_requirements),
-    ...list('Software Requirements', appendices?.software_requirements),
-    ...list('Migration Notes', appendices?.migration_notes),
-    ...list('Illustration Inventory', appendices?.illustration_inventory),
+    h2('Dependencies and Integrations'),
+    ...asArray(appendices?.dependencies_and_integrations).slice(0, 20).map((x) => bullet(x)),
     h2('Data Entities'),
     ...(dataEntities.length
       ? [new Table({
@@ -562,7 +652,9 @@ async function generateBrdDoc(bundle, outputPath) {
   const registry = asArray(bundle?.brd_module_registry_v1);
   const dossiers = asArray(bundle?.brd_module_dossier_v1);
   const appendices = bundle?.brd_appendices_v1 || {};
+  const processMaps = asArray(bundle?.brd_process_map_v1);
   const anchors = resolveAnchorMap(bundle);
+  const processMapByModule = new Map(processMaps.map((pm) => [clean(pm.module_id), pm]));
 
   const doc = new Document({
     sections: [{
@@ -586,9 +678,13 @@ async function generateBrdDoc(bundle, outputPath) {
         h2('Current State'), para(context?.current_state_summary),
         h2('Target State'), para(context?.target_state_summary),
         ...sectionGeneral(general, anchors),
+        ...sectionProcessMaps(processMaps),
         h1(clean(anchors?.section_titles?.modules || 'Module Details'), 'sec_modules'),
-        ...dossiers.flatMap((d) => moduleSection(d, anchors)),
+        ...dossiers.flatMap((d) => moduleSection(d, anchors, processMapByModule.get(clean(d.module_id)))),
+        ...sectionRequirementsTraceability(dossiers),
+        ...sectionOpenIssues(appendices),
         ...sectionAppendices(appendices, anchors),
+        ...sectionApproval(meta),
       ],
     }],
   });

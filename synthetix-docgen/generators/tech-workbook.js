@@ -624,9 +624,28 @@ function buildFlowTraces(data) {
   const traceContent = [];
   const traces = data.form_traces || {};
   const seenTraceSignature = new Map();
+  const activeKeys = new Set(
+    (data.active_form_keys || [])
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const canonicalActive = new Set(
+    (data.mapped_forms || [])
+      .map((f) => String((f && (f.form || f.display_name)) || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
 
   for (const [formKey, formTraces] of Object.entries(traces)) {
     if (!formTraces || !formTraces.length) continue;
+    const shortKey = String(displayFormLabel(formKey || '') || formKey || '')
+      .replace(/\s*\[[^\]]+\]\s*$/g, '')
+      .replace(/\s+\(.*\)\s*$/g, '')
+      .trim()
+      .toLowerCase();
+    const rawKey = String(formKey || '').trim().toLowerCase();
+    if (activeKeys.size) {
+      if (!activeKeys.has(shortKey) && !activeKeys.has(rawKey) && !canonicalActive.has(rawKey)) continue;
+    }
 
     const fObj  = (data.mapped_forms || []).find(f =>
       f.form === formKey || f.form.replace(/^.*::/, '') === formKey || f.display_name === formKey
@@ -1266,16 +1285,17 @@ async function generateTechWb(data, outputPath) {
         ),
         sp(), projectTable, pb(),
 
-        h1('2. Form Technical Profile (K-Tech)'),
-        para('Canonical form profile grouped by active and orphan forms. This section is the single source of truth for form/file membership, source file, LOC, and evidence.'),
-        h2('Active Forms'),
-        sp(), activeProfileTable,
-        h2('Orphan Forms'),
-        sp(), orphanProfileTable,
-        h2('Static Forensics Addendum'),
+        h1('2. Static Forensics Addendum'),
+        para('Static forensics signals summarize code-only findings that support discovery, including source database clues, connection-string variants, dead-form references, global module state, and related static evidence.'),
         sp(), ...staticForensicsContent, pb(),
 
-        h1('3. Dependency Inventory'),
+        h1('3. Form and Dependency Inventory'),
+        h2('Active Forms'),
+        para('Active forms are the canonical in-scope form members associated with the resolved project set. Use this table as the authoritative form/file inventory for the technical workbook.'),
+        sp(), activeProfileTable, sp(),
+        h2('Orphan Forms'),
+        para('Orphan forms were discovered in the repository but are not active project members for the analyzed build. They are retained here for technical review only.'),
+        sp(), orphanProfileTable, sp(),
         h2('K-Tech Technical Matrix'),
         para('Technical matrix for active forms only: form type, ActiveX usage, DB tables, action count, and coverage/confidence.'),
         sp(), ktTable, sp(),
