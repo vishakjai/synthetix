@@ -87,6 +87,14 @@ class LLMClient:
             return {"max_completion_tokens": token_limit}
         return {"max_tokens": token_limit}
 
+    def _openai_sampling_kwargs(self) -> dict[str, Any]:
+        temperature = float(self.config.temperature)
+        if self._openai_model_supports_max_completion_tokens():
+            if abs(temperature - 1.0) < 1e-9:
+                return {"temperature": 1.0}
+            return {}
+        return {"temperature": temperature}
+
     def invoke(self, system_prompt: str, user_message: str) -> LLMResponse:
         """Send a message to the configured LLM and return structured response."""
         start_time = time.time()
@@ -216,7 +224,7 @@ class LLMClient:
         client = self._get_openai_client()
         response = client.chat.completions.create(
             model=self.config.get_model(),
-            temperature=self.config.temperature,
+            **self._openai_sampling_kwargs(),
             **self._openai_token_limit_kwargs(),
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -242,7 +250,7 @@ class LLMClient:
         client = self._get_openai_client()
         response = client.chat.completions.create(
             model=self.config.get_model(),
-            temperature=self.config.temperature,
+            **self._openai_sampling_kwargs(),
             **self._openai_token_limit_kwargs(),
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -294,7 +302,7 @@ class LLMClient:
         client = self._get_openai_client()
         stream = client.chat.completions.create(
             model=self.config.get_model(),
-            temperature=self.config.temperature,
+            **self._openai_sampling_kwargs(),
             **self._openai_token_limit_kwargs(),
             stream=True,
             messages=[
