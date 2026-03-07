@@ -672,6 +672,9 @@ class PipelineRunManager:
         integration = integration_context if isinstance(integration_context, dict) else {}
         project_state_mode = str(integration.get("project_state_mode", "auto")).strip().lower() or "auto"
         project_state_detected = str(integration.get("project_state_detected", "")).strip().lower()
+        scan_scope = integration.get("scan_scope", {}) if isinstance(integration.get("scan_scope", {}), dict) else {}
+        modernization_source_mode = str(scan_scope.get("modernization_source_mode", "manual")).strip().lower() or "manual"
+        evidence_mode = modernization_source_mode in {"evidence", "hybrid"}
         resolved_team_id = str(team_id or "").strip()
         stage_overrides = stage_agent_ids if isinstance(stage_agent_ids, dict) else {}
         has_stage_overrides = any(str(v or "").strip() for v in stage_overrides.values())
@@ -780,7 +783,22 @@ class PipelineRunManager:
         record.pipeline_state["health_assessment"] = {}
         record.pipeline_state["remediation_backlog"] = []
         record.pipeline_state["context_vault_ref"] = {}
-        record.pipeline_state["sil_discovery"] = {} if defer_execution else discover_repo_snapshot(ROOT)
+        imported_seed = _imported_analysis_response_payload(objectives, integration) if evidence_mode else {}
+        sil_discovery = _evidence_sil_discovery(imported_seed) if imported_seed else {}
+        if imported_seed:
+            discover_cache = integration.get("discover_cache", {}) if isinstance(integration.get("discover_cache", {}), dict) else {}
+            discover_cache["analyst_source"] = str(imported_seed.get("source", "imported_analysis"))
+            discover_cache["analyst_summary"] = (
+                imported_seed.get("analyst_brief", {}).get("summary", {})
+                if isinstance(imported_seed.get("analyst_brief", {}), dict)
+                else {}
+            )
+            integration["discover_cache"] = discover_cache
+            record.pipeline_state["legacy_compact_context"] = {
+                "inventory": imported_seed.get("legacy_code_inventory", {}) if isinstance(imported_seed.get("legacy_code_inventory", {}), dict) else {},
+                "legacy_skill_profile": imported_seed.get("legacy_skill_profile", {}) if isinstance(imported_seed.get("legacy_skill_profile", {}), dict) else {},
+            }
+        record.pipeline_state["sil_discovery"] = sil_discovery if sil_discovery else ({} if defer_execution else discover_repo_snapshot(ROOT))
         record.pipeline_state["run_context_bundle"] = run_context_bundle
         record.pipeline_state["workflow_state"] = "QUEUED" if defer_execution else "DISCOVERING"
         record.pipeline_state["discover_review"] = {
@@ -2416,6 +2434,158 @@ def _extract_integration_context(payload: dict[str, Any]) -> dict[str, Any]:
         if key not in context and key in payload:
             context[key] = copy.deepcopy(payload.get(key))
     return context
+
+
+def _imported_analysis_response_payload(objectives: str, integration_ctx: dict[str, Any]) -> dict[str, Any]:
+    integration_ctx = integration_ctx if isinstance(integration_ctx, dict) else {}
+    evidence_ctx = integration_ctx.get("evidence", {}) if isinstance(integration_ctx.get("evidence", {}), dict) else {}
+    evidence_source_mode = str(evidence_ctx.get("source_mode", "")).strip().lower()
+    evidence_bundle_id = str(evidence_ctx.get("bundle_id", "")).strip()
+    if evidence_source_mode not in {"evidence", "hybrid"} or not evidence_bundle_id:
+        return {}
+    bundle_payload = load_evidence_bundle(evidence_bundle_id)
+    if not bundle_payload:
+        return {}
+    normalized_artifacts = (
+        bundle_payload.get("normalized_artifacts", {})
+        if isinstance(bundle_payload.get("normalized_artifacts", {}), dict)
+        else {}
+    )
+    if not normalized_artifacts:
+        bundle_dir = Path(ROOT / "run_artifacts" / "evidence_bundles" / safe_name(evidence_bundle_id))
+        normalized_path = bundle_dir / "normalized_artifacts.json"
+        if normalized_path.exists():
+            try:
+                normalized_artifacts = _get_json(normalized_path.read_bytes())
+            except Exception:
+                normalized_artifacts = {}
+    coverage = (
+        normalized_artifacts.get("evidence_coverage_report_v1", {})
+        if isinstance(normalized_artifacts.get("evidence_coverage_report_v1", {}), dict)
+        else bundle_payload.get("evidence_coverage_report_v1", {})
+        if isinstance(bundle_payload.get("evidence_coverage_report_v1", {}), dict)
+        else {}
+    )
+    landscape = normalized_artifacts.get("repo_landscape_v1", {}) if isinstance(normalized_artifacts.get("repo_landscape_v1", {}), dict) else {}
+    components = normalized_artifacts.get("component_inventory_v1", {}) if isinstance(normalized_artifacts.get("component_inventory_v1", {}), dict) else {}
+    tracks = normalized_artifacts.get("modernization_track_plan_v1", {}) if isinstance(normalized_artifacts.get("modernization_track_plan_v1", {}), dict) else {}
+    component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
+    track_rows = tracks.get("tracks", []) if isinstance(tracks.get("tracks", []), list) else []
+    dimension_scores = coverage.get("dimensions", {}) if isinstance(coverage.get("dimensions", {}), dict) else {}
+    blockers = coverage.get("blockers", []) if isinstance(coverage.get("blockers", []), list) else []
+    analysis = {
+        "overview": (
+            str(objectives).strip()
+            or f"Imported analysis evidence describes {len(component_rows)} component(s) with architecture coverage {int(dimension_scores.get('architecture', 0) or 0)} and behavior coverage {int(dimension_scores.get('behavior', 0) or 0)}."
+        ),
+        "likely_capabilities": [str(row.get("title", "")).strip() for row in track_rows if str(row.get("title", "")).strip()][:8],
+        "input_output_contracts": [f"Coverage {key}: {int(value or 0)}" for key, value in dimension_scores.items()][:8],
+        "key_components": [str(row.get("name", "")).strip() for row in component_rows if str(row.get("name", "")).strip()][:12],
+        "interfaces": [str(row.get("title", "")).strip() for row in landscape.get("high_risk_signals", []) if isinstance(row, dict) and str(row.get("title", "")).strip()][:6],
+        "data_entities": [],
+        "domain_functions": [str(row.get("lane", "")).strip() for row in track_rows if str(row.get("lane", "")).strip()][:8],
+        "unknowns": [str(item).strip() for item in blockers if str(item).strip()][:8],
+        "evidence_files": [str(row.get("file_name", "")).strip() for row in bundle_payload.get("files", []) if isinstance(row, dict) and str(row.get("file_name", "")).strip()][:24],
+        "stats": {
+            "sampled_files": int(bundle_payload.get("file_count", 0) or 0),
+            "sampled_tree_entries": 0,
+            "route_hints": len(track_rows),
+        },
+        "evidence_mode": {
+            "provider": str(bundle_payload.get("provider_match_report_v1", {}).get("selected_provider", "")).strip(),
+            "coverage": coverage,
+        },
+    }
+    compatibility_fields = {
+        "project_name": str(normalized_artifacts.get("project_name", "")).strip() or "Imported VB6 system",
+        "analysis_walkthrough": normalized_artifacts.get("analysis_walkthrough", {}) if isinstance(normalized_artifacts.get("analysis_walkthrough", {}), dict) else {},
+        "context_reference": normalized_artifacts.get("context_reference", {}) if isinstance(normalized_artifacts.get("context_reference", {}), dict) else {},
+        "legacy_skill_profile": normalized_artifacts.get("legacy_skill_profile", {}) if isinstance(normalized_artifacts.get("legacy_skill_profile", {}), dict) else {},
+        "source_target_modernization_profile": normalized_artifacts.get("source_target_modernization_profile", {}) if isinstance(normalized_artifacts.get("source_target_modernization_profile", {}), dict) else {},
+        "legacy_code_inventory": normalized_artifacts.get("legacy_code_inventory", {}) if isinstance(normalized_artifacts.get("legacy_code_inventory", {}), dict) else {},
+        "vb6_analysis": normalized_artifacts.get("vb6_analysis", {}) if isinstance(normalized_artifacts.get("vb6_analysis", {}), dict) else {},
+        "open_questions": normalized_artifacts.get("open_questions", []) if isinstance(normalized_artifacts.get("open_questions", []), list) else blockers,
+        "quality_gates": normalized_artifacts.get("quality_gates", []) if isinstance(normalized_artifacts.get("quality_gates", []), list) else coverage.get("checks", []),
+    }
+    report_seed = {
+        "ok": True,
+        "source": "imported_analysis",
+        "repo": {"owner": "", "repository": "", "default_branch": "", "url": ""},
+        "analyst_brief": {"title": "Analyst functionality understanding", "summary": analysis},
+        "evidence_bundle_v1": bundle_payload,
+        "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
+        "evidence_coverage_report_v1": coverage,
+        **compatibility_fields,
+    }
+    raw_artifacts = build_raw_artifact_set_v1(report_seed)
+    if not isinstance(raw_artifacts, dict):
+        raw_artifacts = {}
+    raw_artifacts.update(normalized_artifacts)
+    report_seed["raw_artifacts"] = raw_artifacts
+    response_payload = {
+        "ok": True,
+        "source": "imported_analysis",
+        "repo": {"owner": "", "repository": "", "default_branch": "", "url": ""},
+        "analyst_brief": {"title": "Analyst functionality understanding", "summary": analysis},
+        **compatibility_fields,
+        "raw_artifacts": raw_artifacts,
+        "evidence_bundle_v1": bundle_payload,
+        "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
+        "evidence_coverage_report_v1": coverage,
+        "analyst_report_v2": build_analyst_report_v2(report_seed),
+    }
+    return response_payload
+
+
+def _evidence_sil_discovery(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or str(payload.get("source", "")).strip().lower() != "imported_analysis":
+        return {}
+    raw = payload.get("raw_artifacts", {}) if isinstance(payload.get("raw_artifacts", {}), dict) else {}
+    landscape = raw.get("repo_landscape_v1", {}) if isinstance(raw.get("repo_landscape_v1", {}), dict) else {}
+    components = raw.get("component_inventory_v1", {}) if isinstance(raw.get("component_inventory_v1", {}), dict) else {}
+    component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
+    language_counts = landscape.get("language_loc", {}) if isinstance(landscape.get("language_loc", {}), dict) else {}
+    file_counts = landscape.get("language_files", {}) if isinstance(landscape.get("language_files", {}), dict) else {}
+    modules = []
+    for idx, row in enumerate(component_rows[:160], start=1):
+        if not isinstance(row, dict):
+            continue
+        root_paths = row.get("root_paths", []) if isinstance(row.get("root_paths", []), list) else []
+        path = str(root_paths[0] if root_paths else row.get("name", f"component-{idx}")).strip()
+        if not path:
+            continue
+        modules.append({
+            "id": f"component:{safe_name(path)}",
+            "path": path,
+            "language": str(row.get("primary_language", "")).strip() or str(row.get("language", "")).strip(),
+            "adapter": str(row.get("component_type", "component")).strip() or "component",
+            "import_count": int(row.get("coupling_count", 0) or 0),
+            "route_count": 0,
+        })
+    scanned_files = int(sum(int(v or 0) for v in file_counts.values()) or 0)
+    return {
+        "repo_root": "imported_analysis",
+        "scanned_files": scanned_files,
+        "content_fingerprint": str(_as_dict_safe(payload.get("evidence_bundle_v1")).get("bundle_id", "")).strip(),
+        "language_counts": {str(k): int(v or 0) for k, v in language_counts.items() if str(k).strip()},
+        "file_samples": [str(x) for x in _as_list_safe(_as_dict_safe(payload.get("analyst_brief")).get("summary", {}).get("evidence_files"))][:220],
+        "endpoint_hints": [],
+        "static_analysis": {
+            "version": "evidence-import-v1",
+            "adapters": ["imported_analysis"],
+            "stats": {
+                "component_count": len(component_rows),
+                "architecture_coverage": int(_as_dict_safe(payload.get("evidence_coverage_report_v1")).get("dimensions", {}).get("architecture", 0) or 0),
+            },
+            "modules": modules,
+            "import_graph": {"edges": []},
+            "route_surface": [],
+            "config_artifacts": [],
+            "infra_resources": [],
+            "parse_errors": [],
+        },
+        "source_mode": "imported_analysis",
+    }
 
 
 def _http_json_request(
@@ -5854,119 +6024,9 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
     evidence_bundle_id = str(evidence_ctx.get("bundle_id", "")).strip()
 
     if evidence_source_mode in {"evidence", "hybrid"} and evidence_bundle_id:
-        bundle_payload = load_evidence_bundle(evidence_bundle_id)
-        if not bundle_payload:
+        response_payload = _imported_analysis_response_payload(objectives, integration_ctx)
+        if not response_payload:
             return JSONResponse({"ok": False, "error": "Evidence bundle could not be loaded. Re-upload the analysis outputs."}, status_code=400)
-        normalized_artifacts = (
-            bundle_payload.get("normalized_artifacts", {})
-            if isinstance(bundle_payload.get("normalized_artifacts", {}), dict)
-            else {}
-        )
-        if not normalized_artifacts:
-            bundle_dir = Path(ROOT / "run_artifacts" / "evidence_bundles" / safe_name(evidence_bundle_id))
-            normalized_path = bundle_dir / "normalized_artifacts.json"
-            if normalized_path.exists():
-                try:
-                    normalized_artifacts = _get_json(normalized_path.read_bytes())
-                except Exception:
-                    normalized_artifacts = {}
-        coverage = (
-            normalized_artifacts.get("evidence_coverage_report_v1", {})
-            if isinstance(normalized_artifacts.get("evidence_coverage_report_v1", {}), dict)
-            else bundle_payload.get("evidence_coverage_report_v1", {})
-            if isinstance(bundle_payload.get("evidence_coverage_report_v1", {}), dict)
-            else {}
-        )
-        landscape = normalized_artifacts.get("repo_landscape_v1", {}) if isinstance(normalized_artifacts.get("repo_landscape_v1", {}), dict) else {}
-        components = normalized_artifacts.get("component_inventory_v1", {}) if isinstance(normalized_artifacts.get("component_inventory_v1", {}), dict) else {}
-        tracks = normalized_artifacts.get("modernization_track_plan_v1", {}) if isinstance(normalized_artifacts.get("modernization_track_plan_v1", {}), dict) else {}
-        component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
-        track_rows = tracks.get("tracks", []) if isinstance(tracks.get("tracks", []), list) else []
-        dimension_scores = coverage.get("dimensions", {}) if isinstance(coverage.get("dimensions", {}), dict) else {}
-        blockers = coverage.get("blockers", []) if isinstance(coverage.get("blockers", []), list) else []
-        analysis = {
-            "overview": (
-                str(objectives).strip()
-                or f"Imported analysis evidence describes {len(component_rows)} component(s) with architecture coverage {int(dimension_scores.get('architecture', 0) or 0)} and behavior coverage {int(dimension_scores.get('behavior', 0) or 0)}."
-            ),
-            "likely_capabilities": [str(row.get("title", "")).strip() for row in track_rows if str(row.get("title", "")).strip()][:8],
-            "input_output_contracts": [f"Coverage {key}: {int(value or 0)}" for key, value in dimension_scores.items()][:8],
-            "key_components": [str(row.get("name", "")).strip() for row in component_rows if str(row.get("name", "")).strip()][:12],
-            "interfaces": [str(row.get("title", "")).strip() for row in landscape.get("high_risk_signals", []) if isinstance(row, dict) and str(row.get("title", "")).strip()][:6],
-            "data_entities": [],
-            "domain_functions": [str(row.get("lane", "")).strip() for row in track_rows if str(row.get("lane", "")).strip()][:8],
-            "unknowns": [str(item).strip() for item in blockers if str(item).strip()][:8],
-            "evidence_files": [str(row.get("file_name", "")).strip() for row in bundle_payload.get("files", []) if isinstance(row, dict) and str(row.get("file_name", "")).strip()][:24],
-            "stats": {
-                "sampled_files": int(bundle_payload.get("file_count", 0) or 0),
-                "sampled_tree_entries": 0,
-                "route_hints": len(track_rows),
-            },
-            "evidence_mode": {
-                "provider": str(bundle_payload.get("provider_match_report_v1", {}).get("selected_provider", "")).strip(),
-                "coverage": coverage,
-            },
-        }
-        compatibility_fields = {
-            "project_name": str(normalized_artifacts.get("project_name", "")).strip() or "Imported VB6 system",
-            "analysis_walkthrough": normalized_artifacts.get("analysis_walkthrough", {})
-            if isinstance(normalized_artifacts.get("analysis_walkthrough", {}), dict)
-            else {},
-            "context_reference": normalized_artifacts.get("context_reference", {})
-            if isinstance(normalized_artifacts.get("context_reference", {}), dict)
-            else {},
-            "legacy_skill_profile": normalized_artifacts.get("legacy_skill_profile", {})
-            if isinstance(normalized_artifacts.get("legacy_skill_profile", {}), dict)
-            else {},
-            "source_target_modernization_profile": normalized_artifacts.get("source_target_modernization_profile", {})
-            if isinstance(normalized_artifacts.get("source_target_modernization_profile", {}), dict)
-            else {},
-            "legacy_code_inventory": normalized_artifacts.get("legacy_code_inventory", {})
-            if isinstance(normalized_artifacts.get("legacy_code_inventory", {}), dict)
-            else {},
-            "vb6_analysis": normalized_artifacts.get("vb6_analysis", {})
-            if isinstance(normalized_artifacts.get("vb6_analysis", {}), dict)
-            else {},
-            "open_questions": normalized_artifacts.get("open_questions", [])
-            if isinstance(normalized_artifacts.get("open_questions", []), list)
-            else blockers,
-            "quality_gates": normalized_artifacts.get("quality_gates", [])
-            if isinstance(normalized_artifacts.get("quality_gates", []), list)
-            else coverage.get("checks", []),
-        }
-        report_seed = {
-            "ok": True,
-            "source": "imported_analysis",
-            "repo": {"owner": "", "repository": "", "default_branch": "", "url": ""},
-            "analyst_brief": {
-                "title": "Analyst functionality understanding",
-                "summary": analysis,
-            },
-            "evidence_bundle_v1": bundle_payload,
-            "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
-            "evidence_coverage_report_v1": coverage,
-            **compatibility_fields,
-        }
-        raw_artifacts = build_raw_artifact_set_v1(report_seed)
-        if not isinstance(raw_artifacts, dict):
-            raw_artifacts = {}
-        raw_artifacts.update(normalized_artifacts)
-        report_seed["raw_artifacts"] = raw_artifacts
-        response_payload = {
-            "ok": True,
-            "source": "imported_analysis",
-            "repo": {"owner": "", "repository": "", "default_branch": "", "url": ""},
-            "analyst_brief": {
-                "title": "Analyst functionality understanding",
-                "summary": analysis,
-            },
-            **compatibility_fields,
-            "raw_artifacts": raw_artifacts,
-            "evidence_bundle_v1": bundle_payload,
-            "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
-            "evidence_coverage_report_v1": coverage,
-            "analyst_report_v2": build_analyst_report_v2(report_seed),
-        }
         return JSONResponse(response_payload)
 
     if project_state_detected == "greenfield" and not repo_url and not legacy_code:
@@ -8801,6 +8861,15 @@ async def api_download_analyst_docgen_docx(request):
 
     pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
     analyst_output = _analyst_output_from_state(pipeline_state)
+    integration_context = pipeline_state.get("integration_context", {}) if isinstance(pipeline_state.get("integration_context", {}), dict) else {}
+    imported_seed = _imported_analysis_response_payload(
+        str(pipeline_state.get("business_objectives", "") or run.get("business_objectives", "")).strip(),
+        integration_context,
+    )
+    if imported_seed:
+        existing_inventory = analyst_output.get("legacy_code_inventory", {}) if isinstance(analyst_output.get("legacy_code_inventory", {}), dict) else {}
+        if not existing_inventory or str(analyst_output.get("source", "")).strip().lower() != "imported_analysis":
+            analyst_output = imported_seed
     if not isinstance(analyst_output, dict) or not analyst_output:
         return JSONResponse({"ok": False, "error": "analyst output not found for this run"}, status_code=404)
 
