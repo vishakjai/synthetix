@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Generator
@@ -584,31 +585,125 @@ class BaseAgent(ABC):
         return text
 
     @staticmethod
+    def _normalize_json_text(text: str) -> str:
+        replacements = {
+            "\u201c": '"',
+            "\u201d": '"',
+            "\u2018": "'",
+            "\u2019": "'",
+            "\u00a0": " ",
+            "\ufeff": "",
+        }
+        normalized = str(text or "")
+        for src, dst in replacements.items():
+            normalized = normalized.replace(src, dst)
+        return normalized.strip()
+
+    @staticmethod
+    def _quote_unquoted_keys(text: str) -> str:
+        return re.sub(r'([{\[,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)(\s*:)', r'\1"\2"\3', text)
+
+    @staticmethod
+    def _balanced_json_candidates(text: str) -> list[str]:
+        candidates: list[str] = []
+        stack: list[tuple[str, int]] = []
+        in_string = False
+        escape = False
+        string_char = ""
+        for idx, ch in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == string_char:
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                string_char = ch
+                continue
+            if ch in "{[":
+                stack.append((ch, idx))
+                continue
+            if ch in "}]":
+                if not stack:
+                    continue
+                open_ch, start = stack[-1]
+                if (open_ch == "{" and ch == "}") or (open_ch == "[" and ch == "]"):
+                    stack.pop()
+                    if not stack:
+                        candidate = text[start : idx + 1].strip()
+                        if candidate:
+                            candidates.append(candidate)
+                else:
+                    stack.clear()
+        return sorted(set(candidates), key=len, reverse=True)
+
+    @staticmethod
+    def _coerce_json_compatible(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): BaseAgent._coerce_json_compatible(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [BaseAgent._coerce_json_compatible(v) for v in value]
+        if isinstance(value, tuple):
+            return [BaseAgent._coerce_json_compatible(v) for v in value]
+        return value
+
+    @staticmethod
     def extract_json(text: str) -> dict[str, Any]:
         """Extract JSON from LLM response, handling markdown code blocks and common mistakes."""
 
         def _try_parse(candidate: str) -> dict[str, Any] | None:
-            """Attempt strict parse first, then sanitized parse."""
+            """Attempt increasingly tolerant parse strategies while staying deterministic."""
+            candidate = BaseAgent._normalize_json_text(candidate)
+            if not candidate:
+                return None
             try:
-                return json.loads(candidate)
+                parsed = json.loads(candidate)
+                if isinstance(parsed, str):
+                    return _try_parse(parsed)
+                return parsed if isinstance(parsed, dict) else None
+            except json.JSONDecodeError:
+                pass
+            sanitized = BaseAgent._sanitize_json(candidate)
+            try:
+                parsed = json.loads(sanitized)
+                if isinstance(parsed, str):
+                    return _try_parse(parsed)
+                return parsed if isinstance(parsed, dict) else None
+            except json.JSONDecodeError:
+                pass
+            quoted = BaseAgent._quote_unquoted_keys(sanitized)
+            try:
+                parsed = json.loads(quoted)
+                if isinstance(parsed, str):
+                    return _try_parse(parsed)
+                return parsed if isinstance(parsed, dict) else None
             except json.JSONDecodeError:
                 pass
             try:
-                return json.loads(BaseAgent._sanitize_json(candidate))
-            except json.JSONDecodeError:
-                return None
+                literal = ast.literal_eval(quoted)
+            except Exception:
+                literal = None
+            if isinstance(literal, str):
+                return _try_parse(literal)
+            if isinstance(literal, dict):
+                coerced = BaseAgent._coerce_json_compatible(literal)
+                return coerced if isinstance(coerced, dict) else None
+            return None
 
-        # 1. Try JSON in ```json ... ``` code blocks
-        json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-        if json_match:
-            result = _try_parse(json_match.group(1).strip())
+        text = BaseAgent._normalize_json_text(text)
+
+        # 1. Try JSON in fenced code blocks
+        for candidate in re.findall(r"```(?:json|javascript|js|python)?\s*\n?(.*?)\n?```", text, re.DOTALL | re.IGNORECASE):
+            result = _try_parse(candidate.strip())
             if result is not None:
                 return result
 
-        # 2. Try raw JSON object (outermost braces)
-        brace_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if brace_match:
-            result = _try_parse(brace_match.group(0))
+        # 2. Try balanced JSON-like segments instead of a greedy regex slice
+        for candidate in BaseAgent._balanced_json_candidates(text):
+            result = _try_parse(candidate)
             if result is not None:
                 return result
 
