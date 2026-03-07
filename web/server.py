@@ -5857,14 +5857,19 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         bundle_payload = load_evidence_bundle(evidence_bundle_id)
         if not bundle_payload:
             return JSONResponse({"ok": False, "error": "Evidence bundle could not be loaded. Re-upload the analysis outputs."}, status_code=400)
-        bundle_dir = Path(ROOT / "run_artifacts" / "evidence_bundles" / safe_name(evidence_bundle_id))
-        normalized_path = bundle_dir / "normalized_artifacts.json"
-        normalized_artifacts: dict[str, Any] = {}
-        if normalized_path.exists():
-            try:
-                normalized_artifacts = _get_json(normalized_path.read_bytes())
-            except Exception:
-                normalized_artifacts = {}
+        normalized_artifacts = (
+            bundle_payload.get("normalized_artifacts", {})
+            if isinstance(bundle_payload.get("normalized_artifacts", {}), dict)
+            else {}
+        )
+        if not normalized_artifacts:
+            bundle_dir = Path(ROOT / "run_artifacts" / "evidence_bundles" / safe_name(evidence_bundle_id))
+            normalized_path = bundle_dir / "normalized_artifacts.json"
+            if normalized_path.exists():
+                try:
+                    normalized_artifacts = _get_json(normalized_path.read_bytes())
+                except Exception:
+                    normalized_artifacts = {}
         coverage = (
             normalized_artifacts.get("evidence_coverage_report_v1", {})
             if isinstance(normalized_artifacts.get("evidence_coverage_report_v1", {}), dict)

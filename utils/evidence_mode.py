@@ -12,12 +12,26 @@ from uuid import uuid4
 
 from providers.registry import get_provider, probe_all, select_best_match
 from providers.types import EvidenceBundle, EvidenceFileRef
+try:
+    from google.cloud import storage  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    storage = None
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_BUNDLE_ROOT = ROOT / "run_artifacts" / "evidence_bundles"
 EVIDENCE_BUNDLE_ROOT.mkdir(parents=True, exist_ok=True)
 EVIDENCE_BUNDLE_MAX_BYTES = 80 * 1024 * 1024
 EVIDENCE_ALLOWED_SUFFIXES = {".pdf", ".csv", ".json", ".html", ".htm", ".txt", ".zip"}
+EVIDENCE_BUNDLE_GCS_BUCKET = str(
+    os.getenv("EVIDENCE_BUNDLE_GCS_BUCKET")
+    or os.getenv("RUN_STORE_GCS_BUCKET")
+    or os.getenv("SYNTHETIX_RUN_STORE_BUCKET")
+    or ""
+).strip()
+EVIDENCE_BUNDLE_GCS_PREFIX = str(
+    os.getenv("EVIDENCE_BUNDLE_GCS_PREFIX")
+    or "evidence_bundles"
+).strip("/ ") or "evidence_bundles"
 
 
 def _safe_name(value: str) -> str:
@@ -46,6 +60,44 @@ def _manifest_path(bundle_id: str) -> Path:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str), encoding="utf-8")
+
+
+def _bundle_blob_path(bundle_id: str, filename: str) -> str:
+    return f"{EVIDENCE_BUNDLE_GCS_PREFIX}/{_safe_name(bundle_id)}/{filename}"
+
+
+def _bundle_bucket():
+    if not EVIDENCE_BUNDLE_GCS_BUCKET or storage is None:
+        return None
+    try:
+        return storage.Client().bucket(EVIDENCE_BUNDLE_GCS_BUCKET)
+    except Exception:
+        return None
+
+
+def _write_bundle_blob(path: str, payload: bytes, content_type: str = "application/octet-stream") -> str | None:
+    bucket = _bundle_bucket()
+    if bucket is None:
+        return None
+    try:
+        blob = bucket.blob(path)
+        blob.upload_from_string(payload, content_type=content_type)
+        return path
+    except Exception:
+        return None
+
+
+def _read_bundle_blob_text(path: str) -> str | None:
+    bucket = _bundle_bucket()
+    if bucket is None:
+        return None
+    try:
+        blob = bucket.blob(path)
+        if not blob.exists():
+            return None
+        return blob.download_as_text()
+    except Exception:
+        return None
 
 
 def create_evidence_bundle(files: list[dict[str, Any]]) -> dict[str, Any]:
@@ -93,6 +145,9 @@ def create_evidence_bundle(files: list[dict[str, Any]]) -> dict[str, Any]:
             "sha256": sha,
             "size_bytes": len(blob),
         }
+        gcs_blob_path = _write_bundle_blob(_bundle_blob_path(bundle_id, f"files/{stored.name}"), bytes(blob), content_type=mime_type)
+        if gcs_blob_path:
+            record["blob_path"] = gcs_blob_path
         manifest_files.append(record)
         file_refs.append(EvidenceFileRef(**{k: record[k] for k in ["file_id", "file_name", "storage_path", "mime_type", "sha256", "size_bytes"]}))
 
@@ -132,8 +187,43 @@ def create_evidence_bundle(files: list[dict[str, Any]]) -> dict[str, Any]:
     bundle_payload["provider_match_report_v1"] = match
     bundle_payload["tool_extraction_v1"] = extraction.get("meta", {})
     bundle_payload["normalized_artifacts_ref"] = str(bundle_dir / "normalized_artifacts.json")
+    bundle_payload["normalized_artifacts"] = normalized
     bundle_payload["evidence_coverage_report_v1"] = coverage
     _write_json(_manifest_path(bundle_id), bundle_payload)
+    _write_bundle_blob(
+        _bundle_blob_path(bundle_id, "provider_match_report_v1.json"),
+        json.dumps(match, indent=2, ensure_ascii=True, default=str).encode("utf-8"),
+        content_type="application/json",
+    )
+    _write_bundle_blob(
+        _bundle_blob_path(bundle_id, "tool_extraction_v1.json"),
+        json.dumps(extraction, indent=2, ensure_ascii=True, default=str).encode("utf-8"),
+        content_type="application/json",
+    )
+    _write_bundle_blob(
+        _bundle_blob_path(bundle_id, "normalized_artifacts.json"),
+        json.dumps(normalized, indent=2, ensure_ascii=True, default=str).encode("utf-8"),
+        content_type="application/json",
+    )
+    if coverage:
+        _write_bundle_blob(
+            _bundle_blob_path(bundle_id, "evidence_coverage_report_v1.json"),
+            json.dumps(coverage, indent=2, ensure_ascii=True, default=str).encode("utf-8"),
+            content_type="application/json",
+        )
+    manifest_blob_path = _write_bundle_blob(
+        _bundle_blob_path(bundle_id, "evidence_bundle_v1.json"),
+        json.dumps(bundle_payload, indent=2, ensure_ascii=True, default=str).encode("utf-8"),
+        content_type="application/json",
+    )
+    if manifest_blob_path:
+        bundle_payload["manifest_blob_path"] = manifest_blob_path
+        _write_json(_manifest_path(bundle_id), bundle_payload)
+        _write_bundle_blob(
+            _bundle_blob_path(bundle_id, "evidence_bundle_v1.json"),
+            json.dumps(bundle_payload, indent=2, ensure_ascii=True, default=str).encode("utf-8"),
+            content_type="application/json",
+        )
     return {
         "evidence_bundle_v1": bundle_payload,
         "provider_match_report_v1": match,
@@ -172,6 +262,9 @@ def _expand_zip(bundle_id: str, zip_name: str, blob: bytes, files_dir: Path) -> 
                 "sha256": sha,
                 "size_bytes": len(content),
             }
+            gcs_blob_path = _write_bundle_blob(_bundle_blob_path(bundle_id, f"files/{stored.name}"), content, content_type=mime_type)
+            if gcs_blob_path:
+                record["blob_path"] = gcs_blob_path
             manifest_files.append(record)
             file_refs.append(EvidenceFileRef(**{k: record[k] for k in ["file_id", "file_name", "storage_path", "mime_type", "sha256", "size_bytes"]}))
     return {"manifest_files": manifest_files, "file_refs": file_refs, "errors": errors}
@@ -179,9 +272,15 @@ def _expand_zip(bundle_id: str, zip_name: str, blob: bytes, files_dir: Path) -> 
 
 def load_evidence_bundle(bundle_id: str) -> dict[str, Any] | None:
     path = _manifest_path(bundle_id)
-    if not path.exists():
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    blob_text = _read_bundle_blob_text(_bundle_blob_path(bundle_id, "evidence_bundle_v1.json"))
+    if not blob_text:
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(blob_text)
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
 def load_bundle_for_provider(bundle_id: str) -> EvidenceBundle:
