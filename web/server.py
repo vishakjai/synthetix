@@ -1717,7 +1717,7 @@ class PipelineRunManager:
                 continue
 
     def subscribe(self, run_id: str) -> tuple[str, queue.Queue] | None:
-        record = self._get_record(run_id)
+        record = self._hydrate_record(run_id) or self._get_record(run_id)
         if not record or record.status != "running":
             return None
         sub_id = uuid.uuid4().hex
@@ -1746,10 +1746,10 @@ class PipelineRunManager:
         thread.start()
 
     def approve(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
-            record = self._records.get(run_id)
+        record = self._hydrate_record(run_id)
         if not record:
-            record = self._hydrate_record(run_id)
+            with self._lock:
+                record = self._records.get(run_id)
 
         if not record:
             return {"ok": False, "error": "run not found or no longer active"}
@@ -1946,7 +1946,80 @@ class PipelineRunManager:
 
         with self._lock:
             existing = self._records.get(run_id)
+            if existing and existing.thread and existing.thread.is_alive():
+                return existing
             if existing:
+                persisted_updated = _parse_iso_dt(meta.get("updated_at") or state_payload.get("saved_at"))
+                local_updated = _parse_iso_dt(existing.updated_at)
+                persisted_status = str(state_payload.get("pipeline_status", existing.status)).strip() or existing.status
+                persisted_logs = (
+                    len(state_payload.get("progress_logs", []))
+                    if isinstance(state_payload.get("progress_logs", []), list)
+                    else 0
+                )
+                should_refresh = (
+                    persisted_status != existing.status
+                    or persisted_logs != len(existing.progress_logs)
+                    or (persisted_updated and (not local_updated or persisted_updated > local_updated))
+                )
+                if not should_refresh:
+                    return existing
+
+                existing.objectives = str(meta.get("business_objectives", "")).strip() or str(pipeline_state.get("business_objectives", "")).strip()
+                existing.use_case = str(pipeline_state.get("use_case", "business_objectives"))
+                existing.legacy_code = str(pipeline_state.get("legacy_code", ""))
+                existing.modernization_language = str(pipeline_state.get("modernization_language", ""))
+                existing.database_source = str(pipeline_state.get("database_source", ""))
+                existing.database_target = str(pipeline_state.get("database_target", ""))
+                existing.database_schema = str(pipeline_state.get("database_schema", ""))
+                existing.deployment_target = str(pipeline_state.get("deployment_target", "local"))
+                existing.cloud_config = (
+                    copy.deepcopy(pipeline_state.get("cloud_config", {}))
+                    if isinstance(pipeline_state.get("cloud_config", {}), dict)
+                    else {}
+                )
+                existing.integration_context = (
+                    copy.deepcopy(pipeline_state.get("integration_context", {}))
+                    if isinstance(pipeline_state.get("integration_context", {}), dict)
+                    else {}
+                )
+                existing.project_state_mode = str(pipeline_state.get("project_state_mode", "auto"))
+                existing.project_state_detected = str(pipeline_state.get("project_state_detected", ""))
+                existing.human_approval = bool(pipeline_state.get("human_approval", False))
+                existing.strict_security_mode = bool(pipeline_state.get("strict_security_mode", False))
+                existing.team_id = str(pipeline_state.get("team_id", ""))
+                existing.team_name = str(pipeline_state.get("team_name", ""))
+                existing.stage_agent_ids = (
+                    copy.deepcopy(pipeline_state.get("stage_agent_ids", {}))
+                    if isinstance(pipeline_state.get("stage_agent_ids", {}), dict)
+                    else {}
+                )
+                existing.agent_personas = (
+                    copy.deepcopy(pipeline_state.get("agent_personas", {}))
+                    if isinstance(pipeline_state.get("agent_personas", {}), dict)
+                    else {}
+                )
+                existing.status = str(state_payload.get("pipeline_status", "completed"))
+                existing.created_at = str(meta.get("created_at", ""))
+                existing.updated_at = str(meta.get("updated_at", ""))
+                existing.current_stage = max(stage_status.keys(), default=0)
+                existing.stage_status = stage_status
+                existing.progress_logs = (
+                    list(state_payload.get("progress_logs", []))
+                    if isinstance(state_payload.get("progress_logs", []), list)
+                    else []
+                )
+                existing.pipeline_state = pipeline_state
+                existing.error_message = str(state_payload.get("error_message", "") or "")
+                existing.retry_count = self._to_int(pipeline_state.get("retry_count", 0), 0)
+                existing.next_stage_idx = self._to_int(pipeline_state.get("next_stage_idx", 0), 0)
+                existing.pending_approval = (
+                    copy.deepcopy(pipeline_state.get("pending_approval", None))
+                    if isinstance(pipeline_state.get("pending_approval", None), dict)
+                    else None
+                )
+                if existing.next_stage_idx <= 0:
+                    existing.next_stage_idx = max(0, existing.current_stage)
                 return existing
 
         record = RunRecord(
@@ -2002,7 +2075,7 @@ class PipelineRunManager:
         return record
 
     def pause(self, run_id: str) -> dict[str, Any]:
-        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        record = self._hydrate_record(run_id) or self._get_record(run_id)
         if not record:
             return {"ok": False, "error": "run not found"}
         if record.status == "paused":
@@ -2020,7 +2093,7 @@ class PipelineRunManager:
         return {"ok": True, "status": "paused", "run_id": run_id}
 
     def resume(self, run_id: str) -> dict[str, Any]:
-        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        record = self._hydrate_record(run_id) or self._get_record(run_id)
         if not record:
             return {"ok": False, "error": "run not found"}
         if record.status == "running":
@@ -2044,7 +2117,7 @@ class PipelineRunManager:
         return {"ok": True, "status": "running", "run_id": run_id}
 
     def abort(self, run_id: str, reason: str = "") -> dict[str, Any]:
-        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        record = self._hydrate_record(run_id) or self._get_record(run_id)
         if not record:
             return {"ok": False, "error": "run not found"}
         if record.status == "aborted":
@@ -2072,7 +2145,7 @@ class PipelineRunManager:
     def rerun_stage(self, run_id: str, stage: int) -> dict[str, Any]:
         if stage < 1 or stage > TOTAL_STAGES:
             return {"ok": False, "error": f"stage must be between 1 and {TOTAL_STAGES}"}
-        record = self._get_record(run_id) or self._hydrate_record(run_id)
+        record = self._hydrate_record(run_id) or self._get_record(run_id)
         if not record:
             return {"ok": False, "error": "run not found"}
         if record.status == "running":
@@ -2162,7 +2235,7 @@ class PipelineRunManager:
             return self._records.get(run_id)
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
-        record = self._get_record(run_id)
+        record = self._hydrate_record(run_id) or self._get_record(run_id)
         if record:
             return self._record_payload(record)
 
@@ -6781,6 +6854,16 @@ def _local_worker_fallback(run_id: str) -> None:
         MANAGER.launch_deferred_run(run_id)
     except Exception:
         pass
+
+
+def _parse_iso_dt(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 def _enqueue_run_worker_task(run_id: str) -> tuple[bool, str]:
