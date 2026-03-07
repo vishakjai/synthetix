@@ -147,6 +147,8 @@ RUN_CONTEXT_ARTIFACT_ROOT = ROOT / "run_artifacts"
 ASYNC_RUN_QUEUE_ENABLED = str(os.getenv("ASYNC_RUN_QUEUE_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 RUN_WORKER_TOKEN = str(os.getenv("RUN_WORKER_TOKEN", "")).strip()
 RUN_WORKER_URL = str(os.getenv("RUN_WORKER_URL", "")).strip()
+RUN_QUEUED_RESCUE_SEC = max(10, int(os.getenv("RUN_QUEUED_RESCUE_SEC", "25") or 25))
+RUN_QUEUED_RESCUE_COOLDOWN_SEC = max(10, int(os.getenv("RUN_QUEUED_RESCUE_COOLDOWN_SEC", "60") or 60))
 RUN_TASK_QUEUE_PATH = str(os.getenv("RUN_TASK_QUEUE_PATH", "")).strip()
 RUN_STALE_RESUME_SEC = max(60, int(os.getenv("RUN_STALE_RESUME_SEC", "300") or 300))
 REPO_SCAN_MAX_FILES = max(24, int(os.getenv("REPO_SCAN_MAX_FILES", "220") or 220))
@@ -2251,6 +2253,7 @@ class PipelineRunManager:
         persisted = self.store.load_run(run_id)
         if not persisted:
             return None
+        _maybe_rescue_queued_run(run_id, persisted)
         status = persisted.get("pipeline_status", "unknown")
         stage_status_raw = persisted.get("stage_status", {})
         stage_status = {
@@ -6875,6 +6878,44 @@ def _parse_iso_dt(value: Any) -> datetime | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _dispatch_worker_direct(run_id: str) -> None:
+    rid = str(run_id or "").strip()
+    if not rid or not RUN_WORKER_URL:
+        return
+    headers = {"Content-Type": "application/json"}
+    if RUN_WORKER_TOKEN:
+        headers["X-Run-Worker-Token"] = RUN_WORKER_TOKEN
+    body = json.dumps({"run_id": rid}).encode("utf-8")
+    request = Request(RUN_WORKER_URL, data=body, headers=headers, method="POST")
+    with urlopen(request, timeout=30):
+        return
+
+
+def _maybe_rescue_queued_run(run_id: str, persisted: dict[str, Any]) -> None:
+    status = str(persisted.get("pipeline_status", "")).strip().lower()
+    if status != "queued":
+        return
+    now = datetime.now(timezone.utc)
+    saved_at = _parse_iso_dt(persisted.get("saved_at"))
+    if not saved_at or (now - saved_at.astimezone(timezone.utc)).total_seconds() < RUN_QUEUED_RESCUE_SEC:
+        return
+    pipeline_state = persisted.get("pipeline_state", {}) if isinstance(persisted.get("pipeline_state", {}), dict) else {}
+    rescue_at = _parse_iso_dt(pipeline_state.get("queue_dispatch_requested_at"))
+    if rescue_at and (now - rescue_at.astimezone(timezone.utc)).total_seconds() < RUN_QUEUED_RESCUE_COOLDOWN_SEC:
+        return
+    if hasattr(RUN_STORE, "mark_queue_dispatch_attempt"):
+        try:
+            RUN_STORE.mark_queue_dispatch_attempt(run_id, "api_rescue")
+        except Exception:
+            pass
+    threading.Thread(
+        target=_dispatch_worker_direct,
+        args=(run_id,),
+        daemon=True,
+        name=f"run-worker-rescue-{run_id}",
+    ).start()
 
 
 def _current_stage_from_status_map(stage_status: dict[int, str], pipeline_state: dict[str, Any] | None = None) -> int:

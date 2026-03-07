@@ -236,6 +236,9 @@ class PipelineRunStore:
         logs = state.get("progress_logs", []) if isinstance(state.get("progress_logs", []), list) else []
         return _tail_logs(logs, limit=limit)
 
+    def mark_queue_dispatch_attempt(self, run_id: str, channel: str) -> None:
+        return None
+
 
 class GcsPipelineRunStore:
     """GCS-backed run history shared across Cloud Run instances."""
@@ -406,6 +409,9 @@ class GcsPipelineRunStore:
         state = self.load_run(run_id) or {}
         logs = state.get("progress_logs", []) if isinstance(state.get("progress_logs", []), list) else []
         return _tail_logs(logs, limit=limit)
+
+    def mark_queue_dispatch_attempt(self, run_id: str, channel: str) -> None:
+        return None
 
 
 class FirestorePipelineRunStore:
@@ -627,6 +633,19 @@ class FirestorePipelineRunStore:
         state = self.load_run(run_id) or {}
         logs = state.get("progress_logs", []) if isinstance(state.get("progress_logs", []), list) else []
         return _tail_logs(logs, limit=limit)
+
+    def mark_queue_dispatch_attempt(self, run_id: str, channel: str) -> None:
+        now = _utc_now_iso()
+        self._doc(run_id).set(
+            {
+                "updated_at": now,
+                "state": {
+                    "queue_dispatch_requested_at": now,
+                    "queue_dispatch_channel": str(channel or "direct"),
+                },
+            },
+            merge=True,
+        )
 
 
 def build_pipeline_run_store(root_dir: str) -> PipelineRunStore | GcsPipelineRunStore | FirestorePipelineRunStore:
