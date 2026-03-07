@@ -317,7 +317,7 @@ function buildExecSnapshot(data) {
   const avgScore = scores.length ? Math.round(scores.reduce((a,b) => a+b, 0) / scores.length) : 0;
 
   const numProjects = data.projects.length;
-  const numForms    = data.active_q.length;
+  const numForms    = (data.mapped_forms || []).length || data.active_q.length;
 
   // Risk level derived from risks data
   const highRisks = (data.risks || []).filter(r => (r.severity||'').toLowerCase() === 'high').length;
@@ -464,6 +464,7 @@ function buildFormInventory(data) {
   });
 
   // K1 — excluded forms (deduplicated)
+  const excludedOrUnresolved = (data.excluded_or_unresolved_unique || data.excluded_unique || []);
   const k1Table = new Table({
     width: { size: W, type: WidthType.DXA },
     columnWidths: [2200, 1100, 4740, 2400],
@@ -472,16 +473,16 @@ function buildFormInventory(data) {
         hCell('File Name', 2200, C.DGREY), hCell('Type', 1100, C.DGREY),
         hCell('Found in Variants', 4740, C.DGREY), hCell('Status', 2400, C.DGREY),
       ]}),
-      ...(data.excluded_unique || []).map(e => new TableRow({ children: [
+      ...excludedOrUnresolved.map(e => new TableRow({ children: [
         cell(e.name, 2200, { bold: true }),
         cell(e.type, 1100, { fill: C.GREY, color: C.DGREY, align: AlignmentType.CENTER }),
         cell((e.projects || []).map(displayProjectLabel).join(', '), 4740),
-        cell('Excluded — not active .vbp member', 2400, { fill: C.LAMB, color: C.AMBR }),
+        cell(e.status || 'Excluded / unresolved', 2400, { fill: C.LAMB, color: C.AMBR }),
       ]})),
     ],
   });
 
-  const numExcluded = (data.excluded_unique || []).length;
+  const numExcluded = excludedOrUnresolved.length;
   const numExcludedEntries = (data.excluded_forms || []).length;
 
   return { kTable, k1Table, numExcluded, numExcludedEntries };
@@ -777,6 +778,7 @@ function buildSprintMap(data) {
 
 // ── Section 6: Risk Register ──────────────────────────────────────────────
 function buildRiskRegister(data) {
+  const orphanKeys = new Set((data.orphan_form_keys || []).map((v) => String(v || '').toLowerCase()));
   const baRiskFormLabel = (risk) => {
     const raw = String((risk && (risk.form_display || risk.form)) || '').trim();
     const low = raw.toLowerCase();
@@ -801,7 +803,15 @@ function buildRiskRegister(data) {
         hCell('Form', 1800, C.RED), hCell('Description', 4640, C.RED),
         hCell('Recommended Action', 2100, C.RED),
       ]}),
-      ...(data.risks || []).map(r => {
+      ...(data.risks || [])
+        .filter((r) => {
+          const raw = String((r && (r.form_display || r.form)) || '').trim();
+          const key = shortFormKey(raw);
+          if (!key) return true;
+          if (orphanKeys.has(key) && !/\[excluded\]|shared module|unattributed sql|project-wide/i.test(raw)) return false;
+          return true;
+        })
+        .map(r => {
         const sev  = (r.severity || '').toLowerCase();
         const fill  = sev === 'high' ? C.LRED : sev === 'medium' ? C.LAMB : C.GREY;
         const color = sev === 'high' ? C.RED  : sev === 'medium' ? C.AMBR : C.GREEN;
@@ -811,7 +821,7 @@ function buildRiskRegister(data) {
           cell(baRiskFormLabel(r), 1800, { sz: 16, color: C.DGREY }),
           cell(r.description, 4640),
           cell(r.action, 2100, { sz: 16 }),
-        ]});
+      ]});
       }),
     ],
   });
@@ -873,7 +883,7 @@ async function generateBaBrief(data, outputPath) {
         para(`${numForms} active forms across ${numProjects} project variants. Inputs show the data fields a user enters. Outputs describe the business effect when the form action completes.`),
         sp(), kTable, sp(),
         h2('K1 — Excluded / Unresolved Forms'),
-        para(`${numExcluded} unique form files discovered on disk but not listed as active members in the .vbp project files. They appear across ${numExcludedEntries} variant project entries. Out of scope until variant and authentication decisions are confirmed.`),
+        para(`${numExcluded} excluded or unresolved form files are listed here for completeness only. These items are not treated as first-class business scope in the BRD/BA package. They appear across ${numExcludedEntries} variant project entries where applicable.`),
         sp(), k1Table, pb(),
 
         h1('3. Business Rules by Form'),
@@ -881,7 +891,7 @@ async function generateBaBrief(data, outputPath) {
         sp(), ...ruleContent, pb(),
 
         h1('4. Traceability Coverage'),
-        para('Each form is scored across four dimensions: event map, SQL map, business rules, and risk register linkage. Score of 100 = fully covered. Score of 0 = discovery work required before sprint assignment.'),
+        para('Each active form is scored across four dimensions: event map, SQL map, business rules, and risk register linkage. Score of 100 = fully covered. Score of 0 indicates no extracted traceability evidence for the current run; it should be reviewed as a coverage gap, not automatically interpreted as proof that the business flow does not exist.'),
         sp(), coverageTable, sp(), qTable, pb(),
 
         h1('5. Sprint Dependency Map'),

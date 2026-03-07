@@ -2719,12 +2719,12 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 _as_int(loc_summary.get("designer_loc_total"), 0),
             )
         )
-        lines.append("| Form ID | Form | Base form | Project | Source file | LOC | In VBP | Active/Orphan | Confidence |")
-        lines.append("|---|---|---|---|---|---:|---|---|---:|")
+        lines.append("| Form ID | Form | Base form | Project | Source file | LOC | In VBP | Active/Orphan | Confidence | Evidence |")
+        lines.append("|---|---|---|---|---|---:|---|---|---:|---|")
         for row in form_loc_rows[:2000]:
             r = _as_dict(row)
             lines.append(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                     _escape_pipe(r.get("form_id") or "n/a"),
                     _escape_pipe(r.get("form") or "n/a"),
                     _escape_pipe(r.get("base_form") or "n/a"),
@@ -2734,6 +2734,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                     "yes" if bool(r.get("in_vbp")) else "no",
                     _escape_pipe(r.get("active_or_orphan") or "n/a"),
                     "{:.2f}".format(_as_float(r.get("confidence"), 0.0)),
+                    _escape_pipe(f"{_clean(r.get('form_id') or 'n/a')} | conf {_as_float(r.get('confidence'), 0.0):.2f}"),
                 )
             )
     else:
@@ -2898,6 +2899,70 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             )
     else:
         lines.append("- No static detector findings were emitted.")
+
+    lines.extend(["", "### Y1. Raw UI Control Inventory"])
+    control_rows: list[dict[str, str]] = []
+    seen_control_rows: set[str] = set()
+    for dossier in raw_form_dossiers[:2000]:
+        d = _as_dict(dossier)
+        project_name = _clean(d.get("project_name")) or "n/a"
+        form_name = _clean(d.get("form_name")) or "n/a"
+        form_key = _form_key(project_name, form_name)
+        control_map = form_control_type_by_key.get(form_key) or form_control_type_by_key.get(_base_only_key(form_name)) or {}
+        for ctl in _as_list(d.get("controls")):
+            ctl_text = _clean(ctl)
+            if not ctl_text:
+                continue
+            if ":" in ctl_text:
+                ctl_type, ctl_name = ctl_text.split(":", 1)
+            else:
+                ctl_type, ctl_name = control_map.get(ctl_text.lower()) or ctl_text, ctl_text
+            ctl_type = _clean(ctl_type) or "unknown"
+            ctl_name = _clean(ctl_name) or "n/a"
+            lower_name = ctl_name.lower()
+            lower_type = ctl_type.lower()
+            role = "display"
+            values = "n/a"
+            if lower_name.startswith(("txt", "msk", "dtp")):
+                role = "data_input"
+            elif lower_name.startswith(("cmd", "btn")):
+                role = "action"
+            elif lower_name.startswith(("cbo", "cmb", "lst", "combo")) or "combobox" in lower_type or "list" in lower_type:
+                role = "selection"
+                values = "designer list values not statically recovered"
+            elif lower_name.startswith(("lbl", "img", "pic")):
+                role = "display"
+            key = f"{project_name.lower()}|{form_name.lower()}|{ctl_name.lower()}|{ctl_type.lower()}"
+            if key in seen_control_rows:
+                continue
+            seen_control_rows.add(key)
+            control_rows.append(
+                {
+                    "project": _project_label(project_name, project_path_by_name),
+                    "form": form_name,
+                    "control_name": ctl_name,
+                    "control_type": ctl_type,
+                    "role": role,
+                    "values": values,
+                }
+            )
+    if control_rows:
+        lines.append("- Controls discovered from raw form dossiers. Selection/list controls are preserved even when list values are not statically recoverable.")
+        lines.append("| Project | Form | Control Name | Control Type | Role | Values / Notes |")
+        lines.append("|---|---|---|---|---|---|")
+        for row in control_rows[:3000]:
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(row.get("project") or "n/a"),
+                    _escape_pipe(row.get("form") or "n/a"),
+                    _escape_pipe(row.get("control_name") or "n/a"),
+                    _escape_pipe(row.get("control_type") or "n/a"),
+                    _escape_pipe(row.get("role") or "n/a"),
+                    _escape_pipe(row.get("values") or "n/a"),
+                )
+            )
+    else:
+        lines.append("- No raw control inventory rows available.")
 
     return "\n".join(lines)
 

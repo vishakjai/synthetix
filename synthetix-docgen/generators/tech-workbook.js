@@ -191,6 +191,41 @@ function buildQaAlerts(data) {
   return out;
 }
 
+function csvItems(value, limit = 99) {
+  return String(value || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function buildFormProfileTable(rows, emptyMessage) {
+  const profileRows = Array.isArray(rows) ? rows : [];
+  if (!profileRows.length) return para(emptyMessage, { color: C.DGREY, italics: true });
+  return new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: [1900, 1500, 2200, 650, 700, 900, 2590],
+    rows: [
+      hRow([
+        hCell('Form', 1900, C.SLATE), hCell('Project', 1500, C.SLATE),
+        hCell('Source File', 2200, C.SLATE), hCell('LOC', 650, C.SLATE),
+        hCell('In VBP', 700, C.SLATE), hCell('Status', 900, C.SLATE),
+        hCell('Evidence', 2590, C.SLATE),
+      ]),
+      ...profileRows.map((r) => new TableRow({ children: [
+        cell(displayFormLabel((r.display_name || r.form || r.base_form || 'n/a').split('::').pop()), 1900, { bold: true }),
+        cell(displayProjectLabel(r.project_display || r.project || 'n/a'), 1500),
+        codeCell(r.source_file || 'n/a', 2200),
+        cell(String(r.loc || 0), 650, { align: AlignmentType.CENTER }),
+        badgeCell(String(r.in_vbp || 'no').toLowerCase() === 'yes' ? 'yes' : 'no', 700),
+        badgeCell(String(r.active_or_orphan || 'n/a'), 900),
+        codeCell(r.evidence || 'n/a', 2590),
+      ]})),
+    ],
+  });
+}
+
 // ── Header / Footer ────────────────────────────────────────────────────────
 const mkHeader = (title) => new Header({
   children: [new Paragraph({
@@ -1005,12 +1040,162 @@ function buildStaticForensics(data, opts = {}) {
   ];
 }
 
+function buildValidationDetails(data) {
+  const rows = [];
+  const seen = new Set();
+  const add = (form, field, rule, acceptable, evidence) => {
+    const key = `${String(form || '').toLowerCase()}||${String(field || '').toLowerCase()}||${String(rule || '').toLowerCase()}`;
+    if (!form || !field || !rule || seen.has(key)) return;
+    seen.add(key);
+    rows.push({ form, field, rule, acceptable, evidence });
+  };
+  for (const form of (data.mapped_forms || [])) {
+    const formLabel = displayFormLabel(form.display_name || form.form);
+    for (const field of csvItems(form.inputs, 12)) {
+      const f = field.toLowerCase();
+      if (/account no|customer id|cheque no|account id|id\b/.test(f)) {
+        add(formLabel, field, 'Numeric validation', 'Digits only; mandatory when submitting the workflow.', `Inputs: ${form.inputs || 'n/a'}`);
+      } else if (/date/.test(f)) {
+        add(formLabel, field, 'Date validation', 'Valid business date required; invalid or incomplete dates must be rejected.', `Inputs: ${form.inputs || 'n/a'}`);
+      } else if (/amount|balance|interest|cash|cheque/.test(f)) {
+        add(formLabel, field, 'Amount validation', 'Numeric value required; negative or malformed amounts must be rejected.', `Inputs: ${form.inputs || 'n/a'}`);
+      } else if (/email/.test(f)) {
+        add(formLabel, field, 'Format validation', 'Must match a valid email pattern when supplied.', `Inputs: ${form.inputs || 'n/a'}`);
+      } else if (/password|pass\b/.test(f)) {
+        add(formLabel, field, 'Credential validation', 'Masked entry with mandatory presence before authentication or password change can proceed.', `Inputs: ${form.inputs || 'n/a'}`);
+      } else if (/account type|contact title|gender|option/.test(f)) {
+        add(formLabel, field, 'Selection validation', 'Value must be chosen from the configured business options.', `Inputs: ${form.inputs || 'n/a'}`);
+      }
+    }
+  }
+  if (!rows.length) return [para('No field-level validation signals were derived from the current form inventory.', { color: C.DGREY, italics: true })];
+  return [new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: [1800, 1700, 1800, 2500, 2640],
+    rows: [
+      hRow([
+        hCell('Form', 1800, C.SLATE), hCell('Field', 1700, C.SLATE),
+        hCell('Validation Rule', 1800, C.SLATE), hCell('Acceptable Values / Criteria', 2500, C.SLATE),
+        hCell('Evidence', 2640, C.SLATE),
+      ]),
+      ...rows.slice(0, 60).map((r) => new TableRow({ children: [
+        cell(r.form, 1800, { bold: true }),
+        cell(r.field, 1700),
+        cell(r.rule, 1800),
+        cell(r.acceptable, 2500, { sz: 15 }),
+        cell(r.evidence, 2640, { sz: 14, color: C.DGREY }),
+      ]})),
+    ],
+  })];
+}
+
+function buildDataSecuritySection(data) {
+  const rows = (data.risks || []).filter((r) => /sql|credential|password|security|privacy|auth/i.test(`${r.description || ''} ${r.action || ''}`));
+  if (!rows.length) {
+    return [para('No explicit application-layer security controls were extracted. Preserve current data protections and validate encryption, credential handling, and database access controls during target design.', { color: C.DGREY })];
+  }
+  return [new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: [1600, 3200, 2800, 2840],
+    rows: [
+      hRow([
+        hCell('Control Area', 1600, C.SLATE), hCell('Observed Legacy Signal', 3200, C.SLATE),
+        hCell('Data Protection Concern', 2800, C.SLATE), hCell('Required Migration Control', 2840, C.SLATE),
+      ]),
+      ...rows.slice(0, 12).map((r) => new TableRow({ children: [
+        cell(/credential|password|auth/i.test(r.description || '') ? 'Identity / credentials' : 'Data access', 1600, { bold: true }),
+        cell(r.description || 'n/a', 3200, { sz: 15 }),
+        cell(/sql/i.test(r.description || '') ? 'Query handling and input sanitization must be strengthened to protect customer/account data.' : 'Sensitive operational data requires explicit handling controls in the target platform.', 2800, { sz: 15 }),
+        cell(r.action || 'Implement parameterization, access control, audit logging, and sensitive-data handling controls.', 2840, { sz: 15 }),
+      ]})),
+    ],
+  })];
+}
+
+function buildThirdPartySection(data) {
+  const deps = Array.isArray(data.dependencies) ? data.dependencies : [];
+  const mdb = Array.isArray(data.mdb_inventory) ? data.mdb_inventory : [];
+  const rows = [
+    ...deps.map((d) => ({
+      component: d.name || 'n/a',
+      type: d.type || d.kind || 'dependency',
+      usage: d.forms || d.used_by_forms || 'project-level',
+      implication: d.action || 'Assess replacement/interop strategy.',
+    })),
+    ...mdb.map((d) => ({
+      component: d.name || d.path || 'n/a',
+      type: 'mdb',
+      usage: d.referenced_by_forms || d.referenced_by_modules || 'local data store',
+      implication: 'Preserve MDB schema lineage and validate source-to-target data migration mapping.',
+    })),
+  ];
+  if (!rows.length) return [para('No third-party components or explicit external integration surfaces were extracted beyond intrinsic VB runtime behavior.', { color: C.DGREY, italics: true })];
+  return [new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: [2200, 1100, 2900, 4240],
+    rows: [
+      hRow([
+        hCell('Component', 2200, C.SLATE), hCell('Type', 1100, C.SLATE),
+        hCell('Observed Usage', 2900, C.SLATE), hCell('Integration / Migration Note', 4240, C.SLATE),
+      ]),
+      ...rows.slice(0, 24).map((r) => new TableRow({ children: [
+        cell(r.component, 2200, { bold: true }),
+        cell(r.type, 1100, { align: AlignmentType.CENTER }),
+        cell(r.usage, 2900, { sz: 15, color: C.DGREY }),
+        cell(r.implication, 4240, { sz: 15 }),
+      ]})),
+    ],
+  })];
+}
+
+function buildUiControlCoverage(data) {
+  const inventory = Array.isArray(data.control_inventory) ? data.control_inventory : [];
+  const rows = [];
+  const seen = new Set();
+  for (const row of inventory) {
+    const role = String(row.role || '').toLowerCase();
+    const type = String(row.control_type || '').toLowerCase();
+    if (!(role === 'selection' || /combo|list/.test(type))) continue;
+    const key = `${String(row.project || '').toLowerCase()}||${String(row.form || '').toLowerCase()}`;
+    const displayProject = displayProjectLabel(row.project || 'n/a');
+    const displayForm = displayFormLabel(row.form || 'n/a');
+    const label = `${displayForm} (${displayProject})`;
+    const note = String(row.values || '').trim() || 'n/a';
+    if (!seen.has(`${key}||${String(row.control_name || '').toLowerCase()}`)) {
+      seen.add(`${key}||${String(row.control_name || '').toLowerCase()}`);
+      rows.push({
+        form: label,
+        controls: `${row.control_name || 'n/a'} [${row.control_type || 'n/a'}]`,
+        note,
+      });
+    }
+  }
+  if (!rows.length) return [para('No raw selection/list controls were recovered from the current MD. If combobox/list values are business-critical, confirm them from the legacy form designers before migration.', { color: C.DGREY })];
+  return [new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: [2200, 3000, 5240],
+    rows: [
+      hRow([hCell('Form', 2200, C.SLATE), hCell('Observed Select/List Controls', 3000, C.SLATE), hCell('Coverage Note', 5240, C.SLATE)]),
+      ...rows.slice(0, 24).map((r) => new TableRow({ children: [
+        cell(r.form, 2200, { bold: true }),
+        cell(r.controls, 3000),
+        cell(r.note, 5240, { sz: 15 }),
+      ]})),
+    ],
+  })];
+}
+
 // ── Main export ────────────────────────────────────────────────────────────
 async function generateTechWb(data, outputPath) {
   const docTitle    = data.meta.title || 'VB6 Banking System';
   const projectTable = buildProjectInventory(data);
   const ktTable      = buildKTech(data);
-  const orphanTable  = buildOrphanFormProfile(data);
+  const activeProfileTable = buildFormProfileTable(data.active_form_profile, 'No active forms detected.');
+  const orphanProfileTable = buildFormProfileTable(data.orphan_form_profile, 'No orphan forms detected.');
   const depsTable    = buildDependencies(data);
   const sqlContent   = buildSqlCatalog(data);
   const traceContent = buildFlowTraces(data);
@@ -1018,6 +1203,10 @@ async function generateTechWb(data, outputPath) {
   const riskTable    = buildRiskRegister(data);
   const findingsContent = buildFindings(data);
   const staticForensicsContent = buildStaticForensics(data, { includeSectionHeading: false });
+  const validationContent = buildValidationDetails(data);
+  const dataSecurityContent = buildDataSecuritySection(data);
+  const thirdPartyContent = buildThirdPartySection(data);
+  const uiControlContent = buildUiControlCoverage(data);
   const qaAlerts = buildQaAlerts(data);
   const appendixCounts = (data && typeof data === 'object' && data.appendix_counts && typeof data.appendix_counts === 'object')
     ? data.appendix_counts
@@ -1078,15 +1267,19 @@ async function generateTechWb(data, outputPath) {
         sp(), projectTable, pb(),
 
         h1('2. Form Technical Profile (K-Tech)'),
-        para('Technical attributes grouped by active and orphan forms. Includes static-forensics details consolidated into this section.'),
+        para('Canonical form profile grouped by active and orphan forms. This section is the single source of truth for form/file membership, source file, LOC, and evidence.'),
         h2('Active Forms'),
-        sp(), ktTable,
+        sp(), activeProfileTable,
         h2('Orphan Forms'),
-        sp(), ...(orphanTable ? [orphanTable] : [para('No orphan forms detected.', { color: C.DGREY, italics: true })]),
+        sp(), orphanProfileTable,
         h2('Static Forensics Addendum'),
         sp(), ...staticForensicsContent, pb(),
 
         h1('3. Dependency Inventory'),
+        h2('K-Tech Technical Matrix'),
+        para('Technical matrix for active forms only: form type, ActiveX usage, DB tables, action count, and coverage/confidence.'),
+        sp(), ktTable, sp(),
+        h2('External Dependencies'),
         para('All external dependencies (OCX, DLL, COM references) discovered across projects. GUID is used for COM registration lookup. Migration action indicates recommended replacement strategy.'),
         sp(), depsTable, pb(),
 
@@ -1097,7 +1290,8 @@ async function generateTechWb(data, outputPath) {
         h1('5. Form Flow Traces (P)'),
         para(
           `Per-form callable trace: each event handler and procedure with its kind, triggering event, ActiveX dependency, SQL operations executed, and table touchpoints. `
-          + `TRACE_GAP = callable found but not fully resolved.${
+          + `TRACE_GAP = the tool found a likely callable/flow context, but deterministic evidence was insufficient to prove the full SQL/table lineage. `
+          + `It does not mean the flow is absent; it means traceability remains incomplete and requires review.${
             data?.meta?.mdb_detected
               ? ' MDB-derived schema signals are included where available to improve table-level traceability.'
               : ''
@@ -1120,6 +1314,22 @@ async function generateTechWb(data, outputPath) {
         h1('8. Detector Findings'),
         para('Automated detector findings from the analysis platform — patterns flagged for engineering review.'),
         sp(), ...findingsContent, sp(),
+
+        h1('9. Data Validation Details'),
+        para('Field-level validation details inferred from active-form inputs and business-rule signals. These details define expected format, mandatory checks, and acceptable values where evidence exists.'),
+        sp(), ...validationContent, pb(),
+
+        h1('10. Data Security'),
+        para('Business and technical security controls that must be preserved or strengthened in the migrated solution, including data access protection and credential handling.'),
+        sp(), ...dataSecurityContent, pb(),
+
+        h1('11. Third-Party Integration'),
+        para('Third-party components and local data-store integrations discovered in the legacy solution. This section documents APIs, OCX/DLL dependencies, and MDB-related exchange surfaces where present.'),
+        sp(), ...thirdPartyContent, pb(),
+
+        h1('12. UI Control Coverage'),
+        para('Observed selection/list controls and UI-input coverage inferred from the legacy form inventory. This is intended to highlight business-critical combobox/list inputs that must be preserved in the target UX.'),
+        sp(), ...uiControlContent, sp(),
       ],
     }],
   });

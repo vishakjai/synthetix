@@ -1302,6 +1302,7 @@ function parseT(content) {
   const iInVbp = idxFirst(hm, ['invbp'], 6);
   const iStatus = idxFirst(hm, ['activeororphan', 'status'], 7);
   const iConfidence = idxFirst(hm, ['confidence'], 8);
+  const iEvidence = idxFirst(hm, ['evidence', 'evidencerefs', 'sourceevidence'], -1);
   return rows.map((r) => ({
     form_id: gc(r, iId),
     form: gc(r, iForm),
@@ -1312,6 +1313,7 @@ function parseT(content) {
     in_vbp: gc(r, iInVbp),
     active_or_orphan: gc(r, iStatus),
     confidence: gc(r, iConfidence),
+    evidence: iEvidence >= 0 ? gc(r, iEvidence) : '',
   }));
 }
 
@@ -1414,7 +1416,7 @@ function parseX(content) {
 }
 
 function parseY(content) {
-  const { headers, rows } = parseTableSection(getSection(content, 'Y.'));
+  const { headers, rows } = parseTableSection(getSection(content, 'Y.', 'Y1.'));
   const hm = headerMap(headers);
   const iDetector = idxFirst(hm, ['detectorid', 'id'], 0);
   const iSeverity = idxFirst(hm, ['severity'], 1);
@@ -1425,6 +1427,25 @@ function parseY(content) {
     severity: gc(r, iSeverity),
     summary: gc(r, iSummary),
     evidence: gc(r, iEvidence),
+  }));
+}
+
+function parseY1(content) {
+  const { headers, rows } = parseTableSection(getSection(content, 'Y1.'));
+  const hm = headerMap(headers);
+  const iProject = idxFirst(hm, ['project'], 0);
+  const iForm = idxFirst(hm, ['form'], 1);
+  const iControlName = idxFirst(hm, ['controlname', 'control'], 2);
+  const iControlType = idxFirst(hm, ['controltype', 'type'], 3);
+  const iRole = idxFirst(hm, ['role'], 4);
+  const iValues = idxFirst(hm, ['valuesnotes', 'values', 'notes'], 5);
+  return rows.map((r) => ({
+    project: gc(r, iProject),
+    form: gc(r, iForm),
+    control_name: gc(r, iControlName),
+    control_type: gc(r, iControlType),
+    role: gc(r, iRole),
+    values: gc(r, iValues),
   }));
 }
 
@@ -1689,6 +1710,247 @@ function addQaDecisions(decisions, qa) {
   return out;
 }
 
+function toYesNo(value, fallback = 'no') {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return fallback;
+  if (['yes', 'true', 'ok', 'mapped', 'active'].includes(v)) return 'yes';
+  if (['no', 'false', 'n/a', 'none', 'orphan', 'excluded'].includes(v)) return 'no';
+  return fallback;
+}
+
+function uniqueBy(rows, keyFn) {
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const key = keyFn(row);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+function formProfileEvidence(row = {}) {
+  const direct = String(row.evidence || row.evidence_refs || '').trim();
+  if (direct) return direct;
+  const parts = [];
+  const formId = String(row.form_id || '').trim();
+  const conf = String(row.confidence || '').trim();
+  if (formId) parts.push(formId);
+  if (conf) parts.push(`conf ${conf}`);
+  return parts.join(' | ') || 'n/a';
+}
+
+function buildCanonicalFormData(kData, formLocProfile) {
+  const mappedRows = Array.isArray(kData?.mapped) ? kData.mapped : [];
+  const excludedRows = Array.isArray(kData?.excluded) ? kData.excluded : [];
+  const profileRows = Array.isArray(formLocProfile) ? formLocProfile : [];
+
+  const profileByKey = new Map();
+  const profileByShort = new Map();
+  for (const row of profileRows) {
+    const short = canonFormKey(row.base_form || row.form);
+    const project = canonicalProjectKey(row.project);
+    if (!short) continue;
+    const key = `${project}||${short}`;
+    const existing = profileByKey.get(key);
+    if (!existing || (toYesNo(row.in_vbp) === 'yes' && toYesNo(existing.in_vbp) !== 'yes')) {
+      profileByKey.set(key, row);
+    }
+    if (!profileByShort.has(short)) profileByShort.set(short, []);
+    profileByShort.get(short).push(row);
+  }
+
+  const pickProfile = (formRow) => {
+    const short = canonFormKey(formRow?.form || formRow?.display_name);
+    if (!short) return null;
+    const project = canonicalProjectKey(formRow?.project);
+    const exact = profileByKey.get(`${project}||${short}`);
+    if (exact) return exact;
+    const options = profileByShort.get(short) || [];
+    if (!options.length) return null;
+    const active = options.find((r) => toYesNo(r.in_vbp) === 'yes');
+    return active || options[0];
+  };
+
+  const activeForms = [];
+  const orphanForms = [];
+  for (const row of mappedRows) {
+    const profile = pickProfile(row);
+    const unresolvedProject = canonicalProjectKey(row?.project) === '__unmapped__';
+    const inferredInVbp = profile
+      ? toYesNo(profile.in_vbp)
+      : ((String(row.status || '').toLowerCase() === 'orphan' || unresolvedProject) ? 'no' : 'yes');
+    const inferredStatus = profile
+      ? (String(profile.active_or_orphan || '').trim().toLowerCase() || (inferredInVbp === 'yes' ? 'active' : 'orphan'))
+      : ((String(row.status || '').trim().toLowerCase() === 'orphan' || unresolvedProject) ? 'orphan' : 'active');
+    const merged = {
+      ...row,
+      source_file: profile ? String(profile.source_file || '').trim() : '',
+      loc: profile ? toIntLoose(profile.loc, 0) : 0,
+      in_vbp: inferredInVbp,
+      active_or_orphan: inferredStatus,
+      evidence: profile ? formProfileEvidence(profile) : 'n/a',
+      project_display: prettyProjectLabel(row.project_display || row.project),
+    };
+    if (String(merged.active_or_orphan || '').toLowerCase().includes('orphan') || toYesNo(merged.in_vbp) === 'no') {
+      orphanForms.push(merged);
+    } else {
+      activeForms.push(merged);
+    }
+  }
+
+  const activeProfileRows = profileRows
+    .filter((row) => toYesNo(row.in_vbp) === 'yes' || String(row.active_or_orphan || '').toLowerCase() === 'active')
+    .map((row) => ({
+      ...row,
+      project_display: prettyProjectLabel(row.project),
+      in_vbp: toYesNo(row.in_vbp),
+      active_or_orphan: 'active',
+      evidence: formProfileEvidence(row),
+    }));
+  const orphanProfileRows = profileRows
+    .filter((row) => !(toYesNo(row.in_vbp) === 'yes' || String(row.active_or_orphan || '').toLowerCase() === 'active'))
+    .map((row) => ({
+      ...row,
+      project_display: prettyProjectLabel(row.project),
+      in_vbp: toYesNo(row.in_vbp),
+      active_or_orphan: 'orphan',
+      evidence: formProfileEvidence(row),
+    }));
+
+  const orphanUnique = uniqueBy(
+    [
+      ...(orphanProfileRows.length ? orphanProfileRows : orphanForms).map((row) => ({
+        name: `${shortFormName(row.base_form || row.form) || 'n/a'}.frm`,
+        type: 'orphan',
+        projects: [prettyProjectLabel(row.project || 'n/a')],
+        status: 'Orphan / unresolved',
+      })),
+      ...excludedRows.map((row) => ({
+        name: shortFormName(row.form || row.name) ? `${shortFormName(row.form || row.name)}.frm` : String(row.name || row.form || 'n/a'),
+        type: row.form_type || row.type || 'excluded',
+        projects: [prettyProjectLabel(row.project_display || row.project || 'n/a')],
+        status: 'Excluded — not active .vbp member',
+      })),
+    ],
+    (row) => `${String(row.name || '').toLowerCase()}||${String(row.status || '').toLowerCase()}`
+  );
+
+  const activeKeys = new Set(activeForms.map((row) => canonFormKey(row.form || row.display_name)).filter(Boolean));
+  const orphanKeys = new Set(orphanForms.map((row) => canonFormKey(row.form || row.display_name)).filter(Boolean));
+  const fallbackProfile = (rows, status) => rows.map((row, idx) => ({
+    form_id: `fallback:${status}:${idx + 1}`,
+    form: row.form,
+    base_form: shortFormName(row.form || row.display_name),
+    project: row.project,
+    project_display: row.project_display || prettyProjectLabel(row.project),
+    source_file: row.source_file || '',
+    loc: toIntLoose(row.loc, 0),
+    in_vbp: status === 'active' ? 'yes' : 'no',
+    active_or_orphan: status,
+    confidence: row.confidence || '',
+    evidence: row.evidence || 'derived from form dossier',
+  }));
+
+  return {
+    active_forms: uniqueBy(activeForms, (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form || row.display_name)}`),
+    orphan_forms: uniqueBy(orphanForms, (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form || row.display_name)}`),
+    active_form_profile: uniqueBy(
+      (activeProfileRows.length ? activeProfileRows : fallbackProfile(activeForms, 'active')),
+      (row) => `${String(row.source_file || '').toLowerCase()}||${canonFormKey(row.form || row.base_form)}`
+    ),
+    orphan_form_profile: uniqueBy(
+      (orphanProfileRows.length ? orphanProfileRows : fallbackProfile(orphanForms, 'orphan')),
+      (row) => `${String(row.source_file || '').toLowerCase()}||${canonFormKey(row.form || row.base_form)}`
+    ),
+    excluded_or_unresolved_unique: orphanUnique,
+    active_form_keys: activeKeys,
+    orphan_form_keys: orphanKeys,
+  };
+}
+
+function canonicalizeTraceabilityRows(qData, activeForms) {
+  const qByKey = new Map();
+  for (const row of (qData || [])) {
+    const short = canonFormKey(row.form);
+    if (!short || qByKey.has(short)) continue;
+    qByKey.set(short, row);
+  }
+  return uniqueBy((activeForms || []).map((formRow) => {
+    const short = canonFormKey(formRow.form || formRow.display_name);
+    const q = qByKey.get(short) || {};
+    const has_event_map = toYesNo(q.has_event_map);
+    const has_sql_map = toYesNo(q.has_sql_map);
+    const has_business_rules = toYesNo(q.has_business_rules);
+    const has_risk_entry = toYesNo(q.has_risk_entry);
+    const score = (has_event_map === 'yes' ? 25 : 0)
+      + (has_sql_map === 'yes' ? 25 : 0)
+      + (has_business_rules === 'yes' ? 25 : 0)
+      + (has_risk_entry === 'yes' ? 25 : 0);
+    return {
+      form: formRow.form,
+      display_name: formRow.display_name,
+      project: formRow.project_display || formRow.project,
+      project_display: formRow.project_display || prettyProjectLabel(formRow.project),
+      has_event_map,
+      has_sql_map,
+      has_business_rules,
+      has_risk_entry,
+      score,
+      missing_links: String(q.missing_links || '').trim() || (
+        score === 100
+          ? 'none'
+          : ['event_map', 'sql_map', 'business_rules', 'risk_entry']
+              .filter((token, idx) => [has_event_map, has_sql_map, has_business_rules, has_risk_entry][idx] !== 'yes')
+              .join(', ')
+      ),
+    };
+  }), (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form || row.display_name)}`);
+}
+
+function canonicalizeSprintRows(rData, activeForms, activeQ) {
+  const sprintByKey = new Map();
+  for (const row of (rData || [])) {
+    const short = canonFormKey(row.form);
+    if (!short || sprintByKey.has(short)) continue;
+    sprintByKey.set(short, row);
+  }
+  const qByKey = new Map();
+  for (const row of (activeQ || [])) {
+    const short = canonFormKey(row.form);
+    if (!short || qByKey.has(short)) continue;
+    qByKey.set(short, row);
+  }
+  return uniqueBy((activeForms || []).map((formRow) => {
+    const short = canonFormKey(formRow.form || formRow.display_name);
+    const existing = sprintByKey.get(short) || {};
+    const q = qByKey.get(short) || {};
+    const score = Number(q.score || 0);
+    const hasRules = String(q.has_business_rules || '').toLowerCase() === 'yes';
+    const hasRisk = String(q.has_risk_entry || '').toLowerCase() === 'yes';
+    const inferredSprint = score < 40
+      ? 'Sprint 0 (Discovery closure)'
+      : ((!hasRules || hasRisk) ? 'Sprint 1 (Risk-first modernization)' : 'Sprint 2 (Parity hardening)');
+    const sprint = String(existing.sprint || '').trim() || inferredSprint;
+    let rationale = String(existing.rationale || '').trim();
+    if (!rationale) {
+      if (/sprint 0/i.test(sprint)) rationale = 'Close traceability gaps before modernization changes.';
+      else if (/sprint 1/i.test(sprint)) rationale = 'Implement remediation-first changes for high-risk legacy behavior.';
+      else rationale = 'Finalize quality gates and publish evidence pack for production readiness.';
+    }
+    return {
+      form: formRow.form,
+      project: formRow.project_display || formRow.project,
+      project_display: formRow.project_display || prettyProjectLabel(formRow.project),
+      sprint,
+      depends_on: String(existing.depends_on || '').trim() || (String(q.missing_links || '').trim() ? `Q.${String(q.missing_links).split(',')[0].trim()}` : 'none'),
+      shared: String(existing.shared || '').trim() || 'none',
+      rationale,
+    };
+  }), (row) => `${canonicalProjectKey(row.project)}||${canonFormKey(row.form)}`);
+}
+
 function parseAppendixCounts(content) {
   const out = {};
   for (const line of String(content || '').split('\n')) {
@@ -1764,6 +2026,8 @@ function parseMd(mdContent, meta = {}) {
   const deadFormRefs = parseW(mdContent);
   const dataenvironmentMappings = parseX(mdContent);
   const staticRiskDetectors = parseY(mdContent);
+  const controlInventory = parseY1(mdContent);
+  const canonicalForms = buildCanonicalFormData(kData, formLocProfile);
 
   // Reconcile LOC components when source summary omits classes/designers.
   const designerLocTotal = (designerLocProfile || []).reduce((acc, row) => acc + toIntLoose(row.loc, 0), 0);
@@ -1855,7 +2119,9 @@ function parseMd(mdContent, meta = {}) {
 
   sqlEntries = mergeSqlEntriesWithMap(sqlEntries, sqlMapRows);
   sqlEntries = ensureSqlCoverage(sqlEntries, mdContent, procedureSummaries, sqlMapRows);
-  const decisions = addQaDecisions(addCoverageDecisions(parsedDecisions, qData, kData.mapped), qaBlock);
+  const decisions = addQaDecisions(addCoverageDecisions(parsedDecisions, qData, canonicalForms.active_forms), qaBlock);
+  const activeQ = canonicalizeTraceabilityRows(qData, canonicalForms.active_forms);
+  const activeSprints = canonicalizeSprintRows(rData, canonicalForms.active_forms, activeQ);
 
   return {
     meta:            headerMeta,
@@ -1876,17 +2142,23 @@ function parseMd(mdContent, meta = {}) {
     sql_map_rows:    sqlMapRows,
     procedure_summaries: procedureSummaries,
 
-    mapped_forms:    kData.mapped,
+    mapped_forms:    canonicalForms.active_forms,
+    orphan_forms:    canonicalForms.orphan_forms,
     excluded_forms:  kData.excluded,
     excluded_unique: kData.excluded_unique,
+    excluded_or_unresolved_unique: canonicalForms.excluded_or_unresolved_unique,
+    active_form_profile: canonicalForms.active_form_profile,
+    orphan_form_profile: canonicalForms.orphan_form_profile,
+    active_form_keys: Array.from(canonicalForms.active_form_keys),
+    orphan_form_keys: Array.from(canonicalForms.orphan_form_keys),
 
     risks:           risks,
     dep_map:         depMap,
     form_traces:     formTraces,
-    traceability:    qData,
-    active_q:        qData,          // alias used by generators
-    sprints:         rData,
-    active_sprints:  rData,          // alias used by generators
+    traceability:    activeQ,
+    active_q:        activeQ,          // alias used by generators
+    sprints:         activeSprints,
+    active_sprints:  activeSprints,    // alias used by generators
     mdb_inventory: mdbInventory,
     form_loc_profile: formLocProfile,
     designer_loc_profile: designerLocProfile,
@@ -1896,6 +2168,7 @@ function parseMd(mdContent, meta = {}) {
     dead_form_refs: deadFormRefs,
     dataenvironment_report_mapping: dataenvironmentMappings,
     static_risk_detectors: staticRiskDetectors,
+    control_inventory: controlInventory,
   };
 }
 
