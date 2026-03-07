@@ -33,6 +33,7 @@ def _utc_now_iso() -> str:
 
 
 RUN_LOG_TAIL_LIMIT = 200
+RUN_STATE_SUMMARY_LOG_LIMIT = 40
 
 
 def _tail_logs(progress_logs: list[str], limit: int = RUN_LOG_TAIL_LIMIT) -> list[str]:
@@ -41,6 +42,108 @@ def _tail_logs(progress_logs: list[str], limit: int = RUN_LOG_TAIL_LIMIT) -> lis
     if limit <= 0:
         return []
     return [str(x) for x in progress_logs[-limit:]]
+
+
+def _compact_output_summary(output: Any) -> Any:
+    if isinstance(output, dict):
+        summary: dict[str, Any] = {}
+        scalar_keys = (
+            "artifact_type",
+            "status",
+            "title",
+            "summary",
+            "version",
+            "provider",
+            "project_name",
+            "coverage_status",
+        )
+        for key in scalar_keys:
+            value = output.get(key)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                if str(value or "").strip() or isinstance(value, (int, float, bool)):
+                    summary[key] = value
+        summary["keys"] = sorted([str(k) for k in output.keys()])[:80]
+        return summary
+    if isinstance(output, list):
+        return {"kind": "list", "count": len(output)}
+    return output
+
+
+def _compact_agent_result(row: Any) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    compact: dict[str, Any] = {
+        "agent_name": row.get("agent_name", ""),
+        "stage": row.get("stage", 0),
+        "status": row.get("status", ""),
+        "summary": row.get("summary", ""),
+        "tokens_used": row.get("tokens_used", 0),
+        "latency_ms": row.get("latency_ms", 0),
+        "logs": _tail_logs(row.get("logs", []) if isinstance(row.get("logs", []), list) else [], limit=20),
+    }
+    if "output" in row:
+        compact["output"] = _compact_output_summary(row.get("output"))
+    return compact
+
+
+def _compact_pipeline_state(pipeline_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(pipeline_state, dict):
+        return pipeline_state
+    compact: dict[str, Any] = {}
+    heavy_keys = {
+        "agent_results",
+        "analyst_output",
+        "analyst_report_v2",
+        "sil_output",
+        "developer_output",
+        "tester_output",
+        "context_bundle",
+        "context_contracts",
+        "system_context_model",
+        "convention_profile",
+        "health_assessment",
+        "health_assessment_bundle",
+        "repo_snapshot",
+        "sil_discovery",
+        "run_context_bundle",
+        "legacy_code",
+    }
+    for key, value in pipeline_state.items():
+        if key in heavy_keys:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            compact[key] = value
+        elif isinstance(value, list):
+            compact[key] = value[:50]
+        elif isinstance(value, dict):
+            compact[key] = value
+    agent_results = pipeline_state.get("agent_results", [])
+    if isinstance(agent_results, list):
+        compact["agent_results"] = [row for row in (_compact_agent_result(item) for item in agent_results[-20:]) if row]
+    for key in (
+        "analyst_output",
+        "developer_output",
+        "tester_output",
+        "system_context_model",
+        "convention_profile",
+        "health_assessment",
+        "run_context_bundle",
+    ):
+        if key in pipeline_state:
+            compact[f"{key}_summary"] = _compact_output_summary(pipeline_state.get(key))
+    return compact
+
+
+def _compact_stage_snapshot(stage_result: dict[str, Any], pipeline_state: dict[str, Any], stage_status: dict[int, str]) -> dict[str, Any]:
+    return {
+        "result": _compact_agent_result(stage_result) or {
+            "stage": stage_result.get("stage", 0) if isinstance(stage_result, dict) else 0,
+            "status": stage_result.get("status", "") if isinstance(stage_result, dict) else "",
+            "summary": stage_result.get("summary", "") if isinstance(stage_result, dict) else "",
+        },
+        "pipeline_state": _compact_pipeline_state(pipeline_state),
+        "stage_status": {str(k): v for k, v in stage_status.items()},
+    }
 
 
 class PipelineRunStore:
@@ -417,11 +520,24 @@ class GcsPipelineRunStore:
 class FirestorePipelineRunStore:
     """Firestore-backed run history shared across Cloud Run instances."""
 
-    def __init__(self, collection: str = "pipeline_runs"):
+    def __init__(self, collection: str = "pipeline_runs", bucket: str = "", prefix: str = "pipeline_runs"):
         if firestore is None:
             raise RuntimeError("google-cloud-firestore is required for Firestore run store backend")
         self.collection = str(collection or "pipeline_runs").strip() or "pipeline_runs"
         self.db = firestore.Client()
+        self.bucket_name = str(
+            bucket
+            or os.getenv("RUN_STORE_GCS_BUCKET")
+            or os.getenv("SYNTHETIX_RUN_STORE_BUCKET")
+            or ""
+        ).strip()
+        self.prefix = str(prefix or os.getenv("RUN_STORE_GCS_PREFIX", "pipeline_runs")).strip("/ ") or "pipeline_runs"
+        self.bucket = None
+        if self.bucket_name and storage is not None:
+            try:
+                self.bucket = storage.Client().bucket(self.bucket_name)
+            except Exception:
+                self.bucket = None
 
     def _doc(self, run_id: str):
         return self.db.collection(self.collection).document(run_id)
@@ -431,6 +547,35 @@ class FirestorePipelineRunStore:
 
     def _event_collection(self, run_id: str):
         return self._doc(run_id).collection("events")
+
+    def _blob_path(self, run_id: str, filename: str) -> str:
+        base = f"{self.prefix}/{run_id}" if self.prefix else run_id
+        return f"{base}/{filename}"
+
+    def _read_blob_json(self, path: str) -> dict[str, Any] | None:
+        if not self.bucket:
+            return None
+        try:
+            blob = self.bucket.blob(path)
+            if not blob.exists():
+                return None
+            payload = json.loads(blob.download_as_text())
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    def _write_blob_json(self, path: str, payload: dict[str, Any]) -> str | None:
+        if not self.bucket:
+            return None
+        try:
+            blob = self.bucket.blob(path)
+            blob.upload_from_string(
+                json.dumps(payload, indent=2, ensure_ascii=True, default=str),
+                content_type="application/json",
+            )
+            return path
+        except Exception:
+            return None
 
     def create_run(
         self,
@@ -474,12 +619,28 @@ class FirestorePipelineRunStore:
         stage_status: dict[int, str],
         progress_logs: list[str],
     ) -> None:
-        self._stage_doc(run_id, stage).set(
+        saved_at = _utc_now_iso()
+        blob_path = self._write_blob_json(
+            self._blob_path(run_id, f"stage_{stage}.json"),
             {
                 "run_id": run_id,
                 "stage": stage,
                 "result": stage_result,
-                "saved_at": _utc_now_iso(),
+                "pipeline_state": pipeline_state,
+                "stage_status": {str(k): v for k, v in stage_status.items()},
+                "saved_at": saved_at,
+            },
+        )
+        compact_snapshot = _compact_stage_snapshot(stage_result, pipeline_state, stage_status)
+        self._stage_doc(run_id, stage).set(
+            {
+                "run_id": run_id,
+                "stage": stage,
+                "result": compact_snapshot.get("result", {}),
+                "pipeline_state": compact_snapshot.get("pipeline_state", {}),
+                "stage_status": compact_snapshot.get("stage_status", {}),
+                "blob_path": blob_path or "",
+                "saved_at": saved_at,
             }
         )
         self._save_state_payload(
@@ -522,6 +683,19 @@ class FirestorePipelineRunStore:
     ) -> None:
         now = _utc_now_iso()
         tail = _tail_logs(progress_logs, limit=RUN_LOG_TAIL_LIMIT)
+        compact_state = _compact_pipeline_state(pipeline_state)
+        state_blob_path = self._write_blob_json(
+            self._blob_path(run_id, "state_full.json"),
+            {
+                "run_id": run_id,
+                "pipeline_status": pipeline_status,
+                "pipeline_state": pipeline_state,
+                "stage_status": {str(k): v for k, v in stage_status.items()},
+                "progress_logs": progress_logs,
+                "error_message": error_message,
+                "saved_at": now,
+            },
+        )
         self._doc(run_id).set(
             {
                 "updated_at": now,
@@ -529,12 +703,13 @@ class FirestorePipelineRunStore:
                 "state": {
                     "run_id": run_id,
                     "pipeline_status": pipeline_status,
-                    "pipeline_state": pipeline_state,
+                    "pipeline_state": compact_state,
                     "stage_status": {str(k): v for k, v in stage_status.items()},
                     "progress_logs_tail": tail,
                     "progress_log_count": len(progress_logs),
                     "last_log_at": now,
                     "error_message": error_message,
+                    "state_blob_path": state_blob_path or "",
                     "saved_at": now,
                 },
             },
@@ -584,10 +759,28 @@ class FirestorePipelineRunStore:
             if isinstance(state.get("progress_logs_tail", []), list)
             else []
         )
+        full_payload = self._read_blob_json(str(state.get("state_blob_path", "")).strip())
+        pipeline_state = (
+            full_payload.get("pipeline_state", {})
+            if isinstance(full_payload, dict) and isinstance(full_payload.get("pipeline_state", {}), dict)
+            else state.get("pipeline_state", {})
+        )
+        stage_status = (
+            full_payload.get("stage_status", {})
+            if isinstance(full_payload, dict) and isinstance(full_payload.get("stage_status", {}), dict)
+            else state.get("stage_status", {})
+        )
+        progress_logs = (
+            full_payload.get("progress_logs", [])
+            if isinstance(full_payload, dict) and isinstance(full_payload.get("progress_logs", []), list)
+            else progress_tail
+        )
         return {
             **state,
-            "progress_logs": progress_tail,
-            "progress_log_count": int(state.get("progress_log_count", len(progress_tail)) or len(progress_tail)),
+            "pipeline_state": pipeline_state if isinstance(pipeline_state, dict) else {},
+            "stage_status": stage_status if isinstance(stage_status, dict) else {},
+            "progress_logs": progress_logs,
+            "progress_log_count": int(state.get("progress_log_count", len(progress_logs)) or len(progress_logs)),
         }
 
     def load_meta(self, run_id: str) -> dict[str, Any] | None:
@@ -613,7 +806,10 @@ class FirestorePipelineRunStore:
         if not snap.exists:
             return None
         payload = snap.to_dict() or {}
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        blob_payload = self._read_blob_json(str(payload.get("blob_path", "")).strip())
+        return blob_payload if isinstance(blob_payload, dict) else payload
 
     def load_logs(self, run_id: str, limit: int = RUN_LOG_TAIL_LIMIT) -> list[str]:
         query = (
