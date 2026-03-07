@@ -562,6 +562,7 @@ class RunRecord:
     next_stage_idx: int = 0
     pending_approval: dict[str, Any] | None = None
     thread: threading.Thread | None = None
+    last_persist_monotonic: float = 0.0
 
 
 class PipelineRunManager:
@@ -1654,6 +1655,7 @@ class PipelineRunManager:
             self._append_log(record, f"⚠️ GitHub export ({phase}) failed: {report.get('reason', 'unknown error')}")
 
     def _persist(self, record: RunRecord) -> None:
+        record.updated_at = _utc_now()
         if record.pipeline_state is not None:
             record.pipeline_state["pending_approval"] = copy.deepcopy(record.pending_approval)
             record.pipeline_state["next_stage_idx"] = int(record.next_stage_idx)
@@ -1666,6 +1668,7 @@ class PipelineRunManager:
             progress_logs=record.progress_logs,
             error_message=record.error_message,
         )
+        record.last_persist_monotonic = time.monotonic()
         snapshot = self._record_payload(record)
         self._emit_event(record.run_id, "update", {"run": snapshot})
         if record.status != "running":
@@ -1674,7 +1677,31 @@ class PipelineRunManager:
     def _append_log(self, record: RunRecord, message: str, timestamped: bool = False) -> None:
         line = message if timestamped else f"[{_ts()}] {message}"
         record.progress_logs.append(line)
+        record.updated_at = _utc_now()
         self._emit_event(record.run_id, "log", {"line": line, "run_id": record.run_id})
+        now_mono = time.monotonic()
+        should_persist = (
+            record.status in {"queued", "running", "waiting_approval", "paused"}
+            and (
+                (now_mono - float(record.last_persist_monotonic or 0.0)) >= 1.25
+                or len(record.progress_logs) <= 3
+                or len(record.progress_logs) % 20 == 0
+            )
+        )
+        if should_persist:
+            if record.pipeline_state is not None:
+                record.pipeline_state["pending_approval"] = copy.deepcopy(record.pending_approval)
+                record.pipeline_state["next_stage_idx"] = int(record.next_stage_idx)
+                record.pipeline_state["current_stage"] = int(record.current_stage)
+            self.store.finalize_run(
+                run_id=record.run_id,
+                status=record.status,
+                pipeline_state=record.pipeline_state,
+                stage_status=record.stage_status,
+                progress_logs=record.progress_logs,
+                error_message=record.error_message,
+            )
+            record.last_persist_monotonic = now_mono
 
     def _emit_event(self, run_id: str, event: str, data: dict[str, Any]) -> None:
         with self._lock:

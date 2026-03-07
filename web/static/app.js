@@ -4314,10 +4314,23 @@ function renderDiscoverScopeGuidance() {
   const variantCandidates = componentRows.filter((row) => !!row?.variant_candidate).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
   const reporting = componentRows.filter((row) => String(row?.component_kind || "").includes("reporting")).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
   const batch = componentRows.filter((row) => String(row?.component_kind || "").includes("batch")).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
-  const questions = [
+  const dedupePreserveOrder = (rows) => {
+    const seen = new Set();
+    const out = [];
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const value = String(row || "").trim();
+      if (!value) return;
+      const key = value.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(value);
+    });
+    return out;
+  };
+  const questions = dedupePreserveOrder([
     ...trackRows.flatMap((row) => Array.isArray(row?.gating_questions) ? row.gating_questions : []),
     ...Array.isArray(tracks.open_questions) ? tracks.open_questions : [],
-  ].filter(Boolean).slice(0, 5);
+  ]).slice(0, 5);
   const bullets = [];
   if (landscapeMode === "greenfield") {
     const targetPlatform = String(solutionSummary.target_platform || "").trim();
@@ -4423,6 +4436,10 @@ function renderDiscoverLandscape() {
     ["Database target", String(solutionSummary.database_target || "").trim()],
     ["Jurisdiction", String(solutionSummary.jurisdiction || "").trim()],
   ].filter((row) => !!row[1]);
+  const locCardLabel = landscapeMode === "greenfield" ? "Planned text LOC" : "Estimated text LOC";
+  const locCardNote = landscapeMode === "greenfield"
+    ? "Scope-derived planning estimate"
+    : "Shallow scan of text-like files";
   const languageHtml = languageRows.slice(0, 8).map((row) => `
     <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">
       <strong>${escapeHtml(String(row?.language || "Unknown"))}</strong><br/>
@@ -4432,16 +4449,36 @@ function renderDiscoverLandscape() {
   const buildHtml = buildRows.slice(0, 8).map((row) => `<li><strong>${escapeHtml(String(row?.kind || ""))}</strong> · ${escapeHtml(String((row?.paths || []).slice(0, 3).join(", ") || "n/a"))}</li>`).join("");
   const archetypeHtml = archetypeRows.slice(0, 8).map((row) => `<span class="rounded border border-slate-300 bg-slate-50 px-2 py-1">${escapeHtml(String(row?.archetype || ""))}</span>`).join("");
   const datastoreHtml = datastoreRows.slice(0, 8).map((row) => `<span class="rounded border border-slate-300 bg-slate-50 px-2 py-1">${escapeHtml(String(row?.datastore || ""))}</span>`).join("");
-  const componentTable = componentRows.slice(0, 16).map((row) => `
-    <tr>
-      <td class="px-2 py-1">${escapeHtml(String(row?.name || row?.component_id || ""))}</td>
-      <td class="px-2 py-1">${escapeHtml(String(row?.component_kind || ""))}</td>
-      <td class="px-2 py-1">${escapeHtml(String((row?.language_mix || [])[0]?.language || "n/a"))}</td>
-      <td class="px-2 py-1 text-right">${escapeHtml(String(row?.stats?.loc || 0))}</td>
-      <td class="px-2 py-1">${escapeHtml(String((row?.risk_flags || []).slice(0, 2).join(", ") || "none"))}</td>
-      <td class="px-2 py-1">${escapeHtml(String((row?.suggested_tracks || []).map((x) => x?.lane || x?.title || "").filter(Boolean).slice(0, 2).join(", ") || "review"))}</td>
-    </tr>
-  `).join("");
+  const componentTable = componentRows.slice(0, 16).map((row) => {
+    const componentName = String(row?.name || row?.component_id || "").trim();
+    const componentPath = String((row?.project_files || [])[0] || (row?.root_paths || [])[0] || "").trim();
+    const componentKind = String(row?.component_kind || "").trim();
+    const primaryLanguage = String((row?.language_mix || [])[0]?.language || "n/a").trim();
+    const locValue = Number(row?.stats?.loc || 0);
+    const isArtifactOnly = locValue <= 0 && ["reporting_pack", "batch_pack"].includes(componentKind);
+    const locDisplay = isArtifactOnly ? "n/a" : String(locValue);
+    const locNote = componentKind === "reporting_pack"
+      ? "artifact-based"
+      : (componentKind === "batch_pack" && locValue <= 0 ? "script pack" : "");
+    const riskDisplay = String((row?.risk_flags || []).slice(0, 2).join(", ") || "none");
+    const trackDisplay = String((row?.suggested_tracks || []).map((x) => x?.lane || x?.title || "").filter(Boolean).slice(0, 2).join(", ") || "review");
+    return `
+      <tr>
+        <td class="px-2 py-1">
+          <div class="font-medium text-slate-900">${escapeHtml(componentName)}</div>
+          ${componentPath ? `<div class="mt-0.5 text-[10px] text-slate-600">${escapeHtml(componentPath)}</div>` : ""}
+        </td>
+        <td class="px-2 py-1">${escapeHtml(componentKind)}</td>
+        <td class="px-2 py-1">${escapeHtml(primaryLanguage)}</td>
+        <td class="px-2 py-1 text-right">
+          <div>${escapeHtml(locDisplay)}</div>
+          ${locNote ? `<div class="text-[10px] text-slate-500">${escapeHtml(locNote)}</div>` : ""}
+        </td>
+        <td class="px-2 py-1">${escapeHtml(riskDisplay)}</td>
+        <td class="px-2 py-1">${escapeHtml(trackDisplay)}</td>
+      </tr>
+    `;
+  }).join("");
   const trackHtml = trackRows.slice(0, 10).map((row) => `
     <div class="rounded border border-slate-300 bg-white p-2">
       <div class="flex items-start justify-between gap-2">
@@ -4504,7 +4541,7 @@ function renderDiscoverLandscape() {
     ${landscapeIntro ? `<div class="mb-2 rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-700">${landscapeIntro}</div>` : ""}
     <div class="grid gap-2 sm:grid-cols-6">
       <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Total files</strong><br/>${escapeHtml(String(scan.total_files || 0))}</div>
-      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Estimated LOC</strong><br/>${escapeHtml(String(scan.total_loc || 0))}</div>
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>${locCardLabel}</strong><br/>${escapeHtml(String(scan.total_loc || 0))}<div class="text-[10px] text-slate-500">${escapeHtml(locCardNote)}</div></div>
       <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Build systems</strong><br/>${escapeHtml(String(buildRows.length))}</div>
       <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Components</strong><br/>${escapeHtml(String(componentRows.length))}</div>
       <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Tracks</strong><br/>${escapeHtml(String(trackRows.length))}</div>
