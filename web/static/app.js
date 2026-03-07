@@ -12494,6 +12494,14 @@ async function fetchRunSnapshot(runId) {
   invalidateCollaborationCache(data.run?.run_id || runId);
   state.currentRun = data.run;
   if (data.run?.run_id) state.dashboardRunDetails[data.run.run_id] = data.run;
+  try {
+    const logsData = await api(`/api/runs/${runId}/logs?limit=400`, null);
+    if (Array.isArray(logsData?.logs)) {
+      state.currentRun.progress_logs = logsData.logs;
+    }
+  } catch (_err) {
+    // Tail logs are optional; keep snapshot usable even if the logs endpoint is unavailable.
+  }
   state.selectedStage = determineCurrentStage(state.currentRun);
   const p = state.currentRun?.pipeline_state || {};
   if (p && typeof p === "object") {

@@ -556,6 +556,7 @@ class RunRecord:
     current_stage: int = 0
     stage_status: dict[int, str] = field(default_factory=dict)
     progress_logs: list[str] = field(default_factory=list)
+    progress_log_count: int = 0
     pipeline_state: dict[str, Any] | None = None
     error_message: str | None = None
     retry_count: int = 0
@@ -1677,7 +1678,13 @@ class PipelineRunManager:
     def _append_log(self, record: RunRecord, message: str, timestamped: bool = False) -> None:
         line = message if timestamped else f"[{_ts()}] {message}"
         record.progress_logs.append(line)
+        record.progress_log_count = max(int(record.progress_log_count or 0) + 1, len(record.progress_logs))
         record.updated_at = _utc_now()
+        if hasattr(self.store, "append_log_event"):
+            try:
+                self.store.append_log_event(record.run_id, line)
+            except Exception:
+                pass
         self._emit_event(record.run_id, "log", {"line": line, "run_id": record.run_id})
         now_mono = time.monotonic()
         should_persist = (
@@ -2009,6 +2016,7 @@ class PipelineRunManager:
                     if isinstance(state_payload.get("progress_logs", []), list)
                     else []
                 )
+                existing.progress_log_count = int(state_payload.get("progress_log_count", len(existing.progress_logs)) or len(existing.progress_logs))
                 existing.pipeline_state = pipeline_state
                 existing.error_message = str(state_payload.get("error_message", "") or "")
                 existing.retry_count = self._to_int(pipeline_state.get("retry_count", 0), 0)
@@ -2059,6 +2067,7 @@ class PipelineRunManager:
             progress_logs=list(state_payload.get("progress_logs", []))
             if isinstance(state_payload.get("progress_logs", []), list)
             else [],
+            progress_log_count=int(state_payload.get("progress_log_count", 0) or 0),
             pipeline_state=pipeline_state,
             error_message=str(state_payload.get("error_message", "") or ""),
             retry_count=self._to_int(pipeline_state.get("retry_count", 0), 0),
@@ -2262,6 +2271,7 @@ class PipelineRunManager:
             "next_stage_idx": int(pipeline_state.get("next_stage_idx", 0) or 0),
             "stage_status": stage_status,
             "progress_logs": persisted.get("progress_logs", []),
+            "progress_log_count": int(persisted.get("progress_log_count", len(persisted.get("progress_logs", [])) if isinstance(persisted.get("progress_logs", []), list) else 0) or 0),
             "pipeline_state": pipeline_state,
             "error_message": persisted.get("error_message"),
             "retry_count": 0,
@@ -2293,6 +2303,7 @@ class PipelineRunManager:
             "next_stage_idx": record.next_stage_idx,
             "stage_status": copy.deepcopy(record.stage_status),
             "progress_logs": list(record.progress_logs),
+            "progress_log_count": max(int(record.progress_log_count or 0), len(record.progress_logs)),
             "pipeline_state": copy.deepcopy(record.pipeline_state),
             "error_message": record.error_message,
             "retry_count": record.retry_count,
@@ -7076,6 +7087,7 @@ async def api_get_run(request):
 def _compact_run_status(run: dict[str, Any]) -> dict[str, Any]:
     logs = run.get("progress_logs", []) if isinstance(run.get("progress_logs", []), list) else []
     stage_status = run.get("stage_status", {}) if isinstance(run.get("stage_status", {}), dict) else {}
+    log_count = int(run.get("progress_log_count", len(logs)) or len(logs))
     return {
         "run_id": str(run.get("run_id", "")),
         "status": str(run.get("status", "unknown")),
@@ -7084,7 +7096,7 @@ def _compact_run_status(run: dict[str, Any]) -> dict[str, Any]:
         "stage_status": stage_status,
         "error_message": run.get("error_message"),
         "updated_at": str(run.get("updated_at", "")),
-        "progress_log_count": len(logs),
+        "progress_log_count": log_count,
         "progress_logs_tail": logs[-80:],
     }
 
@@ -7095,6 +7107,36 @@ async def api_get_run_status(request):
     if not data:
         return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
     return JSONResponse({"ok": True, "status": _compact_run_status(data)})
+
+
+async def api_get_run_logs(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        limit = max(1, min(1000, int(str(request.query_params.get("limit", "200")).strip() or "200")))
+    except ValueError:
+        limit = 200
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id is required"}, status_code=400)
+    data = MANAGER.get_run(run_id)
+    if not data:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    logs: list[str] = []
+    if hasattr(RUN_STORE, "load_logs"):
+        try:
+            logs = RUN_STORE.load_logs(run_id, limit=limit)
+        except Exception:
+            logs = []
+    if not logs:
+        raw = data.get("progress_logs", []) if isinstance(data.get("progress_logs", []), list) else []
+        logs = raw[-limit:]
+    return JSONResponse(
+        {
+            "ok": True,
+            "run_id": run_id,
+            "logs": logs,
+            "count": int(data.get("progress_log_count", len(logs)) or len(logs)),
+        }
+    )
 
 
 async def api_list_runs(_request):
@@ -12510,6 +12552,7 @@ routes = [
     Route("/api/runs", api_start_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}", api_get_run, methods=["GET"]),
     Route("/api/runs/{run_id:str}/status", api_get_run_status, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/logs", api_get_run_logs, methods=["GET"]),
     Route("/api/runs/{run_id:str}/approve", api_approve_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/pause", api_pause_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/resume", api_resume_run, methods=["POST"]),

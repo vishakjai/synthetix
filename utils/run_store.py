@@ -32,6 +32,17 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+RUN_LOG_TAIL_LIMIT = 200
+
+
+def _tail_logs(progress_logs: list[str], limit: int = RUN_LOG_TAIL_LIMIT) -> list[str]:
+    if not isinstance(progress_logs, list):
+        return []
+    if limit <= 0:
+        return []
+    return [str(x) for x in progress_logs[-limit:]]
+
+
 class PipelineRunStore:
     """File-backed run history for pipeline outputs and logs."""
 
@@ -217,6 +228,14 @@ class PipelineRunStore:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def append_log_event(self, run_id: str, line: str) -> None:
+        return None
+
+    def load_logs(self, run_id: str, limit: int = RUN_LOG_TAIL_LIMIT) -> list[str]:
+        state = self.load_run(run_id) or {}
+        logs = state.get("progress_logs", []) if isinstance(state.get("progress_logs", []), list) else []
+        return _tail_logs(logs, limit=limit)
+
 
 class GcsPipelineRunStore:
     """GCS-backed run history shared across Cloud Run instances."""
@@ -380,6 +399,14 @@ class GcsPipelineRunStore:
             return None
         return self._read_json(self._path(run_id, f"stage_{stage}.json"))
 
+    def append_log_event(self, run_id: str, line: str) -> None:
+        return None
+
+    def load_logs(self, run_id: str, limit: int = RUN_LOG_TAIL_LIMIT) -> list[str]:
+        state = self.load_run(run_id) or {}
+        logs = state.get("progress_logs", []) if isinstance(state.get("progress_logs", []), list) else []
+        return _tail_logs(logs, limit=limit)
+
 
 class FirestorePipelineRunStore:
     """Firestore-backed run history shared across Cloud Run instances."""
@@ -395,6 +422,9 @@ class FirestorePipelineRunStore:
 
     def _stage_doc(self, run_id: str, stage: int):
         return self._doc(run_id).collection("stages").document(str(stage))
+
+    def _event_collection(self, run_id: str):
+        return self._doc(run_id).collection("events")
 
     def create_run(
         self,
@@ -419,7 +449,9 @@ class FirestorePipelineRunStore:
                     "pipeline_status": initial_status,
                     "pipeline_state": None,
                     "stage_status": {},
-                    "progress_logs": [],
+                    "progress_logs_tail": [],
+                    "progress_log_count": 0,
+                    "last_log_at": now,
                     "error_message": None,
                     "saved_at": now,
                 },
@@ -483,6 +515,7 @@ class FirestorePipelineRunStore:
         error_message: str | None,
     ) -> None:
         now = _utc_now_iso()
+        tail = _tail_logs(progress_logs, limit=RUN_LOG_TAIL_LIMIT)
         self._doc(run_id).set(
             {
                 "updated_at": now,
@@ -492,12 +525,24 @@ class FirestorePipelineRunStore:
                     "pipeline_status": pipeline_status,
                     "pipeline_state": pipeline_state,
                     "stage_status": {str(k): v for k, v in stage_status.items()},
-                    "progress_logs": progress_logs,
+                    "progress_logs_tail": tail,
+                    "progress_log_count": len(progress_logs),
+                    "last_log_at": now,
                     "error_message": error_message,
                     "saved_at": now,
                 },
             },
             merge=True,
+        )
+
+    def append_log_event(self, run_id: str, line: str) -> None:
+        now = _utc_now_iso()
+        self._event_collection(run_id).add(
+            {
+                "kind": "log",
+                "line": str(line),
+                "created_at": now,
+            }
         )
 
     def list_runs(self, limit: int = 25) -> list[dict[str, Any]]:
@@ -526,7 +571,18 @@ class FirestorePipelineRunStore:
         if not isinstance(payload, dict):
             return None
         state = payload.get("state", {})
-        return state if isinstance(state, dict) else None
+        if not isinstance(state, dict):
+            return None
+        progress_tail = (
+            list(state.get("progress_logs_tail", []))
+            if isinstance(state.get("progress_logs_tail", []), list)
+            else []
+        )
+        return {
+            **state,
+            "progress_logs": progress_tail,
+            "progress_log_count": int(state.get("progress_log_count", len(progress_tail)) or len(progress_tail)),
+        }
 
     def load_meta(self, run_id: str) -> dict[str, Any] | None:
         snap = self._doc(run_id).get()
@@ -552,6 +608,25 @@ class FirestorePipelineRunStore:
             return None
         payload = snap.to_dict() or {}
         return payload if isinstance(payload, dict) else None
+
+    def load_logs(self, run_id: str, limit: int = RUN_LOG_TAIL_LIMIT) -> list[str]:
+        query = (
+            self._event_collection(run_id)
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(max(1, min(1000, int(limit or RUN_LOG_TAIL_LIMIT))))
+        )
+        rows: list[str] = []
+        for snap in query.stream():
+            payload = snap.to_dict() or {}
+            line = str(payload.get("line", "")).strip() if isinstance(payload, dict) else ""
+            if line:
+                rows.append(line)
+        rows.reverse()
+        if rows:
+            return rows
+        state = self.load_run(run_id) or {}
+        logs = state.get("progress_logs", []) if isinstance(state.get("progress_logs", []), list) else []
+        return _tail_logs(logs, limit=limit)
 
 
 def build_pipeline_run_store(root_dir: str) -> PipelineRunStore | GcsPipelineRunStore | FirestorePipelineRunStore:
