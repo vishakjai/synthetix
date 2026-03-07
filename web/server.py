@@ -308,10 +308,19 @@ def _workflow_state_for_stage(stage_num: int) -> str:
 
 
 def _analyst_output_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    def _is_full_output(candidate: Any) -> bool:
+        return isinstance(candidate, dict) and bool(
+            candidate.get("raw_artifacts")
+            or candidate.get("analyst_report_v2")
+            or candidate.get("requirements_pack")
+            or candidate.get("project_name")
+            or candidate.get("vb6_analysis")
+        )
+
     if not isinstance(state, dict):
         return {}
     direct = state.get("analyst_output", {})
-    if isinstance(direct, dict):
+    if _is_full_output(direct):
         return direct
     results = state.get("agent_results", [])
     if isinstance(results, list):
@@ -321,8 +330,35 @@ def _analyst_output_from_state(state: dict[str, Any]) -> dict[str, Any]:
             if int(row.get("stage", 0) or 0) != 1:
                 continue
             output = row.get("output", {})
-            if isinstance(output, dict):
+            if _is_full_output(output):
                 return output
+    run_id = str(state.get("run_id", "")).strip()
+    if run_id:
+        try:
+            snapshot = RUN_STORE.load_stage_snapshot(run_id, 1)
+        except Exception:
+            snapshot = None
+        if isinstance(snapshot, dict):
+            result = snapshot.get("result", {})
+            if isinstance(result, dict):
+                output = result.get("output", {})
+                if _is_full_output(output):
+                    return output
+            snap_state = snapshot.get("pipeline_state", {})
+            if isinstance(snap_state, dict):
+                direct = snap_state.get("analyst_output", {})
+                if _is_full_output(direct):
+                    return direct
+                snap_results = snap_state.get("agent_results", [])
+                if isinstance(snap_results, list):
+                    for row in reversed(snap_results):
+                        if not isinstance(row, dict):
+                            continue
+                        if int(row.get("stage", 0) or 0) != 1:
+                            continue
+                        output = row.get("output", {})
+                        if _is_full_output(output):
+                            return output
     return {}
 
 
