@@ -8020,13 +8020,21 @@ function discoverStepCompletion() {
   const integration = getIntegrationContext();
   const projectStateReady = !!integration.project_state_detected;
   let connectComplete = projectStateReady;
-  const sourceMode = String(integration?.scan_scope?.modernization_source_mode || "manual").trim().toLowerCase();
+  const bundleId = String(
+    integration?.evidence?.bundle_id
+    || state.discoverEvidenceBundle?.data?.evidence_bundle_v1?.bundle_id
+    || ""
+  ).trim();
+  let sourceMode = String(integration?.scan_scope?.modernization_source_mode || "manual").trim().toLowerCase();
+  if (sourceMode === "manual" && bundleId && integration.project_state_detected === "brownfield") {
+    sourceMode = "evidence";
+  }
   if (integration.project_state_detected === "brownfield") {
     if (sourceMode === "evidence") {
-      connectComplete = connectComplete && !!String(integration?.evidence?.bundle_id || "").trim();
+      connectComplete = connectComplete && !!bundleId;
     } else if (sourceMode === "hybrid") {
       connectComplete = connectComplete && (
-        !!String(integration?.evidence?.bundle_id || "").trim()
+        !!bundleId
         || (!!integration.brownfield.repo_provider && !!integration.brownfield.repo_url)
       );
     } else {
