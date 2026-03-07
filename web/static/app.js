@@ -13870,6 +13870,22 @@ function bindEvents() {
           alert("For repository scan mode, connect a GitHub repository in Discover Connect.");
           return;
         }
+      } else if (isModernizationEvidenceMode()) {
+        const integration = getIntegrationContext();
+        const bundleId = String(integration?.evidence?.bundle_id || "").trim();
+        if (!bundleId) {
+          alert("For imported analysis mode, upload analysis outputs in Discover Connect.");
+          return;
+        }
+      } else if (isModernizationHybridMode()) {
+        const integration = getIntegrationContext();
+        const provider = String(integration?.brownfield?.repo_provider || "").toLowerCase();
+        const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+        const bundleId = String(integration?.evidence?.bundle_id || "").trim();
+        if (!bundleId && (provider !== "github" || !repoUrl) && !(el.legacyCode.value || "").trim()) {
+          alert("For hybrid mode, connect a GitHub repository, upload analysis outputs, or provide legacy code.");
+          return;
+        }
       } else if (!(el.legacyCode.value || "").trim()) {
         alert("Please provide legacy code for code modernization, or switch source mode to repository scan.");
         return;
