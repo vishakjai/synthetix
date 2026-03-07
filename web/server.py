@@ -2002,7 +2002,7 @@ class PipelineRunManager:
                 existing.status = str(state_payload.get("pipeline_status", "completed"))
                 existing.created_at = str(meta.get("created_at", ""))
                 existing.updated_at = str(meta.get("updated_at", ""))
-                existing.current_stage = max(stage_status.keys(), default=0)
+                existing.current_stage = _current_stage_from_status_map(stage_status, pipeline_state)
                 existing.stage_status = stage_status
                 existing.progress_logs = (
                     list(state_payload.get("progress_logs", []))
@@ -2054,7 +2054,7 @@ class PipelineRunManager:
             status=str(state_payload.get("pipeline_status", "completed")),
             created_at=str(meta.get("created_at", "")),
             updated_at=str(meta.get("updated_at", "")),
-            current_stage=max(stage_status.keys(), default=0),
+            current_stage=_current_stage_from_status_map(stage_status, pipeline_state),
             stage_status=stage_status,
             progress_logs=list(state_payload.get("progress_logs", []))
             if isinstance(state_payload.get("progress_logs", []), list)
@@ -6864,6 +6864,19 @@ def _parse_iso_dt(value: Any) -> datetime | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _current_stage_from_status_map(stage_status: dict[int, str], pipeline_state: dict[str, Any] | None = None) -> int:
+    current_stage = (
+        int((pipeline_state or {}).get("current_stage", 0) or 0)
+        if isinstance(pipeline_state, dict)
+        else 0
+    )
+    if current_stage > 0:
+        return current_stage
+    active_states = {"running", "completed", "failed", "waiting_approval", "paused"}
+    seen = [stage for stage, state in stage_status.items() if str(state).strip().lower() in active_states]
+    return max(seen) if seen else 0
 
 
 def _enqueue_run_worker_task(run_id: str) -> tuple[bool, str]:
