@@ -296,12 +296,20 @@ const el = {
   projectStateResult: document.getElementById("project-state-result"),
   brownfieldIntegrations: document.getElementById("brownfield-integrations"),
   greenfieldIntegrations: document.getElementById("greenfield-integrations"),
+  bfSourceMode: document.getElementById("bf-source-mode"),
   bfRepoProvider: document.getElementById("bf-repo-provider"),
   bfRepoUrl: document.getElementById("bf-repo-url"),
   bfIssueProvider: document.getElementById("bf-issue-provider"),
   bfIssueProject: document.getElementById("bf-issue-project"),
   bfDocsUrl: document.getElementById("bf-docs-url"),
   bfRuntimeTelemetry: document.getElementById("bf-runtime-telemetry"),
+  bfEvidencePanel: document.getElementById("bf-evidence-panel"),
+  bfEvidenceFiles: document.getElementById("bf-evidence-files"),
+  bfUploadEvidence: document.getElementById("bf-upload-evidence"),
+  bfEvidenceStatus: document.getElementById("bf-evidence-status"),
+  bfEvidencePreview: document.getElementById("bf-evidence-preview"),
+  bfEvidenceOutputTarget: document.getElementById("bf-evidence-output-target"),
+  bfEvidenceAcceptRisk: document.getElementById("bf-evidence-accept-risk"),
   bfLoadGithubTree: document.getElementById("bf-load-github-tree"),
   bfGithubTreeStatus: document.getElementById("bf-github-tree-status"),
   bfGithubTreePreview: document.getElementById("bf-github-tree-preview"),
@@ -556,6 +564,11 @@ const state = {
     threadId: "",
     requestToken: "",
     inFlightPromise: null,
+  },
+  discoverEvidenceBundle: {
+    loading: false,
+    error: "",
+    data: null,
   },
   domainPackCatalog: [],
   currentRunId: "",
@@ -4302,6 +4315,8 @@ function _discoverLandscapeArtifacts() {
 function renderDiscoverScopeGuidance() {
   if (!el.discoverScopeGuidance) return;
   const { landscape, components, tracks } = _discoverLandscapeArtifacts();
+  const raw = _discoverRawArtifacts();
+  const evidenceCoverage = (raw.evidence_coverage_report_v1 && typeof raw.evidence_coverage_report_v1 === "object") ? raw.evidence_coverage_report_v1 : {};
   const landscapeMode = String(landscape?.landscape_mode || "").trim().toLowerCase();
   const solutionSummary = (landscape.solution_summary && typeof landscape.solution_summary === "object") ? landscape.solution_summary : {};
   const componentRows = Array.isArray(components.components) ? components.components : [];
@@ -4330,6 +4345,7 @@ function renderDiscoverScopeGuidance() {
   const questions = dedupePreserveOrder([
     ...trackRows.flatMap((row) => Array.isArray(row?.gating_questions) ? row.gating_questions : []),
     ...Array.isArray(tracks.open_questions) ? tracks.open_questions : [],
+    ...Array.isArray(evidenceCoverage.blockers) ? evidenceCoverage.blockers : [],
   ]).slice(0, 5);
   const bullets = [];
   if (landscapeMode === "greenfield") {
@@ -4367,6 +4383,11 @@ function renderDiscoverScopeGuidance() {
     <ul class="mt-1 list-disc pl-4 text-slate-700">
       ${bullets.map((row) => `<li>${row}</li>`).join("")}
     </ul>
+    ${String(landscape?.source_mode || "").trim() === "imported_analysis" ? `
+      <div class="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
+        Evidence Mode: architecture/dependency findings are evidence-backed; behavioral and data parity remain coverage-scored and may require verification.
+      </div>
+    ` : ""}
     <div class="mt-2 rounded border border-slate-300 bg-white p-2">
       <p class="font-semibold text-slate-900">Questions to resolve before scope lock</p>
       <ul class="mt-1 list-disc pl-4 text-slate-700">
@@ -4379,9 +4400,11 @@ function renderDiscoverScopeGuidance() {
 function renderDiscoverLandscape() {
   if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
   const analystView = state.discoverAnalystBrief || {};
+  const raw = _discoverRawArtifacts();
   const integration = getIntegrationContext();
   const projectState = String(integration?.project_state_detected || state.projectState?.detected || "").trim().toLowerCase();
   const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
+  const evidenceBundleId = String(integration?.evidence?.bundle_id || "").trim();
   const greenfieldTarget = String(integration?.greenfield?.repo_target || "").trim();
   const { landscape, components, tracks } = _discoverLandscapeArtifacts();
   const landscapeMode = String(landscape.landscape_mode || (projectState === "greenfield" ? "greenfield" : "brownfield")).trim().toLowerCase();
@@ -4396,11 +4419,14 @@ function renderDiscoverLandscape() {
   const componentRows = Array.isArray(components.components) ? components.components : [];
   const edgeSummary = (components.graph_summary && typeof components.graph_summary === "object") ? components.graph_summary : {};
   const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
+  const evidenceCoverage = (raw.evidence_coverage_report_v1 && typeof raw.evidence_coverage_report_v1 === "object") ? raw.evidence_coverage_report_v1 : {};
+  const evidenceDimensions = (evidenceCoverage.dimensions && typeof evidenceCoverage.dimensions === "object") ? evidenceCoverage.dimensions : {};
+  const evidenceBlockers = Array.isArray(evidenceCoverage.blockers) ? evidenceCoverage.blockers : [];
   const hasLandscapeData = !!componentRows.length || !!trackRows.length || !!languageRows.length || !!buildRows.length || !!riskRows.length;
-  if (landscapeMode !== "greenfield" && projectState !== "greenfield" && !repoUrl) {
+  if (landscapeMode !== "greenfield" && projectState !== "greenfield" && !repoUrl && !evidenceBundleId) {
     const html = `
       <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
-        Connect a public or private GitHub repository in <strong>Connect</strong> to generate the Landscape view.
+        Connect a public/private GitHub repository or upload imported analysis outputs in <strong>Connect</strong> to generate the Landscape view.
       </div>
     `;
     if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
@@ -4408,9 +4434,12 @@ function renderDiscoverLandscape() {
     return;
   }
   if (analystView.loading && !hasLandscapeData) {
+    const loadingLabel = landscapeMode === "greenfield"
+      ? (greenfieldTarget || "greenfield scope")
+      : (evidenceBundleId || repoUrl || "brownfield scope");
     const html = `
       <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
-        Landscape scan in progress for <strong>${escapeHtml(landscapeMode === "greenfield" ? (greenfieldTarget || "greenfield scope") : repoUrl)}</strong>. Repo MRI or planned solution tracks will appear here when the analyst brief returns.
+        Landscape scan in progress for <strong>${escapeHtml(loadingLabel)}</strong>. Repo MRI or planned solution tracks will appear here when the analyst brief returns.
       </div>
     `;
     if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
@@ -4420,7 +4449,7 @@ function renderDiscoverLandscape() {
   if (!hasLandscapeData) {
     const html = `
       <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
-        No Landscape data is available yet. ${landscapeMode === "greenfield" ? "Provide a business objective or target delivery context, then click <strong>Refresh Landscape</strong>." : "Open <strong>Landscape</strong> after connecting a repo, or click <strong>Refresh Landscape</strong> to run the deterministic repo scan now."}
+        No Landscape data is available yet. ${landscapeMode === "greenfield" ? "Provide a business objective or target delivery context, then click <strong>Refresh Landscape</strong>." : (evidenceBundleId ? "Imported analysis is available but has not been normalized into a Landscape view yet. Click <strong>Refresh Landscape</strong>." : "Open <strong>Landscape</strong> after connecting a repo or uploading analysis outputs, or click <strong>Refresh Landscape</strong> to run the deterministic scan now.")}
       </div>
     `;
     if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
@@ -4519,6 +4548,23 @@ function renderDiscoverLandscape() {
   const landscapeIntro = landscapeMode === "greenfield"
     ? `Greenfield landscape derived from scope inputs${greenfieldTarget ? ` for ${escapeHtml(greenfieldTarget)}` : ""}.`
     : "";
+  const evidenceCoverageHtml = String(landscape.source_mode || "").trim() === "imported_analysis"
+    ? `
+      <div class="mt-2 rounded border border-amber-300 bg-amber-50 p-2">
+        <p class="font-semibold text-amber-950">Evidence Coverage</p>
+        <div class="mt-2 grid gap-1 sm:grid-cols-4">
+          ${[
+            ["Architecture", Number(evidenceDimensions.architecture || 0)],
+            ["Dependencies", Number(evidenceDimensions.dependencies || 0)],
+            ["Behavior", Number(evidenceDimensions.behavior || 0)],
+            ["Data", Number(evidenceDimensions.data || 0)],
+          ].map((row) => `<div class="rounded border border-amber-200 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>${escapeHtml(String(row[0]))}</strong><br/>${escapeHtml(String(row[1]))}%</div>`).join("")}
+        </div>
+        <p class="mt-2 text-[11px] text-amber-900">Proceed state: <strong>${escapeHtml(String(evidenceCoverage.proceed_state || "review_required"))}</strong></p>
+        <ul class="mt-1 list-disc pl-4 text-[11px] text-amber-900">${(evidenceBlockers.length ? evidenceBlockers.slice(0, 4).map((row) => `<li>${escapeHtml(String(row))}</li>`).join("") : "<li>No blockers reported.</li>")}</ul>
+      </div>
+    `
+    : "";
   const greenfieldSummaryHtml = landscapeMode === "greenfield"
     ? `
       <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
@@ -4567,6 +4613,7 @@ function renderDiscoverLandscape() {
           <p class="font-semibold text-slate-900">${dependencyHeading}</p>
           <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
         </div>
+        ${evidenceCoverageHtml}
         ${greenfieldSummaryHtml}
       </div>
       <div class="rounded border border-slate-300 bg-white p-2">
@@ -6949,6 +6996,14 @@ function isModernizationRepoScanMode() {
   return isCodeModernizationMode() && modernizationSourceMode() === "repo_scan";
 }
 
+function isModernizationEvidenceMode() {
+  return isCodeModernizationMode() && modernizationSourceMode() === "evidence";
+}
+
+function isModernizationHybridMode() {
+  return isCodeModernizationMode() && modernizationSourceMode() === "hybrid";
+}
+
 function isDatabaseConversionMode() {
   return currentUseCase() === "database_conversion";
 }
@@ -6987,20 +7042,29 @@ function setAutogeneratedObjective() {
 function toggleUseCasePanel() {
   const codeMode = isCodeModernizationMode();
   const dbMode = isDatabaseConversionMode();
+  const sourceMode = modernizationSourceMode();
 
   el.modernizationPanel.classList.toggle("hidden", !codeMode);
   if (el.databasePanel) {
     el.databasePanel.classList.remove("hidden");
   }
   if (el.modernizationManualInputs) {
-    const hideManual = codeMode && isModernizationRepoScanMode();
+    const hideManual = codeMode && ["repo_scan", "evidence", "hybrid"].includes(sourceMode);
     el.modernizationManualInputs.classList.toggle("hidden", hideManual);
+  }
+  if (el.bfEvidencePanel) {
+    const showEvidence = String(state.projectState?.detected || "").toLowerCase() === "brownfield" && ["evidence", "hybrid"].includes(sourceMode);
+    el.bfEvidencePanel.classList.toggle("hidden", !showEvidence);
   }
   if (el.modernizationSourceHelp) {
     if (!codeMode) {
       el.modernizationSourceHelp.textContent = "";
     } else if (isModernizationRepoScanMode()) {
       el.modernizationSourceHelp.textContent = "The analyst will scan the connected GitHub repository to infer current functionality.";
+    } else if (isModernizationEvidenceMode()) {
+      el.modernizationSourceHelp.textContent = "The analyst will ingest imported analysis outputs and generate evidence-backed artifacts with explicit coverage scoring.";
+    } else if (isModernizationHybridMode()) {
+      el.modernizationSourceHelp.textContent = "The analyst will combine the connected repository and imported analysis outputs into a single evidence-backed view.";
     } else {
       el.modernizationSourceHelp.textContent = "Use pasted/uploaded code when migrating a specific legacy file or module.";
     }
@@ -7030,6 +7094,7 @@ function detectProjectStateHeuristic() {
   const objective = String(el.objectives?.value || "").toLowerCase();
   const legacyCode = String(el.legacyCode?.value || "").trim();
   const dbSchema = String(el.dbSchema?.value || "").trim();
+  const evidenceBundleId = String(state.discoverEvidenceBundle?.data?.evidence_bundle_v1?.bundle_id || "").trim();
   const useCase = currentUseCase();
   const brownfieldTerms = [
     "legacy", "modernize", "migration", "migrate", "existing",
@@ -7039,6 +7104,7 @@ function detectProjectStateHeuristic() {
   if (useCase !== "business_objectives") score += 2;
   if (legacyCode) score += 3;
   if (dbSchema) score += 2;
+  if (evidenceBundleId) score += 3;
   brownfieldTerms.forEach((term) => {
     if (objective.includes(term)) score += 1;
   });
@@ -7075,6 +7141,7 @@ function applyProjectStateResult(result) {
   if (el.greenfieldIntegrations) {
     el.greenfieldIntegrations.classList.toggle("hidden", detected !== "greenfield");
   }
+  renderDiscoverIntegrationPreviews();
   renderDiscoverStepper();
 }
 
@@ -7186,20 +7253,120 @@ function renderDiscoverLinearIssuesPreview() {
   el.bfLinearIssuesPreview.innerHTML = rows;
 }
 
+function renderDiscoverEvidencePreview() {
+  if (!el.bfEvidenceStatus || !el.bfEvidencePreview || !el.bfEvidencePanel) return;
+  const sourceMode = modernizationSourceMode();
+  const showPanel = ["evidence", "hybrid"].includes(sourceMode) && String(state.projectState?.detected || "").toLowerCase() === "brownfield";
+  el.bfEvidencePanel.classList.toggle("hidden", !showPanel);
+  if (!showPanel) return;
+  const view = state.discoverEvidenceBundle || {};
+  const payload = (view.data && typeof view.data === "object") ? view.data : {};
+  const bundle = (payload.evidence_bundle_v1 && typeof payload.evidence_bundle_v1 === "object") ? payload.evidence_bundle_v1 : {};
+  const match = (payload.provider_match_report_v1 && typeof payload.provider_match_report_v1 === "object") ? payload.provider_match_report_v1 : {};
+  const coverage = (payload.evidence_coverage_report_v1 && typeof payload.evidence_coverage_report_v1 === "object") ? payload.evidence_coverage_report_v1 : {};
+  const dimensions = (coverage.dimensions && typeof coverage.dimensions === "object") ? coverage.dimensions : {};
+  const blockers = Array.isArray(coverage.blockers) ? coverage.blockers : [];
+  const files = Array.isArray(bundle.files) ? bundle.files : [];
+  if (view.loading) {
+    el.bfEvidenceStatus.textContent = "Uploading and parsing imported analysis...";
+    el.bfEvidenceStatus.className = "mt-2 text-[11px] text-slate-700";
+    el.bfEvidencePreview.innerHTML = "<p class='text-slate-700'>Evidence bundle is being created. Provider probing, extraction, and normalization are running now.</p>";
+    return;
+  }
+  if (view.error) {
+    el.bfEvidenceStatus.textContent = `Import failed: ${view.error}`;
+    el.bfEvidenceStatus.className = "mt-2 text-[11px] text-rose-700";
+    el.bfEvidencePreview.innerHTML = `<p class="text-rose-700">${escapeHtml(String(view.error || ""))}</p>`;
+    return;
+  }
+  if (!String(bundle.bundle_id || "").trim()) {
+    el.bfEvidenceStatus.textContent = "No imported analysis bundle uploaded.";
+    el.bfEvidenceStatus.className = "mt-2 text-[11px] text-slate-700";
+    el.bfEvidencePreview.innerHTML = "<p class='text-slate-700'>Upload one or more analysis reports to create an evidence bundle and coverage profile.</p>";
+    return;
+  }
+  const selectedTool = String(match.selected_tool || "unknown").trim() || "unknown";
+  const selectedConfidence = Number(match.selected_confidence || 0);
+  const buildAllowed = !!coverage.build_allowed;
+  const outputTarget = String(el.bfEvidenceOutputTarget?.value || "deliverable_pack_only").trim();
+  const coverageCards = [
+    ["Architecture", Number(dimensions.architecture || 0)],
+    ["Dependencies", Number(dimensions.dependencies || 0)],
+    ["Behavior", Number(dimensions.behavior || 0)],
+    ["Data", Number(dimensions.data || 0)],
+  ].map((row) => `<div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>${escapeHtml(String(row[0]))}</strong><br/>${escapeHtml(String(row[1]))}%</div>`).join("");
+  el.bfEvidenceStatus.textContent = `${String(bundle.bundle_id || "")} | ${files.length} files | provider=${selectedTool} | coverage ${buildAllowed ? "build-ready" : "evidence-backed only"}`;
+  el.bfEvidenceStatus.className = `mt-2 text-[11px] ${buildAllowed ? "text-emerald-700" : "text-amber-700"}`;
+  el.bfEvidencePreview.innerHTML = `
+    <div class="grid gap-2 sm:grid-cols-4">${coverageCards}</div>
+    <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+      <p class="font-semibold text-slate-900">Provider match</p>
+      <p class="mt-1 text-[11px] text-slate-700">Tool: ${escapeHtml(selectedTool)} | confidence=${escapeHtml(selectedConfidence.toFixed(2))} | output=${escapeHtml(outputTarget)}</p>
+    </div>
+    <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+      <p class="font-semibold text-slate-900">Imported files</p>
+      <ul class="mt-1 list-disc pl-4 text-[11px] text-slate-700">${(files.length ? files.slice(0, 8).map((row) => `<li>${escapeHtml(String(row.file_name || ""))}</li>`).join("") : "<li>No files captured.</li>")}</ul>
+    </div>
+    <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+      <p class="font-semibold text-slate-900">Blockers to proceed</p>
+      <ul class="mt-1 list-disc pl-4 text-[11px] text-slate-700">${(blockers.length ? blockers.map((row) => `<li>${escapeHtml(String(row))}</li>`).join("") : "<li>No blocking evidence gaps reported.</li>")}</ul>
+    </div>
+  `;
+}
+
 function renderDiscoverIntegrationPreviews() {
   renderDiscoverGitHubTreePreview();
   renderDiscoverLinearIssuesPreview();
+  renderDiscoverEvidencePreview();
+}
+
+async function uploadDiscoverEvidenceBundle() {
+  const files = Array.from(el.bfEvidenceFiles?.files || []);
+  if (!files.length) {
+    alert("Select one or more analysis exports first.");
+    return;
+  }
+  state.discoverEvidenceBundle = { loading: true, error: "", data: null };
+  renderDiscoverIntegrationPreviews();
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file));
+  try {
+    const data = await apiMultipart("/api/evidence/bundles", form, "POST");
+    state.discoverEvidenceBundle = { loading: false, error: "", data };
+    if (el.projectStateMode && String(el.projectStateMode.value || "auto").toLowerCase() === "auto") {
+      applyProjectStateResult({
+        detected: "brownfield",
+        confidence: 0.96,
+        reason: "Imported analysis evidence indicates an existing system under brownfield discovery.",
+      });
+    }
+    renderDiscoverIntegrationPreviews();
+    renderDiscoverStepper();
+    renderDiscoverLandscape();
+    renderDiscoverScopeGuidance();
+    await loadDiscoverAnalystBrief({ force: true });
+    setGlobalSearchStatus("Imported analysis bundle ready.");
+  } catch (err) {
+    state.discoverEvidenceBundle = { loading: false, error: String(err?.message || err || "Evidence upload failed."), data: null };
+    renderDiscoverIntegrationPreviews();
+    setGlobalSearchStatus(`Evidence upload failed: ${err.message || err}`, true);
+  } finally {
+    if (el.bfEvidenceFiles) el.bfEvidenceFiles.value = "";
+  }
 }
 
 function analystBriefRequestKey() {
   const integration = getIntegrationContext();
   const brownfield = integration?.brownfield || {};
+  const evidence = integration?.evidence || {};
   const payload = [
     String(currentUseCase() || ""),
     String(modernizationSourceMode() || "manual"),
     String(integration?.project_state_detected || ""),
     String(brownfield.repo_provider || ""),
     String(brownfield.repo_url || ""),
+    String(evidence.bundle_id || ""),
+    String(evidence.output_target || ""),
     String(el.objectives?.value || "").trim().slice(0, 500),
     String(el.legacyCode?.value || "").trim().slice(0, 500),
     String(el.dbSchema?.value || "").trim().slice(0, 500),
@@ -7212,15 +7379,18 @@ function analystBriefRequestKey() {
 function renderDiscoverAnalystBrief() {
   if (!el.discoverAnalystBriefStatus || !el.discoverAnalystBriefPreview) return;
   const view = state.discoverAnalystBrief || {};
+  const sourceMode = modernizationSourceMode();
   if (el.discoverRunAnalystBrief) {
     el.discoverRunAnalystBrief.disabled = !!view.loading;
     el.discoverRunAnalystBrief.textContent = view.loading ? "Running Analyst Brief..." : "Run Analyst Brief";
   }
   const loadingData = (view.data && typeof view.data === "object") ? view.data : null;
   if (view.loading && !loadingData) {
-    el.discoverAnalystBriefStatus.textContent = "Analyst Agent is reading sampled source files and inferring functionality...";
+    el.discoverAnalystBriefStatus.textContent = ["evidence", "hybrid"].includes(sourceMode)
+      ? "Analyst Agent is normalizing imported analysis evidence and deriving canonical artifacts..."
+      : "Analyst Agent is reading sampled source files and inferring functionality...";
     el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-slate-700";
-    el.discoverAnalystBriefPreview.innerHTML = `<p class="text-slate-700">Running source-aware analysis...</p>`;
+    el.discoverAnalystBriefPreview.innerHTML = `<p class="text-slate-700">${["evidence", "hybrid"].includes(sourceMode) ? "Running evidence-aware analysis..." : "Running source-aware analysis..."}</p>`;
     return;
   }
   if (view.error) {
@@ -7271,7 +7441,9 @@ function renderDiscoverAnalystBrief() {
   const rpOpenQuestions = Array.isArray(requirementsPack?.open_questions) ? requirementsPack.open_questions : [];
 
   if (!overview && !caps.length && !components.length) {
-    el.discoverAnalystBriefStatus.textContent = "Waiting for Landscape analysis of the connected source code.";
+    el.discoverAnalystBriefStatus.textContent = ["evidence", "hybrid"].includes(sourceMode)
+      ? "Waiting for Landscape analysis of the imported evidence bundle."
+      : "Waiting for Landscape analysis of the connected source code.";
     el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-slate-700";
     el.discoverAnalystBriefPreview.innerHTML = "Analyst summary will appear here after the Landscape scan runs.";
     return;
@@ -7353,6 +7525,7 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
       const candidateThreadParts = [
         String(integration?.project_state_detected || ""),
         String(integration?.brownfield?.repo_url || ""),
+        String(integration?.evidence?.bundle_id || ""),
         String(integration?.greenfield?.repo_target || ""),
         String(currentUseCase() || ""),
       ].filter(Boolean);
@@ -7372,7 +7545,7 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
             thread_id: inferredThreadId,
             workspace_id: "default-workspace",
             client_id: "default-client",
-            project_id: slugifyValue(String(integration?.brownfield?.repo_url || integration?.greenfield?.repo_target || "default-project")) || "default-project",
+            project_id: slugifyValue(String(integration?.brownfield?.repo_url || integration?.evidence?.bundle_id || integration?.greenfield?.repo_target || "default-project")) || "default-project",
             domain_pack_id: String(integration?.domain_pack_id || ""),
             domain_pack: integration?.custom_domain_pack || null,
             jurisdiction: String(integration?.jurisdiction || ""),
@@ -7590,6 +7763,18 @@ function getIntegrationContext() {
     if (!row || typeof row !== "object") return false;
     return String(row.workspace || "").trim() === workspace && String(row.project || "").trim() === project;
   }) || null;
+  const evidenceView = (state.discoverEvidenceBundle?.data && typeof state.discoverEvidenceBundle.data === "object")
+    ? state.discoverEvidenceBundle.data
+    : {};
+  const evidenceBundle = (evidenceView.evidence_bundle_v1 && typeof evidenceView.evidence_bundle_v1 === "object")
+    ? evidenceView.evidence_bundle_v1
+    : {};
+  const evidenceCoverage = (evidenceView.evidence_coverage_report_v1 && typeof evidenceView.evidence_coverage_report_v1 === "object")
+    ? evidenceView.evidence_coverage_report_v1
+    : {};
+  const evidenceProviderMatch = (evidenceView.provider_match_report_v1 && typeof evidenceView.provider_match_report_v1 === "object")
+    ? evidenceView.provider_match_report_v1
+    : {};
   return {
     project_state_mode: String(el.projectStateMode?.value || "auto"),
     project_state_detected: String(state.projectState.detected || ""),
@@ -7617,6 +7802,16 @@ function getIntegrationContext() {
       modernization_source_mode: String(el.modernizationSourceMode?.value || "manual"),
       include_paths: parseLines(el.includePaths?.value || ""),
       exclude_paths: parseLines(el.excludePaths?.value || ""),
+    },
+    evidence: {
+      source_mode: ["evidence", "hybrid"].includes(String(el.modernizationSourceMode?.value || "manual"))
+        ? String(el.modernizationSourceMode?.value || "manual")
+        : "",
+      bundle_id: String(evidenceBundle.bundle_id || "").trim(),
+      output_target: String(el.bfEvidenceOutputTarget?.value || "deliverable_pack_only").trim(),
+      accept_low_coverage_risk: !!el.bfEvidenceAcceptRisk?.checked,
+      provider_match: evidenceProviderMatch,
+      coverage: evidenceCoverage,
     },
     domain_pack_selection: String(domainPack.selected || "auto"),
     domain_pack_id: String(domainPack.domain_pack_id || ""),
@@ -7697,8 +7892,23 @@ function applyIntegrationContext(ctx) {
   if (el.analysisDepth) el.analysisDepth.value = String(scope.analysis_depth || "standard");
   if (el.telemetryMode) el.telemetryMode.value = String(scope.telemetry_mode || "off");
   if (el.modernizationSourceMode) el.modernizationSourceMode.value = String(scope.modernization_source_mode || "manual");
+  if (el.bfSourceMode) el.bfSourceMode.value = String(scope.modernization_source_mode || "manual");
   if (el.includePaths) el.includePaths.value = Array.isArray(scope.include_paths) ? scope.include_paths.join("\n") : "";
   if (el.excludePaths) el.excludePaths.value = Array.isArray(scope.exclude_paths) ? scope.exclude_paths.join("\n") : "";
+  const evidenceCtx = (ctx.evidence && typeof ctx.evidence === "object") ? ctx.evidence : {};
+  if (el.bfEvidenceOutputTarget) el.bfEvidenceOutputTarget.value = String(evidenceCtx.output_target || "deliverable_pack_only");
+  if (el.bfEvidenceAcceptRisk) el.bfEvidenceAcceptRisk.checked = !!evidenceCtx.accept_low_coverage_risk;
+  if (String(evidenceCtx.bundle_id || "").trim()) {
+    state.discoverEvidenceBundle = {
+      loading: false,
+      error: "",
+      data: {
+        evidence_bundle_v1: { bundle_id: String(evidenceCtx.bundle_id || "").trim(), files: [] },
+        provider_match_report_v1: (evidenceCtx.provider_match && typeof evidenceCtx.provider_match === "object") ? evidenceCtx.provider_match : {},
+        evidence_coverage_report_v1: (evidenceCtx.coverage && typeof evidenceCtx.coverage === "object") ? evidenceCtx.coverage : {},
+      },
+    };
+  }
 
   const selection = String(
     ctx.domain_pack_selection
@@ -7772,10 +7982,20 @@ function discoverStepCompletion() {
   const integration = getIntegrationContext();
   const projectStateReady = !!integration.project_state_detected;
   let connectComplete = projectStateReady;
+  const sourceMode = String(integration?.scan_scope?.modernization_source_mode || "manual").trim().toLowerCase();
   if (integration.project_state_detected === "brownfield") {
-    connectComplete = connectComplete
-      && !!integration.brownfield.repo_provider
-      && !!integration.brownfield.repo_url;
+    if (sourceMode === "evidence") {
+      connectComplete = connectComplete && !!String(integration?.evidence?.bundle_id || "").trim();
+    } else if (sourceMode === "hybrid") {
+      connectComplete = connectComplete && (
+        !!String(integration?.evidence?.bundle_id || "").trim()
+        || (!!integration.brownfield.repo_provider && !!integration.brownfield.repo_url)
+      );
+    } else {
+      connectComplete = connectComplete
+        && !!integration.brownfield.repo_provider
+        && !!integration.brownfield.repo_url;
+    }
   } else if (integration.project_state_detected === "greenfield") {
     connectComplete = connectComplete
       && !!integration.greenfield.repo_destination
@@ -7804,6 +8024,16 @@ function discoverStepCompletion() {
             String(integration.brownfield.repo_provider || "").toLowerCase() === "github"
             && !!String(integration.brownfield.repo_url || "").trim()
           )
+          : isModernizationEvidenceMode()
+            ? !!String(integration?.evidence?.bundle_id || "").trim()
+            : isModernizationHybridMode()
+              ? (
+                !!String(integration?.evidence?.bundle_id || "").trim()
+                || (
+                  String(integration.brownfield.repo_provider || "").toLowerCase() === "github"
+                  && !!String(integration.brownfield.repo_url || "").trim()
+                )
+              )
           : !!String(el.legacyCode?.value || "").trim()
       )
     )
@@ -12842,6 +13072,34 @@ async function startRun() {
         alert("Code modernization repository scan mode requires a connected GitHub repository in Discover Connect.");
         return;
       }
+    } else if (isModernizationEvidenceMode()) {
+      const bundleId = String(integrationContext?.evidence?.bundle_id || "").trim();
+      if (!bundleId) {
+        state.runStart.pending = false;
+        state.runStart.startedAt = 0;
+        renderRunControls();
+        renderProgress();
+        alert("Evidence Mode requires an uploaded analysis bundle in Discover Connect.");
+        setMode(MODES.DISCOVER);
+        setWizardStep(1);
+        setDiscoverStep(1);
+        return;
+      }
+    } else if (isModernizationHybridMode()) {
+      const provider = String(integrationContext?.brownfield?.repo_provider || "").toLowerCase();
+      const repoUrl = String(integrationContext?.brownfield?.repo_url || "").trim();
+      const bundleId = String(integrationContext?.evidence?.bundle_id || "").trim();
+      if (!bundleId && (provider !== "github" || !repoUrl)) {
+        state.runStart.pending = false;
+        state.runStart.startedAt = 0;
+        renderRunControls();
+        renderProgress();
+        alert("Hybrid mode requires a connected GitHub repository or an uploaded evidence bundle.");
+        setMode(MODES.DISCOVER);
+        setWizardStep(1);
+        setDiscoverStep(1);
+        return;
+      }
     } else if (!(el.legacyCode.value || "").trim()) {
       state.runStart.pending = false;
       state.runStart.startedAt = 0;
@@ -13424,6 +13682,13 @@ function bindEvents() {
       renderDiscoverAnalystBrief();
     });
   });
+  el.bfUploadEvidence?.addEventListener("click", () => el.bfEvidenceFiles?.click());
+  el.bfEvidenceFiles?.addEventListener("change", () => {
+    uploadDiscoverEvidenceBundle().catch((err) => {
+      state.discoverEvidenceBundle = { loading: false, error: String(err?.message || err || "Evidence upload failed."), data: null };
+      renderDiscoverIntegrationPreviews();
+    });
+  });
   el.bfLoadGithubTree?.addEventListener("click", () => {
     loadDiscoverGithubTree().catch((err) => {
       state.discoverGithubTree = { loading: false, error: String(err?.message || err || "Failed to load repo tree."), repo: null, tree: null };
@@ -13437,6 +13702,7 @@ function bindEvents() {
     });
   });
   [
+    el.bfSourceMode,
     el.bfRepoProvider,
     el.bfRepoUrl,
     el.bfIssueProvider,
@@ -13463,9 +13729,13 @@ function bindEvents() {
     state.discoverAutoFetch.linearKey = "";
     state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
     renderDomainPackControls();
+    if (node === el.bfSourceMode && el.modernizationSourceMode) el.modernizationSourceMode.value = String(el.bfSourceMode.value || "manual");
+    toggleUseCasePanel();
+    renderDiscoverIntegrationPreviews();
     renderDiscoverStepper();
   }));
   [
+    el.bfSourceMode,
     el.bfRepoProvider,
     el.bfIssueProvider,
     el.bfRuntimeTelemetry,
@@ -13484,8 +13754,11 @@ function bindEvents() {
     state.discoverAutoFetch.githubKey = "";
     state.discoverAutoFetch.linearKey = "";
     state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    if (node === el.bfSourceMode && el.modernizationSourceMode) el.modernizationSourceMode.value = String(el.bfSourceMode.value || "manual");
+    if (node === el.modernizationSourceMode && el.bfSourceMode) el.bfSourceMode.value = String(el.modernizationSourceMode.value || "manual");
     toggleUseCasePanel();
     renderDomainPackControls();
+    renderDiscoverIntegrationPreviews();
     renderDiscoverStepper();
   }));
 

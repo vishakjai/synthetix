@@ -9,6 +9,8 @@ jsonschema>=4.23.0
 starlette>=0.35.0,<0.36.0
 uvicorn>=0.30.0
 python-docx>=1.1.2
+pypdf>=5.1.0
+python-multipart>=0.0.9
 
 # LLM Providers
 anthropic>=0.40.0

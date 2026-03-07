@@ -98,6 +98,7 @@ from utils.analyst_docx import build_business_docx_bytes  # noqa: E402
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.landscape_router import build_greenfield_landscape_artifacts, build_landscape_artifacts  # noqa: E402
+from utils.evidence_mode import create_evidence_bundle, load_evidence_bundle  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -5068,6 +5069,50 @@ async def api_remove_knowledge_source(request):
     return JSONResponse({"ok": True, "settings": settings, "sources": hub.get("sources", [])})
 
 
+async def api_create_evidence_bundle(request):
+    try:
+        form = await request.form()
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Invalid multipart form data: {exc}"}, status_code=400)
+
+    uploads = form.getlist("files")
+    if not uploads:
+        single = form.get("file")
+        if single is not None:
+            uploads = [single]
+    if not uploads:
+        return JSONResponse({"ok": False, "error": "At least one uploaded analysis file is required."}, status_code=400)
+
+    files_payload: list[dict[str, Any]] = []
+    for upload in uploads:
+        try:
+            blob = await upload.read()
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": f"Failed to read uploaded file: {exc}"}, status_code=400)
+        files_payload.append(
+            {
+                "filename": str(getattr(upload, "filename", "") or "").strip() or "evidence.bin",
+                "content_type": str(getattr(upload, "content_type", "") or "").strip() or "application/octet-stream",
+                "content": blob,
+            }
+        )
+    try:
+        evidence = create_evidence_bundle(files_payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Evidence import failed: {exc}"}, status_code=500)
+    return JSONResponse({"ok": True, **evidence})
+
+
+async def api_get_evidence_bundle(request):
+    bundle_id = request.path_params.get("bundle_id", "")
+    payload = load_evidence_bundle(bundle_id)
+    if not payload:
+        return JSONResponse({"ok": False, "error": "evidence bundle not found"}, status_code=404)
+    return JSONResponse({"ok": True, "evidence_bundle_v1": payload})
+
+
 async def api_upsert_knowledge_set(request):
     payload = _get_json(await request.body())
     try:
@@ -5768,6 +5813,73 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         or payload.get("project_state_detected", "")
         or ("greenfield" if greenfield else "")
     ).strip().lower()
+    evidence_ctx = integration_ctx.get("evidence", {}) if isinstance(integration_ctx.get("evidence", {}), dict) else {}
+    evidence_source_mode = str(evidence_ctx.get("source_mode", "")).strip().lower()
+    evidence_bundle_id = str(evidence_ctx.get("bundle_id", "")).strip()
+
+    if evidence_source_mode in {"evidence", "hybrid"} and evidence_bundle_id:
+        bundle_payload = load_evidence_bundle(evidence_bundle_id)
+        if not bundle_payload:
+            return JSONResponse({"ok": False, "error": "Evidence bundle could not be loaded. Re-upload the analysis outputs."}, status_code=400)
+        bundle_dir = Path(ROOT / "run_artifacts" / "evidence_bundles" / safe_name(evidence_bundle_id))
+        normalized_path = bundle_dir / "normalized_artifacts.json"
+        normalized_artifacts: dict[str, Any] = {}
+        if normalized_path.exists():
+            try:
+                normalized_artifacts = _get_json(normalized_path.read_bytes())
+            except Exception:
+                normalized_artifacts = {}
+        coverage = (
+            normalized_artifacts.get("evidence_coverage_report_v1", {})
+            if isinstance(normalized_artifacts.get("evidence_coverage_report_v1", {}), dict)
+            else bundle_payload.get("evidence_coverage_report_v1", {})
+            if isinstance(bundle_payload.get("evidence_coverage_report_v1", {}), dict)
+            else {}
+        )
+        landscape = normalized_artifacts.get("repo_landscape_v1", {}) if isinstance(normalized_artifacts.get("repo_landscape_v1", {}), dict) else {}
+        components = normalized_artifacts.get("component_inventory_v1", {}) if isinstance(normalized_artifacts.get("component_inventory_v1", {}), dict) else {}
+        tracks = normalized_artifacts.get("modernization_track_plan_v1", {}) if isinstance(normalized_artifacts.get("modernization_track_plan_v1", {}), dict) else {}
+        component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
+        track_rows = tracks.get("tracks", []) if isinstance(tracks.get("tracks", []), list) else []
+        dimension_scores = coverage.get("dimensions", {}) if isinstance(coverage.get("dimensions", {}), dict) else {}
+        blockers = coverage.get("blockers", []) if isinstance(coverage.get("blockers", []), list) else []
+        analysis = {
+            "overview": (
+                str(objectives).strip()
+                or f"Imported analysis evidence describes {len(component_rows)} component(s) with architecture coverage {int(dimension_scores.get('architecture', 0) or 0)} and behavior coverage {int(dimension_scores.get('behavior', 0) or 0)}."
+            ),
+            "likely_capabilities": [str(row.get("title", "")).strip() for row in track_rows if str(row.get("title", "")).strip()][:8],
+            "input_output_contracts": [f"Coverage {key}: {int(value or 0)}" for key, value in dimension_scores.items()][:8],
+            "key_components": [str(row.get("name", "")).strip() for row in component_rows if str(row.get("name", "")).strip()][:12],
+            "interfaces": [str(row.get("title", "")).strip() for row in landscape.get("high_risk_signals", []) if isinstance(row, dict) and str(row.get("title", "")).strip()][:6],
+            "data_entities": [],
+            "domain_functions": [str(row.get("lane", "")).strip() for row in track_rows if str(row.get("lane", "")).strip()][:8],
+            "unknowns": [str(item).strip() for item in blockers if str(item).strip()][:8],
+            "evidence_files": [str(row.get("file_name", "")).strip() for row in bundle_payload.get("files", []) if isinstance(row, dict) and str(row.get("file_name", "")).strip()][:24],
+            "stats": {
+                "sampled_files": int(bundle_payload.get("file_count", 0) or 0),
+                "sampled_tree_entries": 0,
+                "route_hints": len(track_rows),
+            },
+            "evidence_mode": {
+                "provider": str(bundle_payload.get("provider_match_report_v1", {}).get("selected_provider", "")).strip(),
+                "coverage": coverage,
+            },
+        }
+        response_payload = {
+            "ok": True,
+            "source": "imported_analysis",
+            "repo": {"owner": "", "repository": "", "default_branch": "", "url": ""},
+            "analyst_brief": {
+                "title": "Analyst functionality understanding",
+                "summary": analysis,
+            },
+            "raw_artifacts": normalized_artifacts,
+            "evidence_bundle_v1": bundle_payload,
+            "provider_match_report_v1": bundle_payload.get("provider_match_report_v1", {}),
+            "evidence_coverage_report_v1": coverage,
+        }
+        return JSONResponse(response_payload)
 
     if project_state_detected == "greenfield" and not repo_url and not legacy_code:
         artifacts = build_greenfield_landscape_artifacts(
@@ -6999,8 +7111,80 @@ async def api_internal_run_worker(request):
     return JSONResponse(result, status_code=status)
 
 
+def _evidence_mode_preflight(payload: dict[str, Any], integration_context: dict[str, Any]) -> dict[str, Any]:
+    scan_scope = integration_context.get("scan_scope", {}) if isinstance(integration_context.get("scan_scope", {}), dict) else {}
+    evidence_ctx = integration_context.get("evidence", {}) if isinstance(integration_context.get("evidence", {}), dict) else {}
+    source_mode = str(evidence_ctx.get("source_mode") or scan_scope.get("modernization_source_mode") or "").strip().lower()
+    if source_mode not in {"evidence", "hybrid"}:
+        return {"ok": True, "source_mode": source_mode or "manual"}
+
+    bundle_id = str(evidence_ctx.get("bundle_id", "")).strip()
+    output_target = str(evidence_ctx.get("output_target", "deliverable_pack_only")).strip().lower() or "deliverable_pack_only"
+    accept_risk = bool(evidence_ctx.get("accept_low_coverage_risk", False))
+    if not bundle_id:
+        return {
+            "ok": False,
+            "code": "missing_evidence_bundle",
+            "source_mode": source_mode,
+            "error": "Evidence Mode requires an uploaded analysis bundle before scope lock.",
+        }
+
+    bundle_payload = load_evidence_bundle(bundle_id)
+    if not bundle_payload:
+        return {
+            "ok": False,
+            "code": "missing_evidence_bundle",
+            "source_mode": source_mode,
+            "error": "Uploaded evidence bundle could not be found. Re-upload the analysis bundle.",
+        }
+
+    coverage = evidence_ctx.get("coverage", {}) if isinstance(evidence_ctx.get("coverage", {}), dict) else {}
+    if not coverage:
+        coverage = bundle_payload.get("evidence_coverage_report_v1", {}) if isinstance(bundle_payload.get("evidence_coverage_report_v1", {}), dict) else {}
+    dimensions = coverage.get("dimensions", {}) if isinstance(coverage.get("dimensions", {}), dict) else {}
+    data_score = int(dimensions.get("data", 0) or 0)
+    behavior_score = int(dimensions.get("behavior", 0) or 0)
+    build_allowed = bool(coverage.get("build_allowed", False))
+    blockers = coverage.get("blockers", []) if isinstance(coverage.get("blockers", []), list) else []
+    if source_mode == "evidence" and output_target != "deliverable_pack_only" and not build_allowed and not accept_risk:
+        return {
+            "ok": False,
+            "code": "evidence_coverage_blocked",
+            "source_mode": source_mode,
+            "output_target": output_target,
+            "coverage": coverage,
+            "error": (
+                "Imported analysis coverage is not sufficient for build-oriented execution. "
+                "Use 'Deliverable pack only' or explicitly accept evidence risk after review."
+            ),
+            "blockers": blockers,
+            "thresholds": {"behavior": behavior_score, "data": data_score},
+        }
+
+    return {
+        "ok": True,
+        "source_mode": source_mode,
+        "output_target": output_target,
+        "coverage": coverage,
+        "accept_low_coverage_risk": accept_risk,
+        "blockers": blockers,
+    }
+
+
 async def api_run_preflight(request):
     payload = _get_json(await request.body())
+    integration_context = payload.get("integration_context", {}) if isinstance(payload.get("integration_context", {}), dict) else {}
+    evidence_check = _evidence_mode_preflight(payload, integration_context)
+    if not bool(evidence_check.get("ok", True)):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(evidence_check.get("error", "Evidence preflight failed")),
+                "preflight": {"ok": False, "code": str(evidence_check.get("code", "evidence_mode_blocked"))},
+                "evidence_preflight": evidence_check,
+            },
+            status_code=400,
+        )
     try:
         llm_preflight = _llm_preflight_from_payload(payload)
     except ValueError as exc:
@@ -7014,7 +7198,7 @@ async def api_run_preflight(request):
             },
             status_code=400,
         )
-    return JSONResponse({"ok": True, "preflight": llm_preflight})
+    return JSONResponse({"ok": True, "preflight": llm_preflight, "evidence_preflight": evidence_check})
 
 
 async def api_start_run(request):
@@ -7034,6 +7218,7 @@ async def api_start_run(request):
     scan_scope = integration_context.get("scan_scope", {}) if isinstance(integration_context.get("scan_scope", {}), dict) else {}
     brownfield = integration_context.get("brownfield", {}) if isinstance(integration_context.get("brownfield", {}), dict) else {}
     modernization_source_mode = str(scan_scope.get("modernization_source_mode", "manual")).strip().lower() or "manual"
+    evidence_ctx = integration_context.get("evidence", {}) if isinstance(integration_context.get("evidence", {}), dict) else {}
     team_id = str(payload.get("team_id", "")).strip()
     stage_agent_ids = payload.get("stage_agent_ids", {}) if isinstance(payload.get("stage_agent_ids", {}), dict) else {}
     if not objectives:
@@ -7043,6 +7228,8 @@ async def api_start_run(request):
             {"ok": False, "error": "use_case must be business_objectives, code_modernization, or database_conversion"},
             status_code=400,
         )
+    evidence_bundle_id = str(evidence_ctx.get("bundle_id", "")).strip()
+    evidence_mode = modernization_source_mode in {"evidence", "hybrid"}
     if use_case == "code_modernization" and not legacy_code and modernization_source_mode == "repo_scan":
         repo_provider = str(brownfield.get("repo_provider", "")).strip().lower()
         repo_url = str(brownfield.get("repo_url", "")).strip()
@@ -7055,10 +7242,28 @@ async def api_start_run(request):
                 status_code=400,
             )
     if use_case == "code_modernization" and not legacy_code:
-        if modernization_source_mode != "repo_scan":
+        if modernization_source_mode == "manual":
             return JSONResponse({"ok": False, "error": "legacy_code is required for code_modernization use case"}, status_code=400)
+        if modernization_source_mode == "evidence" and not evidence_bundle_id:
+            return JSONResponse({"ok": False, "error": "Evidence import mode requires an uploaded evidence bundle in Discover Connect."}, status_code=400)
+        if modernization_source_mode == "hybrid":
+            repo_provider = str(brownfield.get("repo_provider", "")).strip().lower()
+            repo_url = str(brownfield.get("repo_url", "")).strip()
+            if not evidence_bundle_id and (repo_provider != "github" or not repo_url):
+                return JSONResponse({"ok": False, "error": "Hybrid mode requires a connected GitHub repository or an uploaded evidence bundle."}, status_code=400)
     if use_case == "database_conversion" and not database_schema:
         return JSONResponse({"ok": False, "error": "database_schema is required for database_conversion use case"}, status_code=400)
+    evidence_check = _evidence_mode_preflight(payload, integration_context)
+    if not bool(evidence_check.get("ok", True)):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(evidence_check.get("error", "Evidence preflight failed")),
+                "preflight": {"ok": False, "code": str(evidence_check.get("code", "evidence_mode_blocked"))},
+                "evidence_preflight": evidence_check,
+            },
+            status_code=400,
+        )
 
     try:
         llm_preflight = _llm_preflight_from_payload(payload)
@@ -12558,6 +12763,8 @@ routes = [
     Route("/api/settings/llm/{provider:str}/disconnect", api_disconnect_llm_provider, methods=["POST"]),
     Route("/api/discover/github/tree", api_discover_github_tree, methods=["POST"]),
     Route("/api/discover/access/inspect", api_discover_access_inspect, methods=["POST"]),
+    Route("/api/evidence/bundles", api_create_evidence_bundle, methods=["POST"]),
+    Route("/api/evidence/bundles/{bundle_id:str}", api_get_evidence_bundle, methods=["GET"]),
     Route("/api/discover/analyst-brief", api_discover_analyst_brief, methods=["POST"]),
     Route("/api/discover/issues", api_discover_issues, methods=["POST"]),
     Route("/api/discover/linear/issues", api_discover_linear_issues, methods=["POST"]),
