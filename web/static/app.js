@@ -4345,6 +4345,9 @@ function renderDiscoverScopeGuidance() {
 
 function renderDiscoverLandscape() {
   if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
+  const analystView = state.discoverAnalystBrief || {};
+  const integration = getIntegrationContext();
+  const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
   const { landscape, components, tracks } = _discoverLandscapeArtifacts();
   const scan = (landscape.scan_summary && typeof landscape.scan_summary === "object") ? landscape.scan_summary : {};
   const languageRows = Array.isArray(landscape.languages) ? landscape.languages : [];
@@ -4356,6 +4359,37 @@ function renderDiscoverLandscape() {
   const componentRows = Array.isArray(components.components) ? components.components : [];
   const edgeSummary = (components.graph_summary && typeof components.graph_summary === "object") ? components.graph_summary : {};
   const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
+  const hasLandscapeData = !!componentRows.length || !!trackRows.length || !!languageRows.length || !!buildRows.length || !!riskRows.length;
+  if (!repoUrl) {
+    const html = `
+      <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
+        Connect a public or private GitHub repository in <strong>Connect</strong> to generate the Landscape view.
+      </div>
+    `;
+    if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
+    if (el.discoverLandscapeStepContent) el.discoverLandscapeStepContent.innerHTML = html;
+    return;
+  }
+  if (analystView.loading && !hasLandscapeData) {
+    const html = `
+      <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
+        Landscape scan in progress for <strong>${escapeHtml(repoUrl)}</strong>. Repo MRI, components, and suggested tracks will appear here when the analyst brief returns.
+      </div>
+    `;
+    if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
+    if (el.discoverLandscapeStepContent) el.discoverLandscapeStepContent.innerHTML = html;
+    return;
+  }
+  if (!hasLandscapeData) {
+    const html = `
+      <div class="rounded border border-slate-300 bg-white p-3 text-xs text-slate-700">
+        No Landscape data is available yet. Open <strong>Landscape</strong> after connecting a repo, or click <strong>Refresh Landscape</strong> to run the deterministic repo scan now.
+      </div>
+    `;
+    if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = html;
+    if (el.discoverLandscapeStepContent) el.discoverLandscapeStepContent.innerHTML = html;
+    return;
+  }
   const polyglot = languageRows.filter((row) => Number(row?.stats?.loc || 0) > 0).length > 1 || buildRows.length > 1;
   const languageHtml = languageRows.slice(0, 8).map((row) => `
     <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">
