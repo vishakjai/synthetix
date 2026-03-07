@@ -73,6 +73,20 @@ class LLMClient:
             )
         return self._openai_client
 
+    def _openai_model_supports_max_completion_tokens(self) -> bool:
+        model = str(self.config.get_model() or "").strip().lower()
+        if not model:
+            return False
+        return model.startswith("gpt-5") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4")
+
+    def _openai_token_limit_kwargs(self) -> dict[str, Any]:
+        token_limit = int(self.config.max_output_tokens or 0)
+        if token_limit <= 0:
+            return {}
+        if self._openai_model_supports_max_completion_tokens():
+            return {"max_completion_tokens": token_limit}
+        return {"max_tokens": token_limit}
+
     def invoke(self, system_prompt: str, user_message: str) -> LLMResponse:
         """Send a message to the configured LLM and return structured response."""
         start_time = time.time()
@@ -203,7 +217,7 @@ class LLMClient:
         response = client.chat.completions.create(
             model=self.config.get_model(),
             temperature=self.config.temperature,
-            max_tokens=self.config.max_output_tokens,
+            **self._openai_token_limit_kwargs(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -229,7 +243,7 @@ class LLMClient:
         response = client.chat.completions.create(
             model=self.config.get_model(),
             temperature=self.config.temperature,
-            max_tokens=self.config.max_output_tokens,
+            **self._openai_token_limit_kwargs(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -281,7 +295,7 @@ class LLMClient:
         stream = client.chat.completions.create(
             model=self.config.get_model(),
             temperature=self.config.temperature,
-            max_tokens=self.config.max_output_tokens,
+            **self._openai_token_limit_kwargs(),
             stream=True,
             messages=[
                 {"role": "system", "content": system_prompt},
