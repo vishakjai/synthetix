@@ -212,10 +212,12 @@ const el = {
   wizardBack: document.getElementById("wizard-back"),
   discoverStepStatus: document.getElementById("discover-step-status"),
   discoverStepConnect: document.getElementById("discover-step-connect"),
+  discoverStepLandscape: document.getElementById("discover-step-landscape"),
   discoverStepScope: document.getElementById("discover-step-scope"),
   discoverStepScan: document.getElementById("discover-step-scan"),
   discoverStepResults: document.getElementById("discover-step-results"),
   discoverConnectPanel: document.getElementById("discover-connect-panel"),
+  discoverLandscapeStepPanel: document.getElementById("discover-landscape-step-panel"),
   discoverScopePanel: document.getElementById("discover-scope-panel"),
   discoverScanPanel: document.getElementById("discover-scan-panel"),
   discoverResultsPanel: document.getElementById("discover-results-panel"),
@@ -224,6 +226,14 @@ const el = {
   discoverResultsIntegrations: document.getElementById("discover-results-integrations"),
   discoverResultsScan: document.getElementById("discover-results-scan"),
   discoverResultsForensics: document.getElementById("discover-results-forensics"),
+  discoverScopeGuidance: document.getElementById("discover-scope-guidance"),
+  discoverLandscapeStepContent: document.getElementById("discover-landscape-step-content"),
+  discoverRunAnalystBriefLandscape: document.getElementById("discover-run-analyst-brief-landscape"),
+  discoverOpenLandscapeStepResults: document.getElementById("discover-open-landscape-step-results"),
+  discoverExportLandscapeStep: document.getElementById("discover-export-landscape-step"),
+  discoverExportComponentInventoryStep: document.getElementById("discover-export-component-inventory-step"),
+  discoverExportTrackPlanStep: document.getElementById("discover-export-track-plan-step"),
+  discoverOpenLandscape: document.getElementById("discover-open-landscape"),
   discoverOpenCityMap: document.getElementById("discover-open-city-map"),
   discoverOpenSystemMap: document.getElementById("discover-open-system-map"),
   discoverOpenHealthDebt: document.getElementById("discover-open-health-debt"),
@@ -235,6 +245,7 @@ const el = {
   discoverOpenTrends: document.getElementById("discover-open-trends"),
   discoverOpenData: document.getElementById("discover-open-data"),
   discoverExportBaseline: document.getElementById("discover-export-baseline"),
+  discoverLandscapePanel: document.getElementById("discover-landscape-panel"),
   discoverCityMapPanel: document.getElementById("discover-city-map-panel"),
   discoverSystemMapPanel: document.getElementById("discover-system-map-panel"),
   discoverHealthPanel: document.getElementById("discover-health-panel"),
@@ -245,6 +256,10 @@ const el = {
   discoverDependencyMatrixPanel: document.getElementById("discover-dependency-matrix-panel"),
   discoverTrendsPanel: document.getElementById("discover-trends-panel"),
   discoverDataPanel: document.getElementById("discover-data-panel"),
+  discoverExportLandscape: document.getElementById("discover-export-landscape"),
+  discoverExportComponentInventory: document.getElementById("discover-export-component-inventory"),
+  discoverExportTrackPlan: document.getElementById("discover-export-track-plan"),
+  discoverExportRouterRuleset: document.getElementById("discover-export-router-ruleset"),
   discoverExportSourceSchema: document.getElementById("discover-export-source-schema"),
   discoverExportSourceErd: document.getElementById("discover-export-source-erd"),
   discoverExportDataDictionary: document.getElementById("discover-export-data-dictionary"),
@@ -268,6 +283,7 @@ const el = {
   discoverDependencyMatrixContent: document.getElementById("discover-dependency-matrix-content"),
   discoverTrendsContent: document.getElementById("discover-trends-content"),
   discoverDataContent: document.getElementById("discover-data-content"),
+  discoverLandscapeContent: document.getElementById("discover-landscape-content"),
   cityMapSvg: document.getElementById("city-map-svg"),
   cityMapInspector: document.getElementById("city-map-inspector"),
   cityMapReset: document.getElementById("city-map-reset"),
@@ -545,6 +561,7 @@ const state = {
   currentRunId: "",
   currentRun: null,
   eventSource: null,
+  runSnapshotPollTimer: null,
   selectedStage: 1,
   impactDiffTab: "topology",
   cityOverlay: "none",
@@ -3956,10 +3973,11 @@ function handleGlobalSearchQuery(query) {
 function renderDiscoverResultsView() {
   let view = String(state.discoverResultsView || "");
   if (!view) {
-    view = "city";
+    view = "landscape";
     state.discoverResultsView = view;
   }
   const viewMap = {
+    landscape: el.discoverLandscapePanel,
     city: el.discoverCityMapPanel,
     system: el.discoverSystemMapPanel,
     health: el.discoverHealthPanel,
@@ -3977,7 +3995,7 @@ function renderDiscoverResultsView() {
 }
 
 function setDiscoverResultsView(view) {
-  state.discoverResultsView = String(view || "city");
+  state.discoverResultsView = String(view || "landscape");
   renderDiscoverResultsView();
 }
 
@@ -4269,6 +4287,185 @@ function _discoverRawArtifacts() {
     });
   });
   return merged;
+}
+
+function _discoverLandscapeArtifacts() {
+  const raw = _discoverRawArtifacts();
+  return {
+    landscape: (raw.repo_landscape_v1 && typeof raw.repo_landscape_v1 === "object") ? raw.repo_landscape_v1 : {},
+    components: (raw.component_inventory_v1 && typeof raw.component_inventory_v1 === "object") ? raw.component_inventory_v1 : {},
+    tracks: (raw.modernization_track_plan_v1 && typeof raw.modernization_track_plan_v1 === "object") ? raw.modernization_track_plan_v1 : {},
+    router: (raw.router_ruleset_v1 && typeof raw.router_ruleset_v1 === "object") ? raw.router_ruleset_v1 : {},
+  };
+}
+
+function renderDiscoverScopeGuidance() {
+  if (!el.discoverScopeGuidance) return;
+  const { landscape, components, tracks } = _discoverLandscapeArtifacts();
+  const componentRows = Array.isArray(components.components) ? components.components : [];
+  const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
+  const riskRows = Array.isArray(landscape.high_risk_signals) ? landscape.high_risk_signals : [];
+  if (!componentRows.length && !trackRows.length && !riskRows.length) {
+    el.discoverScopeGuidance.innerHTML = "Landscape-guided scope decisions will appear here after the analyst brief runs.";
+    return;
+  }
+  const variantCandidates = componentRows.filter((row) => !!row?.variant_candidate).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
+  const reporting = componentRows.filter((row) => String(row?.component_kind || "").includes("reporting")).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
+  const batch = componentRows.filter((row) => String(row?.component_kind || "").includes("batch")).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
+  const questions = [
+    ...trackRows.flatMap((row) => Array.isArray(row?.gating_questions) ? row.gating_questions : []),
+    ...Array.isArray(tracks.open_questions) ? tracks.open_questions : [],
+  ].filter(Boolean).slice(0, 5);
+  const bullets = [];
+  if (variantCandidates.length) {
+    bullets.push(`Confirm canonical project(s): <strong>${escapeHtml(variantCandidates.join(", "))}</strong>.`);
+  }
+  if (reporting.length) {
+    bullets.push(`Decide whether reporting components are in scope now or deferred: <strong>${escapeHtml(reporting.join(", "))}</strong>.`);
+  }
+  if (batch.length) {
+    bullets.push(`Review batch/automation workloads separately from UI modernization: <strong>${escapeHtml(batch.join(", "))}</strong>.`);
+  }
+  if (!bullets.length) {
+    bullets.push(`Synthetix detected <strong>${componentRows.length}</strong> candidate component(s) and <strong>${trackRows.length}</strong> suggested modernization track(s).`);
+  }
+  el.discoverScopeGuidance.innerHTML = `
+    <p class="font-semibold text-slate-900">Guided by Landscape</p>
+    <ul class="mt-1 list-disc pl-4 text-slate-700">
+      ${bullets.map((row) => `<li>${row}</li>`).join("")}
+    </ul>
+    <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+      <p class="font-semibold text-slate-900">Questions to resolve before scope lock</p>
+      <ul class="mt-1 list-disc pl-4 text-slate-700">
+        ${(questions.length ? questions : ["No gating questions generated yet."]).map((row) => `<li>${escapeHtml(String(row))}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderDiscoverLandscape() {
+  if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
+  const { landscape, components, tracks } = _discoverLandscapeArtifacts();
+  const scan = (landscape.scan_summary && typeof landscape.scan_summary === "object") ? landscape.scan_summary : {};
+  const languageRows = Array.isArray(landscape.languages) ? landscape.languages : [];
+  const buildRows = Array.isArray(landscape.build_systems) ? landscape.build_systems : [];
+  const archetypeRows = Array.isArray(landscape.archetypes) ? landscape.archetypes : [];
+  const datastoreRows = Array.isArray(landscape.datastore_signals) ? landscape.datastore_signals : [];
+  const riskRows = Array.isArray(landscape.high_risk_signals) ? landscape.high_risk_signals : [];
+  const dependencyFootprint = (landscape.dependency_footprint && typeof landscape.dependency_footprint === "object") ? landscape.dependency_footprint : {};
+  const componentRows = Array.isArray(components.components) ? components.components : [];
+  const edgeSummary = (components.graph_summary && typeof components.graph_summary === "object") ? components.graph_summary : {};
+  const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
+  const polyglot = languageRows.filter((row) => Number(row?.stats?.loc || 0) > 0).length > 1 || buildRows.length > 1;
+  const languageHtml = languageRows.slice(0, 8).map((row) => `
+    <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1">
+      <strong>${escapeHtml(String(row?.language || "Unknown"))}</strong><br/>
+      ${escapeHtml(String(row?.stats?.files || 0))} files · ${escapeHtml(String(row?.stats?.loc || 0))} est. LOC
+    </div>
+  `).join("");
+  const buildHtml = buildRows.slice(0, 8).map((row) => `<li><strong>${escapeHtml(String(row?.kind || ""))}</strong> · ${escapeHtml(String((row?.paths || []).slice(0, 3).join(", ") || "n/a"))}</li>`).join("");
+  const archetypeHtml = archetypeRows.slice(0, 8).map((row) => `<span class="rounded border border-slate-300 bg-slate-50 px-2 py-1">${escapeHtml(String(row?.archetype || ""))}</span>`).join("");
+  const datastoreHtml = datastoreRows.slice(0, 8).map((row) => `<span class="rounded border border-slate-300 bg-slate-50 px-2 py-1">${escapeHtml(String(row?.datastore || ""))}</span>`).join("");
+  const componentTable = componentRows.slice(0, 16).map((row) => `
+    <tr>
+      <td class="px-2 py-1">${escapeHtml(String(row?.name || row?.component_id || ""))}</td>
+      <td class="px-2 py-1">${escapeHtml(String(row?.component_kind || ""))}</td>
+      <td class="px-2 py-1">${escapeHtml(String((row?.language_mix || [])[0]?.language || "n/a"))}</td>
+      <td class="px-2 py-1 text-right">${escapeHtml(String(row?.stats?.loc || 0))}</td>
+      <td class="px-2 py-1">${escapeHtml(String((row?.risk_flags || []).slice(0, 2).join(", ") || "none"))}</td>
+      <td class="px-2 py-1">${escapeHtml(String((row?.suggested_tracks || []).map((x) => x?.lane || x?.title || "").filter(Boolean).slice(0, 2).join(", ") || "review"))}</td>
+    </tr>
+  `).join("");
+  const trackHtml = trackRows.slice(0, 10).map((row) => `
+    <div class="rounded border border-slate-300 bg-white p-2">
+      <div class="flex items-start justify-between gap-2">
+        <div>
+          <p class="font-semibold text-slate-900">${escapeHtml(String(row?.title || row?.track_id || ""))}</p>
+          <p class="mt-0.5 text-[11px] text-slate-700">${escapeHtml(String(row?.why || ""))}</p>
+        </div>
+        <span class="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[10px] font-semibold text-slate-800">${escapeHtml(String(row?.lane || "unknown"))}</span>
+      </div>
+      <p class="mt-1 text-[11px] text-slate-700"><strong>Target:</strong> ${escapeHtml(String(row?.suggested_target || "TBD"))}</p>
+      <p class="mt-1 text-[11px] text-slate-700"><strong>Source:</strong> ${escapeHtml(String((row?.source_components || []).join(", ") || "n/a"))}</p>
+      <p class="mt-1 text-[11px] text-slate-700"><strong>Questions:</strong> ${escapeHtml(String((row?.gating_questions || []).slice(0, 2).join(" | ") || "None"))}</p>
+    </div>
+  `).join("");
+  const riskHtml = riskRows.slice(0, 8).map((row) => `
+    <div class="rounded border border-slate-300 bg-slate-50 p-2">
+      <p class="font-semibold text-slate-900">${escapeHtml(String(row?.title || row?.signal_id || ""))}</p>
+      <p class="mt-0.5 text-[11px] text-slate-700">${escapeHtml(String(row?.description || ""))}</p>
+      <p class="mt-1 text-[11px] text-slate-700"><strong>Action:</strong> ${escapeHtml(String(row?.recommendation || ""))}</p>
+    </div>
+  `).join("");
+  const nextActions = [
+    componentRows.some((row) => !!row?.variant_candidate) ? "Confirm canonical component(s) before deep analysis." : "",
+    trackRows.length ? "Choose a target stack per suggested modernization track." : "",
+    datastoreRows.length ? "Provide DB exports or docs to improve datastore confidence where possible." : "",
+    riskRows.some((row) => String(row?.signal_id || "").includes("HUGE_FILES")) ? "Enable streaming/decomposed analysis for large files." : "",
+  ].filter(Boolean);
+
+  const landscapeHtml = `
+    <div class="grid gap-2 sm:grid-cols-6">
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Total files</strong><br/>${escapeHtml(String(scan.total_files || 0))}</div>
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Estimated LOC</strong><br/>${escapeHtml(String(scan.total_loc || 0))}</div>
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Build systems</strong><br/>${escapeHtml(String(buildRows.length))}</div>
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Components</strong><br/>${escapeHtml(String(componentRows.length))}</div>
+      <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Tracks</strong><br/>${escapeHtml(String(trackRows.length))}</div>
+      <div class="rounded border ${polyglot ? "border-amber-300 bg-amber-50 text-amber-900" : "border-emerald-300 bg-emerald-50 text-emerald-900"} px-2 py-1"><strong>Polyglot repo</strong><br/>${polyglot ? "Yes" : "No"}</div>
+    </div>
+    <div class="mt-2 grid gap-2 lg:grid-cols-2">
+      <div class="rounded border border-slate-300 bg-white p-2">
+        <p class="font-semibold text-slate-900">What we detected</p>
+        <div class="mt-2 grid gap-1 sm:grid-cols-2">${languageHtml || `<p class="text-slate-700">No language signals detected yet. Check repo access and exclusions.</p>`}</div>
+        <div class="mt-2">
+          <p class="font-semibold text-slate-900">Build systems</p>
+          <ul class="mt-1 list-disc pl-4 text-slate-700">${buildHtml || `<li>No build system files detected.</li>`}</ul>
+        </div>
+        <div class="mt-2">
+          <p class="font-semibold text-slate-900">Application archetypes</p>
+          <div class="mt-1 flex flex-wrap gap-1">${archetypeHtml || `<span class=\"text-slate-700\">No archetypes detected.</span>`}</div>
+        </div>
+        <div class="mt-2">
+          <p class="font-semibold text-slate-900">Datastores</p>
+          <div class="mt-1 flex flex-wrap gap-1">${datastoreHtml || `<span class=\"text-slate-700\">No datastore signals detected.</span>`}</div>
+        </div>
+        <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+          <p class="font-semibold text-slate-900">Dependency footprint</p>
+          <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
+        </div>
+      </div>
+      <div class="rounded border border-slate-300 bg-white p-2">
+        <p class="font-semibold text-slate-900">Suggested modernization tracks</p>
+        <div class="mt-2 grid gap-2">${trackHtml || `<p class="text-slate-700">No track suggestions generated yet.</p>`}</div>
+      </div>
+    </div>
+    <div class="mt-2 rounded border border-slate-300 bg-white p-2">
+      <div class="flex items-center justify-between gap-2">
+        <p class="font-semibold text-slate-900">Components</p>
+        <span class="text-[11px] text-slate-700">edges=${escapeHtml(String(edgeSummary.edge_count || 0))} · shared_db=${escapeHtml(String(edgeSummary.shared_db_edges || 0))}</span>
+      </div>
+      <div class="mt-1 overflow-x-auto">
+        <table class="w-full text-[11px]">
+          <thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Component</th><th class="px-2 py-1">Kind</th><th class="px-2 py-1">Primary language</th><th class="px-2 py-1 text-right">LOC</th><th class="px-2 py-1">Risk flags</th><th class="px-2 py-1">Suggested track</th></tr></thead>
+          <tbody>${componentTable || `<tr><td class="px-2 py-1 text-slate-600\" colspan=\"6\">No components detected. Try expanding scan roots or removing exclusions.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="mt-2 grid gap-2 lg:grid-cols-2">
+      <div class="rounded border border-slate-300 bg-white p-2">
+        <p class="font-semibold text-slate-900">Immediate risk flags</p>
+        <div class="mt-2 grid gap-2">${riskHtml || `<p class="text-slate-700">No immediate landscape risk flags.</p>`}</div>
+      </div>
+      <div class="rounded border border-slate-300 bg-white p-2">
+        <p class="font-semibold text-slate-900">Next actions</p>
+        <ul class="mt-2 list-disc pl-4 text-slate-700">
+          ${(nextActions.length ? nextActions : ["Proceed to Define Scope and confirm in-scope components."]).map((row) => `<li>${escapeHtml(String(row))}</li>`).join("")}
+        </ul>
+      </div>
+    </div>
+  `;
+  if (el.discoverLandscapeContent) el.discoverLandscapeContent.innerHTML = landscapeHtml;
+  if (el.discoverLandscapeStepContent) el.discoverLandscapeStepContent.innerHTML = landscapeHtml;
 }
 
 function _nodeKey(node, idx) {
@@ -4730,6 +4927,8 @@ function renderDiscoverInsights() {
   const { nodes, edges, rules, findings, backlog, demo } = data;
   _renderCityAndSystemGraphs(data);
   const rawArtifacts = _discoverRawArtifacts();
+  renderDiscoverLandscape();
+  renderDiscoverScopeGuidance();
 
   if (el.discoverCityMapContent && el.discoverCityMapContent.dataset) {
     el.discoverCityMapContent.dataset.mode = demo ? "demo" : "live";
@@ -6937,9 +7136,9 @@ function renderDiscoverAnalystBrief() {
   const rpOpenQuestions = Array.isArray(requirementsPack?.open_questions) ? requirementsPack.open_questions : [];
 
   if (!overview && !caps.length && !components.length) {
-    el.discoverAnalystBriefStatus.textContent = "Waiting to analyze connected source code.";
+    el.discoverAnalystBriefStatus.textContent = "Waiting for Landscape analysis of the connected source code.";
     el.discoverAnalystBriefStatus.className = "mt-1 text-[11px] text-slate-700";
-    el.discoverAnalystBriefPreview.innerHTML = "Analyst summary will appear here after Scope → Scan.";
+    el.discoverAnalystBriefPreview.innerHTML = "Analyst summary will appear here after the Landscape scan runs.";
     return;
   }
 
@@ -7453,6 +7652,14 @@ function discoverStepCompletion() {
       String(integration.domain_pack_selection || "auto") !== "custom"
       || !!(integration.custom_domain_pack && typeof integration.custom_domain_pack === "object")
     );
+  const analystData = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
+    ? state.discoverAnalystBrief.data
+    : null;
+  const landscapeArtifacts = _discoverLandscapeArtifacts();
+  const hasLandscape = !!(analystData && Object.keys(analystData).length)
+    || (Array.isArray(landscapeArtifacts.components?.components) && landscapeArtifacts.components.components.length > 0)
+    || (Array.isArray(landscapeArtifacts.landscape?.languages) && landscapeArtifacts.landscape.languages.length > 0)
+    || (Array.isArray(landscapeArtifacts.tracks?.tracks) && landscapeArtifacts.tracks.tracks.length > 0);
   const scopeComplete = !!objective
     && (
       !isCodeModernizationMode()
@@ -7467,19 +7674,18 @@ function discoverStepCompletion() {
     )
     && (!isDatabaseConversionMode() || !!String(el.dbSchema?.value || "").trim())
     && customDomainPackValid;
-  const analystData = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
-    ? state.discoverAnalystBrief.data
-    : null;
-  const scanComplete = !!(analystData && Object.keys(analystData).length);
-  const resultsComplete = connectComplete && scopeComplete && scanComplete;
-  return { connectComplete, scopeComplete, scanComplete, resultsComplete };
+  const landscapeComplete = hasLandscape;
+  const scanComplete = landscapeComplete && scopeComplete;
+  const resultsComplete = connectComplete && landscapeComplete && scopeComplete && scanComplete;
+  return { connectComplete, landscapeComplete, scopeComplete, scanComplete, resultsComplete };
 }
 
 function setDiscoverStep(step) {
-  const target = Math.max(1, Math.min(4, Number(step || 1)));
+  const target = Math.max(1, Math.min(5, Number(step || 1)));
   state.discoverStep = target;
   const stepMap = [
     { btn: el.discoverStepConnect, panel: el.discoverConnectPanel, label: "Connect" },
+    { btn: el.discoverStepLandscape, panel: el.discoverLandscapeStepPanel, label: "Landscape" },
     { btn: el.discoverStepScope, panel: el.discoverScopePanel, label: "Define scope" },
     { btn: el.discoverStepScan, panel: el.discoverScanPanel, label: "Scan" },
     { btn: el.discoverStepResults, panel: el.discoverResultsPanel, label: "Results" },
@@ -7488,7 +7694,7 @@ function setDiscoverStep(step) {
     const isActive = (idx + 1) === target;
     entry.panel?.classList.toggle("discover-panel-hidden", !isActive);
   });
-  if (target === 3) {
+  if (target === 2) {
     const hasAnalystData = !!(state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object" && Object.keys(state.discoverAnalystBrief.data).length);
     if (!hasAnalystData && !state.discoverAnalystBrief?.loading) {
       loadDiscoverAnalystBrief({ force: false }).catch(() => {});
@@ -7501,6 +7707,7 @@ function renderDiscoverStepper() {
   const completion = discoverStepCompletion();
   const steps = [
     { btn: el.discoverStepConnect, done: completion.connectComplete, label: "Connect" },
+    { btn: el.discoverStepLandscape, done: completion.landscapeComplete, label: "Landscape" },
     { btn: el.discoverStepScope, done: completion.scopeComplete, label: "Define scope" },
     { btn: el.discoverStepScan, done: completion.scanComplete, label: "Scan" },
     { btn: el.discoverStepResults, done: completion.resultsComplete, label: "Results" },
@@ -7521,7 +7728,7 @@ function renderDiscoverStepper() {
     el.wizardPrevDiscover.classList.toggle("opacity-50", state.discoverStep <= 1);
   }
   if (el.wizardContinue) {
-    if (state.discoverStep < 4) {
+    if (state.discoverStep < 5) {
       const nextLabel = steps[state.discoverStep]?.label || "Results";
       el.wizardContinue.textContent = `Next: ${nextLabel}`;
     } else {
@@ -7594,12 +7801,16 @@ function validateDiscoverStep(step) {
     alert("Complete Connect sources to continue.");
     return false;
   }
-  if (step === 2 && !c.scopeComplete) {
+  if (step === 2 && !c.landscapeComplete) {
+    alert("Complete Landscape scan first.");
+    return false;
+  }
+  if (step === 3 && !c.scopeComplete) {
     alert("Complete Define scope: provide objectives, required legacy/database inputs, and a valid domain pack configuration.");
     return false;
   }
-  if (step === 3 && !c.scanComplete) {
-    alert("Complete Scanning system: run Analyst brief to finish Scan.");
+  if (step === 4 && !c.scanComplete) {
+    alert("Complete Landscape and Define Scope before moving into Results.");
     return false;
   }
   return true;
@@ -9762,6 +9973,10 @@ async function downloadDiscoverDbArtifact(kind) {
 
 async function downloadDiscoverArtifact(kind) {
   const validKinds = new Set([
+    "repo_landscape",
+    "component_inventory",
+    "modernization_track_plan",
+    "router_ruleset",
     "project_metrics",
     "static_forensics",
     "quality_rules",
@@ -9778,6 +9993,10 @@ async function downloadDiscoverArtifact(kind) {
   const safeRun = runId || "discover";
   const rawArtifacts = _discoverRawArtifacts();
   const localKeyByType = {
+    repo_landscape: "repo_landscape_v1",
+    component_inventory: "component_inventory_v1",
+    modernization_track_plan: "modernization_track_plan_v1",
+    router_ruleset: "router_ruleset_v1",
     project_metrics: "project_metrics",
     static_forensics: "static_forensics_layer",
     quality_rules: "code_quality_rules",
@@ -9819,6 +10038,10 @@ async function downloadDiscoverArtifact(kind) {
   const header = String(response.headers.get("content-disposition") || "");
   const match = header.match(/filename=\"?([^\";]+)\"?/i);
   const fallbackByType = {
+    repo_landscape: `repo_landscape-${runId}.json`,
+    component_inventory: `component_inventory-${runId}.json`,
+    modernization_track_plan: `modernization_track_plan-${runId}.json`,
+    router_ruleset: `router_ruleset-${runId}.json`,
     project_metrics: `project_metrics-${runId}.json`,
     static_forensics: `static_forensics-${runId}.json`,
     quality_rules: `quality_rules-${runId}.json`,
@@ -12122,6 +12345,10 @@ function stopStreaming() {
     state.eventSource.close();
     state.eventSource = null;
   }
+  if (state.runSnapshotPollTimer) {
+    clearInterval(state.runSnapshotPollTimer);
+    state.runSnapshotPollTimer = null;
+  }
 }
 
 function upsertLog(line) {
@@ -12194,6 +12421,17 @@ function applyRunStatus(status) {
 function startStreaming(runId) {
   stopStreaming();
   state.eventSource = new EventSource(`/api/runs/${runId}/stream`);
+  state.runSnapshotPollTimer = setInterval(async () => {
+    try {
+      if (!state.currentRun || state.currentRun.run_id !== runId) return;
+      const latest = await fetchRunSnapshot(runId);
+      if (!isActiveRunStatus(latest?.status || "")) {
+        stopStreaming();
+      }
+    } catch (_err) {
+      // Keep the stream alive; snapshot polling is a best-effort freshness backstop.
+    }
+  }, 8000);
 
   state.eventSource.addEventListener("snapshot", (evt) => {
     try {
@@ -12240,15 +12478,22 @@ function startStreaming(runId) {
   state.eventSource.onerror = async () => {
     stopStreaming();
     try {
-      const status = await fetchRunStatus(runId);
-      applyRunStatus(status);
-      renderRun();
-      if (isActiveRunStatus(status?.status || "")) {
+      const latest = await fetchRunSnapshot(runId);
+      if (isActiveRunStatus(latest?.status || "")) {
         setTimeout(() => startStreaming(runId), 1200);
-      } else {
-        await fetchRunSnapshot(runId);
       }
     } catch (err) {
+      try {
+        const status = await fetchRunStatus(runId);
+        applyRunStatus(status);
+        renderRun();
+        if (isActiveRunStatus(status?.status || "")) {
+          setTimeout(() => startStreaming(runId), 1200);
+          return;
+        }
+      } catch (_fallbackErr) {
+        // no-op
+      }
       el.pipelineStatusText.textContent = `STREAM ERROR: ${err.message}`;
     }
   };
@@ -12421,7 +12666,7 @@ async function startRun() {
     alert(`Domain Pack configuration error: ${integrationContext.domain_pack_error}`);
     setMode(MODES.DISCOVER);
     setWizardStep(1);
-    setDiscoverStep(2);
+    setDiscoverStep(3);
     return;
   }
 
@@ -12477,21 +12722,23 @@ async function startRun() {
   }
   const discoverCompletion = discoverStepCompletion();
   const requiresConnectStep = useCase === "code_modernization" && isModernizationRepoScanMode();
-  if (!discoverCompletion.scopeComplete || !discoverCompletion.scanComplete || (requiresConnectStep && !discoverCompletion.connectComplete)) {
+  if (!discoverCompletion.landscapeComplete || !discoverCompletion.scopeComplete || !discoverCompletion.scanComplete || (requiresConnectStep && !discoverCompletion.connectComplete)) {
     state.runStart.pending = false;
     state.runStart.startedAt = 0;
     renderRunControls();
     renderProgress();
     const blockers = [];
     if (requiresConnectStep && !discoverCompletion.connectComplete) blockers.push("Connect");
+    if (!discoverCompletion.landscapeComplete) blockers.push("Landscape");
     if (!discoverCompletion.scopeComplete) blockers.push("Define scope");
     if (!discoverCompletion.scanComplete) blockers.push("Scan");
     alert(`Complete Discover step(s): ${blockers.join(", ")} before starting a run.`);
     setMode(MODES.DISCOVER);
     setWizardStep(1);
     if (requiresConnectStep && !discoverCompletion.connectComplete) setDiscoverStep(1);
-    else if (!discoverCompletion.scopeComplete) setDiscoverStep(2);
-    else if (!discoverCompletion.scanComplete) setDiscoverStep(3);
+    else if (!discoverCompletion.landscapeComplete) setDiscoverStep(2);
+    else if (!discoverCompletion.scopeComplete) setDiscoverStep(3);
+    else if (!discoverCompletion.scanComplete) setDiscoverStep(4);
     return;
   }
   if (String(el.deploymentTarget.value || "local").toLowerCase() === "cloud" && !el.enableCloudPromotion?.checked) {
@@ -12812,9 +13059,23 @@ function bindEvents() {
   el.settingsAuditRefresh?.addEventListener("click", () => loadSettings(true).catch((err) => setSettingsMessage(err.message, true)));
 
   el.discoverStepConnect?.addEventListener("click", () => setDiscoverStep(1));
-  el.discoverStepScope?.addEventListener("click", () => setDiscoverStep(2));
-  el.discoverStepScan?.addEventListener("click", () => setDiscoverStep(3));
-  el.discoverStepResults?.addEventListener("click", () => setDiscoverStep(4));
+  el.discoverStepLandscape?.addEventListener("click", () => setDiscoverStep(2));
+  el.discoverStepScope?.addEventListener("click", () => setDiscoverStep(3));
+  el.discoverStepScan?.addEventListener("click", () => setDiscoverStep(4));
+  el.discoverStepResults?.addEventListener("click", () => setDiscoverStep(5));
+  el.discoverRunAnalystBriefLandscape?.addEventListener("click", () => loadDiscoverAnalystBrief({ force: true }).catch((err) => {
+    state.discoverAnalystBrief.error = err.message;
+    renderDiscoverAnalystBrief();
+    renderDiscoverStepper();
+  }));
+  el.discoverOpenLandscapeStepResults?.addEventListener("click", () => {
+    setDiscoverStep(5);
+    setDiscoverResultsView("landscape");
+  });
+  el.discoverExportLandscapeStep?.addEventListener("click", () => downloadDiscoverArtifact("repo_landscape").catch((err) => alert(err.message)));
+  el.discoverExportComponentInventoryStep?.addEventListener("click", () => downloadDiscoverArtifact("component_inventory").catch((err) => alert(err.message)));
+  el.discoverExportTrackPlanStep?.addEventListener("click", () => downloadDiscoverArtifact("modernization_track_plan").catch((err) => alert(err.message)));
+  el.discoverOpenLandscape?.addEventListener("click", () => setDiscoverResultsView("landscape"));
   el.discoverOpenCityMap?.addEventListener("click", () => setDiscoverResultsView("city"));
   el.discoverOpenSystemMap?.addEventListener("click", () => setDiscoverResultsView("system"));
   el.discoverOpenHealthDebt?.addEventListener("click", () => setDiscoverResultsView("health"));
@@ -12859,6 +13120,38 @@ function bindEvents() {
       setGlobalSearchStatus("Baseline report exported from Discover.");
     } catch (err) {
       setGlobalSearchStatus(`Baseline export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportLandscape?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("repo_landscape");
+      setGlobalSearchStatus("Landscape report exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Landscape export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportComponentInventory?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("component_inventory");
+      setGlobalSearchStatus("Component inventory exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Component inventory export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportTrackPlan?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("modernization_track_plan");
+      setGlobalSearchStatus("Track plan exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Track plan export failed: ${err.message || err}`, true);
+    }
+  });
+  el.discoverExportRouterRuleset?.addEventListener("click", async () => {
+    try {
+      await downloadDiscoverArtifact("router_ruleset");
+      setGlobalSearchStatus("Router ruleset exported.");
+    } catch (err) {
+      setGlobalSearchStatus(`Router ruleset export failed: ${err.message || err}`, true);
     }
   });
   el.discoverExportSourceSchema?.addEventListener("click", async () => {
@@ -13143,7 +13436,7 @@ function bindEvents() {
   });
 
   el.wizardContinue.addEventListener("click", async () => {
-    if (state.discoverStep < 4) {
+    if (state.discoverStep < 5) {
       const previousStep = state.discoverStep;
       if (!validateDiscoverStep(state.discoverStep)) return;
       setDiscoverStep(state.discoverStep + 1);

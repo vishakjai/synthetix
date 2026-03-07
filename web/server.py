@@ -97,6 +97,7 @@ from utils.analyst_aas import AnalystAASService  # noqa: E402
 from utils.analyst_docx import build_business_docx_bytes  # noqa: E402
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
+from utils.landscape_router import build_landscape_artifacts  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -5555,6 +5556,43 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             response_payload["quality_gates"] = aas_result.get("quality_gates", [])
         return response_payload
 
+    def _attach_landscape_artifacts(
+        response_payload: dict[str, Any],
+        *,
+        repo_ref: str,
+        branch_ref: str,
+        commit_ref: str,
+        tree_entries: list[dict[str, Any]],
+        fetched_files: dict[str, str],
+    ) -> dict[str, Any]:
+        try:
+            artifacts = build_landscape_artifacts(
+                repo=repo_ref,
+                branch=branch_ref or "main",
+                commit_sha=commit_ref,
+                entries=[row for row in tree_entries if isinstance(row, dict)],
+                file_contents=fetched_files,
+                include_paths=include_paths,
+                exclude_paths=exclude_paths,
+            )
+        except Exception as exc:
+            response_payload.setdefault("landscape_error", f"landscape generation failed: {exc}")
+            return response_payload
+        raw = response_payload.get("raw_artifacts", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        raw.update(artifacts)
+        response_payload["raw_artifacts"] = raw
+        report = response_payload.get("analyst_report_v2", {})
+        if isinstance(report, dict):
+            report_raw = report.get("raw_artifacts", {})
+            if not isinstance(report_raw, dict):
+                report_raw = {}
+            report_raw.update(artifacts)
+            report["raw_artifacts"] = report_raw
+            response_payload["analyst_report_v2"] = report
+        return response_payload
+
     # Legacy modernization path: analyze provided code directly.
     if legacy_code and use_case == "code_modernization":
         file_entries = [{"path": "inline/legacy_code.txt", "type": "file", "depth": 1}]
@@ -5681,6 +5719,14 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             response_payload,
             fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
         )
+        response_payload = _attach_landscape_artifacts(
+            response_payload,
+            repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
+            branch_ref=str(sample_tree.get("repo", {}).get("default_branch", "main")),
+            commit_ref="sample",
+            tree_entries=[item for item in entries if isinstance(item, dict)],
+            fetched_files=sample_contents,
+        )
         return JSONResponse(response_payload)
 
     base_url, headers, authenticated = _github_request_context()
@@ -5765,6 +5811,14 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
     response_payload = _enrich_with_analyst_aas(
         response_payload,
         fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
+    )
+    response_payload = _attach_landscape_artifacts(
+        response_payload,
+        repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
+        branch_ref=branch,
+        commit_ref=str(tree_payload.get("sha") or repo_meta.get("default_branch") or ""),
+        tree_entries=[item for item in raw_entries if isinstance(item, dict)],
+        fetched_files=file_contents,
     )
     return JSONResponse(response_payload)
 
