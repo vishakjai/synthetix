@@ -492,12 +492,14 @@ class BaseAgent(ABC):
 
         user_msg = self.build_user_message(state)
         self.log(f"[{self.name}] Sending request to LLM ({self.llm.config.get_model()})...")
+        raw_response = ""
 
         try:
             response = self.llm.invoke(self.effective_system_prompt(state), user_msg)
+            raw_response = str(response.content or "")
             self.log(f"[{self.name}] Received response ({response.output_tokens} tokens, {response.latency_ms:.0f}ms)")
 
-            parsed = self.parse_output(response.content)
+            parsed = self.parse_output(raw_response)
             self.log(f"[{self.name}] Output parsed successfully")
 
             return AgentResult(
@@ -506,7 +508,7 @@ class BaseAgent(ABC):
                 status="success",
                 summary=self._build_summary(parsed),
                 output=parsed,
-                raw_response=response.content,
+                raw_response=raw_response,
                 tokens_used=response.input_tokens + response.output_tokens,
                 latency_ms=response.latency_ms,
                 logs=self._logs.copy(),
@@ -519,7 +521,7 @@ class BaseAgent(ABC):
                 status="error",
                 summary=f"Agent failed: {e}",
                 output={"error": str(e)},
-                raw_response="",
+                raw_response=raw_response,
                 logs=self._logs.copy(),
             )
 

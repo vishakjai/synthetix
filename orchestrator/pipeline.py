@@ -160,6 +160,7 @@ def _make_node(
             "status": result.status,
             "summary": result.summary,
             "output": output_payload,
+            "raw_response": result.raw_response,
             "tokens_used": result.tokens_used,
             "latency_ms": result.latency_ms,
             "logs": result.logs,

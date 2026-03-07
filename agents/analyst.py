@@ -496,7 +496,49 @@ OUTPUT REQUIREMENTS:
         return self._build_user_message_with_context(state, deterministic)
 
     def parse_output(self, raw: str) -> dict[str, Any]:
-        return self.extract_json(raw)
+        try:
+            return self.extract_json(raw)
+        except Exception as exc:
+            repaired = self._repair_json_response(raw)
+            if repaired is not None:
+                self.log(f"[{self.name}] Output recovered via JSON repair pass")
+                return repaired
+            raise exc
+
+    def _repair_json_response(self, raw: str) -> dict[str, Any] | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        self.log(f"[{self.name}] Attempting JSON repair pass for analyst output...")
+        repair_system = """You repair Analyst Agent outputs into strict JSON.
+Return a single valid JSON object only. No markdown. No explanation.
+Preserve the original meaning. If some sections are missing, use empty arrays/objects.
+Required top-level keys:
+- analysis_walkthrough
+- project_name
+- executive_summary
+- functional_requirements
+- non_functional_requirements
+- legacy_functional_contract
+- legacy_code_inventory
+- assumptions
+- risks
+- open_questions"""
+        repair_user = f"""The previous model response was not valid JSON.
+Rewrite it into valid JSON with the required top-level keys listed above.
+
+SOURCE RESPONSE:
+```text
+{text[:24000]}
+```"""
+        try:
+            repaired = self.llm.invoke(repair_system, repair_user)
+            self.log(f"[{self.name}] JSON repair response received ({repaired.output_tokens} tokens, {repaired.latency_ms:.0f}ms)")
+            parsed = self.extract_json(repaired.content)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception as repair_exc:
+            self.log(f"[{self.name}] JSON repair failed: {repair_exc}")
+            return None
 
     def _split_legacy_chunks(self, legacy_code: str) -> list[str]:
         text = str(legacy_code or "").strip()
