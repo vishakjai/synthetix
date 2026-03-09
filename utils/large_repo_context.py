@@ -21,6 +21,7 @@ def build_large_repo_context_v1(
     included_files: list[str] = []
     included_chunks: list[str] = []
     omitted_chunks: list[str] = []
+    chunk_inputs: list[dict[str, Any]] = []
 
     header = (
         "### LARGE REPO CONTEXT\n"
@@ -84,6 +85,8 @@ def build_large_repo_context_v1(
         total += len(heading)
         included_chunks.append(chunk_id)
         per_chunk_cap = max(6000, min(remaining - len(heading), max_total_chars // max(max_chunks_with_content, 1)))
+        chunk_text_parts: list[str] = [heading.rstrip()]
+        chunk_included_paths: list[str] = []
         for path in sorted(paths, key=_bundle_order_key):
             content = str(file_contents.get(path, "") or "")
             if not content:
@@ -95,10 +98,30 @@ def build_large_repo_context_v1(
                     continue
                 block = block[:trimmed]
             lines.append(block)
+            chunk_text_parts.append(block.rstrip())
             total += len(block)
             included_files.append(path)
+            chunk_included_paths.append(path)
             if total >= max_total_chars:
                 break
+        if chunk_included_paths:
+            chunk_inputs.append(
+                {
+                    "chunk_id": chunk_id,
+                    "component_id": str(chunk.get("component_id", "")).strip(),
+                    "component_name": str(chunk.get("component_name", "")).strip(),
+                    "component_type": str(chunk.get("component_type", "")).strip(),
+                    "priority": int(chunk.get("priority", 0) or 0),
+                    "estimated_loc": int(chunk.get("estimated_loc", 0) or 0),
+                    "paths": chunk_included_paths[:200],
+                    "coverage_expectations": (
+                        chunk.get("coverage_expectations", {})
+                        if isinstance(chunk.get("coverage_expectations", {}), dict)
+                        else {}
+                    ),
+                    "text": "\n".join(chunk_text_parts).strip(),
+                }
+            )
         if total >= max_total_chars:
             break
 
@@ -121,6 +144,7 @@ def build_large_repo_context_v1(
         "omitted_chunks": omitted_chunks[:200],
         "included_paths_sample": included_files[:400],
         "omitted_paths_sample": omitted_files[:400],
+        "chunk_inputs": chunk_inputs[:200],
         "context_text": "\n".join(lines).strip()[: max_total_chars],
     }
 

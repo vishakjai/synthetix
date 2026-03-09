@@ -83,6 +83,9 @@ class ChunkManifestVb6Test(unittest.TestCase):
         self.assertIn("### LARGE REPO CONTEXT", context["context_text"])
         self.assertIn("## CHUNK:", context["context_text"])
         self.assertIn("### FILE: BANK.vbp", context["context_text"])
+        self.assertTrue(isinstance(context.get("chunk_inputs", []), list))
+        self.assertGreaterEqual(len(context.get("chunk_inputs", [])), 1)
+        self.assertIn("text", context["chunk_inputs"][0])
 
 
 if __name__ == "__main__":

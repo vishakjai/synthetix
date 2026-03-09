@@ -37,6 +37,7 @@ from utils.legacy_skills import (
     vb6_skill_pack_manifest,
 )
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1
+from utils.chunk_merge import build_chunk_qa_report_v1, build_merged_analysis_coverage_v1
 
 
 class AnalystAgent(BaseAgent):
@@ -1734,20 +1735,87 @@ Analyze this code chunk and extract behavior compactly.
             if isinstance(source_loc_metrics.get("by_file", {}), dict)
             else {}
         )
+        integration_ctx = state.get("integration_context", {}) if isinstance(state, dict) and isinstance(state.get("integration_context", {}), dict) else {}
+        repo_scan_cache = (
+            integration_ctx.get("repo_scan_cache", {})
+            if isinstance(integration_ctx.get("repo_scan_cache", {}), dict)
+            else {}
+        )
+        repo_snapshot = (
+            repo_scan_cache.get("repo_snapshot", {})
+            if isinstance(repo_scan_cache.get("repo_snapshot", {}), dict)
+            else {}
+        )
+        repo_bundle_summary = (
+            repo_snapshot.get("bundle_summary", {})
+            if isinstance(repo_snapshot.get("bundle_summary", {}), dict)
+            else {}
+        )
+        component_inventory = (
+            repo_snapshot.get("component_inventory_v1", {})
+            if isinstance(repo_snapshot.get("component_inventory_v1", {}), dict)
+            else {}
+        )
+        chunk_manifest = (
+            repo_snapshot.get("chunk_manifest_v1", {})
+            if isinstance(repo_snapshot.get("chunk_manifest_v1", {}), dict)
+            else {}
+        )
+        dependency_graph = (
+            repo_snapshot.get("global_dependency_graph_v1", {})
+            if isinstance(repo_snapshot.get("global_dependency_graph_v1", {}), dict)
+            else {}
+        )
+        large_repo_context = (
+            repo_snapshot.get("legacy_chunk_context_v1", {})
+            if isinstance(repo_snapshot.get("legacy_chunk_context_v1", {}), dict)
+            else {}
+        )
+        structured_chunk_inputs = [
+            row
+            for row in (large_repo_context.get("chunk_inputs", []) if isinstance(large_repo_context.get("chunk_inputs", []), list) else [])
+            if isinstance(row, dict) and str(row.get("chunk_id", "")).strip() and str(row.get("text", "")).strip()
+        ]
         bundle_paths = list(bundle_file_map.keys())
         legacy_skill_profile = infer_legacy_skill(
             file_paths=bundle_paths,
             file_contents=(bundle_file_map if bundle_file_map else {"legacy_bundle": text[:50000]}),
         )
-        inline = len(text) <= self.LEGACY_INLINE_MAX_CHARS
-        chunks = [text] if inline else self._split_legacy_chunks(text)
-        if not chunks:
-            chunks = [text]
+        if structured_chunk_inputs:
+            inline = False
+            chunk_inputs = [
+                {
+                    "chunk_id": str(row.get("chunk_id", "")).strip() or f"chunk:{idx}",
+                    "component_name": str(row.get("component_name", "")).strip(),
+                    "component_type": str(row.get("component_type", "")).strip(),
+                    "paths": row.get("paths", []) if isinstance(row.get("paths", []), list) else [],
+                    "coverage_expectations": row.get("coverage_expectations", {}) if isinstance(row.get("coverage_expectations", {}), dict) else {},
+                    "text": str(row.get("text", "")).strip(),
+                }
+                for idx, row in enumerate(structured_chunk_inputs, start=1)
+                if str(row.get("text", "")).strip()
+            ]
+        else:
+            inline = len(text) <= self.LEGACY_INLINE_MAX_CHARS
+            chunks = [text] if inline else self._split_legacy_chunks(text)
+            if not chunks:
+                chunks = [text]
+            chunk_inputs = [
+                {
+                    "chunk_id": f"legacy_chunk:{idx}",
+                    "component_name": "",
+                    "component_type": "inline_bundle" if inline else "legacy_bundle",
+                    "paths": [],
+                    "coverage_expectations": {},
+                    "text": str(chunk or ""),
+                }
+                for idx, chunk in enumerate(chunks, start=1)
+            ]
         summaries: list[str] = []
         contracts: list[dict[str, Any]] = []
         seen_fn: set[str] = set()
-        chunk_count = len(chunks)
-        llm_chunk_limit = 0 if inline else min(self.LEGACY_LLM_CHUNK_LIMIT, chunk_count)
+        chunk_count = len(chunk_inputs)
+        llm_chunk_limit = 0 if (inline or structured_chunk_inputs) else min(self.LEGACY_LLM_CHUNK_LIMIT, chunk_count)
         functions_set: set[str] = set()
         tables_set: set[str] = set()
         inputs_set: set[str] = set()
@@ -1792,6 +1860,7 @@ Analyze this code chunk and extract behavior compactly.
         form_event_map: dict[str, set[str]] = {}
         vb6_by_path: dict[str, dict[str, Any]] = {}
         project_definitions: list[dict[str, Any]] = []
+        chunk_execution_rows: list[dict[str, Any]] = []
 
         for path, body in bundle_file_map.items():
             sig = legacy_extract_vb6_signals(path, body)
@@ -1972,7 +2041,8 @@ Analyze this code chunk and extract behavior compactly.
                     if not str(existing.get("evidence", "")).strip():
                         existing["evidence"] = str(detector.get("evidence", "")).strip()
 
-        for idx, chunk in enumerate(chunks, start=1):
+        for idx, chunk_input in enumerate(chunk_inputs, start=1):
+            chunk = str(chunk_input.get("text", "") or "")
             use_llm = idx <= llm_chunk_limit
             extracted: dict[str, Any]
             if use_llm:
@@ -2073,6 +2143,19 @@ Analyze this code chunk and extract behavior compactly.
                     )
                     if len(contracts) >= 40:
                         break
+            chunk_execution_rows.append(
+                {
+                    "chunk_id": str(chunk_input.get("chunk_id", "")).strip() or f"legacy_chunk:{idx}",
+                    "component_name": str(chunk_input.get("component_name", "")).strip(),
+                    "component_type": str(chunk_input.get("component_type", "")).strip(),
+                    "paths": chunk_input.get("paths", []) if isinstance(chunk_input.get("paths", []), list) else [],
+                    "forms_count": len(extracted.get("forms", []) if isinstance(extracted.get("forms", []), list) else []),
+                    "event_handlers_count": len(extracted.get("event_handlers", []) if isinstance(extracted.get("event_handlers", []), list) else []),
+                    "functions_count": len(extracted.get("functions", []) if isinstance(extracted.get("functions", []), list) else []),
+                    "project_members_count": len(extracted.get("project_members", []) if isinstance(extracted.get("project_members", []), list) else []),
+                    "summary": str(extracted.get("summary", "")).strip(),
+                }
+            )
             if len(contracts) >= 40:
                 break
 
@@ -2294,42 +2377,6 @@ Analyze this code chunk and extract behavior compactly.
             },
             state=source_target_state,
         )
-        integration_ctx = state.get("integration_context", {}) if isinstance(state, dict) and isinstance(state.get("integration_context", {}), dict) else {}
-        repo_scan_cache = (
-            integration_ctx.get("repo_scan_cache", {})
-            if isinstance(integration_ctx.get("repo_scan_cache", {}), dict)
-            else {}
-        )
-        repo_snapshot = (
-            repo_scan_cache.get("repo_snapshot", {})
-            if isinstance(repo_scan_cache.get("repo_snapshot", {}), dict)
-            else {}
-        )
-        repo_bundle_summary = (
-            repo_snapshot.get("bundle_summary", {})
-            if isinstance(repo_snapshot.get("bundle_summary", {}), dict)
-            else {}
-        )
-        component_inventory = (
-            repo_snapshot.get("component_inventory_v1", {})
-            if isinstance(repo_snapshot.get("component_inventory_v1", {}), dict)
-            else {}
-        )
-        chunk_manifest = (
-            repo_snapshot.get("chunk_manifest_v1", {})
-            if isinstance(repo_snapshot.get("chunk_manifest_v1", {}), dict)
-            else {}
-        )
-        dependency_graph = (
-            repo_snapshot.get("global_dependency_graph_v1", {})
-            if isinstance(repo_snapshot.get("global_dependency_graph_v1", {}), dict)
-            else {}
-        )
-        large_repo_context = (
-            repo_snapshot.get("legacy_chunk_context_v1", {})
-            if isinstance(repo_snapshot.get("legacy_chunk_context_v1", {}), dict)
-            else {}
-        )
         repo_manifest = repo_snapshot.get("manifest", []) if isinstance(repo_snapshot.get("manifest", []), list) else []
         selected_form_like_files = len(
             [
@@ -2344,6 +2391,32 @@ Analyze this code chunk and extract behavior compactly.
             global_readiness=modernization_readiness,
         )
         dependency_reference_rows = self._extract_vbp_dependency_references(project_definitions)
+        chunk_qa_report_v1 = build_chunk_qa_report_v1(
+            snapshot_id=str(repo_snapshot.get("snapshot_id", "")).strip() or "legacy-bundle",
+            chunk_manifest=chunk_manifest,
+            chunk_executions=chunk_execution_rows,
+            large_repo_context=large_repo_context,
+        )
+        merged_analysis_coverage_v1 = build_merged_analysis_coverage_v1(
+            snapshot_id=str(repo_snapshot.get("snapshot_id", "")).strip() or "legacy-bundle",
+            repo_scan_coverage={
+                "analysis_mode": str(repo_snapshot.get("analysis_mode", "standard") or "standard"),
+                "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
+                "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
+                "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
+                "failed_paths": repo_snapshot.get("failed_paths", []) if isinstance(repo_snapshot.get("failed_paths", []), list) else [],
+                "bundle_summary": repo_bundle_summary,
+                "chunk_count": int(chunk_manifest.get("chunk_count", 0) or 0),
+                "large_repo_context": {
+                    "included_chunk_count": int(large_repo_context.get("included_chunk_count", 0) or 0),
+                    "omitted_chunk_count": int(large_repo_context.get("omitted_chunk_count", 0) or 0),
+                },
+            },
+            chunk_qa_report=chunk_qa_report_v1,
+            forms_count_reported=forms_count_reported,
+            event_handler_count_exact=event_handler_count_exact,
+            bas_module_count=len(bas_module_paths),
+        )
 
         legacy_inventory = {
             "summary": (
@@ -2359,12 +2432,13 @@ Analyze this code chunk and extract behavior compactly.
                     f"bundle_included={int(repo_bundle_summary.get('included_file_count', 0) or 0)}, "
                     f"bundle_omitted={int(repo_bundle_summary.get('omitted_file_count', 0) or 0)}, "
                     f"selected_form_files={selected_form_like_files}, "
-                    f"components={int(component_inventory.get('component_count', 0) or 0)}, "
-                    f"chunks={int(chunk_manifest.get('chunk_count', 0) or 0)}, "
-                    f"dependency_edges={int(dependency_graph.get('edge_count', 0) or 0)}. "
-                    if repo_snapshot
-                    else ""
-                )
+                f"components={int(component_inventory.get('component_count', 0) or 0)}, "
+                f"chunks={int(chunk_manifest.get('chunk_count', 0) or 0)}, "
+                f"dependency_edges={int(dependency_graph.get('edge_count', 0) or 0)}, "
+                f"analyzed_chunks={int(chunk_qa_report_v1.get('analyzed_chunk_count', 0) or 0)}. "
+                if repo_snapshot
+                else ""
+            )
                 + f"Modernization readiness score={readiness_score}/100 "
                 + f"({str(readiness_strategy.get('name', 'strategy pending'))})."
             ),
@@ -2436,10 +2510,14 @@ Analyze this code chunk and extract behavior compactly.
                     "included_file_count": int(large_repo_context.get("included_file_count", 0) or 0),
                     "omitted_file_count": int(large_repo_context.get("omitted_file_count", 0) or 0),
                 },
+                "chunk_qa_report_v1": chunk_qa_report_v1,
+                "merged_analysis_coverage_v1": merged_analysis_coverage_v1,
             },
             "component_inventory_v1": component_inventory,
             "chunk_manifest_v1": chunk_manifest,
             "global_dependency_graph_v1": dependency_graph,
+            "chunk_qa_report_v1": chunk_qa_report_v1,
+            "merged_analysis_coverage_v1": merged_analysis_coverage_v1,
             "vb6_file_type_coverage": file_type_coverage,
             "bas_module_summary": {
                 "module_count": len(bas_module_paths),
@@ -2555,6 +2633,8 @@ Analyze this code chunk and extract behavior compactly.
                 "binary_companion_files": binary_companions[:120],
                 "business_rules_catalog": business_rules_catalog[:120],
                 "form_coverage": form_coverage[: self.LEGACY_MAX_FORMS],
+                "chunk_qa_report_v1": chunk_qa_report_v1,
+                "merged_analysis_coverage_v1": merged_analysis_coverage_v1,
             },
         }
 
@@ -2570,7 +2650,8 @@ Analyze this code chunk and extract behavior compactly.
                 f"components={int(component_inventory.get('component_count', 0) or 0)}, "
                 f"chunk_manifest={int(chunk_manifest.get('chunk_count', 0) or 0)}, "
                 f"dependency_edges={int(dependency_graph.get('edge_count', 0) or 0)}, "
-                f"chunk_context_included={int(large_repo_context.get('included_chunk_count', 0) or 0)}.\n"
+                f"chunk_context_included={int(large_repo_context.get('included_chunk_count', 0) or 0)}, "
+                f"chunk_exec_analyzed={int(chunk_qa_report_v1.get('analyzed_chunk_count', 0) or 0)}.\n"
                 if repo_snapshot
                 else ""
             )
@@ -4776,6 +4857,10 @@ BUSINESS OBJECTIVES:
             rules = out.get("legacy_code_inventory", {}).get("business_rules_catalog", [])
             if isinstance(rules, list):
                 out["business_rules_catalog"] = rules[:200]
+            if isinstance(out.get("legacy_code_inventory", {}).get("chunk_qa_report_v1", {}), dict):
+                out["chunk_qa_report_v1"] = out.get("legacy_code_inventory", {}).get("chunk_qa_report_v1", {})
+            if isinstance(out.get("legacy_code_inventory", {}).get("merged_analysis_coverage_v1", {}), dict):
+                out["merged_analysis_coverage_v1"] = out.get("legacy_code_inventory", {}).get("merged_analysis_coverage_v1", {})
         elif isinstance(requirements_pack.get("business_rules_catalog", []), list):
             out["business_rules_catalog"] = requirements_pack.get("business_rules_catalog", [])[:200]
         db_schema_input = str(state.get("database_schema", "")).strip()
