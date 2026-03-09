@@ -1,0 +1,112 @@
+"""
+Deterministic first-pass intent routing for knowledge-layer interactions.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def _clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def classify_interaction_intent(message: str) -> dict[str, Any]:
+    text = _clean(message)
+    lower = text.lower()
+
+    modification_markers = (
+        "update ",
+        "change ",
+        "modify ",
+        "set ",
+        "mark ",
+        "rewrite ",
+        "edit ",
+        "commit ",
+        "apply ",
+    )
+    generation_markers = (
+        "generate ",
+        "draft ",
+        "summarize ",
+        "write ",
+        "create a briefing",
+        "create briefing",
+        "produce ",
+    )
+    analysis_markers = (
+        "what if",
+        "impact",
+        "blast radius",
+        "break if",
+        "breaks if",
+        "depends on",
+        "dependency",
+        "conflict",
+        "gap",
+        "compliance gap",
+    )
+
+    intent = "query"
+    reason = "default_query"
+    if any(token in lower for token in modification_markers):
+        intent = "modification"
+        reason = "mutation_verb"
+    elif any(token in lower for token in generation_markers):
+        intent = "generation"
+        reason = "generation_verb"
+    elif any(token in lower for token in analysis_markers):
+        intent = "analysis"
+        reason = "analysis_marker"
+
+    tokens = text.replace("?", " ").replace(",", " ").split()
+    topic = "general"
+    entity_name = ""
+    mentions_form_like = any(token.strip().lower().startswith(("frm", "mdi", "menu")) for token in tokens)
+    if (
+        "lines of code" in lower
+        or "line of code" in lower
+        or "loc" in lower
+        or "how many forms" in lower
+        or "how many modules" in lower
+        or "how many files" in lower
+        or "how many projects" in lower
+        or "project count" in lower
+        or "file count" in lower
+        or "form count" in lower
+    ):
+        topic = "metrics"
+    elif "compliance" in lower:
+        topic = "compliance"
+    elif "traceability" in lower or "coverage" in lower:
+        topic = "traceability"
+    elif "rule" in lower or "business rule" in lower or "br-" in lower:
+        topic = "rule"
+    elif "depends on" in lower or "blast radius" in lower or "dependency" in lower:
+        topic = "dependency"
+    elif "module" in lower or "form" in lower or "screen" in lower or mentions_form_like:
+        topic = "module"
+    elif "provenance" in lower or "come from" in lower or "source of" in lower:
+        topic = "provenance"
+
+    for token in tokens:
+        raw = token.strip()
+        low = raw.lower()
+        if low.startswith("br-") or low.startswith("dec-") or low.startswith("risk-"):
+            entity_name = raw
+            break
+    if not entity_name and topic in {"module", "dependency", "provenance"}:
+        for token in tokens:
+            raw = token.strip()
+            if raw.lower().startswith(("frm", "mdi", "menu")):
+                entity_name = raw
+                break
+
+    return {
+        "intent": intent,
+        "reason": reason,
+        "topic": topic,
+        "entity_name": entity_name,
+        "message": text,
+    }

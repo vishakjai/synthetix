@@ -478,6 +478,14 @@ const el = {
   collabStageLabel: document.getElementById("collab-stage-label"),
   collabTabButtons: document.getElementById("collab-tab-buttons"),
   collabTabContent: document.getElementById("collab-tab-content"),
+  knowledgeAssistantPanel: document.getElementById("knowledge-assistant-panel"),
+  knowledgeAssistantInput: document.getElementById("knowledge-assistant-input"),
+  knowledgeAssistantAsk: document.getElementById("knowledge-assistant-ask"),
+  knowledgeAssistantPropose: document.getElementById("knowledge-assistant-propose"),
+  knowledgeAssistantStatus: document.getElementById("knowledge-assistant-status"),
+  knowledgeAssistantOutput: document.getElementById("knowledge-assistant-output"),
+  knowledgeAssistantProposalsStatus: document.getElementById("knowledge-assistant-proposals-status"),
+  knowledgeAssistantProposals: document.getElementById("knowledge-assistant-proposals"),
   liveLogs: document.getElementById("live-logs"),
   flowDiagramSection: document.getElementById("flow-diagram-section"),
 
@@ -628,6 +636,16 @@ const state = {
     loadingKey: "",
     errorByKey: {},
     drafts: {},
+  },
+  knowledgeAssistant: {
+    draftByRun: {},
+    loadingRunId: "",
+    proposalLoadingRunId: "",
+    errorByRun: {},
+    responseByRun: {},
+    proposalsByRun: {},
+    proposalsLoadedByRun: {},
+    proposalErrorByRun: {},
   },
   verify: {
     selectedTab: "summary",
@@ -12537,6 +12555,256 @@ function renderCollaborationPanel() {
   ensureCollaborationLoaded(stage);
 }
 
+function knowledgeAssistantResponse(runId) {
+  const key = String(runId || "").trim();
+  if (!key) return null;
+  return state.knowledgeAssistant.responseByRun[key] || null;
+}
+
+function knowledgeAssistantProposals(runId) {
+  const key = String(runId || "").trim();
+  if (!key) return [];
+  const rows = state.knowledgeAssistant.proposalsByRun[key];
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function loadKnowledgeAssistantProposals(runId, force = false) {
+  const key = String(runId || "").trim();
+  if (!key) return [];
+  if (!force && state.knowledgeAssistant.proposalsLoadedByRun[key]) {
+    return knowledgeAssistantProposals(key);
+  }
+  if (state.knowledgeAssistant.proposalLoadingRunId === key) {
+    return knowledgeAssistantProposals(key);
+  }
+  state.knowledgeAssistant.proposalLoadingRunId = key;
+  delete state.knowledgeAssistant.proposalErrorByRun[key];
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(key)}/knowledge/proposals`, null);
+    state.knowledgeAssistant.proposalsByRun[key] = Array.isArray(data?.proposals) ? data.proposals : [];
+    state.knowledgeAssistant.proposalsLoadedByRun[key] = true;
+  } catch (err) {
+    state.knowledgeAssistant.proposalErrorByRun[key] = String(err?.message || err || "Failed to load proposals.");
+  } finally {
+    state.knowledgeAssistant.proposalLoadingRunId = "";
+    renderKnowledgeAssistantPanel();
+  }
+  return knowledgeAssistantProposals(key);
+}
+
+function renderKnowledgeAssistantPanel() {
+  if (!el.knowledgeAssistantPanel || !el.knowledgeAssistantOutput || !el.knowledgeAssistantStatus) return;
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) {
+    el.knowledgeAssistantPanel.classList.add("hidden");
+    return;
+  }
+  el.knowledgeAssistantPanel.classList.remove("hidden");
+  if (!state.knowledgeAssistant.proposalsLoadedByRun[runId] && state.knowledgeAssistant.proposalLoadingRunId !== runId) {
+    loadKnowledgeAssistantProposals(runId).catch(() => {});
+  }
+  const draft = String(state.knowledgeAssistant.draftByRun[runId] || "");
+  if (el.knowledgeAssistantInput && String(el.knowledgeAssistantInput.value || "") !== draft) {
+    el.knowledgeAssistantInput.value = draft;
+  }
+  const loading = state.knowledgeAssistant.loadingRunId === runId;
+  const proposalLoading = state.knowledgeAssistant.proposalLoadingRunId === runId;
+  const error = String(state.knowledgeAssistant.errorByRun[runId] || "").trim();
+  const record = knowledgeAssistantResponse(runId);
+  if (el.knowledgeAssistantAsk) {
+    el.knowledgeAssistantAsk.disabled = loading;
+    el.knowledgeAssistantAsk.textContent = loading ? "Asking..." : "Ask";
+  }
+  if (el.knowledgeAssistantPropose) {
+    el.knowledgeAssistantPropose.disabled = proposalLoading;
+    el.knowledgeAssistantPropose.textContent = proposalLoading ? "Creating..." : "Create proposal";
+  }
+  if (loading) {
+    el.knowledgeAssistantStatus.textContent = "Querying knowledge layer...";
+  } else if (error) {
+    el.knowledgeAssistantStatus.textContent = error;
+  } else if (record && record.response) {
+    const response = record.response;
+    el.knowledgeAssistantStatus.textContent = `Mode: ${String(response.mode || "n/a")} · Confidence: ${Number(response.confidence || 0).toFixed(2)}`;
+  } else {
+    el.knowledgeAssistantStatus.textContent = "No query yet.";
+  }
+  if (!record || !record.response) {
+    el.knowledgeAssistantOutput.innerHTML = "<p class='text-slate-700'>No response yet.</p>";
+  } else {
+    const response = record.response;
+    const provenance = Array.isArray(response.provenance) ? response.provenance : [];
+    const provenanceHtml = provenance.length
+      ? provenance
+        .map((ref) => {
+          const artifact = escapeHtml(String(ref?.artifact_id || "artifact"));
+          const path = escapeHtml(String(ref?.path || ""));
+          const line = Number(ref?.line || 0);
+          const note = escapeHtml(String(ref?.note || ""));
+          const parts = [artifact];
+          if (path) parts.push(path);
+          if (line > 0) parts.push(`line ${line}`);
+          if (note) parts.push(note);
+          return `<li>${parts.join(" · ")}</li>`;
+        })
+        .join("")
+      : "<li>No provenance refs returned.</li>";
+    el.knowledgeAssistantOutput.innerHTML = `
+      <div class="space-y-2">
+        <div>
+          <p class="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">Answer</p>
+          <p class="mt-1 text-sm text-slate-900">${escapeHtml(String(response.answer || ""))}</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span class="rounded-md border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">${escapeHtml(String(response.intent || "query"))}</span>
+          <span class="rounded-md border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">${escapeHtml(String(response.topic || "general"))}</span>
+          <span class="rounded-md border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">${escapeHtml(String(response.mode || "needs verification"))}</span>
+        </div>
+        <div>
+          <p class="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">Provenance</p>
+          <ul class="mt-1 list-disc space-y-1 pl-4 text-[11px] text-slate-700">${provenanceHtml}</ul>
+        </div>
+      </div>
+    `;
+  }
+
+  const proposalError = String(state.knowledgeAssistant.proposalErrorByRun[runId] || "").trim();
+  const proposals = knowledgeAssistantProposals(runId);
+  if (el.knowledgeAssistantProposalsStatus) {
+    if (proposalLoading) el.knowledgeAssistantProposalsStatus.textContent = "Loading proposals...";
+    else if (proposalError) el.knowledgeAssistantProposalsStatus.textContent = proposalError;
+    else if (!proposals.length) el.knowledgeAssistantProposalsStatus.textContent = "No proposals yet.";
+    else el.knowledgeAssistantProposalsStatus.textContent = `${proposals.length} proposal(s)`;
+  }
+  if (el.knowledgeAssistantProposals) {
+    el.knowledgeAssistantProposals.innerHTML = renderKnowledgeAssistantProposals(runId, proposals);
+    el.knowledgeAssistantProposals.querySelectorAll("[data-knowledge-proposal-decision]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const proposalId = String(btn.getAttribute("data-knowledge-proposal-id") || "");
+        const decision = String(btn.getAttribute("data-knowledge-proposal-decision") || "");
+        reviewKnowledgeProposal(runId, proposalId, decision).catch((err) => alert(err.message || err));
+      });
+    });
+  }
+}
+
+function renderKnowledgeAssistantProposals(runId, proposals) {
+  if (!Array.isArray(proposals) || !proposals.length) {
+    return "<p class='text-slate-700'>No proposals yet.</p>";
+  }
+  return proposals.slice().reverse().map((proposal) => {
+    const impact = (proposal && typeof proposal.impact === "object") ? proposal.impact : {};
+    const docs = Array.isArray(impact.impacted_documents) ? impact.impacted_documents : [];
+    const affectedModules = Array.isArray(impact.blast_radius?.affected_modules) ? impact.blast_radius.affected_modules : [];
+    const before = proposal && typeof proposal.before === "object" ? proposal.before : {};
+    const after = proposal && typeof proposal.after === "object" ? proposal.after : {};
+    const pending = String(proposal?.status || "").toLowerCase() === "pending";
+    return `
+      <div class="mb-2 rounded-lg border border-slate-300 bg-slate-50 p-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p class="text-xs font-semibold text-slate-900">${escapeHtml(String(proposal?.title || "Proposal"))}</p>
+            <p class="mt-1 text-[11px] text-slate-700">${escapeHtml(String(proposal?.summary || ""))}</p>
+          </div>
+          <span class="rounded border px-2 py-0.5 text-[10px] font-semibold ${collabStatusBadge(proposal?.status)}">${escapeHtml(String(proposal?.status || "pending").toUpperCase())}</span>
+        </div>
+        <div class="mt-2 grid gap-2 lg:grid-cols-2">
+          <div class="rounded border border-slate-300 bg-white p-2">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Before</p>
+            <pre class="mono mt-1 whitespace-pre-wrap text-[10px] text-slate-700">${escapeHtml(JSON.stringify(before, null, 2))}</pre>
+          </div>
+          <div class="rounded border border-slate-300 bg-white p-2">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">After</p>
+            <pre class="mono mt-1 whitespace-pre-wrap text-[10px] text-slate-700">${escapeHtml(JSON.stringify(after, null, 2))}</pre>
+          </div>
+        </div>
+        <div class="mt-2 text-[11px] text-slate-700">
+          <strong>Documents:</strong> ${escapeHtml(docs.join(", ") || "n/a")}
+          ${affectedModules.length ? `<br /><strong>Blast radius:</strong> ${escapeHtml(affectedModules.map((row) => row?.name || "").filter(Boolean).join(", "))}` : ""}
+        </div>
+        <p class="mono mt-1 text-[10px] text-slate-600">${escapeHtml(String(proposal?.id || ""))}</p>
+        ${pending ? `
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button data-knowledge-proposal-id="${escapeHtml(String(proposal?.id || ""))}" data-knowledge-proposal-decision="approve" class="btn-success rounded-md px-2 py-1 text-[11px] font-semibold">Approve</button>
+            <button data-knowledge-proposal-id="${escapeHtml(String(proposal?.id || ""))}" data-knowledge-proposal-decision="reject" class="btn-danger rounded-md px-2 py-1 text-[11px] font-semibold">Reject</button>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }).join("");
+}
+
+async function askKnowledgeAssistant() {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) return;
+  const message = String(el.knowledgeAssistantInput?.value || "").trim();
+  state.knowledgeAssistant.draftByRun[runId] = message;
+  if (!message) {
+    state.knowledgeAssistant.errorByRun[runId] = "Enter a question first.";
+    renderKnowledgeAssistantPanel();
+    return;
+  }
+  state.knowledgeAssistant.loadingRunId = runId;
+  delete state.knowledgeAssistant.errorByRun[runId];
+  renderKnowledgeAssistantPanel();
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/knowledge/interact`, { message }, "POST");
+    state.knowledgeAssistant.responseByRun[runId] = data;
+  } catch (err) {
+    state.knowledgeAssistant.errorByRun[runId] = String(err?.message || err || "Knowledge query failed.");
+  } finally {
+    state.knowledgeAssistant.loadingRunId = "";
+    renderKnowledgeAssistantPanel();
+  }
+}
+
+async function createKnowledgeProposal() {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) return;
+  const message = String(el.knowledgeAssistantInput?.value || "").trim();
+  state.knowledgeAssistant.draftByRun[runId] = message;
+  if (!message) {
+    state.knowledgeAssistant.proposalErrorByRun[runId] = "Enter a change request first.";
+    renderKnowledgeAssistantPanel();
+    return;
+  }
+  state.knowledgeAssistant.proposalLoadingRunId = runId;
+  delete state.knowledgeAssistant.proposalErrorByRun[runId];
+  renderKnowledgeAssistantPanel();
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/knowledge/proposals`, { message }, "POST");
+    state.knowledgeAssistant.proposalsByRun[runId] = Array.isArray(data?.proposals) ? data.proposals : [];
+    state.knowledgeAssistant.proposalsLoadedByRun[runId] = true;
+  } catch (err) {
+    state.knowledgeAssistant.proposalErrorByRun[runId] = String(err?.message || err || "Proposal creation failed.");
+  } finally {
+    state.knowledgeAssistant.proposalLoadingRunId = "";
+    renderKnowledgeAssistantPanel();
+  }
+}
+
+async function reviewKnowledgeProposal(runId, proposalId, decision) {
+  if (!runId || !proposalId) return;
+  const rationale = prompt(`Provide rationale for ${decision}:`, "") || "";
+  state.knowledgeAssistant.proposalLoadingRunId = runId;
+  delete state.knowledgeAssistant.proposalErrorByRun[runId];
+  renderKnowledgeAssistantPanel();
+  try {
+    const data = await api(
+      `/api/runs/${encodeURIComponent(runId)}/knowledge/proposals/${encodeURIComponent(proposalId)}/decision`,
+      { decision, rationale },
+      "POST"
+    );
+    state.knowledgeAssistant.proposalsByRun[runId] = Array.isArray(data?.proposals) ? data.proposals : [];
+    state.knowledgeAssistant.proposalsLoadedByRun[runId] = true;
+  } catch (err) {
+    state.knowledgeAssistant.proposalErrorByRun[runId] = String(err?.message || err || "Proposal review failed.");
+  } finally {
+    state.knowledgeAssistant.proposalLoadingRunId = "";
+    renderKnowledgeAssistantPanel();
+  }
+}
+
 function openStageModal(stage) {
   const agent = activeAgentsForRun(state.currentRun).find((a) => a.stage === stage) || AGENTS.find((a) => a.stage === stage);
   const result = latestResultByStage(state.currentRun, stage);
@@ -12747,6 +13015,7 @@ function renderRun() {
   renderAgentTabs();
   renderAgentTabPanel();
   renderCollaborationPanel();
+  renderKnowledgeAssistantPanel();
   renderImpactDiff();
   renderLogs();
   renderFlowDiagram();
@@ -12996,6 +13265,7 @@ async function loadRunFromHistory() {
   toggleUseCasePanel();
   toggleCloudConfig();
   setMode(MODES.BUILD);
+  renderRun();
 }
 
 async function submitApproval(decision) {
@@ -14173,6 +14443,44 @@ function bindEvents() {
       state.collaboration.selectedTab = tab;
       renderCollaborationPanel();
     });
+  });
+  el.knowledgeAssistantAsk?.addEventListener("click", () => {
+    askKnowledgeAssistant().catch((err) => {
+        const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+        if (runId) {
+        state.knowledgeAssistant.errorByRun[runId] = String(err?.message || err || "Knowledge query failed.");
+        state.knowledgeAssistant.loadingRunId = "";
+        renderKnowledgeAssistantPanel();
+      }
+    });
+  });
+  el.knowledgeAssistantPropose?.addEventListener("click", () => {
+    createKnowledgeProposal().catch((err) => {
+      const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+      if (runId) {
+        state.knowledgeAssistant.proposalErrorByRun[runId] = String(err?.message || err || "Proposal creation failed.");
+        state.knowledgeAssistant.proposalLoadingRunId = "";
+        renderKnowledgeAssistantPanel();
+      }
+    });
+  });
+  el.knowledgeAssistantInput?.addEventListener("input", () => {
+    const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+    if (!runId) return;
+    state.knowledgeAssistant.draftByRun[runId] = String(el.knowledgeAssistantInput?.value || "");
+  });
+  el.knowledgeAssistantInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      askKnowledgeAssistant().catch((err) => {
+        const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+        if (runId) {
+          state.knowledgeAssistant.errorByRun[runId] = String(err?.message || err || "Knowledge query failed.");
+          state.knowledgeAssistant.loadingRunId = "";
+          renderKnowledgeAssistantPanel();
+        }
+      });
+    }
   });
   el.closeModal.addEventListener("click", () => el.outputModal.close());
   el.diagramClose?.addEventListener("click", () => el.diagramModal?.close());

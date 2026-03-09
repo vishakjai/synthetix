@@ -2294,6 +2294,30 @@ Analyze this code chunk and extract behavior compactly.
             },
             state=source_target_state,
         )
+        integration_ctx = state.get("integration_context", {}) if isinstance(state, dict) and isinstance(state.get("integration_context", {}), dict) else {}
+        repo_scan_cache = (
+            integration_ctx.get("repo_scan_cache", {})
+            if isinstance(integration_ctx.get("repo_scan_cache", {}), dict)
+            else {}
+        )
+        repo_snapshot = (
+            repo_scan_cache.get("repo_snapshot", {})
+            if isinstance(repo_scan_cache.get("repo_snapshot", {}), dict)
+            else {}
+        )
+        repo_bundle_summary = (
+            repo_snapshot.get("bundle_summary", {})
+            if isinstance(repo_snapshot.get("bundle_summary", {}), dict)
+            else {}
+        )
+        repo_manifest = repo_snapshot.get("manifest", []) if isinstance(repo_snapshot.get("manifest", []), list) else []
+        selected_form_like_files = len(
+            [
+                row
+                for row in repo_manifest
+                if isinstance(row, dict) and str(row.get("path", "")).lower().endswith((".frm", ".ctl"))
+            ]
+        )
         project_business_summaries = build_project_business_summaries(
             vb6_projects=vb6_projects,
             source_target_profile=source_target_profile,
@@ -2308,11 +2332,22 @@ Analyze this code chunk and extract behavior compactly.
                 f"{len(controls_set)} controls, {len(activex_set)} ActiveX/COM dependencies, "
                 f"{event_handler_count_exact} event handlers, {len(bas_module_paths)} .bas modules "
                 f"({bas_procedure_count} procedures). "
-                f"Modernization readiness score={readiness_score}/100 "
-                f"({str(readiness_strategy.get('name', 'strategy pending'))})."
+                + (
+                    f"Repo scan coverage: selected={int(repo_snapshot.get('selected_file_count', 0) or 0)}, "
+                    f"fetched={int(repo_snapshot.get('fetched_file_count', 0) or 0)}, "
+                    f"failed={int(repo_snapshot.get('failed_fetch_count', 0) or 0)}, "
+                    f"bundle_included={int(repo_bundle_summary.get('included_file_count', 0) or 0)}, "
+                    f"bundle_omitted={int(repo_bundle_summary.get('omitted_file_count', 0) or 0)}, "
+                    f"selected_form_files={selected_form_like_files}. "
+                    if repo_snapshot
+                    else ""
+                )
+                + f"Modernization readiness score={readiness_score}/100 "
+                + f"({str(readiness_strategy.get('name', 'strategy pending'))})."
             ),
             "form_count_referenced": referenced_form_count,
             "form_count_discovered_files": discovered_form_file_count,
+            "form_count_selected_files": selected_form_like_files,
             "form_count_unmapped_files": unmapped_form_file_count,
             "source_loc_total": int(source_loc_metrics.get("total_loc", 0) or 0),
             "source_loc_forms": int(source_loc_metrics.get("forms_loc", 0) or 0),
@@ -2359,6 +2394,15 @@ Analyze this code chunk and extract behavior compactly.
             "migration_strategy_recommendation": readiness_strategy,
             "source_target_modernization_profile": source_target_profile,
             "project_business_summaries": project_business_summaries,
+            "repo_scan_coverage": {
+                "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
+                "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
+                "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
+                "failed_paths": repo_snapshot.get("failed_paths", [])[:200]
+                if isinstance(repo_snapshot.get("failed_paths", []), list)
+                else [],
+                "bundle_summary": repo_bundle_summary,
+            },
             "vb6_file_type_coverage": file_type_coverage,
             "bas_module_summary": {
                 "module_count": len(bas_module_paths),

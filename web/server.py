@@ -53,6 +53,7 @@ from config import (  # noqa: E402
 )
 from orchestrator.pipeline import AGENT_SEQUENCE, make_initial_state, run_single_stage  # noqa: E402
 from agents.developer import DeveloperAgent  # noqa: E402
+from agents.interaction_agent import InteractionAgent  # noqa: E402
 from agents.system_intelligence import SystemIntelligenceAgent  # noqa: E402
 from utils.cloud_deployer import required_cloud_fields  # noqa: E402
 from utils.artifacts import safe_name  # noqa: E402
@@ -99,6 +100,10 @@ from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.landscape_router import build_greenfield_landscape_artifacts, build_landscape_artifacts  # noqa: E402
 from utils.evidence_mode import create_evidence_bundle, load_evidence_bundle  # noqa: E402
+from utils.knowledge_proposals import KnowledgeProposalService, KnowledgeProposalStore  # noqa: E402
+from utils.knowledge_projection import build_knowledge_projection  # noqa: E402
+from utils.knowledge_queries import KnowledgeQueries  # noqa: E402
+from utils.knowledge_store_sqlite import SqliteKnowledgeStore  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -145,6 +150,8 @@ DOCGEN_ROOT = ROOT / "synthetix-docgen"
 KNOWLEDGE_SOURCE_UPLOAD_ROOT = TEAM_DATA_ROOT / "knowledge_sources"
 KNOWLEDGE_SOURCE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024
 RUN_CONTEXT_ARTIFACT_ROOT = ROOT / "run_artifacts"
+RUN_KNOWLEDGE_GRAPH_ROOT = RUN_CONTEXT_ARTIFACT_ROOT / "knowledge_graphs"
+RUN_KNOWLEDGE_GRAPH_ROOT.mkdir(parents=True, exist_ok=True)
 ASYNC_RUN_QUEUE_ENABLED = str(os.getenv("ASYNC_RUN_QUEUE_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 RUN_WORKER_TOKEN = str(os.getenv("RUN_WORKER_TOKEN", "")).strip()
 RUN_WORKER_URL = str(os.getenv("RUN_WORKER_URL", "")).strip()
@@ -385,6 +392,45 @@ def _review_check_row(
         "detail": str(detail or "").strip(),
         "source": str(source or "derived").strip(),
     }
+
+
+def _knowledge_store_for_run(run_id: str) -> SqliteKnowledgeStore:
+    safe_run_id = safe_name(str(run_id or "run"))
+    return SqliteKnowledgeStore(RUN_KNOWLEDGE_GRAPH_ROOT / safe_run_id / "knowledge.sqlite")
+
+
+def _knowledge_proposal_store_for_run(run_id: str) -> KnowledgeProposalStore:
+    safe_run_id = safe_name(str(run_id or "run"))
+    return KnowledgeProposalStore(RUN_KNOWLEDGE_GRAPH_ROOT / safe_run_id / "proposals.json")
+
+
+def _run_context_bundle_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    bundle = state.get("run_context_bundle", {})
+    return bundle if isinstance(bundle, dict) else {}
+
+
+def _ensure_run_knowledge_projection(run_id: str) -> tuple[dict[str, Any], KnowledgeQueries]:
+    run = MANAGER.get_run(run_id)
+    if not run:
+        raise KeyError("run not found")
+    state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _ensure_analyst_report_v2(_analyst_output_from_state(state))
+    if not analyst_output:
+        raise ValueError("analyst output unavailable")
+    run_context_bundle = _run_context_bundle_from_state(state)
+    projection = build_knowledge_projection(
+        run_id=run_id,
+        analyst_output=analyst_output,
+        run_context_bundle=run_context_bundle,
+    )
+    store = _knowledge_store_for_run(run_id)
+    metadata = store.get_projection_metadata(run_id)
+    projected_at = _clean_text(_as_dict_safe(projection.get("metadata")).get("generated_at"))
+    if not metadata or _clean_text(metadata.get("generated_at")) != projected_at:
+        metadata = store.save_projection(projection)
+    return metadata, KnowledgeQueries(store, run_id)
 
 
 def _discover_review_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -3924,12 +3970,14 @@ def _select_source_entries_for_analysis(
             rank = 0
         elif path.endswith(".vbp") or path.endswith(".vbg"):
             rank = 0
-        elif path.endswith(".bas"):
+        elif path.endswith(".frm") or path.endswith(".ctl"):
             rank = 1
-        elif path.endswith(".dcx") or path.endswith(".dca"):
-            rank = 1
-        elif path.endswith(".frm") or path.endswith(".ctl") or path.endswith(".cls"):
+        elif path.endswith(".cls"):
             rank = 2
+        elif path.endswith(".bas"):
+            rank = 3
+        elif path.endswith(".dcx") or path.endswith(".dca"):
+            rank = 3
         elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res") or path.endswith(".ocx") or path.endswith(".mdb") or path.endswith(".accdb"):
             # Keep binary companions in scope, but prioritize code-bearing files first for accurate decomposition.
             rank = 8
@@ -3946,24 +3994,98 @@ def _select_source_entries_for_analysis(
     return [row[2] for row in priority_rank[: max(1, effective_limit)]]
 
 
-def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: int = 420000) -> str:
+def _legacy_bundle_bucket(path: str) -> str:
+    lower = str(path or "").strip().lower()
+    if lower.endswith((".vbp", ".vbg")):
+        return "project"
+    if lower.endswith((".frm", ".ctl")):
+        return "form"
+    if lower.endswith(".cls"):
+        return "class"
+    if lower.endswith(".bas"):
+        return "module"
+    if lower.endswith((".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb")):
+        return "companion"
+    return "other"
+
+
+def _legacy_bundle_order_key(path: str) -> tuple[int, str]:
+    bucket_order = {
+        "project": 0,
+        "form": 1,
+        "class": 2,
+        "module": 3,
+        "companion": 4,
+        "other": 5,
+    }
+    normalized = str(path or "").strip().replace("\\", "/").lower()
+    return (bucket_order.get(_legacy_bundle_bucket(normalized), 9), normalized)
+
+
+def _compose_legacy_code_bundle(
+    file_contents: dict[str, str],
+    max_total_chars: int = 420000,
+) -> tuple[str, dict[str, Any]]:
+    available_paths = [path for path in file_contents.keys() if str(file_contents.get(path, "") or "").strip()]
+    vb6_source_hits = sum(
+        1
+        for path in available_paths
+        if str(path).lower().endswith((".vbp", ".vbg", ".frm", ".ctl", ".cls", ".bas", ".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
+    )
+    projected_chars = sum(len(str(file_contents.get(path, "") or "")) + len(str(path)) + 16 for path in available_paths)
+    effective_max = int(max_total_chars or 0)
+    if vb6_source_hits >= 12:
+        # Large VB6 estates lose coverage if we flatten them into the old 420k cap.
+        # Keep the bundle bounded, but allow enough room for deterministic per-file extraction.
+        effective_max = max(effective_max, min(max(projected_chars, 900000), 2400000))
+
     chunks: list[str] = []
     total = 0
-    for path in sorted(file_contents.keys()):
+    included_paths: list[str] = []
+    omitted_paths: list[str] = []
+    included_by_bucket: dict[str, int] = {}
+    omitted_by_bucket: dict[str, int] = {}
+    for path in sorted(available_paths, key=_legacy_bundle_order_key):
         content = str(file_contents.get(path, "") or "")
         if not content:
             continue
         block = f"\n### FILE: {path}\n{content}\n"
-        if total + len(block) > max_total_chars:
-            remaining = max_total_chars - total
+        if total + len(block) > effective_max:
+            remaining = effective_max - total
             if remaining <= 200:
-                break
+                omitted_paths.append(path)
+                bucket = _legacy_bundle_bucket(path)
+                omitted_by_bucket[bucket] = int(omitted_by_bucket.get(bucket, 0) or 0) + 1
+                continue
             block = block[:remaining]
         chunks.append(block)
         total += len(block)
-        if total >= max_total_chars:
+        included_paths.append(path)
+        bucket = _legacy_bundle_bucket(path)
+        included_by_bucket[bucket] = int(included_by_bucket.get(bucket, 0) or 0) + 1
+        if total >= effective_max:
             break
-    return "".join(chunks).strip()
+
+    for path in sorted(set(available_paths) - set(included_paths), key=_legacy_bundle_order_key):
+        if path in omitted_paths:
+            continue
+        omitted_paths.append(path)
+        bucket = _legacy_bundle_bucket(path)
+        omitted_by_bucket[bucket] = int(omitted_by_bucket.get(bucket, 0) or 0) + 1
+
+    return "".join(chunks).strip(), {
+        "requested_max_chars": int(max_total_chars or 0),
+        "effective_max_chars": effective_max,
+        "projected_chars": projected_chars,
+        "available_file_count": len(available_paths),
+        "vb6_source_file_count": vb6_source_hits,
+        "included_file_count": len(included_paths),
+        "omitted_file_count": len(omitted_paths),
+        "included_paths_sample": included_paths[:200],
+        "omitted_paths_sample": omitted_paths[:200],
+        "included_by_bucket": included_by_bucket,
+        "omitted_by_bucket": omitted_by_bucket,
+    }
 
 
 def _repo_snapshot_local_dir(snapshot_id: str) -> Path:
@@ -3988,12 +4110,14 @@ def _repo_snapshot_family_key(
 ) -> str:
     seed = "|".join(
         [
+            "bundle_v2",
             owner.lower().strip(),
             repository.lower().strip(),
             branch.lower().strip(),
             hashlib.sha1(",".join(sorted(include_paths)).encode("utf-8")).hexdigest()[:12],
             hashlib.sha1(",".join(sorted(exclude_paths)).encode("utf-8")).hexdigest()[:12],
             str(int(max_files or 0)),
+            str(int(REPO_SCAN_BUNDLE_MAX_CHARS or 0)),
         ]
     )
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
@@ -4218,7 +4342,7 @@ def _resolve_legacy_code_from_repo_scan(
             "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
             "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
         }
-        legacy_code = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        legacy_code, bundle_summary = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
         sid_seed = f"sample::{owner}/{repository}::{','.join(sorted(sample_contents.keys()))}"
         snapshot_id = hashlib.sha1(sid_seed.encode("utf-8")).hexdigest()[:20]
         payload = {
@@ -4233,6 +4357,9 @@ def _resolve_legacy_code_from_repo_scan(
             "created_at": _utc_now(),
             "cache_hit": False,
             "selected_file_count": len(sample_contents),
+            "fetched_file_count": len(sample_contents),
+            "failed_fetch_count": 0,
+            "failed_paths": [],
             "manifest": [
                 {
                     "path": p,
@@ -4243,6 +4370,7 @@ def _resolve_legacy_code_from_repo_scan(
                 }
                 for p in sorted(sample_contents.keys())
             ],
+            "bundle_summary": bundle_summary,
             "legacy_code": legacy_code,
         }
         _repo_snapshot_save(snapshot_id, payload)
@@ -4301,6 +4429,7 @@ def _resolve_legacy_code_from_repo_scan(
 
         snapshot_seed = "|".join(
             [
+                "bundle_v2",
                 "github",
                 owner.lower(),
                 repository.lower(),
@@ -4310,6 +4439,7 @@ def _resolve_legacy_code_from_repo_scan(
                 hashlib.sha1(",".join(exclude_paths).encode("utf-8")).hexdigest()[:12],
                 str(REPO_SCAN_MAX_FILES),
                 str(REPO_SCAN_CHUNK_SIZE),
+                str(REPO_SCAN_BUNDLE_MAX_CHARS),
             ]
         )
         snapshot_id = hashlib.sha1(snapshot_seed.encode("utf-8")).hexdigest()[:20]
@@ -4410,9 +4540,16 @@ def _resolve_legacy_code_from_repo_scan(
                 f"resolved={len(file_contents)} reused={len(reused_paths)} failed={len(failed_paths)}"
             )
 
-        legacy_code = _compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        legacy_code, bundle_summary = _compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
         if not legacy_code:
             return "", {}, "Repo scan completed but no analyzable source content was extracted."
+        emit(
+            "🧾 Repo bundle coverage: "
+            f"selected={len(selected_entries)} fetched={len(file_contents)} failed={len(failed_paths)} "
+            f"included={int(bundle_summary.get('included_file_count', 0) or 0)} "
+            f"omitted={int(bundle_summary.get('omitted_file_count', 0) or 0)} "
+            f"max_chars={int(bundle_summary.get('effective_max_chars', REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS)}"
+        )
         manifest = []
         for entry in selected_entries:
             path = str(entry.get("path", "")).strip()
@@ -4448,6 +4585,8 @@ def _resolve_legacy_code_from_repo_scan(
             "exclude_paths": exclude_paths,
             "total_tree_entries": len(raw_entries),
             "selected_file_count": len(selected_entries),
+            "fetched_file_count": len(file_contents),
+            "failed_fetch_count": len(failed_paths),
             "selected_paths": sorted(selected_path_set)[:400],
             "chunk_count": len(chunks),
             "chunk_size": REPO_SCAN_CHUNK_SIZE,
@@ -4460,6 +4599,7 @@ def _resolve_legacy_code_from_repo_scan(
             "failed_paths": failed_paths[:200],
             "sampled_files": sorted(file_contents.keys())[:80],
             "manifest": manifest,
+            "bundle_summary": bundle_summary,
             "file_contents": file_contents,
             "legacy_code": legacy_code,
         }
@@ -8848,6 +8988,203 @@ async def api_download_analyst_docx(request):
     )
 
 
+async def api_get_run_knowledge_module(request):
+    run_id = request.path_params.get("run_id", "")
+    module_name = _clean_text(request.query_params.get("name"))
+    if not module_name:
+        return JSONResponse({"ok": False, "error": "module name is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_module_context(module_name)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_rule(request):
+    run_id = request.path_params.get("run_id", "")
+    rule_id = _clean_text(request.query_params.get("id"))
+    if not rule_id:
+        return JSONResponse({"ok": False, "error": "rule id is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_rule_context(rule_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_blast_radius(request):
+    run_id = request.path_params.get("run_id", "")
+    module_name = _clean_text(request.query_params.get("module"))
+    if not module_name:
+        return JSONResponse({"ok": False, "error": "module name is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_dependency_blast_radius(module_name)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_compliance_gaps(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_compliance_gaps()})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_traceability_gaps(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_traceability_gaps()})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_search(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    query = _clean_text(_as_dict_safe(payload).get("query"))
+    node_types = _as_list_safe(_as_dict_safe(payload).get("node_types"))
+    limit = int(_as_dict_safe(payload).get("limit", 10) or 10)
+    if not query:
+        return JSONResponse({"ok": False, "error": "query is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse(
+            {
+                "ok": True,
+                "projection": metadata,
+                "data": queries.search_concepts(query, node_types=[str(x) for x in node_types], limit=limit),
+            }
+        )
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_provenance(request):
+    run_id = request.path_params.get("run_id", "")
+    node_id = _clean_text(request.query_params.get("node_id"))
+    if not node_id:
+        return JSONResponse({"ok": False, "error": "node_id is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.explain_provenance(node_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_interact(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    message = _clean_text(_as_dict_safe(payload).get("message"))
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        agent = InteractionAgent(queries)
+        response = agent.respond(message)
+        return JSONResponse({"ok": True, "projection": metadata, "response": response})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_proposals(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        service = KnowledgeProposalService(queries, _knowledge_proposal_store_for_run(run_id))
+        return JSONResponse({"ok": True, "projection": metadata, "proposals": service.list_proposals()})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_proposals(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    message = _clean_text(_as_dict_safe(payload).get("message"))
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        service = KnowledgeProposalService(queries, _knowledge_proposal_store_for_run(run_id))
+        proposal = service.create_from_message(message, actor=_request_actor(request))
+        return JSONResponse(
+            {
+                "ok": True,
+                "projection": metadata,
+                "proposal": proposal,
+                "proposals": service.list_proposals(),
+            }
+        )
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_proposal_decision(request):
+    run_id = request.path_params.get("run_id", "")
+    proposal_id = _clean_text(request.path_params.get("proposal_id", ""))
+    if not proposal_id:
+        return JSONResponse({"ok": False, "error": "proposal_id is required"}, status_code=400)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    decision = _clean_text(_as_dict_safe(payload).get("decision")).lower()
+    rationale = _clean_text(_as_dict_safe(payload).get("rationale"))
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        service = KnowledgeProposalService(queries, _knowledge_proposal_store_for_run(run_id))
+        proposal = service.review(
+            proposal_id,
+            decision=decision,
+            rationale=rationale,
+            actor=_request_actor(request),
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "projection": metadata,
+                "proposal": proposal,
+                "proposals": service.list_proposals(),
+            }
+        )
+    except KeyError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 async def api_download_analyst_docgen_docx(request):
     run_id = request.path_params.get("run_id", "")
     run = MANAGER.get_run(run_id)
@@ -12981,6 +13318,21 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/module", api_get_run_knowledge_module, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/rule", api_get_run_knowledge_rule, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/blast-radius", api_get_run_knowledge_blast_radius, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/compliance-gaps", api_get_run_knowledge_compliance_gaps, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/traceability-gaps", api_get_run_knowledge_traceability_gaps, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/search", api_post_run_knowledge_search, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/knowledge/provenance", api_get_run_knowledge_provenance, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/interact", api_post_run_knowledge_interact, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/knowledge/proposals", api_get_run_knowledge_proposals, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/proposals", api_post_run_knowledge_proposals, methods=["POST"]),
+    Route(
+        "/api/runs/{run_id:str}/knowledge/proposals/{proposal_id:str}/decision",
+        api_post_run_knowledge_proposal_decision,
+        methods=["POST"],
+    ),
     Route("/api/runs/{run_id:str}/db-artifact", api_download_db_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/discover-artifact", api_download_discover_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),
