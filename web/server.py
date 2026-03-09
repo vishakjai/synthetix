@@ -104,6 +104,8 @@ from utils.knowledge_proposals import KnowledgeProposalService, KnowledgeProposa
 from utils.knowledge_projection import build_knowledge_projection  # noqa: E402
 from utils.knowledge_queries import KnowledgeQueries  # noqa: E402
 from utils.knowledge_store_sqlite import SqliteKnowledgeStore  # noqa: E402
+from utils.repo_snapshot import build_repo_snapshot_v1, classify_repo_scan_mode  # noqa: E402
+from utils.symbol_index import build_symbol_index_v1  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -4345,6 +4347,36 @@ def _resolve_legacy_code_from_repo_scan(
         legacy_code, bundle_summary = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
         sid_seed = f"sample::{owner}/{repository}::{','.join(sorted(sample_contents.keys()))}"
         snapshot_id = hashlib.sha1(sid_seed.encode("utf-8")).hexdigest()[:20]
+        sample_entries = [
+            {"path": p, "size": len(sample_contents.get(p, "")), "sha": hashlib.sha1(str(sample_contents.get(p, "")).encode("utf-8")).hexdigest()[:12], "ext": Path(p).suffix.lower(), "depth": p.count("/"), "type": "blob"}
+            for p in sorted(sample_contents.keys())
+        ]
+        routing = classify_repo_scan_mode(sample_entries, total_tree_entries=len(sample_entries))
+        repo_snapshot_v1 = build_repo_snapshot_v1(
+            snapshot_id=snapshot_id,
+            repo_url=repo_url,
+            owner=owner,
+            repository=repository,
+            branch="sample",
+            commit_sha="sample",
+            tree_sha="sample",
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            raw_entries=sample_entries,
+            selected_entries=sample_entries,
+            file_contents=sample_contents,
+            failed_paths=[],
+            reused_paths=[],
+            changed_paths=[],
+            compare_error="",
+            chunk_size=REPO_SCAN_CHUNK_SIZE,
+            chunk_workers=REPO_SCAN_CHUNK_WORKERS,
+            family_key="sample",
+            bundle_summary=bundle_summary,
+            analysis_mode=str(routing.get("analysis_mode", "standard")),
+            analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
+        )
+        symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=sample_contents)
         payload = {
             "snapshot_id": snapshot_id,
             "owner": owner,
@@ -4356,6 +4388,8 @@ def _resolve_legacy_code_from_repo_scan(
             "repo_url": repo_url,
             "created_at": _utc_now(),
             "cache_hit": False,
+            "analysis_mode": str(routing.get("analysis_mode", "standard")),
+            "analysis_mode_reasons": routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
             "selected_file_count": len(sample_contents),
             "fetched_file_count": len(sample_contents),
             "failed_fetch_count": 0,
@@ -4370,6 +4404,8 @@ def _resolve_legacy_code_from_repo_scan(
                 }
                 for p in sorted(sample_contents.keys())
             ],
+            "repo_snapshot_v1": repo_snapshot_v1,
+            "symbol_index_v1": symbol_index_v1,
             "bundle_summary": bundle_summary,
             "legacy_code": legacy_code,
         }
@@ -4417,6 +4453,14 @@ def _resolve_legacy_code_from_repo_scan(
         )
         if not selected_entries:
             return "", {}, "Repo scan completed but no eligible source files matched current include/exclude filters."
+        routing = classify_repo_scan_mode(selected_entries, total_tree_entries=len(raw_entries))
+        analysis_mode = str(routing.get("analysis_mode", "standard")).strip() or "standard"
+        analysis_mode_reasons = routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else []
+        emit(
+            "🧭 Repo scan mode: "
+            f"{analysis_mode}"
+            + (f" ({'; '.join([str(x) for x in analysis_mode_reasons[:6] if str(x).strip()])})" if analysis_mode_reasons else "")
+        )
 
         family_key = _repo_snapshot_family_key(
             owner=owner,
@@ -4429,7 +4473,7 @@ def _resolve_legacy_code_from_repo_scan(
 
         snapshot_seed = "|".join(
             [
-                "bundle_v2",
+                "bundle_v3",
                 "github",
                 owner.lower(),
                 repository.lower(),
@@ -4454,6 +4498,7 @@ def _resolve_legacy_code_from_repo_scan(
                     "repository": repository,
                     "default_branch": branch,
                     "commit_sha": commit_sha,
+                    "analysis_mode": str(cached.get("analysis_mode", "standard") or "standard"),
                     "sampled_files": sampled[:40] if isinstance(sampled, list) else [],
                     "repo_snapshot": {
                         **{k: v for k, v in cached.items() if k not in {"legacy_code", "file_contents"}},
@@ -4581,6 +4626,8 @@ def _resolve_legacy_code_from_repo_scan(
             "base_commit_sha": base_commit if isinstance(base_snapshot, dict) else "",
             "tree_sha": tree_sha,
             "created_at": _utc_now(),
+            "analysis_mode": analysis_mode,
+            "analysis_mode_reasons": analysis_mode_reasons[:20],
             "include_paths": include_paths,
             "exclude_paths": exclude_paths,
             "total_tree_entries": len(raw_entries),
@@ -4603,6 +4650,34 @@ def _resolve_legacy_code_from_repo_scan(
             "file_contents": file_contents,
             "legacy_code": legacy_code,
         }
+        snapshot_payload["repo_snapshot_v1"] = build_repo_snapshot_v1(
+            snapshot_id=snapshot_id,
+            repo_url=repo_url,
+            owner=owner,
+            repository=repository,
+            branch=branch,
+            commit_sha=commit_sha,
+            tree_sha=tree_sha,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            raw_entries=[item for item in raw_entries if isinstance(item, dict)],
+            selected_entries=selected_entries,
+            file_contents=file_contents,
+            failed_paths=failed_paths,
+            reused_paths=reused_paths,
+            changed_paths=changed_paths,
+            compare_error=compare_error,
+            chunk_size=REPO_SCAN_CHUNK_SIZE,
+            chunk_workers=REPO_SCAN_CHUNK_WORKERS,
+            family_key=family_key,
+            bundle_summary=bundle_summary,
+            analysis_mode=analysis_mode,
+            analysis_mode_reasons=analysis_mode_reasons,
+        )
+        snapshot_payload["symbol_index_v1"] = build_symbol_index_v1(
+            snapshot_id=snapshot_id,
+            file_contents=file_contents,
+        )
         _repo_snapshot_save(snapshot_id, snapshot_payload)
         _repo_snapshot_latest_ref_save(family_key, snapshot_id)
         emit(f"🗂️ Repo snapshot persisted: {snapshot_id} (bundle chars={len(legacy_code)})")
@@ -4613,6 +4688,7 @@ def _resolve_legacy_code_from_repo_scan(
                 "repository": repository,
                 "default_branch": branch,
                 "commit_sha": commit_sha,
+                "analysis_mode": analysis_mode,
                 "sampled_files": sorted(file_contents.keys())[:40],
                 "repo_snapshot": {k: v for k, v in snapshot_payload.items() if k not in {"legacy_code", "file_contents"}},
             },
