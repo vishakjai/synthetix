@@ -104,21 +104,19 @@ test("discover -> scan -> build happy path with seeded API state", async ({ page
 
   await page.goto("/");
   await page.click("#nav-work");
-  await page.click("#discover-step-scope");
-  await expect(page.locator("#task-type")).toBeVisible();
-
-  await page.selectOption("#task-type", "code_modernization");
-  await page.selectOption("#modernization-source-mode", "repo_scan");
-  await page.fill("#objectives", "Legacy VB6 modernization with parity migration.");
-
-  await page.click("#discover-step-connect");
+  await expect(page.locator("#discover-connect-panel")).toBeVisible();
+  await page.selectOption("#project-state-mode", "brownfield");
   await page.click("#detect-project-state");
   await expect(page.locator("#brownfield-integrations")).toBeVisible();
+  await page.selectOption("#bf-source-mode", "repo_scan");
 
   await page.selectOption("#bf-repo-provider", "github");
   await page.fill("#bf-repo-url", "https://github.com/vishakjai/TestVB6Project1");
 
   await page.click("#discover-step-scope");
+  await expect(page.locator("#task-type")).toBeVisible();
+  await page.selectOption("#task-type", "code_modernization");
+  await page.fill("#objectives", "Legacy VB6 modernization with parity migration.");
   await page.click("#discover-run-analyst-brief");
   await expect(page.locator("#discover-analyst-brief-preview")).toContainText("Seeded analyst summary for e2e.");
 
