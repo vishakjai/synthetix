@@ -77,6 +77,22 @@ test("discover -> scan -> build happy path with seeded API state", async ({ page
     await route.continue();
   });
 
+  await page.route("**/api/runs/preflight", async (route) => {
+    if (route.request().method().toUpperCase() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        preflight: { ok: true, provider: "openai", model: "gpt-4o", key_source: "test" },
+        evidence_preflight: { ok: true, source_mode: "repo_scan" },
+      }),
+    });
+  });
+
   await page.route("**/api/runs/e2e-seeded-run", async (route) => {
     if (route.request().method().toUpperCase() !== "GET") {
       await route.continue();
