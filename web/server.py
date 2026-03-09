@@ -53,6 +53,7 @@ from config import (  # noqa: E402
 )
 from orchestrator.pipeline import AGENT_SEQUENCE, make_initial_state, run_single_stage  # noqa: E402
 from agents.developer import DeveloperAgent  # noqa: E402
+from agents.interaction_agent import InteractionAgent  # noqa: E402
 from agents.system_intelligence import SystemIntelligenceAgent  # noqa: E402
 from utils.cloud_deployer import required_cloud_fields  # noqa: E402
 from utils.artifacts import safe_name  # noqa: E402
@@ -99,6 +100,9 @@ from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.landscape_router import build_greenfield_landscape_artifacts, build_landscape_artifacts  # noqa: E402
 from utils.evidence_mode import create_evidence_bundle, load_evidence_bundle  # noqa: E402
+from utils.knowledge_projection import build_knowledge_projection  # noqa: E402
+from utils.knowledge_queries import KnowledgeQueries  # noqa: E402
+from utils.knowledge_store_sqlite import SqliteKnowledgeStore  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -145,6 +149,8 @@ DOCGEN_ROOT = ROOT / "synthetix-docgen"
 KNOWLEDGE_SOURCE_UPLOAD_ROOT = TEAM_DATA_ROOT / "knowledge_sources"
 KNOWLEDGE_SOURCE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024
 RUN_CONTEXT_ARTIFACT_ROOT = ROOT / "run_artifacts"
+RUN_KNOWLEDGE_GRAPH_ROOT = RUN_CONTEXT_ARTIFACT_ROOT / "knowledge_graphs"
+RUN_KNOWLEDGE_GRAPH_ROOT.mkdir(parents=True, exist_ok=True)
 ASYNC_RUN_QUEUE_ENABLED = str(os.getenv("ASYNC_RUN_QUEUE_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 RUN_WORKER_TOKEN = str(os.getenv("RUN_WORKER_TOKEN", "")).strip()
 RUN_WORKER_URL = str(os.getenv("RUN_WORKER_URL", "")).strip()
@@ -385,6 +391,40 @@ def _review_check_row(
         "detail": str(detail or "").strip(),
         "source": str(source or "derived").strip(),
     }
+
+
+def _knowledge_store_for_run(run_id: str) -> SqliteKnowledgeStore:
+    safe_run_id = safe_name(str(run_id or "run"))
+    return SqliteKnowledgeStore(RUN_KNOWLEDGE_GRAPH_ROOT / safe_run_id / "knowledge.sqlite")
+
+
+def _run_context_bundle_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    bundle = state.get("run_context_bundle", {})
+    return bundle if isinstance(bundle, dict) else {}
+
+
+def _ensure_run_knowledge_projection(run_id: str) -> tuple[dict[str, Any], KnowledgeQueries]:
+    run = MANAGER.get_run(run_id)
+    if not run:
+        raise KeyError("run not found")
+    state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _ensure_analyst_report_v2(_analyst_output_from_state(state))
+    if not analyst_output:
+        raise ValueError("analyst output unavailable")
+    run_context_bundle = _run_context_bundle_from_state(state)
+    projection = build_knowledge_projection(
+        run_id=run_id,
+        analyst_output=analyst_output,
+        run_context_bundle=run_context_bundle,
+    )
+    store = _knowledge_store_for_run(run_id)
+    metadata = store.get_projection_metadata(run_id)
+    projected_at = _clean_text(_as_dict_safe(projection.get("metadata")).get("generated_at"))
+    if not metadata or _clean_text(metadata.get("generated_at")) != projected_at:
+        metadata = store.save_projection(projection)
+    return metadata, KnowledgeQueries(store, run_id)
 
 
 def _discover_review_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -8848,6 +8888,130 @@ async def api_download_analyst_docx(request):
     )
 
 
+async def api_get_run_knowledge_module(request):
+    run_id = request.path_params.get("run_id", "")
+    module_name = _clean_text(request.query_params.get("name"))
+    if not module_name:
+        return JSONResponse({"ok": False, "error": "module name is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_module_context(module_name)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_rule(request):
+    run_id = request.path_params.get("run_id", "")
+    rule_id = _clean_text(request.query_params.get("id"))
+    if not rule_id:
+        return JSONResponse({"ok": False, "error": "rule id is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_rule_context(rule_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_blast_radius(request):
+    run_id = request.path_params.get("run_id", "")
+    module_name = _clean_text(request.query_params.get("module"))
+    if not module_name:
+        return JSONResponse({"ok": False, "error": "module name is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_dependency_blast_radius(module_name)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_compliance_gaps(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_compliance_gaps()})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_traceability_gaps(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.get_traceability_gaps()})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_search(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    query = _clean_text(_as_dict_safe(payload).get("query"))
+    node_types = _as_list_safe(_as_dict_safe(payload).get("node_types"))
+    limit = int(_as_dict_safe(payload).get("limit", 10) or 10)
+    if not query:
+        return JSONResponse({"ok": False, "error": "query is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse(
+            {
+                "ok": True,
+                "projection": metadata,
+                "data": queries.search_concepts(query, node_types=[str(x) for x in node_types], limit=limit),
+            }
+        )
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_get_run_knowledge_provenance(request):
+    run_id = request.path_params.get("run_id", "")
+    node_id = _clean_text(request.query_params.get("node_id"))
+    if not node_id:
+        return JSONResponse({"ok": False, "error": "node_id is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        return JSONResponse({"ok": True, "projection": metadata, "data": queries.explain_provenance(node_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_interact(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    message = _clean_text(_as_dict_safe(payload).get("message"))
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        agent = InteractionAgent(queries)
+        response = agent.respond(message)
+        return JSONResponse({"ok": True, "projection": metadata, "response": response})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 async def api_download_analyst_docgen_docx(request):
     run_id = request.path_params.get("run_id", "")
     run = MANAGER.get_run(run_id)
@@ -12981,6 +13145,14 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/module", api_get_run_knowledge_module, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/rule", api_get_run_knowledge_rule, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/blast-radius", api_get_run_knowledge_blast_radius, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/compliance-gaps", api_get_run_knowledge_compliance_gaps, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/traceability-gaps", api_get_run_knowledge_traceability_gaps, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/search", api_post_run_knowledge_search, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/knowledge/provenance", api_get_run_knowledge_provenance, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/interact", api_post_run_knowledge_interact, methods=["POST"]),
     Route("/api/runs/{run_id:str}/db-artifact", api_download_db_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/discover-artifact", api_download_discover_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),

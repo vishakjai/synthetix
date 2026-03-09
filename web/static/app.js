@@ -478,6 +478,11 @@ const el = {
   collabStageLabel: document.getElementById("collab-stage-label"),
   collabTabButtons: document.getElementById("collab-tab-buttons"),
   collabTabContent: document.getElementById("collab-tab-content"),
+  knowledgeAssistantPanel: document.getElementById("knowledge-assistant-panel"),
+  knowledgeAssistantInput: document.getElementById("knowledge-assistant-input"),
+  knowledgeAssistantAsk: document.getElementById("knowledge-assistant-ask"),
+  knowledgeAssistantStatus: document.getElementById("knowledge-assistant-status"),
+  knowledgeAssistantOutput: document.getElementById("knowledge-assistant-output"),
   liveLogs: document.getElementById("live-logs"),
   flowDiagramSection: document.getElementById("flow-diagram-section"),
 
@@ -628,6 +633,12 @@ const state = {
     loadingKey: "",
     errorByKey: {},
     drafts: {},
+  },
+  knowledgeAssistant: {
+    draftByRun: {},
+    loadingRunId: "",
+    errorByRun: {},
+    responseByRun: {},
   },
   verify: {
     selectedTab: "summary",
@@ -12537,6 +12548,105 @@ function renderCollaborationPanel() {
   ensureCollaborationLoaded(stage);
 }
 
+function knowledgeAssistantResponse(runId) {
+  const key = String(runId || "").trim();
+  if (!key) return null;
+  return state.knowledgeAssistant.responseByRun[key] || null;
+}
+
+function renderKnowledgeAssistantPanel() {
+  if (!el.knowledgeAssistantPanel || !el.knowledgeAssistantOutput || !el.knowledgeAssistantStatus) return;
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) {
+    el.knowledgeAssistantPanel.classList.add("hidden");
+    return;
+  }
+  el.knowledgeAssistantPanel.classList.remove("hidden");
+  const draft = String(state.knowledgeAssistant.draftByRun[runId] || "");
+  if (el.knowledgeAssistantInput && String(el.knowledgeAssistantInput.value || "") !== draft) {
+    el.knowledgeAssistantInput.value = draft;
+  }
+  const loading = state.knowledgeAssistant.loadingRunId === runId;
+  const error = String(state.knowledgeAssistant.errorByRun[runId] || "").trim();
+  const record = knowledgeAssistantResponse(runId);
+  if (el.knowledgeAssistantAsk) {
+    el.knowledgeAssistantAsk.disabled = loading;
+    el.knowledgeAssistantAsk.textContent = loading ? "Asking..." : "Ask";
+  }
+  if (loading) {
+    el.knowledgeAssistantStatus.textContent = "Querying knowledge layer...";
+  } else if (error) {
+    el.knowledgeAssistantStatus.textContent = error;
+  } else if (record && record.response) {
+    const response = record.response;
+    el.knowledgeAssistantStatus.textContent = `Mode: ${String(response.mode || "n/a")} · Confidence: ${Number(response.confidence || 0).toFixed(2)}`;
+  } else {
+    el.knowledgeAssistantStatus.textContent = "No query yet.";
+  }
+  if (!record || !record.response) {
+    el.knowledgeAssistantOutput.innerHTML = "<p class='text-slate-700'>No response yet.</p>";
+    return;
+  }
+  const response = record.response;
+  const provenance = Array.isArray(response.provenance) ? response.provenance : [];
+  const provenanceHtml = provenance.length
+    ? provenance
+      .map((ref) => {
+        const artifact = escapeHtml(String(ref?.artifact_id || "artifact"));
+        const path = escapeHtml(String(ref?.path || ""));
+        const line = Number(ref?.line || 0);
+        const note = escapeHtml(String(ref?.note || ""));
+        const parts = [artifact];
+        if (path) parts.push(path);
+        if (line > 0) parts.push(`line ${line}`);
+        if (note) parts.push(note);
+        return `<li>${parts.join(" · ")}</li>`;
+      })
+      .join("")
+    : "<li>No provenance refs returned.</li>";
+  el.knowledgeAssistantOutput.innerHTML = `
+    <div class="space-y-2">
+      <div>
+        <p class="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">Answer</p>
+        <p class="mt-1 text-sm text-slate-900">${escapeHtml(String(response.answer || ""))}</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="rounded-md border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">${escapeHtml(String(response.intent || "query"))}</span>
+        <span class="rounded-md border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">${escapeHtml(String(response.topic || "general"))}</span>
+        <span class="rounded-md border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-700">${escapeHtml(String(response.mode || "needs verification"))}</span>
+      </div>
+      <div>
+        <p class="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-600">Provenance</p>
+        <ul class="mt-1 list-disc space-y-1 pl-4 text-[11px] text-slate-700">${provenanceHtml}</ul>
+      </div>
+    </div>
+  `;
+}
+
+async function askKnowledgeAssistant() {
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  if (!runId) return;
+  const message = String(el.knowledgeAssistantInput?.value || "").trim();
+  state.knowledgeAssistant.draftByRun[runId] = message;
+  if (!message) {
+    state.knowledgeAssistant.errorByRun[runId] = "Enter a question first.";
+    renderKnowledgeAssistantPanel();
+    return;
+  }
+  state.knowledgeAssistant.loadingRunId = runId;
+  delete state.knowledgeAssistant.errorByRun[runId];
+  renderKnowledgeAssistantPanel();
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/knowledge/interact`, { message }, "POST");
+    state.knowledgeAssistant.responseByRun[runId] = data;
+  } catch (err) {
+    state.knowledgeAssistant.errorByRun[runId] = String(err?.message || err || "Knowledge query failed.");
+  } finally {
+    state.knowledgeAssistant.loadingRunId = "";
+    renderKnowledgeAssistantPanel();
+  }
+}
+
 function openStageModal(stage) {
   const agent = activeAgentsForRun(state.currentRun).find((a) => a.stage === stage) || AGENTS.find((a) => a.stage === stage);
   const result = latestResultByStage(state.currentRun, stage);
@@ -12747,6 +12857,7 @@ function renderRun() {
   renderAgentTabs();
   renderAgentTabPanel();
   renderCollaborationPanel();
+  renderKnowledgeAssistantPanel();
   renderImpactDiff();
   renderLogs();
   renderFlowDiagram();
@@ -12996,6 +13107,7 @@ async function loadRunFromHistory() {
   toggleUseCasePanel();
   toggleCloudConfig();
   setMode(MODES.BUILD);
+  renderRun();
 }
 
 async function submitApproval(decision) {
@@ -14173,6 +14285,34 @@ function bindEvents() {
       state.collaboration.selectedTab = tab;
       renderCollaborationPanel();
     });
+  });
+  el.knowledgeAssistantAsk?.addEventListener("click", () => {
+    askKnowledgeAssistant().catch((err) => {
+      const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+      if (runId) {
+        state.knowledgeAssistant.errorByRun[runId] = String(err?.message || err || "Knowledge query failed.");
+        state.knowledgeAssistant.loadingRunId = "";
+        renderKnowledgeAssistantPanel();
+      }
+    });
+  });
+  el.knowledgeAssistantInput?.addEventListener("input", () => {
+    const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+    if (!runId) return;
+    state.knowledgeAssistant.draftByRun[runId] = String(el.knowledgeAssistantInput?.value || "");
+  });
+  el.knowledgeAssistantInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      askKnowledgeAssistant().catch((err) => {
+        const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+        if (runId) {
+          state.knowledgeAssistant.errorByRun[runId] = String(err?.message || err || "Knowledge query failed.");
+          state.knowledgeAssistant.loadingRunId = "";
+          renderKnowledgeAssistantPanel();
+        }
+      });
+    }
   });
   el.closeModal.addEventListener("click", () => el.outputModal.close());
   el.diagramClose?.addEventListener("click", () => el.diagramModal?.close());

@@ -28,7 +28,7 @@ module.exports = defineConfig({
       process.env.E2E_WEB_SERVER_CMD
       || "bash -lc 'if [ -x .venv/bin/python ]; then .venv/bin/python web/server.py; else python3 web/server.py; fi'",
     url: process.env.E2E_BASE_URL || "http://127.0.0.1:8788",
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     timeout: 180_000,
     cwd: "..",
   },
