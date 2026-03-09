@@ -106,6 +106,9 @@ from utils.knowledge_queries import KnowledgeQueries  # noqa: E402
 from utils.knowledge_store_sqlite import SqliteKnowledgeStore  # noqa: E402
 from utils.repo_snapshot import build_repo_snapshot_v1, classify_repo_scan_mode  # noqa: E402
 from utils.symbol_index import build_symbol_index_v1  # noqa: E402
+from utils.repo_dependency_graph import build_global_dependency_graph_v1  # noqa: E402
+from utils.repo_componentizer import build_component_inventory_v1, build_chunk_manifest_v1  # noqa: E402
+from utils.large_repo_context import build_large_repo_context_v1  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -4377,6 +4380,30 @@ def _resolve_legacy_code_from_repo_scan(
             analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
         )
         symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=sample_contents)
+        dependency_graph_v1 = build_global_dependency_graph_v1(
+            snapshot_id=snapshot_id,
+            file_contents=sample_contents,
+            selected_entries=sample_entries,
+        )
+        component_inventory_v1 = build_component_inventory_v1(
+            snapshot_id=snapshot_id,
+            selected_entries=sample_entries,
+            file_contents=sample_contents,
+        )
+        chunk_manifest_v1 = build_chunk_manifest_v1(
+            snapshot_id=snapshot_id,
+            component_inventory=component_inventory_v1,
+            file_contents=sample_contents,
+        )
+        large_repo_context_v1 = build_large_repo_context_v1(
+            snapshot_id=snapshot_id,
+            repo_snapshot=repo_snapshot_v1,
+            component_inventory=component_inventory_v1,
+            chunk_manifest=chunk_manifest_v1,
+            dependency_graph=dependency_graph_v1,
+            file_contents=sample_contents,
+            max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS,
+        )
         payload = {
             "snapshot_id": snapshot_id,
             "owner": owner,
@@ -4406,6 +4433,10 @@ def _resolve_legacy_code_from_repo_scan(
             ],
             "repo_snapshot_v1": repo_snapshot_v1,
             "symbol_index_v1": symbol_index_v1,
+            "global_dependency_graph_v1": dependency_graph_v1,
+            "component_inventory_v1": component_inventory_v1,
+            "chunk_manifest_v1": chunk_manifest_v1,
+            "legacy_chunk_context_v1": large_repo_context_v1,
             "bundle_summary": bundle_summary,
             "legacy_code": legacy_code,
         }
@@ -4678,6 +4709,35 @@ def _resolve_legacy_code_from_repo_scan(
             snapshot_id=snapshot_id,
             file_contents=file_contents,
         )
+        snapshot_payload["global_dependency_graph_v1"] = build_global_dependency_graph_v1(
+            snapshot_id=snapshot_id,
+            file_contents=file_contents,
+            selected_entries=selected_entries,
+        )
+        snapshot_payload["component_inventory_v1"] = build_component_inventory_v1(
+            snapshot_id=snapshot_id,
+            selected_entries=selected_entries,
+            file_contents=file_contents,
+        )
+        snapshot_payload["chunk_manifest_v1"] = build_chunk_manifest_v1(
+            snapshot_id=snapshot_id,
+            component_inventory=snapshot_payload["component_inventory_v1"],
+            file_contents=file_contents,
+        )
+        if analysis_mode == "large_repo":
+            snapshot_payload["legacy_chunk_context_v1"] = build_large_repo_context_v1(
+                snapshot_id=snapshot_id,
+                repo_snapshot=snapshot_payload["repo_snapshot_v1"],
+                component_inventory=snapshot_payload["component_inventory_v1"],
+                chunk_manifest=snapshot_payload["chunk_manifest_v1"],
+                dependency_graph=snapshot_payload["global_dependency_graph_v1"],
+                file_contents=file_contents,
+                max_total_chars=int(bundle_summary.get("effective_max_chars", REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS),
+            )
+            large_repo_text = str(snapshot_payload["legacy_chunk_context_v1"].get("context_text", "")).strip()
+            if large_repo_text:
+                legacy_code = large_repo_text
+                snapshot_payload["legacy_code"] = legacy_code
         _repo_snapshot_save(snapshot_id, snapshot_payload)
         _repo_snapshot_latest_ref_save(family_key, snapshot_id)
         emit(f"🗂️ Repo snapshot persisted: {snapshot_id} (bundle chars={len(legacy_code)})")

@@ -2310,6 +2310,26 @@ Analyze this code chunk and extract behavior compactly.
             if isinstance(repo_snapshot.get("bundle_summary", {}), dict)
             else {}
         )
+        component_inventory = (
+            repo_snapshot.get("component_inventory_v1", {})
+            if isinstance(repo_snapshot.get("component_inventory_v1", {}), dict)
+            else {}
+        )
+        chunk_manifest = (
+            repo_snapshot.get("chunk_manifest_v1", {})
+            if isinstance(repo_snapshot.get("chunk_manifest_v1", {}), dict)
+            else {}
+        )
+        dependency_graph = (
+            repo_snapshot.get("global_dependency_graph_v1", {})
+            if isinstance(repo_snapshot.get("global_dependency_graph_v1", {}), dict)
+            else {}
+        )
+        large_repo_context = (
+            repo_snapshot.get("legacy_chunk_context_v1", {})
+            if isinstance(repo_snapshot.get("legacy_chunk_context_v1", {}), dict)
+            else {}
+        )
         repo_manifest = repo_snapshot.get("manifest", []) if isinstance(repo_snapshot.get("manifest", []), list) else []
         selected_form_like_files = len(
             [
@@ -2338,7 +2358,10 @@ Analyze this code chunk and extract behavior compactly.
                     f"failed={int(repo_snapshot.get('failed_fetch_count', 0) or 0)}, "
                     f"bundle_included={int(repo_bundle_summary.get('included_file_count', 0) or 0)}, "
                     f"bundle_omitted={int(repo_bundle_summary.get('omitted_file_count', 0) or 0)}, "
-                    f"selected_form_files={selected_form_like_files}. "
+                    f"selected_form_files={selected_form_like_files}, "
+                    f"components={int(component_inventory.get('component_count', 0) or 0)}, "
+                    f"chunks={int(chunk_manifest.get('chunk_count', 0) or 0)}, "
+                    f"dependency_edges={int(dependency_graph.get('edge_count', 0) or 0)}. "
                     if repo_snapshot
                     else ""
                 )
@@ -2395,6 +2418,7 @@ Analyze this code chunk and extract behavior compactly.
             "source_target_modernization_profile": source_target_profile,
             "project_business_summaries": project_business_summaries,
             "repo_scan_coverage": {
+                "analysis_mode": str(repo_snapshot.get("analysis_mode", "standard") or "standard"),
                 "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
                 "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
                 "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
@@ -2402,7 +2426,20 @@ Analyze this code chunk and extract behavior compactly.
                 if isinstance(repo_snapshot.get("failed_paths", []), list)
                 else [],
                 "bundle_summary": repo_bundle_summary,
+                "component_count": int(component_inventory.get("component_count", 0) or 0),
+                "chunk_count": int(chunk_manifest.get("chunk_count", 0) or 0),
+                "dependency_node_count": int(dependency_graph.get("node_count", 0) or 0),
+                "dependency_edge_count": int(dependency_graph.get("edge_count", 0) or 0),
+                "large_repo_context": {
+                    "included_chunk_count": int(large_repo_context.get("included_chunk_count", 0) or 0),
+                    "omitted_chunk_count": int(large_repo_context.get("omitted_chunk_count", 0) or 0),
+                    "included_file_count": int(large_repo_context.get("included_file_count", 0) or 0),
+                    "omitted_file_count": int(large_repo_context.get("omitted_file_count", 0) or 0),
+                },
             },
+            "component_inventory_v1": component_inventory,
+            "chunk_manifest_v1": chunk_manifest,
+            "global_dependency_graph_v1": dependency_graph,
             "vb6_file_type_coverage": file_type_coverage,
             "bas_module_summary": {
                 "module_count": len(bas_module_paths),
@@ -2528,6 +2565,15 @@ Analyze this code chunk and extract behavior compactly.
             + f"projects={len(vb6_projects)}, forms={forms_count_reported}, activex={len(activex_set)}, "
             + f"event_handlers={event_handler_count_exact}, dlls={len(dll_set)}, ocx={len(ocx_set)}, business_rules={len(business_rules_catalog)}, "
             + f"sql={len(sql_query_set)}, win32_declares={len(win32_declares_set)}, loc={int(source_loc_metrics.get('total_loc', 0) or 0)}, readiness={readiness_score}.\n"
+            + (
+                f"repo_mode={str(repo_snapshot.get('analysis_mode', 'standard') or 'standard')}, "
+                f"components={int(component_inventory.get('component_count', 0) or 0)}, "
+                f"chunk_manifest={int(chunk_manifest.get('chunk_count', 0) or 0)}, "
+                f"dependency_edges={int(dependency_graph.get('edge_count', 0) or 0)}, "
+                f"chunk_context_included={int(large_repo_context.get('included_chunk_count', 0) or 0)}.\n"
+                if repo_snapshot
+                else ""
+            )
             + f"source_target={str(source_target_profile.get('source', {}).get('language', 'legacy'))}"
             + f"->{str(source_target_profile.get('target', {}).get('language', 'unspecified'))}.\n"
             + "\n".join(summaries[:10])
