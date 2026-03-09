@@ -100,6 +100,7 @@ from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.landscape_router import build_greenfield_landscape_artifacts, build_landscape_artifacts  # noqa: E402
 from utils.evidence_mode import create_evidence_bundle, load_evidence_bundle  # noqa: E402
+from utils.knowledge_proposals import KnowledgeProposalService, KnowledgeProposalStore  # noqa: E402
 from utils.knowledge_projection import build_knowledge_projection  # noqa: E402
 from utils.knowledge_queries import KnowledgeQueries  # noqa: E402
 from utils.knowledge_store_sqlite import SqliteKnowledgeStore  # noqa: E402
@@ -396,6 +397,11 @@ def _review_check_row(
 def _knowledge_store_for_run(run_id: str) -> SqliteKnowledgeStore:
     safe_run_id = safe_name(str(run_id or "run"))
     return SqliteKnowledgeStore(RUN_KNOWLEDGE_GRAPH_ROOT / safe_run_id / "knowledge.sqlite")
+
+
+def _knowledge_proposal_store_for_run(run_id: str) -> KnowledgeProposalStore:
+    safe_run_id = safe_name(str(run_id or "run"))
+    return KnowledgeProposalStore(RUN_KNOWLEDGE_GRAPH_ROOT / safe_run_id / "proposals.json")
 
 
 def _run_context_bundle_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -9012,6 +9018,79 @@ async def api_post_run_knowledge_interact(request):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+async def api_get_run_knowledge_proposals(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        service = KnowledgeProposalService(queries, _knowledge_proposal_store_for_run(run_id))
+        return JSONResponse({"ok": True, "projection": metadata, "proposals": service.list_proposals()})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_proposals(request):
+    run_id = request.path_params.get("run_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    message = _clean_text(_as_dict_safe(payload).get("message"))
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        service = KnowledgeProposalService(queries, _knowledge_proposal_store_for_run(run_id))
+        proposal = service.create_from_message(message, actor=_request_actor(request))
+        return JSONResponse(
+            {
+                "ok": True,
+                "projection": metadata,
+                "proposal": proposal,
+                "proposals": service.list_proposals(),
+            }
+        )
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+async def api_post_run_knowledge_proposal_decision(request):
+    run_id = request.path_params.get("run_id", "")
+    proposal_id = _clean_text(request.path_params.get("proposal_id", ""))
+    if not proposal_id:
+        return JSONResponse({"ok": False, "error": "proposal_id is required"}, status_code=400)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    decision = _clean_text(_as_dict_safe(payload).get("decision")).lower()
+    rationale = _clean_text(_as_dict_safe(payload).get("rationale"))
+    try:
+        metadata, queries = _ensure_run_knowledge_projection(run_id)
+        service = KnowledgeProposalService(queries, _knowledge_proposal_store_for_run(run_id))
+        proposal = service.review(
+            proposal_id,
+            decision=decision,
+            rationale=rationale,
+            actor=_request_actor(request),
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "projection": metadata,
+                "proposal": proposal,
+                "proposals": service.list_proposals(),
+            }
+        )
+    except KeyError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 async def api_download_analyst_docgen_docx(request):
     run_id = request.path_params.get("run_id", "")
     run = MANAGER.get_run(run_id)
@@ -13153,6 +13232,13 @@ routes = [
     Route("/api/runs/{run_id:str}/knowledge/search", api_post_run_knowledge_search, methods=["POST"]),
     Route("/api/runs/{run_id:str}/knowledge/provenance", api_get_run_knowledge_provenance, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/interact", api_post_run_knowledge_interact, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/knowledge/proposals", api_get_run_knowledge_proposals, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/knowledge/proposals", api_post_run_knowledge_proposals, methods=["POST"]),
+    Route(
+        "/api/runs/{run_id:str}/knowledge/proposals/{proposal_id:str}/decision",
+        api_post_run_knowledge_proposal_decision,
+        methods=["POST"],
+    ),
     Route("/api/runs/{run_id:str}/db-artifact", api_download_db_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/discover-artifact", api_download_discover_artifact, methods=["GET"]),
     Route("/api/runs/{run_id:str}/stages/{stage:int}/collaboration", api_get_stage_collaboration, methods=["GET"]),

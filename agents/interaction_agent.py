@@ -36,7 +36,13 @@ class InteractionAgent:
         provenance: list[dict[str, Any]] = []
         confidence = 0.4
 
-        if topic == "module" and isinstance(primary.get("module"), dict):
+        if intent == "modification":
+            answer = (
+                "This request looks like a change proposal. Review the grounded context below and use the proposal "
+                "workflow to create a typed change for approval before any artifacts are regenerated."
+            )
+            confidence = 0.8
+        elif topic == "module" and isinstance(primary.get("module"), dict):
             module = primary["module"]
             props = module.get("properties", {}) if isinstance(module.get("properties", {}), dict) else {}
             desc = _clean(props.get("description")) or "No module description is available."

@@ -1092,11 +1092,21 @@
                 <textarea id="knowledge-assistant-input" rows="3" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900" placeholder="What does frmdeposit do? What depends on menu? Show compliance gaps."></textarea>
                 <div class="flex flex-wrap items-center gap-2">
                   <button id="knowledge-assistant-ask" class="btn-dark rounded-md px-3 py-1.5 text-xs font-semibold">Ask</button>
+                  <button id="knowledge-assistant-propose" class="btn-light rounded-md px-3 py-1.5 text-xs font-semibold">Create proposal</button>
                   <span id="knowledge-assistant-status" class="text-[11px] text-slate-700">No query yet.</span>
                 </div>
               </div>
               <div id="knowledge-assistant-output" class="mt-2 rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
                 <p class="text-slate-700">No response yet.</p>
+              </div>
+              <div class="mt-2 rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-800">
+                <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h4 class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-700">Proposals</h4>
+                  <span id="knowledge-assistant-proposals-status" class="text-[11px] text-slate-600">No proposals yet.</span>
+                </div>
+                <div id="knowledge-assistant-proposals">
+                  <p class="text-slate-700">No proposals yet.</p>
+                </div>
               </div>
             </section>
             <section class="mt-4 rounded-xl border border-slate-300 bg-slate-50 p-3">
