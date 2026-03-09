@@ -353,6 +353,33 @@ function isGenericModulePurpose(value) {
     || v === 'business workflow module derived from legacy form behavior.';
 }
 
+function moduleDescriptionFitsKind(value, kind) {
+  const v = norm(value);
+  const k = norm(kind);
+  if (!v) return false;
+  if (k === 'customer_management') {
+    if (/(report|statement|history|filter|output)/i.test(v) && !/(customer|account|profile|master|maint)/i.test(v)) return false;
+    return /(customer|account|profile|master|maint|servic)/i.test(v);
+  }
+  if (k === 'reporting') {
+    if (/(customer|profile|master data|maintenance)/i.test(v) && !/(report|statement|history|filter|output)/i.test(v)) return false;
+    return /(report|statement|history|filter|output)/i.test(v);
+  }
+  if (k === 'navigation') {
+    return /(route|menu|navigation|hub|destination)/i.test(v);
+  }
+  if (k === 'authentication') {
+    return /(auth|credential|password|access|login)/i.test(v);
+  }
+  if (k === 'transaction') {
+    return /(deposit|withdraw|transaction|balance|posting|ledger|financial)/i.test(v);
+  }
+  if (k === 'system_flow') {
+    return /(startup|loading|gate|entry|initiali)/i.test(v);
+  }
+  return true;
+}
+
 function buildProjectMeta(data, options = {}) {
   const now = new Date().toISOString().slice(0, 10);
   const title = clean(data?.meta?.title) || 'Modernization BRD';
@@ -409,9 +436,23 @@ function buildContext(data, moduleRegistry = []) {
     'The delivery objective is parity-first modernization: preserve current business outcomes, make controls explicit, and provide auditable traceability from legacy behavior to target design.',
     `Risk-led priorities are applied from discovery evidence, including ${risksCount} registered modernization risks and explicit decision gates for scope, security, and compliance.`,
   ];
-  const scopeIn = uniqueStrings([
-    ...asArray(data?.mapped_forms).map((f) => f.display_name || f.form),
-  ]).slice(0, 60);
+  const mappedLabelsByToken = new Map(
+    asArray(data?.mapped_forms)
+      .map((f) => [scopeToken(f.form || f.display_name || ''), clean(f.display_name || f.form)])
+      .filter(([token, label]) => token && label)
+  );
+  const activeScopeRows = asArray(data?.active_form_profile).length
+    ? asArray(data?.active_form_profile)
+    : asArray(data?.mapped_forms);
+  const scopeIn = uniqueStrings(
+    activeScopeRows
+      .map((f) => {
+        const token = scopeToken(f.base_form || f.form || f.display_name || '');
+        return mappedLabelsByToken.get(token)
+          || clean(f.display_name || shortFormName(f.form || '') || f.form);
+      })
+      .filter(Boolean)
+  ).slice(0, 60);
   const scopeOut = uniqueStrings([
     ...asArray(data?.excluded_unique).map((f) => f.form || f),
   ]);
@@ -540,6 +581,7 @@ function buildModuleRegistry(data) {
         module_name_from_code: shortName || clean(row.form),
         module_kind_votes: new Map(),
         short_description: '',
+        description_candidates: [],
         source_forms: [],
         source_routes: [],
         confidence_scores: [],
@@ -548,8 +590,14 @@ function buildModuleRegistry(data) {
     const cur = grouped.get(key);
     cur.module_kind_votes.set(kind, (cur.module_kind_votes.get(kind) || 0) + 1);
     const descCandidate = clean(row.business_purpose || row.purpose || row.outputs || row.inputs);
-    if (!isNA(descCandidate) && descCandidate.length > cur.short_description.length) {
-      cur.short_description = descCandidate;
+    if (!isNA(descCandidate)) {
+      cur.description_candidates.push({
+        kind,
+        value: descCandidate,
+      });
+      if (descCandidate.length > cur.short_description.length) {
+        cur.short_description = descCandidate;
+      }
     }
     cur.source_forms.push(clean(row.form));
     cur.source_routes.push(clean(`${row.project_display || row.project || '(unmapped)'}::${row.form}`));
@@ -564,7 +612,18 @@ function buildModuleRegistry(data) {
       : 70;
     const sortedKinds = Array.from(m.module_kind_votes.entries()).sort((a, b) => b[1] - a[1]);
     const dominantKind = sortedKinds.length ? sortedKinds[0][0] : 'business_flow';
-    let description = clean(m.short_description || 'Business workflow module derived from legacy form behavior.');
+    const preferredDescription = asArray(m.description_candidates)
+      .filter((candidate) =>
+        norm(candidate.kind) === norm(dominantKind)
+        && !isGenericModulePurpose(candidate.value)
+        && moduleDescriptionFitsKind(candidate.value, dominantKind)
+      )
+      .sort((a, b) => b.value.length - a.value.length)[0]?.value;
+    let description = clean(
+      preferredDescription
+      || (moduleDescriptionFitsKind(m.short_description, dominantKind) ? m.short_description : '')
+      || 'Business workflow module derived from legacy form behavior.'
+    );
     if (isGenericModulePurpose(description)) {
       if (dominantKind === 'authentication') description = 'Authentication workflow that validates credentials and controls access.';
       else if (dominantKind === 'navigation') description = 'Navigation hub that routes users to operational modules.';
