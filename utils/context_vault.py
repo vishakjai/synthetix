@@ -55,7 +55,7 @@ def git_fingerprint(repo_root: Path) -> dict[str, str]:
     return {
         "repo": repo_name,
         "branch": _safe_slug(branch),
-        "commit_sha": commit,
+        "commit_sha": commit[:12],
     }
 
 

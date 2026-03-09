@@ -8442,6 +8442,7 @@ def _ensure_synthetix_docgen_dependencies() -> None:
         capture_output=True,
         text=True,
         timeout=300,
+        shell=(sys.platform == "win32"),
     )
     if proc.returncode != 0:
         stderr = str(proc.stderr or "").strip()
@@ -8517,6 +8518,7 @@ def _run_synthetix_docgen(
             capture_output=True,
             text=True,
             timeout=300,
+            shell=(sys.platform == "win32"),
         )
         if proc.returncode != 0:
             stderr = str(proc.stderr or "").strip()
