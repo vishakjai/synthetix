@@ -11877,6 +11877,7 @@ async def api_stage_chat(request):
         return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
     save_as_directive = bool(payload.get("save_as_directive", False))
     propose_change = bool(payload.get("propose_change", False))
+    knowledge_grounded = bool(payload.get("knowledge_grounded", False))
     actor = _request_actor(request)
     llm_payload = payload.get("llm", {}) if isinstance(payload.get("llm", {}), dict) else {}
     llm_options = {
@@ -12043,6 +12044,15 @@ async def api_stage_chat(request):
             _append_collab_log(progress_logs, f"Stage {stage} proposal review queue failed: {exc}")
 
     assistant_message = ""
+    knowledge_response: dict[str, Any] | None = None
+    if knowledge_grounded and not save_as_directive and not propose_change:
+        try:
+            _projection, queries = _ensure_run_knowledge_projection(run_id)
+            knowledge_response = InteractionAgent(queries).respond(message)
+            assistant_message = str(knowledge_response.get("answer", "")).strip()
+        except Exception as exc:
+            _append_collab_log(progress_logs, f"Stage {stage} knowledge interaction fallback failed: {exc}")
+
     if stage == 1:
         msg_lower = message.lower()
         analyst_update_intent = (
@@ -12063,7 +12073,7 @@ async def api_stage_chat(request):
                 ]
             )
         )
-        if not analyst_update_intent:
+        if not analyst_update_intent and not assistant_message:
             assistant_message = _build_stage_memory_response(
                 run_id=run_id,
                 stage=stage,
@@ -12193,7 +12203,7 @@ async def api_stage_chat(request):
                     assistant_message += " Saved as a persistent directive for downstream stages."
                 if proposal_created:
                     assistant_message += " Proposed artifact change queued; review it in Proposed Changes."
-    else:
+    elif not assistant_message:
         assistant_message = _build_stage_memory_response(
             run_id=run_id,
             stage=stage,
@@ -12211,6 +12221,19 @@ async def api_stage_chat(request):
         "created_at": _utc_now(),
         "created_by": "agent",
         "message": assistant_message,
+        "meta": (
+            {
+                "source": "knowledge",
+                "mode": str(knowledge_response.get("mode", "")).strip(),
+                "confidence": float(knowledge_response.get("confidence", 0.0) or 0.0),
+                "provenance": knowledge_response.get("provenance", []),
+                "topic": str(knowledge_response.get("topic", "")).strip(),
+                "intent": str(knowledge_response.get("intent", "")).strip(),
+                "summary_count": int(knowledge_response.get("summary_count", 0) or 0),
+            }
+            if isinstance(knowledge_response, dict)
+            else {}
+        ),
     }
     chat_rows.append(assistant_chat)
     bucket["chat"] = chat_rows[-STAGE_COLLAB_CHAT_LIMIT:]

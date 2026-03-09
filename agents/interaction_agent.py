@@ -102,6 +102,27 @@ class InteractionAgent:
             document = primary.get("document", {}) if isinstance(primary.get("document", {}), dict) else {}
             provenance = list(document.get("provenance_ref", []))
             confidence = float(document.get("confidence", 0.0) or 0.9)
+        elif topic == "inventory":
+            inventory_kind = _clean(primary.get("inventory_kind")) or "modules"
+            items = primary.get("items", [])
+            count = int(primary.get("count", 0) or 0)
+            preview_rows = items if count <= 50 else items[:20]
+            preview = ", ".join(
+                [
+                    (
+                        f"{_clean(row.get('name'))} ({_clean(row.get('project'))})"
+                        if _clean(row.get("project"))
+                        else _clean(row.get("name"))
+                    )
+                    for row in preview_rows
+                    if isinstance(row, dict) and _clean(row.get("name"))
+                ]
+            ) or "none"
+            label = "List" if count <= 50 else "Sample"
+            answer = f"I found {count} {inventory_kind}. {label}: {preview}."
+            if items and isinstance(items[0], dict):
+                provenance = list(items[0].get("provenance_ref", []))
+            confidence = 0.95
         elif topic == "provenance" and isinstance(primary.get("node"), dict):
             node = primary["node"]
             refs = primary.get("provenance_ref", [])
@@ -136,5 +157,6 @@ class InteractionAgent:
             "confidence": round(confidence, 3),
             "mode": _mode_for_confidence(confidence),
             "provenance": provenance[:12],
+            "summary_count": int(primary.get("count", 0) or 0) if isinstance(primary, dict) else 0,
             "context": assembled,
         }

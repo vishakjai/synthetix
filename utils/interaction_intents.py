@@ -47,6 +47,19 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
         "gap",
         "compliance gap",
     )
+    inventory_markers = (
+        "list ",
+        "show all",
+        "show me all",
+        "which forms",
+        "what forms",
+        "list forms",
+        "list the forms",
+        "list modules",
+        "list the modules",
+        "list rules",
+        "list the rules",
+    )
 
     intent = "query"
     reason = "default_query"
@@ -59,10 +72,14 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
     elif any(token in lower for token in analysis_markers):
         intent = "analysis"
         reason = "analysis_marker"
+    elif any(token in lower for token in inventory_markers):
+        intent = "query"
+        reason = "inventory_marker"
 
     tokens = text.replace("?", " ").replace(",", " ").split()
     topic = "general"
     entity_name = ""
+    inventory_kind = ""
     mentions_form_like = any(token.strip().lower().startswith(("frm", "mdi", "menu")) for token in tokens)
     if (
         "lines of code" in lower
@@ -77,6 +94,17 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
         or "form count" in lower
     ):
         topic = "metrics"
+    elif (
+        "list" in lower
+        or "show all" in lower
+        or "which forms" in lower
+        or "what forms" in lower
+        or "what modules" in lower
+        or "which modules" in lower
+        or "what rules" in lower
+        or "which rules" in lower
+    ):
+        topic = "inventory"
     elif "compliance" in lower:
         topic = "compliance"
     elif "traceability" in lower or "coverage" in lower:
@@ -103,10 +131,23 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
                 entity_name = raw
                 break
 
+    if topic == "inventory":
+        if "form" in lower or "screen" in lower:
+            inventory_kind = "forms"
+        elif "rule" in lower or "business rule" in lower or "br-" in lower:
+            inventory_kind = "rules"
+        elif "project" in lower:
+            inventory_kind = "projects"
+        elif "function" in lower or "procedure" in lower:
+            inventory_kind = "functions"
+        else:
+            inventory_kind = "modules"
+
     return {
         "intent": intent,
         "reason": reason,
         "topic": topic,
         "entity_name": entity_name,
+        "inventory_kind": inventory_kind,
         "message": text,
     }

@@ -109,6 +109,14 @@ class InteractionAgentTest(unittest.TestCase):
         self.assertIn("120", response["answer"])
         self.assertNotIn("Top matches", response["answer"])
 
+    def test_inventory_question_lists_forms_instead_of_semantic_hits(self):
+        agent = self._make_agent()
+        response = agent.respond("Can you list the forms in the application?")
+        self.assertEqual(response["topic"], "inventory")
+        self.assertIn("I found 1 forms.", response["answer"])
+        self.assertIn("frmCustomer", response["answer"])
+        self.assertNotIn("Top matches", response["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

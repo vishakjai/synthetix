@@ -12222,13 +12222,29 @@ function renderCollabChatTab(stage, record) {
     ? chat.slice(-16).map((row) => {
       const role = String(row.role || "assistant");
       const cls = role === "user" ? "border-sky-300 bg-sky-50" : "border-slate-300 bg-slate-50";
+      const meta = (row.meta && typeof row.meta === "object") ? row.meta : {};
+      const chips = [];
+      if (role === "assistant" && String(meta.source || "").trim()) chips.push(String(meta.source || "").trim());
+      if (role === "assistant" && String(meta.mode || "").trim()) chips.push(String(meta.mode || "").trim());
+      if (role === "assistant" && Number.isFinite(Number(meta.confidence))) chips.push(`confidence ${Number(meta.confidence).toFixed(2)}`);
+      const provenance = Array.isArray(meta.provenance) ? meta.provenance : [];
+      const provenanceHtml = provenance.length
+        ? `<div class="mt-1 text-[10px] text-slate-600">Provenance: ${escapeHtml(provenance.slice(0, 4).map((p) => {
+            if (!p || typeof p !== "object") return "";
+            const artifactId = String(p.artifact_id || "").trim();
+            const line = Number(p.line || 0);
+            return artifactId ? `${artifactId}${line ? `:${line}` : ""}` : "";
+          }).filter(Boolean).join(", "))}</div>`
+        : "";
       return `
         <div class="rounded-md border ${cls} p-2">
           <div class="mb-1 flex items-center justify-between gap-2">
             <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700">${escapeHtml(role)}</span>
             <span class="mono text-[10px] text-slate-600">${escapeHtml(String(row.created_at || "").replace("T", " ").slice(0, 19))}</span>
           </div>
+          ${chips.length ? `<div class="mb-1 text-[10px] text-slate-600">${escapeHtml(chips.join(" · "))}</div>` : ""}
           <div class="whitespace-pre-wrap text-[11px] text-slate-800">${escapeHtml(row.message || "")}</div>
+          ${provenanceHtml}
         </div>
       `;
     }).join("")
@@ -12242,6 +12258,7 @@ function renderCollabChatTab(stage, record) {
         <div class="max-h-[270px] space-y-2 overflow-auto rounded-lg border border-slate-300 bg-white p-2">${thread}</div>
         <textarea id="collab-chat-input" rows="3" class="mt-2 w-full rounded-lg border border-slate-300 bg-white px-2 py-2 text-xs text-slate-900" placeholder="Ask the agent to explain, compare options, or suggest a targeted change...">${escapeHtml(draft)}</textarea>
         <div class="mt-2 flex flex-wrap items-center gap-3">
+          <label class="inline-flex items-center gap-2 text-[11px] text-slate-800"><input id="collab-knowledge-grounded" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" checked />Knowledge-grounded</label>
           <label class="inline-flex items-center gap-2 text-[11px] text-slate-800"><input id="collab-save-directive" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Save as directive</label>
           <label class="inline-flex items-center gap-2 text-[11px] text-slate-800"><input id="collab-create-proposal" type="checkbox" class="h-4 w-4 rounded border-slate-400 text-slate-900" />Create proposal diff</label>
           <button id="collab-chat-send" class="btn-dark rounded-md px-3 py-1.5 text-xs font-semibold">Send</button>
@@ -12366,6 +12383,7 @@ function renderCollabDecisionsTab(record) {
 async function submitCollabChat(stage) {
   const safeStage = Number(stage || currentCollabStage() || 1);
   const input = document.getElementById("collab-chat-input");
+  const knowledgeGrounded = document.getElementById("collab-knowledge-grounded");
   const saveDirective = document.getElementById("collab-save-directive");
   const createProposal = document.getElementById("collab-create-proposal");
   const message = String(input?.value || "").trim();
@@ -12378,6 +12396,7 @@ async function submitCollabChat(stage) {
   try {
     const data = await api(`/api/runs/${encodeURIComponent(runId)}/stages/${safeStage}/collaboration/chat`, {
       message,
+      knowledge_grounded: !!knowledgeGrounded?.checked && !saveDirective?.checked && !createProposal?.checked,
       save_as_directive: !!saveDirective?.checked,
       propose_change: !!createProposal?.checked,
       llm: {

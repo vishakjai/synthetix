@@ -172,6 +172,44 @@ class KnowledgeQueries:
             "form_loc_subtotal": total_form_loc,
         }
 
+    def list_inventory(self, inventory_kind: str) -> dict[str, Any]:
+        kind = _clean(inventory_kind).lower() or "modules"
+        if kind == "rules":
+            rows = self.store.query_nodes(self.engagement_id, node_type="BusinessRule", limit=2000)
+        elif kind == "functions":
+            rows = self.store.query_nodes(self.engagement_id, node_type="Function", limit=5000)
+        else:
+            rows = self.store.query_nodes(self.engagement_id, node_type="Module", limit=5000)
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            props = row.get("properties", {}) if isinstance(row.get("properties", {}), dict) else {}
+            name = _clean(row.get("name"))
+            if not name:
+                continue
+            module_kind = _clean(props.get("module_kind")).lower()
+            project = _clean(props.get("project"))
+            if kind == "forms":
+                if module_kind in {"module", "bas", "class", "cls"}:
+                    continue
+            items.append(
+                {
+                    "node_id": _clean(row.get("node_id")),
+                    "name": name,
+                    "project": project,
+                    "module_kind": module_kind,
+                    "loc": int(props.get("loc", 0) or 0),
+                    "provenance_ref": row.get("provenance_ref", []),
+                    "confidence": float(row.get("confidence", 0.0) or 0.0),
+                }
+            )
+        if kind == "projects":
+            names = sorted({item.get("project", "") for item in items if _clean(item.get("project"))})
+            return {"inventory_kind": kind, "count": len(names), "items": [{"name": name} for name in names]}
+        items.sort(key=lambda item: (str(item.get("project") or "").lower(), str(item.get("name") or "").lower()))
+        return {"inventory_kind": kind, "count": len(items), "items": items}
+
     def search_concepts(self, query: str, *, node_types: list[str] | None = None, limit: int = 10) -> dict[str, Any]:
         hits = self.store.search_nodes(self.engagement_id, query=query, limit=limit * 3)
         if node_types:

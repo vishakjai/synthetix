@@ -18,6 +18,7 @@ def assemble_knowledge_context(queries: KnowledgeQueries, message: str) -> dict[
     routed = classify_interaction_intent(message)
     topic = routed.get("topic")
     entity_name = _clean(routed.get("entity_name"))
+    inventory_kind = _clean(routed.get("inventory_kind"))
 
     assembled: dict[str, Any] = {
         "intent": routed,
@@ -37,6 +38,8 @@ def assemble_knowledge_context(queries: KnowledgeQueries, message: str) -> dict[
         assembled["primary"] = queries.get_traceability_gaps()
     elif topic == "metrics":
         assembled["primary"] = queries.get_estate_metrics()
+    elif topic == "inventory":
+        assembled["primary"] = queries.list_inventory(inventory_kind or "modules")
     elif topic == "provenance" and entity_name:
         assembled["primary"] = queries.explain_provenance(entity_name)
     else:
