@@ -102,6 +102,13 @@ class InteractionAgentTest(unittest.TestCase):
         self.assertEqual(response["topic"], "rule")
         self.assertIn("BR-001", response["answer"])
 
+    def test_loc_question_returns_estate_metrics_not_search_hits(self):
+        agent = self._make_agent()
+        response = agent.respond("How many lines of code exist in the legacy application?")
+        self.assertEqual(response["topic"], "metrics")
+        self.assertIn("120", response["answer"])
+        self.assertNotIn("Top matches", response["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

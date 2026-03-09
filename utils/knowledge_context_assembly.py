@@ -35,6 +35,8 @@ def assemble_knowledge_context(queries: KnowledgeQueries, message: str) -> dict[
         assembled["primary"] = queries.get_compliance_gaps()
     elif topic == "traceability":
         assembled["primary"] = queries.get_traceability_gaps()
+    elif topic == "metrics":
+        assembled["primary"] = queries.get_estate_metrics()
     elif topic == "provenance" and entity_name:
         assembled["primary"] = queries.explain_provenance(entity_name)
     else:

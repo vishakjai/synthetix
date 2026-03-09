@@ -3970,12 +3970,14 @@ def _select_source_entries_for_analysis(
             rank = 0
         elif path.endswith(".vbp") or path.endswith(".vbg"):
             rank = 0
-        elif path.endswith(".bas"):
+        elif path.endswith(".frm") or path.endswith(".ctl"):
             rank = 1
-        elif path.endswith(".dcx") or path.endswith(".dca"):
-            rank = 1
-        elif path.endswith(".frm") or path.endswith(".ctl") or path.endswith(".cls"):
+        elif path.endswith(".cls"):
             rank = 2
+        elif path.endswith(".bas"):
+            rank = 3
+        elif path.endswith(".dcx") or path.endswith(".dca"):
+            rank = 3
         elif path.endswith(".frx") or path.endswith(".ctx") or path.endswith(".res") or path.endswith(".ocx") or path.endswith(".mdb") or path.endswith(".accdb"):
             # Keep binary companions in scope, but prioritize code-bearing files first for accurate decomposition.
             rank = 8
@@ -3992,24 +3994,98 @@ def _select_source_entries_for_analysis(
     return [row[2] for row in priority_rank[: max(1, effective_limit)]]
 
 
-def _compose_legacy_code_bundle(file_contents: dict[str, str], max_total_chars: int = 420000) -> str:
+def _legacy_bundle_bucket(path: str) -> str:
+    lower = str(path or "").strip().lower()
+    if lower.endswith((".vbp", ".vbg")):
+        return "project"
+    if lower.endswith((".frm", ".ctl")):
+        return "form"
+    if lower.endswith(".cls"):
+        return "class"
+    if lower.endswith(".bas"):
+        return "module"
+    if lower.endswith((".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb")):
+        return "companion"
+    return "other"
+
+
+def _legacy_bundle_order_key(path: str) -> tuple[int, str]:
+    bucket_order = {
+        "project": 0,
+        "form": 1,
+        "class": 2,
+        "module": 3,
+        "companion": 4,
+        "other": 5,
+    }
+    normalized = str(path or "").strip().replace("\\", "/").lower()
+    return (bucket_order.get(_legacy_bundle_bucket(normalized), 9), normalized)
+
+
+def _compose_legacy_code_bundle(
+    file_contents: dict[str, str],
+    max_total_chars: int = 420000,
+) -> tuple[str, dict[str, Any]]:
+    available_paths = [path for path in file_contents.keys() if str(file_contents.get(path, "") or "").strip()]
+    vb6_source_hits = sum(
+        1
+        for path in available_paths
+        if str(path).lower().endswith((".vbp", ".vbg", ".frm", ".ctl", ".cls", ".bas", ".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
+    )
+    projected_chars = sum(len(str(file_contents.get(path, "") or "")) + len(str(path)) + 16 for path in available_paths)
+    effective_max = int(max_total_chars or 0)
+    if vb6_source_hits >= 12:
+        # Large VB6 estates lose coverage if we flatten them into the old 420k cap.
+        # Keep the bundle bounded, but allow enough room for deterministic per-file extraction.
+        effective_max = max(effective_max, min(max(projected_chars, 900000), 2400000))
+
     chunks: list[str] = []
     total = 0
-    for path in sorted(file_contents.keys()):
+    included_paths: list[str] = []
+    omitted_paths: list[str] = []
+    included_by_bucket: dict[str, int] = {}
+    omitted_by_bucket: dict[str, int] = {}
+    for path in sorted(available_paths, key=_legacy_bundle_order_key):
         content = str(file_contents.get(path, "") or "")
         if not content:
             continue
         block = f"\n### FILE: {path}\n{content}\n"
-        if total + len(block) > max_total_chars:
-            remaining = max_total_chars - total
+        if total + len(block) > effective_max:
+            remaining = effective_max - total
             if remaining <= 200:
-                break
+                omitted_paths.append(path)
+                bucket = _legacy_bundle_bucket(path)
+                omitted_by_bucket[bucket] = int(omitted_by_bucket.get(bucket, 0) or 0) + 1
+                continue
             block = block[:remaining]
         chunks.append(block)
         total += len(block)
-        if total >= max_total_chars:
+        included_paths.append(path)
+        bucket = _legacy_bundle_bucket(path)
+        included_by_bucket[bucket] = int(included_by_bucket.get(bucket, 0) or 0) + 1
+        if total >= effective_max:
             break
-    return "".join(chunks).strip()
+
+    for path in sorted(set(available_paths) - set(included_paths), key=_legacy_bundle_order_key):
+        if path in omitted_paths:
+            continue
+        omitted_paths.append(path)
+        bucket = _legacy_bundle_bucket(path)
+        omitted_by_bucket[bucket] = int(omitted_by_bucket.get(bucket, 0) or 0) + 1
+
+    return "".join(chunks).strip(), {
+        "requested_max_chars": int(max_total_chars or 0),
+        "effective_max_chars": effective_max,
+        "projected_chars": projected_chars,
+        "available_file_count": len(available_paths),
+        "vb6_source_file_count": vb6_source_hits,
+        "included_file_count": len(included_paths),
+        "omitted_file_count": len(omitted_paths),
+        "included_paths_sample": included_paths[:200],
+        "omitted_paths_sample": omitted_paths[:200],
+        "included_by_bucket": included_by_bucket,
+        "omitted_by_bucket": omitted_by_bucket,
+    }
 
 
 def _repo_snapshot_local_dir(snapshot_id: str) -> Path:
@@ -4034,12 +4110,14 @@ def _repo_snapshot_family_key(
 ) -> str:
     seed = "|".join(
         [
+            "bundle_v2",
             owner.lower().strip(),
             repository.lower().strip(),
             branch.lower().strip(),
             hashlib.sha1(",".join(sorted(include_paths)).encode("utf-8")).hexdigest()[:12],
             hashlib.sha1(",".join(sorted(exclude_paths)).encode("utf-8")).hexdigest()[:12],
             str(int(max_files or 0)),
+            str(int(REPO_SCAN_BUNDLE_MAX_CHARS or 0)),
         ]
     )
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
@@ -4264,7 +4342,7 @@ def _resolve_legacy_code_from_repo_scan(
             "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
             "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
         }
-        legacy_code = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        legacy_code, bundle_summary = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
         sid_seed = f"sample::{owner}/{repository}::{','.join(sorted(sample_contents.keys()))}"
         snapshot_id = hashlib.sha1(sid_seed.encode("utf-8")).hexdigest()[:20]
         payload = {
@@ -4279,6 +4357,9 @@ def _resolve_legacy_code_from_repo_scan(
             "created_at": _utc_now(),
             "cache_hit": False,
             "selected_file_count": len(sample_contents),
+            "fetched_file_count": len(sample_contents),
+            "failed_fetch_count": 0,
+            "failed_paths": [],
             "manifest": [
                 {
                     "path": p,
@@ -4289,6 +4370,7 @@ def _resolve_legacy_code_from_repo_scan(
                 }
                 for p in sorted(sample_contents.keys())
             ],
+            "bundle_summary": bundle_summary,
             "legacy_code": legacy_code,
         }
         _repo_snapshot_save(snapshot_id, payload)
@@ -4347,6 +4429,7 @@ def _resolve_legacy_code_from_repo_scan(
 
         snapshot_seed = "|".join(
             [
+                "bundle_v2",
                 "github",
                 owner.lower(),
                 repository.lower(),
@@ -4356,6 +4439,7 @@ def _resolve_legacy_code_from_repo_scan(
                 hashlib.sha1(",".join(exclude_paths).encode("utf-8")).hexdigest()[:12],
                 str(REPO_SCAN_MAX_FILES),
                 str(REPO_SCAN_CHUNK_SIZE),
+                str(REPO_SCAN_BUNDLE_MAX_CHARS),
             ]
         )
         snapshot_id = hashlib.sha1(snapshot_seed.encode("utf-8")).hexdigest()[:20]
@@ -4456,9 +4540,16 @@ def _resolve_legacy_code_from_repo_scan(
                 f"resolved={len(file_contents)} reused={len(reused_paths)} failed={len(failed_paths)}"
             )
 
-        legacy_code = _compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        legacy_code, bundle_summary = _compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
         if not legacy_code:
             return "", {}, "Repo scan completed but no analyzable source content was extracted."
+        emit(
+            "🧾 Repo bundle coverage: "
+            f"selected={len(selected_entries)} fetched={len(file_contents)} failed={len(failed_paths)} "
+            f"included={int(bundle_summary.get('included_file_count', 0) or 0)} "
+            f"omitted={int(bundle_summary.get('omitted_file_count', 0) or 0)} "
+            f"max_chars={int(bundle_summary.get('effective_max_chars', REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS)}"
+        )
         manifest = []
         for entry in selected_entries:
             path = str(entry.get("path", "")).strip()
@@ -4494,6 +4585,8 @@ def _resolve_legacy_code_from_repo_scan(
             "exclude_paths": exclude_paths,
             "total_tree_entries": len(raw_entries),
             "selected_file_count": len(selected_entries),
+            "fetched_file_count": len(file_contents),
+            "failed_fetch_count": len(failed_paths),
             "selected_paths": sorted(selected_path_set)[:400],
             "chunk_count": len(chunks),
             "chunk_size": REPO_SCAN_CHUNK_SIZE,
@@ -4506,6 +4599,7 @@ def _resolve_legacy_code_from_repo_scan(
             "failed_paths": failed_paths[:200],
             "sampled_files": sorted(file_contents.keys())[:80],
             "manifest": manifest,
+            "bundle_summary": bundle_summary,
             "file_contents": file_contents,
             "legacy_code": legacy_code,
         }

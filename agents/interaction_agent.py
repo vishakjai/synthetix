@@ -86,6 +86,22 @@ class InteractionAgent:
             preview = ", ".join([_clean(row.get("name")) for row in modules[:6] if isinstance(row, dict) and _clean(row.get("name"))]) or "none"
             answer = f"There are {int(primary.get('count', 0) or 0)} module(s) with traceability gaps. Sample: {preview}."
             confidence = 0.75
+        elif topic == "metrics":
+            source_loc_total = int(primary.get("source_loc_total", 0) or 0)
+            form_count = int(primary.get("form_count", 0) or 0)
+            project_count = int(primary.get("project_count", 0) or 0)
+            module_count = int(primary.get("module_count", 0) or 0)
+            projects = primary.get("projects", [])
+            project_preview = ", ".join([_clean(x) for x in projects[:6] if _clean(x)]) or "n/a"
+            answer = (
+                f"The legacy application contains {source_loc_total:,} lines of code. "
+                f"I currently have {form_count} form/module node(s) across {project_count} project(s). "
+                f"Projects: {project_preview}. "
+                f"Projected module inventory size: {module_count}."
+            )
+            document = primary.get("document", {}) if isinstance(primary.get("document", {}), dict) else {}
+            provenance = list(document.get("provenance_ref", []))
+            confidence = float(document.get("confidence", 0.0) or 0.9)
         elif topic == "provenance" and isinstance(primary.get("node"), dict):
             node = primary["node"]
             refs = primary.get("provenance_ref", [])

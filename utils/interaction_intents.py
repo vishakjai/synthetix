@@ -64,7 +64,20 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
     topic = "general"
     entity_name = ""
     mentions_form_like = any(token.strip().lower().startswith(("frm", "mdi", "menu")) for token in tokens)
-    if "compliance" in lower:
+    if (
+        "lines of code" in lower
+        or "line of code" in lower
+        or "loc" in lower
+        or "how many forms" in lower
+        or "how many modules" in lower
+        or "how many files" in lower
+        or "how many projects" in lower
+        or "project count" in lower
+        or "file count" in lower
+        or "form count" in lower
+    ):
+        topic = "metrics"
+    elif "compliance" in lower:
         topic = "compliance"
     elif "traceability" in lower or "coverage" in lower:
         topic = "traceability"

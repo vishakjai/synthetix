@@ -145,6 +145,33 @@ class KnowledgeQueries:
                 gaps.append(module)
         return {"count": len(gaps), "modules": gaps}
 
+    def get_estate_metrics(self) -> dict[str, Any]:
+        docs = self.store.query_nodes(self.engagement_id, node_type="Document", name="Analyst Report v2", limit=5)
+        summary = docs[0] if docs else None
+        props = summary.get("properties", {}) if isinstance(summary, dict) and isinstance(summary.get("properties", {}), dict) else {}
+        modules = self.store.query_nodes(self.engagement_id, node_type="Module", limit=1000)
+        projects = sorted(
+            {
+                _clean(row.get("properties", {}).get("project"))
+                for row in modules
+                if isinstance(row, dict) and _clean(row.get("properties", {}).get("project"))
+            }
+        )
+        total_form_loc = sum(
+            int(_clean(_clean(row.get("properties", {}).get("loc")) or 0) or 0)
+            for row in modules
+            if isinstance(row, dict)
+        )
+        return {
+            "document": summary,
+            "source_loc_total": int(props.get("loc", 0) or 0),
+            "project_count": int(props.get("projects", 0) or 0) or len(projects),
+            "form_count": int(props.get("forms", 0) or 0) or len(modules),
+            "module_count": len(modules),
+            "projects": projects,
+            "form_loc_subtotal": total_form_loc,
+        }
+
     def search_concepts(self, query: str, *, node_types: list[str] | None = None, limit: int = 10) -> dict[str, Any]:
         hits = self.store.search_nodes(self.engagement_id, query=query, limit=limit * 3)
         if node_types:
