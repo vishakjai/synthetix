@@ -7640,6 +7640,9 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
     }
     renderDiscoverAnalystBrief();
     renderDiscoverInsights();
+    renderDiscoverLandscape();
+    renderDiscoverStepper();
+    renderDiscoverResultsView();
   })();
   state.discoverAnalystBrief.inFlightPromise = runPromise;
   try {
@@ -7649,6 +7652,9 @@ async function loadDiscoverAnalystBrief({ force = false } = {}) {
       state.discoverAnalystBrief.inFlightPromise = null;
     }
     renderDiscoverAnalystBrief();
+    renderDiscoverLandscape();
+    renderDiscoverStepper();
+    renderDiscoverResultsView();
   }
 }
 
