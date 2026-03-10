@@ -9901,6 +9901,50 @@ async def api_download_analyst_docgen_docx(request):
     )
 
 
+async def api_download_analyst_markdown(request):
+    run_id = request.path_params.get("run_id", "")
+    run = MANAGER.get_run(run_id)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+
+    pipeline_state = run.get("pipeline_state", {}) if isinstance(run.get("pipeline_state", {}), dict) else {}
+    analyst_output = _analyst_output_from_state(pipeline_state)
+    integration_context = pipeline_state.get("integration_context", {}) if isinstance(pipeline_state.get("integration_context", {}), dict) else {}
+    imported_seed = _imported_analysis_response_payload(
+        str(pipeline_state.get("business_objectives", "") or run.get("business_objectives", "")).strip(),
+        integration_context,
+    )
+    if imported_seed:
+        existing_inventory = analyst_output.get("legacy_code_inventory", {}) if isinstance(analyst_output.get("legacy_code_inventory", {}), dict) else {}
+        if not existing_inventory or str(analyst_output.get("source", "")).strip().lower() != "imported_analysis":
+            analyst_output = imported_seed
+    if not isinstance(analyst_output, dict) or not analyst_output:
+        return JSONResponse({"ok": False, "error": "analyst output not found for this run"}, status_code=404)
+
+    try:
+        markdown_text = _build_analyst_markdown_for_docgen(
+            pipeline_state=pipeline_state,
+            analyst_output=analyst_output,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"unable to prepare analyst markdown: {exc}"}, status_code=500)
+    if not markdown_text:
+        return JSONResponse({"ok": False, "error": "analyst markdown is empty"}, status_code=500)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safe_run_id = safe_name(str(run_id or "run"))
+    filename = f"analyst-output-{safe_run_id}-{stamp}.md"
+    content = (markdown_text.rstrip() + "\n").encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 async def api_download_db_artifact(request):
     run_id = request.path_params.get("run_id", "")
     run = MANAGER.get_run(run_id)
@@ -14011,6 +14055,7 @@ routes = [
     Route("/api/runs/{run_id:str}/abort", api_abort_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/rerun", api_rerun_stage, methods=["POST"]),
     Route("/api/runs/{run_id:str}/analyst-doc", api_update_analyst_doc, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/analyst-markdown", api_download_analyst_markdown, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/module", api_get_run_knowledge_module, methods=["GET"]),
