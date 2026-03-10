@@ -100,6 +100,11 @@ Depth requirements:
 - Include at least 4 latency_optimizations.
 - Include at least 3 trade_offs with explicit alternatives considered.
 - If `legacy_system` is present, include at least 5 key_logic_steps.
+QUALITY RULES FOR BROWNFIELD MODERNIZATION:
+- Preserve distinct legacy workflow boundaries. Do not describe deposit, withdrawal, reporting, customer management, navigation, authentication, or startup flows with the same generic wording.
+- If the Analyst evidence identifies named workflows or forms, reflect those as separate responsibilities or legacy logic steps instead of collapsing them into a generic hub.
+- Do not invent a navigation-hub description for non-navigation modules.
+- When evidence is incomplete, say that the legacy behavior requires validation rather than masking the gap with boilerplate.
 Respond ONLY with the JSON, no other text."""
 
     def build_user_message(self, state: dict[str, Any]) -> str:
@@ -169,7 +174,8 @@ Include:
 - The target architecture and a NON-EMPTY Mermaid diagram.
 - {diagram_instructions}
 - Any Mermaid diagram provided MUST be valid syntax starting with "graph TD;".
-- If deployment target is local, prefer Docker-local compatible services over cloud-managed dependencies."""
+- If deployment target is local, prefer Docker-local compatible services over cloud-managed dependencies.
+- Keep the architecture narrative aligned to the concrete legacy workflows surfaced by the Analyst output; avoid repeating the same generalized workflow text across different legacy modules."""
 
     def parse_output(self, raw: str) -> dict[str, Any]:
         parsed = self.extract_json(raw)

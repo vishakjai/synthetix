@@ -539,6 +539,14 @@ Each requirement MUST have at least 3 acceptance criteria.
 For modernization use cases, each requirement description should explicitly mention expected inputs/outputs or data contracts where relevant.
 Include concrete acceptance criteria that can be objectively tested (not generic statements).
 Use stable IDs for requirements and BDD features so downstream traceability is deterministic.
+QUALITY RULES FOR BROWNFIELD / LEGACY ANALYSIS:
+- Prefer business-language requirement titles and descriptions over generic software phrasing.
+- Do NOT use filler text such as "event-driven UI controls", "workflow capability", "transaction lifecycle", or similarly generic summaries unless the evidence is genuinely too weak to say more.
+- If evidence is weak, state that explicitly as an evidence gap or clarification need instead of inventing a generic narrative.
+- Keep distinct legacy workflows distinct. Do not merge deposit, withdrawal, reporting, customer management, navigation, authentication, or startup flows into the same requirement narrative unless the evidence clearly shows they are the same workflow.
+- Where legacy inventory exists, derive named requirements from the dominant forms, rules, SQL touchpoints, and field labels rather than abstract template text.
+- Acceptance criteria must reference concrete business outcomes, validations, or persisted state changes when evidence exists. Avoid repetitive navigation-only acceptance criteria unless the workflow is actually a navigation module.
+- Treat the output as the source material for BA Brief / Tech Workbook / BRD. Write it so downstream document generation can stay business-facing without extra cleanup.
 Respond ONLY with the JSON, no other text."""
 
     def _build_user_message_with_context(self, state: dict[str, Any], deterministic: dict[str, Any]) -> str:
@@ -626,6 +634,8 @@ IMPORTANT:
 - Document explicit inputs, outputs, and side effects.
 - Produce a granular legacy inventory in the output (forms, controls, ActiveX/DLL/OCX dependencies, project members, and mapped business use).
 - Preserve backward-compatible behavior in requirements unless explicitly changed.
+- For VB6/brownfield modernization, identify the dominant business workflows separately (for example: authentication, navigation, customer maintenance, deposit capture, withdrawal, reporting, startup/splash) and keep them distinct in requirement titles, summaries, and acceptance criteria.
+- Do not write generic module placeholders if the form names, field labels, rules, or SQL evidence imply a clearer business function.
 """
             else:
                 preview = str(legacy_code)[: self.LEGACY_INLINE_MAX_CHARS]
@@ -643,6 +653,7 @@ IMPORTANT:
 - Extract functional behavior from the legacy code.
 - Document explicit inputs, outputs, and side effects.
 - Preserve backward-compatible behavior in requirements unless explicitly changed.
+- Avoid generic workflow summaries; if the evidence is thin, call out an evidence gap explicitly.
 """
 
         database_context = ""

@@ -983,8 +983,72 @@ function moduleDependencies(module, data) {
 function moduleUserStory(module, featureId) {
   const bn = module.business_name.toLowerCase();
   const kind = module.module_kind;
+  const nameKey = norm(module.business_name);
   const sourceForms = asArray(module?.source_forms).map((f) => norm(shortFormName(f)));
   const isMainHub = sourceForms.some((f) => f === 'main' || f === 'menu' || f === 'mdi');
+  if (/deposit/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'operations user',
+      i_want: `to capture and post ${bn} details`,
+      so_that: 'customer balances and transaction records stay accurate after deposits are received.',
+    };
+  }
+  if (/withdraw/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'operations user',
+      i_want: `to capture and authorize ${bn} details`,
+      so_that: 'debit transactions are posted correctly and account balances remain controlled.',
+    };
+  }
+  if (/report|statement/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'operations analyst',
+      i_want: `to generate ${bn} outputs`,
+      so_that: 'business decisions and customer servicing can rely on current reporting information.',
+    };
+  }
+  if (/menu|navigation|main/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'business user',
+      i_want: `to navigate from ${bn} to the required business module`,
+      so_that: 'I can reach the correct workflow quickly and without errors.',
+    };
+  }
+  if (/auth|login|password/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'authenticated user',
+      i_want: `to securely complete ${bn} actions`,
+      so_that: 'access is controlled and business operations remain protected.',
+    };
+  }
+  if (/account type/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'operations user',
+      i_want: `to maintain ${bn} configuration`,
+      so_that: 'account categories, rates, and thresholds remain consistent across customer onboarding and servicing.',
+    };
+  }
+  if (/customer/.test(nameKey)) {
+    return {
+      story_id: `${module.module_id}-US-001`,
+      feature_id: featureId,
+      as_a: 'operations user',
+      i_want: `to maintain ${bn} records`,
+      so_that: 'customer and account master data stays accurate and up to date.',
+    };
+  }
   if (isMainHub) {
     return {
       story_id: `${module.module_id}-US-001`,
@@ -1069,9 +1133,40 @@ function moduleUserStory(module, featureId) {
 function narrativeForModule(module, interactions, fieldRows, ruleRows) {
   const kind = norm(module.module_kind);
   const name = clean(module.business_name);
+  const nameKey = norm(name);
   const sourceForms = asArray(module?.source_forms).map((f) => norm(shortFormName(f)));
   const isMainHub = kind === 'navigation' || sourceForms.every((f) => f === 'main' || f === 'menu' || f === 'mdi');
   const interactionHint = interactions.length ? clean(interactions[0]) : '';
+  if (/deposit/.test(nameKey)) {
+    return `${name} captures deposit details, validates required fields, and updates account balances accordingly.`;
+  }
+  if (/withdraw/.test(nameKey)) {
+    return `${name} captures withdrawal details, validates account state, and posts debit updates to balance records.`;
+  }
+  if (/history/.test(nameKey)) {
+    return `${name} retrieves and presents prior transaction activity for audit and customer service review.`;
+  }
+  if (/ledger/.test(nameKey)) {
+    return `${name} consolidates transaction movements and supports ledger-level verification activities.`;
+  }
+  if (/report|statement/.test(nameKey)) {
+    return `${name} captures reporting filters and generates business outputs for review and operational decision support.`;
+  }
+  if (/account type/.test(nameKey)) {
+    return `${name} defines account category configuration, including rates and minimum-balance thresholds used by downstream customer and transaction workflows.`;
+  }
+  if (/customer/.test(nameKey)) {
+    return `${name} captures and maintains customer profile records used by downstream transaction, servicing, and reporting workflows.`;
+  }
+  if (/auth|login|password/.test(nameKey)) {
+    return `${name} validates user identity and credential rules before any operational screen is opened. Successful authentication transitions the user to authorized workflows.`;
+  }
+  if (/menu|navigation|main/.test(nameKey)) {
+    return `${name} serves as the workflow hub that routes users to customer, transaction, and reporting modules based on their selected action.`;
+  }
+  if (/splash|loading|startup/.test(nameKey)) {
+    return `${name} performs startup checks and progress gating before the system opens the next operational screen.`;
+  }
   if (isMainHub) {
     return `${name} serves as the operational navigation hub after successful authentication, routing users to customer, transaction, and reporting workflows.`;
   }
