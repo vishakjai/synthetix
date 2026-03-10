@@ -78,6 +78,8 @@ class ChunkMergeCoverageTest(unittest.TestCase):
                 "selected_file_count": 3,
                 "fetched_file_count": 3,
                 "failed_fetch_count": 0,
+                "truncated_fetch_count": 1,
+                "chunked_file_count": 1,
                 "failed_paths": [],
                 "bundle_summary": {"included_file_count": 3, "omitted_file_count": 0},
                 "chunk_count": 2,
@@ -92,6 +94,8 @@ class ChunkMergeCoverageTest(unittest.TestCase):
         self.assertEqual(merged["analysis_mode"], "large_repo")
         self.assertEqual(merged["analyzed_chunk_count"], 2)
         self.assertEqual(merged["forms_reported"], 1)
+        self.assertEqual(merged["truncated_fetch_count"], 1)
+        self.assertEqual(merged["chunked_file_count"], 1)
 
 
 if __name__ == "__main__":

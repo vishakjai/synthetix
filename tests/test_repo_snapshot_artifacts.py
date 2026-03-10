@@ -55,6 +55,16 @@ class RepoSnapshotArtifactsTest(unittest.TestCase):
             bundle_summary=bundle_summary,
             analysis_mode="standard",
             analysis_mode_reasons=[],
+            file_fetch_meta={
+                "BANK.vbp": {"original_char_count": 80, "fetched_char_count": 80, "truncated_at_fetch": False},
+                "frmCustomer.frm": {"original_char_count": 120, "fetched_char_count": 120, "truncated_at_fetch": False},
+                "Module1.bas": {"original_char_count": 300, "fetched_char_count": 200, "truncated_at_fetch": True},
+            },
+            file_chunk_manifest={
+                "files": [
+                    {"path": "Module1.bas", "chunked_for_analysis": True, "chunk_count": 2},
+                ]
+            },
         )
         self.assertEqual(snapshot["artifact_type"], "repo_snapshot_v1")
         self.assertEqual(snapshot["selected_file_count"], 3)
@@ -63,6 +73,12 @@ class RepoSnapshotArtifactsTest(unittest.TestCase):
         self.assertEqual(snapshot["counts_by_type"]["form"], 1)
         self.assertEqual(snapshot["counts_by_type"]["module"], 1)
         self.assertEqual(snapshot["estimated_loc_by_type"]["form"], 5)
+        self.assertEqual(snapshot["fetch_coverage_summary"]["truncated_fetch_count"], 1)
+        self.assertEqual(snapshot["fetch_coverage_summary"]["chunked_file_count"], 1)
+        by_path = {row["path"]: row for row in snapshot["files"]}
+        self.assertTrue(by_path["Module1.bas"]["truncated_at_fetch"])
+        self.assertTrue(by_path["Module1.bas"]["chunked_for_analysis"])
+        self.assertEqual(by_path["Module1.bas"]["analysis_chunk_count"], 2)
 
         symbols = build_symbol_index_v1(snapshot_id="snap-123", file_contents=file_contents)
         self.assertEqual(symbols["artifact_type"], "symbol_index_v1")

@@ -4475,6 +4475,7 @@ function renderDiscoverLandscape() {
   const landscapeView = state.discoverLandscape || {};
   const raw = _discoverRawArtifacts();
   const analysisPlan = _discoverAnalysisPlanArtifact();
+  const repoSnapshot = (raw.repo_snapshot_v1 && typeof raw.repo_snapshot_v1 === "object") ? raw.repo_snapshot_v1 : {};
   const integration = getIntegrationContext();
   const projectState = String(integration?.project_state_detected || state.projectState?.detected || "").trim().toLowerCase();
   const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
@@ -4499,6 +4500,7 @@ function renderDiscoverLandscape() {
   const analysisMode = String(analysisPlan.analysis_mode || "").trim().toLowerCase();
   const analysisReasons = Array.isArray(analysisPlan.analysis_mode_reasons) ? analysisPlan.analysis_mode_reasons : [];
   const analysisNotes = Array.isArray(analysisPlan.notes) ? analysisPlan.notes : [];
+  const typeCounts = (repoSnapshot.counts_by_type && typeof repoSnapshot.counts_by_type === "object") ? repoSnapshot.counts_by_type : {};
   const hasLandscapeData = !!componentRows.length || !!trackRows.length || !!languageRows.length || !!buildRows.length || !!riskRows.length;
   if (landscapeMode !== "greenfield" && projectState !== "greenfield" && !repoUrl && !evidenceBundleId) {
     const html = `
@@ -4685,6 +4687,29 @@ function renderDiscoverLandscape() {
       </div>
     `
     : "";
+  const inventorySummaryHtml = Object.keys(typeCounts).length
+    ? `
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <p class="font-semibold text-slate-900">Source inventory</p>
+            <p class="text-[11px] text-slate-700">Selected legacy files by detected type.</p>
+          </div>
+          <button type="button" class="btn-light rounded px-2 py-1 text-[11px] font-semibold" onclick="window.__downloadDiscoverArtifact && window.__downloadDiscoverArtifact('repo_snapshot')">Export file inventory</button>
+        </div>
+        <div class="mt-2 grid gap-1 sm:grid-cols-3 lg:grid-cols-6">
+          ${[
+            ["Projects", Number(typeCounts.project || 0) + Number(typeCounts.project_group || 0)],
+            ["Forms", Number(typeCounts.form || 0)],
+            ["UserControls", Number(typeCounts.usercontrol || 0)],
+            ["Modules", Number(typeCounts.module || 0)],
+            ["Classes", Number(typeCounts.class || 0)],
+            ["Companions", Number(typeCounts.form_binary || 0) + Number(typeCounts.usercontrol_binary || 0) + Number(typeCounts.database || 0)],
+          ].map((row) => `<div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>${escapeHtml(String(row[0]))}</strong><br/>${escapeHtml(String(row[1]))}</div>`).join("")}
+        </div>
+      </div>
+    `
+    : "";
 
   const landscapeHtml = `
     ${landscapeIntro ? `<div class="mb-2 rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-700">${landscapeIntro}</div>` : ""}
@@ -4717,6 +4742,7 @@ function renderDiscoverLandscape() {
           <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
         </div>
         ${analysisPlanHtml}
+        ${inventorySummaryHtml}
         ${evidenceCoverageHtml}
         ${greenfieldSummaryHtml}
       </div>
@@ -10563,6 +10589,8 @@ async function downloadDiscoverDbArtifact(kind) {
 async function downloadDiscoverArtifact(kind) {
   const validKinds = new Set([
     "repo_landscape",
+    "repo_snapshot",
+    "file_chunk_manifest",
     "component_inventory",
     "modernization_track_plan",
     "router_ruleset",
@@ -10583,6 +10611,8 @@ async function downloadDiscoverArtifact(kind) {
   const rawArtifacts = _discoverRawArtifacts();
   const localKeyByType = {
     repo_landscape: "repo_landscape_v1",
+    repo_snapshot: "repo_snapshot_v1",
+    file_chunk_manifest: "file_chunk_manifest_v1",
     component_inventory: "component_inventory_v1",
     modernization_track_plan: "modernization_track_plan_v1",
     router_ruleset: "router_ruleset_v1",
@@ -10628,6 +10658,8 @@ async function downloadDiscoverArtifact(kind) {
   const match = header.match(/filename=\"?([^\";]+)\"?/i);
   const fallbackByType = {
     repo_landscape: `repo_landscape-${runId}.json`,
+    repo_snapshot: `repo_snapshot-${runId}.json`,
+    file_chunk_manifest: `file_chunk_manifest-${runId}.json`,
     component_inventory: `component_inventory-${runId}.json`,
     modernization_track_plan: `modernization_track_plan-${runId}.json`,
     router_ruleset: `router_ruleset-${runId}.json`,
@@ -10652,6 +10684,7 @@ async function downloadDiscoverArtifact(kind) {
   a.remove();
   window.URL.revokeObjectURL(url);
 }
+window.__downloadDiscoverArtifact = downloadDiscoverArtifact;
 
 function renderVerifyTabButtons() {
   if (!el.verifyTabButtons) return;

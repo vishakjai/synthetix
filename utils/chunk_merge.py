@@ -145,6 +145,8 @@ def build_merged_analysis_coverage_v1(
         "selected_file_count": int(coverage.get("selected_file_count", 0) or 0),
         "fetched_file_count": int(coverage.get("fetched_file_count", 0) or 0),
         "failed_fetch_count": int(coverage.get("failed_fetch_count", 0) or 0),
+        "truncated_fetch_count": int(coverage.get("truncated_fetch_count", 0) or 0),
+        "chunked_file_count": int(coverage.get("chunked_file_count", 0) or 0),
         "bundle_included_file_count": int(bundle_summary.get("included_file_count", 0) or 0),
         "bundle_omitted_file_count": int(bundle_summary.get("omitted_file_count", 0) or 0),
         "chunk_manifest_count": int(coverage.get("chunk_count", 0) or 0),

@@ -202,6 +202,8 @@ Respond ONLY with the JSON, no other text."""
                 "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
                 "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
                 "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
+                "truncated_fetch_count": int(repo_snapshot.get("truncated_fetch_count", 0) or 0),
+                "chunked_file_count": int(repo_snapshot.get("chunked_file_count", 0) or 0),
                 "failed_paths": repo_snapshot.get("failed_paths", []) if isinstance(repo_snapshot.get("failed_paths", []), list) else [],
                 "bundle_summary": repo_bundle_summary,
                 "chunk_count": int(chunk_manifest.get("chunk_count", 0) or 0),
@@ -2659,6 +2661,8 @@ Analyze this code chunk and extract behavior compactly.
                 "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
                 "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
                 "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
+                "truncated_fetch_count": int(repo_snapshot.get("truncated_fetch_count", 0) or 0),
+                "chunked_file_count": int(repo_snapshot.get("chunked_file_count", 0) or 0),
                 "failed_paths": repo_snapshot.get("failed_paths", []) if isinstance(repo_snapshot.get("failed_paths", []), list) else [],
                 "bundle_summary": repo_bundle_summary,
                 "chunk_count": int(chunk_manifest.get("chunk_count", 0) or 0),
@@ -2684,6 +2688,8 @@ Analyze this code chunk and extract behavior compactly.
                     f"Repo scan coverage: selected={int(repo_snapshot.get('selected_file_count', 0) or 0)}, "
                     f"fetched={int(repo_snapshot.get('fetched_file_count', 0) or 0)}, "
                     f"failed={int(repo_snapshot.get('failed_fetch_count', 0) or 0)}, "
+                    f"truncated={int(repo_snapshot.get('truncated_fetch_count', 0) or 0)}, "
+                    f"chunked={int(repo_snapshot.get('chunked_file_count', 0) or 0)}, "
                     f"bundle_included={int(repo_bundle_summary.get('included_file_count', 0) or 0)}, "
                     f"bundle_omitted={int(repo_bundle_summary.get('omitted_file_count', 0) or 0)}, "
                     f"selected_form_files={selected_form_like_files}, "
@@ -2751,6 +2757,8 @@ Analyze this code chunk and extract behavior compactly.
                 "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
                 "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
                 "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
+                "truncated_fetch_count": int(repo_snapshot.get("truncated_fetch_count", 0) or 0),
+                "chunked_file_count": int(repo_snapshot.get("chunked_file_count", 0) or 0),
                 "failed_paths": repo_snapshot.get("failed_paths", [])[:200]
                 if isinstance(repo_snapshot.get("failed_paths", []), list)
                 else [],

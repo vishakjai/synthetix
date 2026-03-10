@@ -84,14 +84,25 @@ def build_repo_snapshot_v1(
     bundle_summary: dict[str, Any],
     analysis_mode: str,
     analysis_mode_reasons: list[str],
+    file_fetch_meta: dict[str, dict[str, Any]] | None = None,
+    file_chunk_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts_by_type: Counter[str] = Counter()
     estimated_loc_by_type: Counter[str] = Counter()
     files: list[dict[str, Any]] = []
     file_contents_map = file_contents if isinstance(file_contents, dict) else {}
+    fetch_meta_index = file_fetch_meta if isinstance(file_fetch_meta, dict) else {}
+    chunk_manifest = file_chunk_manifest if isinstance(file_chunk_manifest, dict) else {}
+    chunk_index = {
+        str(row.get("path", "")).strip(): row
+        for row in chunk_manifest.get("files", [])
+        if isinstance(row, dict) and str(row.get("path", "")).strip()
+    }
     failed_set = {str(path).strip() for path in failed_paths if str(path).strip()}
     reused_set = {str(path).strip() for path in reused_paths if str(path).strip()}
     selected_paths = {str(row.get("path", "")).strip() for row in selected_entries if isinstance(row, dict) and str(row.get("path", "")).strip()}
+    truncated_fetch_count = 0
+    chunked_file_count = 0
 
     for row in selected_entries:
         if not isinstance(row, dict):
@@ -102,6 +113,14 @@ def build_repo_snapshot_v1(
         ext = Path(path).suffix.lower()
         loc = len(str(file_contents_map.get(path, "") or "").splitlines()) if path in file_contents_map else 0
         kind = _kind_from_path(path)
+        fetch_meta = fetch_meta_index.get(path, {}) if isinstance(fetch_meta_index.get(path, {}), dict) else {}
+        chunk_meta = chunk_index.get(path, {}) if isinstance(chunk_index.get(path, {}), dict) else {}
+        truncated_at_fetch = bool(fetch_meta.get("truncated_at_fetch", False))
+        chunked_for_analysis = bool(chunk_meta.get("chunked_for_analysis", False))
+        if truncated_at_fetch:
+            truncated_fetch_count += 1
+        if chunked_for_analysis:
+            chunked_file_count += 1
         counts_by_type[kind] += 1
         estimated_loc_by_type[kind] += int(loc or 0)
         files.append(
@@ -116,6 +135,11 @@ def build_repo_snapshot_v1(
                 "reused": path in reused_set,
                 "failed_fetch": path in failed_set,
                 "estimated_loc": int(loc or 0),
+                "original_char_count": int(fetch_meta.get("original_char_count", len(str(file_contents_map.get(path, "") or ""))) or 0),
+                "fetched_char_count": int(fetch_meta.get("fetched_char_count", len(str(file_contents_map.get(path, "") or ""))) or 0),
+                "truncated_at_fetch": truncated_at_fetch,
+                "chunked_for_analysis": chunked_for_analysis,
+                "analysis_chunk_count": int(chunk_meta.get("chunk_count", 0) or 0),
                 "language": _path_language_hint(path),
                 "is_binary": ext in {".frx", ".ctx", ".res", ".ocx", ".mdb", ".accdb"},
             }
@@ -146,6 +170,10 @@ def build_repo_snapshot_v1(
         "compare_error": str(compare_error or "").strip(),
         "chunk_size": int(chunk_size or 0),
         "chunk_workers": int(chunk_workers or 0),
+        "fetch_coverage_summary": {
+            "truncated_fetch_count": truncated_fetch_count,
+            "chunked_file_count": chunked_file_count,
+        },
         "counts_by_type": dict(sorted(counts_by_type.items())),
         "estimated_loc_by_type": dict(sorted(estimated_loc_by_type.items())),
         "bundle_summary": bundle_summary if isinstance(bundle_summary, dict) else {},

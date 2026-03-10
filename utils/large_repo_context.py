@@ -12,6 +12,7 @@ def build_large_repo_context_v1(
     chunk_manifest: dict[str, Any],
     dependency_graph: dict[str, Any],
     file_contents: dict[str, str],
+    file_chunk_manifest: dict[str, Any] | None = None,
     max_total_chars: int,
 ) -> dict[str, Any]:
     chunks = chunk_manifest.get("chunks", []) if isinstance(chunk_manifest.get("chunks", []), list) else []
@@ -22,6 +23,12 @@ def build_large_repo_context_v1(
     included_chunks: list[str] = []
     omitted_chunks: list[str] = []
     chunk_inputs: list[dict[str, Any]] = []
+    chunk_manifest_index = {
+        str(row.get("path", "")).strip(): row
+        for row in (file_chunk_manifest.get("files", []) if isinstance((file_chunk_manifest or {}).get("files", []), list) else [])
+        if isinstance(row, dict) and str(row.get("path", "")).strip()
+    }
+    chunked_file_count = 0
 
     header = (
         "### LARGE REPO CONTEXT\n"
@@ -91,6 +98,35 @@ def build_large_repo_context_v1(
             content = str(file_contents.get(path, "") or "")
             if not content:
                 continue
+            file_chunk_meta = chunk_manifest_index.get(path, {}) if isinstance(chunk_manifest_index.get(path, {}), dict) else {}
+            file_chunk_rows = file_chunk_meta.get("chunks", []) if isinstance(file_chunk_meta.get("chunks", []), list) else []
+            if bool(file_chunk_meta.get("chunked_for_analysis", False)) and file_chunk_rows:
+                chunked_file_count += 1
+                for row in file_chunk_rows:
+                    start = int(row.get("start_char", 0) or 0)
+                    end = int(row.get("end_char", 0) or 0)
+                    if end <= start:
+                        continue
+                    label = f"{int(row.get('chunk_index', 0) or 0)}/{int(file_chunk_meta.get('chunk_count', len(file_chunk_rows)) or len(file_chunk_rows))}"
+                    piece = content[start:end]
+                    block = f"\n### FILE CHUNK: {path} [{label}] chars={start + 1}-{end}\n{piece}\n"
+                    if total + len(block) > max_total_chars or len(block) > per_chunk_cap:
+                        trimmed = min(max_total_chars - total, per_chunk_cap)
+                        if trimmed <= 200:
+                            continue
+                        block = block[:trimmed]
+                    lines.append(block)
+                    chunk_text_parts.append(block.rstrip())
+                    total += len(block)
+                    if path not in included_files:
+                        included_files.append(path)
+                    if path not in chunk_included_paths:
+                        chunk_included_paths.append(path)
+                    if total >= max_total_chars:
+                        break
+                if total >= max_total_chars:
+                    break
+                continue
             block = f"\n### FILE: {path}\n{content}\n"
             if total + len(block) > max_total_chars or len(block) > per_chunk_cap:
                 trimmed = min(max_total_chars - total, per_chunk_cap)
@@ -140,6 +176,7 @@ def build_large_repo_context_v1(
         "omitted_chunk_count": len(omitted_chunks),
         "included_file_count": len(included_files),
         "omitted_file_count": len(omitted_files),
+        "chunked_file_count": chunked_file_count,
         "included_chunks": included_chunks[:200],
         "omitted_chunks": omitted_chunks[:200],
         "included_paths_sample": included_files[:400],

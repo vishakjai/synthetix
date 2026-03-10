@@ -109,6 +109,7 @@ from utils.symbol_index import build_symbol_index_v1  # noqa: E402
 from utils.repo_dependency_graph import build_global_dependency_graph_v1  # noqa: E402
 from utils.repo_componentizer import build_component_inventory_v1, build_chunk_manifest_v1  # noqa: E402
 from utils.large_repo_context import build_large_repo_context_v1  # noqa: E402
+from utils.file_chunk_manifest import build_file_chunk_manifest_v1  # noqa: E402
 from utils.analysis_estimator import build_analysis_plan_v1  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
@@ -169,6 +170,23 @@ REPO_SCAN_MAX_FILES = max(24, int(os.getenv("REPO_SCAN_MAX_FILES", "220") or 220
 REPO_SCAN_CHUNK_SIZE = max(8, int(os.getenv("REPO_SCAN_CHUNK_SIZE", "24") or 24))
 REPO_SCAN_CHUNK_WORKERS = max(1, min(16, int(os.getenv("REPO_SCAN_CHUNK_WORKERS", "4") or 4)))
 REPO_SCAN_BUNDLE_MAX_CHARS = max(120000, int(os.getenv("REPO_SCAN_BUNDLE_MAX_CHARS", "420000") or 420000))
+REPO_SCAN_FILE_MAX_CHARS_STANDARD = max(4000, int(os.getenv("REPO_SCAN_FILE_MAX_CHARS_STANDARD", "12000") or 12000))
+REPO_SCAN_FILE_MAX_CHARS_LARGE = max(
+    REPO_SCAN_FILE_MAX_CHARS_STANDARD,
+    int(os.getenv("REPO_SCAN_FILE_MAX_CHARS_LARGE", "100000") or 100000),
+)
+REPO_SCAN_FILE_HARD_MAX_CHARS = max(
+    REPO_SCAN_FILE_MAX_CHARS_LARGE,
+    int(os.getenv("REPO_SCAN_FILE_HARD_MAX_CHARS", "250000") or 250000),
+)
+REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS = max(
+    8000,
+    int(os.getenv("REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS", "25000") or 25000),
+)
+REPO_SCAN_FILE_CHUNK_SIZE_CHARS = max(
+    4000,
+    int(os.getenv("REPO_SCAN_FILE_CHUNK_SIZE_CHARS", "20000") or 20000),
+)
 REPO_SNAPSHOT_GCS_BUCKET = str(
     os.getenv("REPO_SNAPSHOT_GCS_BUCKET")
     or os.getenv("RUN_STORE_GCS_BUCKET")
@@ -3858,7 +3876,7 @@ def _analyze_source_bundle(
     }
 
 
-def _fetch_github_file_content(
+def _fetch_github_file_payload(
     *,
     base_url: str,
     owner: str,
@@ -3867,17 +3885,19 @@ def _fetch_github_file_content(
     ref: str,
     headers: dict[str, str],
     max_chars: int = 12000,
-) -> str:
+) -> dict[str, Any]:
     content_url = f"{base_url}/repos/{quote(owner)}/{quote(repository)}/contents/{quote(path, safe='/')}?ref={quote(ref, safe='')}"
     payload = _http_json_request(content_url, headers=headers)
     if not isinstance(payload, dict):
-        return ""
+        return {"text": "", "original_char_count": 0, "fetched_char_count": 0, "truncated_at_fetch": False, "is_binary": False}
     raw_content = str(payload.get("content", "") or "")
     encoding = str(payload.get("encoding", "")).strip().lower()
     if not raw_content:
-        return ""
+        return {"text": "", "original_char_count": 0, "fetched_char_count": 0, "truncated_at_fetch": False, "is_binary": False}
     suffix = Path(path).suffix.lower()
     text = ""
+    original_char_count = 0
+    truncated_at_fetch = False
     if encoding == "base64":
         try:
             raw_bytes = base64.b64decode(raw_content.encode("utf-8"), validate=False)
@@ -3889,16 +3909,69 @@ def _fetch_github_file_content(
                     note = "MS Access database file detected."
                 else:
                     note = "Companion binary/resource file detected."
-                return (
+                text = (
                     f"[BINARY_COMPANION] file={path} ext={suffix or 'unknown'} bytes={len(raw_bytes)} "
                     f"sha1={digest} note={note}"
-                )[:max_chars]
+                )
+                original_char_count = len(text)
+                text = text[:max_chars]
+                truncated_at_fetch = len(text) < original_char_count
+                return {
+                    "text": text,
+                    "original_char_count": original_char_count,
+                    "fetched_char_count": len(text),
+                    "truncated_at_fetch": truncated_at_fetch,
+                    "is_binary": True,
+                }
             text = raw_bytes.decode("utf-8", errors="replace")
         except Exception:
             text = ""
     else:
         text = raw_content
-    return text[:max_chars]
+    original_char_count = len(text)
+    text = text[:max_chars]
+    truncated_at_fetch = len(text) < original_char_count
+    return {
+        "text": text,
+        "original_char_count": original_char_count,
+        "fetched_char_count": len(text),
+        "truncated_at_fetch": truncated_at_fetch,
+        "is_binary": suffix in {".frx", ".ctx", ".res", ".ocx", ".mdb", ".accdb"},
+    }
+
+
+def _fetch_github_file_content(
+    *,
+    base_url: str,
+    owner: str,
+    repository: str,
+    path: str,
+    ref: str,
+    headers: dict[str, str],
+    max_chars: int = 12000,
+) -> str:
+    return str(
+        _fetch_github_file_payload(
+            base_url=base_url,
+            owner=owner,
+            repository=repository,
+            path=path,
+            ref=ref,
+            headers=headers,
+            max_chars=max_chars,
+        ).get("text", "")
+        or ""
+    )
+
+
+def _repo_scan_file_max_chars(analysis_mode: str, path: str) -> int:
+    ext = Path(str(path or "")).suffix.lower()
+    mode = str(analysis_mode or "").strip().lower()
+    if mode != "large_repo":
+        return REPO_SCAN_FILE_MAX_CHARS_STANDARD
+    if ext in {".frm", ".ctl", ".bas", ".cls", ".vbp", ".vbg", ".php", ".py", ".js", ".ts", ".tsx", ".java", ".cs", ".go", ".sql"}:
+        return REPO_SCAN_FILE_MAX_CHARS_LARGE
+    return min(REPO_SCAN_FILE_MAX_CHARS_LARGE, 40000)
 
 
 def _allowed_source_extensions() -> set[str]:
@@ -4180,7 +4253,7 @@ def _repo_snapshot_family_key(
 ) -> str:
     seed = "|".join(
         [
-            "bundle_v2",
+            "bundle_v4",
             owner.lower().strip(),
             repository.lower().strip(),
             branch.lower().strip(),
@@ -4188,6 +4261,10 @@ def _repo_snapshot_family_key(
             hashlib.sha1(",".join(sorted(exclude_paths)).encode("utf-8")).hexdigest()[:12],
             str(int(max_files or 0)),
             str(int(REPO_SCAN_BUNDLE_MAX_CHARS or 0)),
+            str(int(REPO_SCAN_FILE_MAX_CHARS_STANDARD or 0)),
+            str(int(REPO_SCAN_FILE_MAX_CHARS_LARGE or 0)),
+            str(int(REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS or 0)),
+            str(int(REPO_SCAN_FILE_CHUNK_SIZE_CHARS or 0)),
         ]
     )
     return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
@@ -4412,6 +4489,14 @@ def _resolve_legacy_code_from_repo_scan(
             "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
             "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
         }
+        sample_fetch_meta = {
+            path: {
+                "original_char_count": len(str(sample_contents.get(path, "") or "")),
+                "fetched_char_count": len(str(sample_contents.get(path, "") or "")),
+                "truncated_at_fetch": False,
+            }
+            for path in sample_contents.keys()
+        }
         legacy_code, bundle_summary = _compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
         sid_seed = f"sample::{owner}/{repository}::{','.join(sorted(sample_contents.keys()))}"
         snapshot_id = hashlib.sha1(sid_seed.encode("utf-8")).hexdigest()[:20]
@@ -4443,6 +4528,7 @@ def _resolve_legacy_code_from_repo_scan(
             bundle_summary=bundle_summary,
             analysis_mode=str(routing.get("analysis_mode", "standard")),
             analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
+            file_fetch_meta=sample_fetch_meta,
         )
         symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=sample_contents)
         dependency_graph_v1 = build_global_dependency_graph_v1(
@@ -4460,6 +4546,14 @@ def _resolve_legacy_code_from_repo_scan(
             component_inventory=component_inventory_v1,
             file_contents=sample_contents,
         )
+        file_chunk_manifest_v1 = build_file_chunk_manifest_v1(
+            snapshot_id=snapshot_id,
+            file_contents=sample_contents,
+            file_fetch_meta=sample_fetch_meta,
+            analysis_mode=str(routing.get("analysis_mode", "standard")),
+            chunk_threshold_chars=REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS,
+            chunk_size_chars=REPO_SCAN_FILE_CHUNK_SIZE_CHARS,
+        )
         large_repo_context_v1 = build_large_repo_context_v1(
             snapshot_id=snapshot_id,
             repo_snapshot=repo_snapshot_v1,
@@ -4467,6 +4561,7 @@ def _resolve_legacy_code_from_repo_scan(
             chunk_manifest=chunk_manifest_v1,
             dependency_graph=dependency_graph_v1,
             file_contents=sample_contents,
+            file_chunk_manifest=file_chunk_manifest_v1,
             max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS,
         )
         plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
@@ -4512,6 +4607,7 @@ def _resolve_legacy_code_from_repo_scan(
             "global_dependency_graph_v1": dependency_graph_v1,
             "component_inventory_v1": component_inventory_v1,
             "chunk_manifest_v1": chunk_manifest_v1,
+            "file_chunk_manifest_v1": file_chunk_manifest_v1,
             "legacy_chunk_context_v1": large_repo_context_v1,
             "analysis_plan_v1": analysis_plan_v1,
             "bundle_summary": bundle_summary,
@@ -4581,7 +4677,7 @@ def _resolve_legacy_code_from_repo_scan(
 
         snapshot_seed = "|".join(
             [
-                "bundle_v3",
+                "bundle_v4",
                 "github",
                 owner.lower(),
                 repository.lower(),
@@ -4592,6 +4688,10 @@ def _resolve_legacy_code_from_repo_scan(
                 str(REPO_SCAN_MAX_FILES),
                 str(REPO_SCAN_CHUNK_SIZE),
                 str(REPO_SCAN_BUNDLE_MAX_CHARS),
+                str(REPO_SCAN_FILE_MAX_CHARS_STANDARD),
+                str(REPO_SCAN_FILE_MAX_CHARS_LARGE),
+                str(REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS),
+                str(REPO_SCAN_FILE_CHUNK_SIZE_CHARS),
             ]
         )
         snapshot_id = hashlib.sha1(snapshot_seed.encode("utf-8")).hexdigest()[:20]
@@ -4648,6 +4748,7 @@ def _resolve_legacy_code_from_repo_scan(
         )
 
         file_contents: dict[str, str] = {}
+        file_fetch_meta: dict[str, dict[str, Any]] = {}
         failed_paths: list[str] = []
         reused_paths: list[str] = []
         compare_enabled = bool(base_file_contents and base_commit and commit_sha and base_commit != commit_sha and not compare_error)
@@ -4664,27 +4765,38 @@ def _resolve_legacy_code_from_repo_scan(
                         content = str(base_file_contents.get(path, "") or "")
                         if content:
                             file_contents[path] = content
+                            file_fetch_meta[path] = {
+                                "original_char_count": len(content),
+                                "fetched_char_count": len(content),
+                                "truncated_at_fetch": False,
+                            }
                             reused_paths.append(path)
                             continue
                     fut = pool.submit(
-                        _fetch_github_file_content,
+                        _fetch_github_file_payload,
                         base_url=base_url,
                         owner=owner,
                         repository=repository,
                         path=path,
                         ref=branch,
                         headers=headers,
-                        max_chars=12000,
+                        max_chars=_repo_scan_file_max_chars(analysis_mode, path),
                     )
                     futures[fut] = path
                 for fut in as_completed(list(futures.keys())):
                     path = futures.get(fut, "")
                     try:
-                        content = str(fut.result() or "")
+                        payload = fut.result()
                     except Exception:
-                        content = ""
+                        payload = {}
+                    content = str((payload or {}).get("text", "") or "")
                     if content:
                         file_contents[path] = content
+                        file_fetch_meta[path] = {
+                            "original_char_count": int((payload or {}).get("original_char_count", len(content)) or len(content)),
+                            "fetched_char_count": int((payload or {}).get("fetched_char_count", len(content)) or len(content)),
+                            "truncated_at_fetch": bool((payload or {}).get("truncated_at_fetch", False)),
+                        }
                     else:
                         if path:
                             failed_paths.append(path)
@@ -4694,6 +4806,16 @@ def _resolve_legacy_code_from_repo_scan(
             )
 
         legacy_code, bundle_summary = _compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)
+        file_chunk_manifest_v1 = build_file_chunk_manifest_v1(
+            snapshot_id=snapshot_id,
+            file_contents=file_contents,
+            file_fetch_meta=file_fetch_meta,
+            analysis_mode=analysis_mode,
+            chunk_threshold_chars=REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS,
+            chunk_size_chars=REPO_SCAN_FILE_CHUNK_SIZE_CHARS,
+        )
+        truncated_fetch_count = int(file_chunk_manifest_v1.get("truncated_fetch_count", 0) or 0)
+        chunked_file_count = int(file_chunk_manifest_v1.get("chunked_file_count", 0) or 0)
         if not legacy_code:
             return "", {}, "Repo scan completed but no analyzable source content was extracted."
         emit(
@@ -4701,6 +4823,7 @@ def _resolve_legacy_code_from_repo_scan(
             f"selected={len(selected_entries)} fetched={len(file_contents)} failed={len(failed_paths)} "
             f"included={int(bundle_summary.get('included_file_count', 0) or 0)} "
             f"omitted={int(bundle_summary.get('omitted_file_count', 0) or 0)} "
+            f"truncated={truncated_fetch_count} chunked={chunked_file_count} "
             f"max_chars={int(bundle_summary.get('effective_max_chars', REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS)}"
         )
         manifest = []
@@ -4742,6 +4865,8 @@ def _resolve_legacy_code_from_repo_scan(
             "selected_file_count": len(selected_entries),
             "fetched_file_count": len(file_contents),
             "failed_fetch_count": len(failed_paths),
+            "truncated_fetch_count": truncated_fetch_count,
+            "chunked_file_count": chunked_file_count,
             "selected_paths": sorted(selected_path_set)[:400],
             "chunk_count": len(chunks),
             "chunk_size": REPO_SCAN_CHUNK_SIZE,
@@ -4755,6 +4880,8 @@ def _resolve_legacy_code_from_repo_scan(
             "sampled_files": sorted(file_contents.keys())[:80],
             "manifest": manifest,
             "bundle_summary": bundle_summary,
+            "file_fetch_meta": file_fetch_meta,
+            "file_chunk_manifest_v1": file_chunk_manifest_v1,
             "file_contents": file_contents,
             "legacy_code": legacy_code,
         }
@@ -4781,6 +4908,8 @@ def _resolve_legacy_code_from_repo_scan(
             bundle_summary=bundle_summary,
             analysis_mode=analysis_mode,
             analysis_mode_reasons=analysis_mode_reasons,
+            file_fetch_meta=file_fetch_meta,
+            file_chunk_manifest=file_chunk_manifest_v1,
         )
         snapshot_payload["symbol_index_v1"] = build_symbol_index_v1(
             snapshot_id=snapshot_id,
@@ -4809,6 +4938,7 @@ def _resolve_legacy_code_from_repo_scan(
                 chunk_manifest=snapshot_payload["chunk_manifest_v1"],
                 dependency_graph=snapshot_payload["global_dependency_graph_v1"],
                 file_contents=file_contents,
+                file_chunk_manifest=file_chunk_manifest_v1,
                 max_total_chars=int(bundle_summary.get("effective_max_chars", REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS),
             )
             large_repo_text = str(snapshot_payload["legacy_chunk_context_v1"].get("context_text", "")).strip()
@@ -6276,6 +6406,15 @@ def _attach_repo_scan_artifacts_to_payload(
             [row for row in selected_entries if isinstance(row, dict)],
             total_tree_entries=len(tree_entries or []),
         )
+        file_fetch_meta = {
+            str(path): {
+                "original_char_count": len(str(body or "")),
+                "fetched_char_count": len(str(body or "")),
+                "truncated_at_fetch": False,
+            }
+            for path, body in (fetched_files.items() if isinstance(fetched_files, dict) else [])
+            if str(path).strip()
+        }
         repo_snapshot_v1 = build_repo_snapshot_v1(
             snapshot_id=snapshot_id,
             repo_url=repo_ref,
@@ -6299,6 +6438,7 @@ def _attach_repo_scan_artifacts_to_payload(
             bundle_summary=bundle_summary,
             analysis_mode=str(routing.get("analysis_mode", "standard")),
             analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
+            file_fetch_meta=file_fetch_meta,
         )
         symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=fetched_files)
         dependency_graph_v1 = build_global_dependency_graph_v1(
@@ -6316,6 +6456,14 @@ def _attach_repo_scan_artifacts_to_payload(
             component_inventory=component_inventory_v1,
             file_contents=fetched_files,
         )
+        file_chunk_manifest_v1 = build_file_chunk_manifest_v1(
+            snapshot_id=snapshot_id,
+            file_contents=fetched_files,
+            file_fetch_meta=file_fetch_meta,
+            analysis_mode=str(routing.get("analysis_mode", "standard")),
+            chunk_threshold_chars=REPO_SCAN_FILE_CHUNK_THRESHOLD_CHARS,
+            chunk_size_chars=REPO_SCAN_FILE_CHUNK_SIZE_CHARS,
+        )
         legacy_chunk_context_v1 = build_large_repo_context_v1(
             snapshot_id=snapshot_id,
             repo_snapshot=repo_snapshot_v1,
@@ -6323,6 +6471,7 @@ def _attach_repo_scan_artifacts_to_payload(
             chunk_manifest=chunk_manifest_v1,
             dependency_graph=dependency_graph_v1,
             file_contents=fetched_files,
+            file_chunk_manifest=file_chunk_manifest_v1,
             max_total_chars=int(bundle_summary.get("effective_max_chars", REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS),
         )
         plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
@@ -6349,6 +6498,7 @@ def _attach_repo_scan_artifacts_to_payload(
             "global_dependency_graph_v1": dependency_graph_v1,
             "component_inventory_v1": component_inventory_v1,
             "chunk_manifest_v1": chunk_manifest_v1,
+            "file_chunk_manifest_v1": file_chunk_manifest_v1,
             "legacy_chunk_context_v1": legacy_chunk_context_v1,
             "analysis_plan_v1": analysis_plan_v1,
         }
@@ -6735,7 +6885,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
                 path=path,
                 ref=branch,
                 headers=headers,
-                max_chars=12000,
+                max_chars=_repo_scan_file_max_chars("standard", path),
             )
             if content:
                 file_contents[path] = content
@@ -6921,7 +7071,15 @@ async def api_discover_landscape(request):
         if not path:
             continue
         try:
-            content = _fetch_github_file_content(base_url=base_url, owner=owner, repository=repository, path=path, ref=branch, headers=headers, max_chars=12000)
+            content = _fetch_github_file_content(
+                base_url=base_url,
+                owner=owner,
+                repository=repository,
+                path=path,
+                ref=branch,
+                headers=headers,
+                max_chars=_repo_scan_file_max_chars("standard", path),
+            )
             if content:
                 file_contents[path] = content
         except ValueError as exc:
@@ -9801,6 +9959,8 @@ async def api_download_discover_artifact(request):
     query = request.query_params
     artifact_type = str(query.get("type", "project_metrics")).strip().lower()
     allowlist: dict[str, tuple[str, str]] = {
+        "repo_snapshot": ("repo_snapshot_v1", "repo_snapshot"),
+        "file_chunk_manifest": ("file_chunk_manifest_v1", "file_chunk_manifest"),
         "project_metrics": ("project_metrics", "project_metrics"),
         "static_forensics": ("static_forensics_layer", "static_forensics"),
         "quality_rules": ("code_quality_rules", "quality_rules"),
@@ -9825,6 +9985,7 @@ async def api_download_discover_artifact(request):
                 "ok": False,
                 "error": (
                     "type must be one of: project_metrics, static_forensics, quality_rules, quality_violations, "
+                    "repo_snapshot, file_chunk_manifest, "
                     "dead_code, type_dependency_matrix, runtime_dependency_matrix, "
                     "third_party_usage, trend_snapshot, trend_series, mdb_inventory, form_loc_profile, "
                     "connection_string_variants, module_global_inventory, dead_form_refs, "
