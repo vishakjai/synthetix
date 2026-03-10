@@ -117,6 +117,51 @@ class PhpSummaryPathTest(unittest.TestCase):
         self.assertNotIn("DEC-UI-001", ids)
         self.assertEqual(report["metadata"]["context_reference"]["source_language"], "php")
 
+    def test_php_analyst_report_falls_back_to_framework_profile_and_landscape_summary(self):
+        output = {
+            "source_language": "PHP",
+            "requirements_pack": {
+                "legacy_code_inventory": {
+                    "summary": "Detected PHP legacy application.",
+                    "modernization_readiness": {"score": 60, "risk_tier": "medium"},
+                    "source_loc_total": 0,
+                    "source_files_scanned": 0,
+                    "php_analysis": {
+                        "route_inventory": {},
+                        "controller_inventory": {},
+                        "template_inventory": {},
+                    },
+                }
+            },
+            "raw_artifacts": {
+                "repo_landscape_v1": {
+                    "scan_summary": {"total_loc": 565185, "total_files": 3827},
+                    "dependency_footprint": {"composer_package_count": 3},
+                },
+                "php_framework_profile_v1": {
+                    "framework": "custom_php",
+                    "controller_count": 248,
+                    "template_count": 0,
+                    "route_file_count": 1,
+                    "composer_package_count": 3,
+                    "auth_touchpoint_estimate": 18,
+                },
+                "php_route_hints_v1": {
+                    "estimated_route_files": 1,
+                    "estimated_controllers": 248,
+                    "estimated_templates": 0,
+                },
+            },
+        }
+        report = build_analyst_report_v2(output)
+        inventory = report["decision_brief"]["at_a_glance"]["inventory_summary"]
+        self.assertEqual(inventory["applications"], 1)
+        self.assertEqual(inventory["controllers"], 248)
+        self.assertEqual(inventory["routes"], 1)
+        self.assertEqual(inventory["dependencies"], 3)
+        self.assertEqual(inventory["source_loc_total"], 565185)
+        self.assertEqual(inventory["source_files_scanned"], 3827)
+
     def test_php_inventory_falls_back_from_discover_cache_landscape(self):
         agent = AnalystAgent(Mock())
         state = {

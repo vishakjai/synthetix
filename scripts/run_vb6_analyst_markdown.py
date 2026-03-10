@@ -335,11 +335,11 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
 
     if is_php_summary:
         inventory_summary_text = (
-            f"{_clean(inventory.get('applications') or 0)} application(s), "
-            f"{_clean(inventory.get('controllers') or 0)} controllers, "
-            f"{_clean(inventory.get('routes') or 0)} routes, "
-            f"{_clean(inventory.get('templates') or 0)} templates, "
-            f"{_clean(inventory.get('dependencies') or 0)} dependencies"
+            f"{_as_int(inventory.get('applications'), 0)} application(s), "
+            f"{_as_int(inventory.get('controllers'), 0)} controllers, "
+            f"{_as_int(inventory.get('routes'), 0)} routes, "
+            f"{_as_int(inventory.get('templates'), 0)} templates, "
+            f"{_as_int(inventory.get('dependencies'), 0)} dependencies"
         )
         loc_summary_text = f"{source_loc_total} total LOC across {source_files_scanned} files"
     else:

@@ -7984,15 +7984,64 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     php_auth = _as_dict(php_analysis.get("authz_authn_inventory"))
     php_jobs = _as_dict(php_analysis.get("background_job_inventory"))
     php_file_io = _as_dict(php_analysis.get("file_io_inventory"))
-    php_route_count = int(php_routes.get("route_count", 0) or 0)
-    php_controller_count = int(php_controllers.get("controller_count", 0) or 0)
-    php_template_count = int(php_templates.get("template_count", 0) or 0)
-    php_session_key_count = int(php_sessions.get("session_key_count", 0) or 0)
-    php_auth_touchpoints = int(php_auth.get("auth_touchpoint_count", 0) or 0)
-    php_job_count = int(php_jobs.get("job_count", 0) or 0)
-    php_file_io_count = int((php_file_io.get("upload_file_count", 0) or 0) + (php_file_io.get("export_file_count", 0) or 0))
+    php_framework_profile = _as_dict(raw_artifacts.get("php_framework_profile_v1")) or _as_dict(raw_artifacts.get("php_framework_profile"))
+    php_route_hints = _as_dict(raw_artifacts.get("php_route_hints_v1")) or _as_dict(raw_artifacts.get("php_route_hints"))
+    repo_landscape_summary = _as_dict(_as_dict(raw_artifacts.get("repo_landscape_v1")).get("scan_summary")) or _as_dict(_as_dict(raw_artifacts.get("repo_landscape")).get("scan_summary"))
     landscape_dep = _as_dict(_as_dict(raw_artifacts.get("repo_landscape_v1")).get("dependency_footprint")) or _as_dict(_as_dict(raw_artifacts.get("repo_landscape")).get("dependency_footprint"))
-    php_dependency_count = int(legacy_inventory.get("php_dependency_count", 0) or landscape_dep.get("composer_package_count", 0) or 0)
+    php_route_count = int(
+        php_routes.get("route_count", 0)
+        or php_routes.get("entrypoint_count", 0)
+        or php_route_hints.get("estimated_route_files", 0)
+        or php_framework_profile.get("route_file_count", 0)
+        or 0
+    )
+    php_controller_count = int(
+        php_controllers.get("controller_count", 0)
+        or php_framework_profile.get("controller_count", 0)
+        or php_route_hints.get("estimated_controllers", 0)
+        or 0
+    )
+    php_template_count = int(
+        php_templates.get("template_count", 0)
+        or php_framework_profile.get("template_count", 0)
+        or php_route_hints.get("estimated_templates", 0)
+        or 0
+    )
+    php_session_key_count = int(
+        php_sessions.get("session_key_count", 0)
+        or php_sessions.get("key_count", 0)
+        or php_framework_profile.get("session_key_count", 0)
+        or 0
+    )
+    php_auth_touchpoints = int(
+        php_auth.get("auth_touchpoint_count", 0)
+        or php_framework_profile.get("auth_touchpoint_estimate", 0)
+        or 0
+    )
+    php_job_count = int(
+        php_jobs.get("job_count", 0)
+        or php_jobs.get("background_job_count", 0)
+        or 0
+    )
+    php_file_io_count = int((php_file_io.get("upload_file_count", 0) or 0) + (php_file_io.get("export_file_count", 0) or 0))
+    php_dependency_count = int(
+        legacy_inventory.get("php_dependency_count", 0)
+        or php_framework_profile.get("composer_package_count", 0)
+        or landscape_dep.get("composer_package_count", 0)
+        or 0
+    )
+    if is_php_summary and not source_loc_total:
+        source_loc_total = int(
+            repo_landscape_summary.get("total_loc", 0)
+            or repo_landscape_summary.get("loc_total", 0)
+            or 0
+        )
+    if is_php_summary and not source_files_scanned:
+        source_files_scanned = int(
+            repo_landscape_summary.get("total_files", 0)
+            or repo_landscape_summary.get("file_count_total", 0)
+            or 0
+        )
 
     readiness_score = readiness.get("score")
     try:

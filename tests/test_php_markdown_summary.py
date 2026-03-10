@@ -78,6 +78,47 @@ class PhpMarkdownSummaryTest(unittest.TestCase):
         self.assertNotIn("DEC-UI-001", markdown)
         self.assertIn("DEC-PHP-ARCH-001", markdown)
 
+    def test_php_markdown_falls_back_to_framework_profile_and_landscape_summary(self):
+        output = {
+            "source_language": "PHP",
+            "requirements_pack": {
+                "legacy_code_inventory": {
+                    "summary": "Detected PHP legacy application.",
+                    "modernization_readiness": {"score": 60, "risk_tier": "medium"},
+                    "source_loc_total": 0,
+                    "source_files_scanned": 0,
+                    "php_analysis": {
+                        "route_inventory": {},
+                        "controller_inventory": {},
+                        "template_inventory": {},
+                    },
+                }
+            },
+            "raw_artifacts": {
+                "repo_landscape_v1": {
+                    "scan_summary": {"total_loc": 565185, "total_files": 3827},
+                    "dependency_footprint": {"composer_package_count": 3},
+                },
+                "php_framework_profile_v1": {
+                    "framework": "custom_php",
+                    "controller_count": 248,
+                    "template_count": 0,
+                    "route_file_count": 1,
+                    "composer_package_count": 3,
+                    "auth_touchpoint_estimate": 18,
+                },
+                "php_route_hints_v1": {
+                    "estimated_route_files": 1,
+                    "estimated_controllers": 248,
+                    "estimated_templates": 0,
+                },
+            },
+        }
+        markdown = build_full_markdown(output, mode="full")
+        self.assertIn("1 application(s), 248 controllers, 1 routes, 0 templates, 3 dependencies", markdown)
+        self.assertIn("565185 total LOC across 3827 files", markdown)
+        self.assertNotIn("0 total LOC across 0 files", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()
