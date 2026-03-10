@@ -7,6 +7,8 @@ from collections import Counter, defaultdict
 from pathlib import PurePosixPath
 from typing import Any
 
+from .php_landscape import build_php_landscape_artifacts
+
 
 LANGUAGE_BY_EXT = {
     ".frm": "VB6",
@@ -35,6 +37,8 @@ LANGUAGE_BY_EXT = {
     ".sh": "Shell",
     ".java": "Java",
     ".go": "Go",
+    ".php": "PHP",
+    ".phtml": "PHP",
     ".json": "JSON",
     ".yaml": "YAML",
     ".yml": "YAML",
@@ -52,7 +56,7 @@ LANGUAGE_BY_EXT = {
 TEXT_EXTENSIONS = {
     ".frm", ".bas", ".cls", ".ctl", ".pag", ".vbp", ".vb", ".cs", ".sln", ".csproj",
     ".js", ".ts", ".tsx", ".jsx", ".py", ".sql", ".ps1", ".psm1", ".cmd", ".bat",
-    ".sh", ".java", ".go", ".json", ".yaml", ".yml", ".xml", ".config", ".ini", ".env",
+    ".sh", ".java", ".go", ".php", ".phtml", ".json", ".yaml", ".yml", ".xml", ".config", ".ini", ".env",
     ".toml", ".tf", ".md", ".txt", ".dsr",
 }
 
@@ -61,6 +65,7 @@ BUILD_KINDS = {
     ".sln": "dotnet_sln",
     ".csproj": "dotnet_project",
     "package.json": "node_package",
+    "composer.json": "php_composer",
     "pom.xml": "maven_project",
     "build.gradle": "gradle_project",
     "build.gradle.kts": "gradle_project",
@@ -76,6 +81,7 @@ ARCTYPE_HINTS = {
 
 DB_HINT_PATTERNS = [
     ("access_mdb", re.compile(r"(?:\.mdb|\.accdb)\b", re.I)),
+    ("mysql", re.compile(r"\bmysqli?\b|pdo_mysql|mysql:", re.I)),
     ("sqlserver", re.compile(r"server\s*=|initial catalog\s*=|trusted_connection\s*=", re.I)),
     ("oracle", re.compile(r"oracle|tns:|data source\s*=.*oracle", re.I)),
     ("db2", re.compile(r"\bdb2\b", re.I)),
@@ -104,17 +110,24 @@ def _is_text_like(path: str) -> bool:
     lower = path.lower()
     name = PurePosixPath(lower).name
     ext = PurePosixPath(lower).suffix
-    return ext in TEXT_EXTENSIONS or name in BUILD_KINDS
+    return ext in TEXT_EXTENSIONS or name in BUILD_KINDS or lower.endswith(PHP_TEMPLATE_SUFFIXES)
+
+
+PHP_TEMPLATE_SUFFIXES = (".blade.php", ".twig", ".tpl.php")
 
 
 def _language_for_path(path: str) -> str:
     lower = path.lower()
     name = PurePosixPath(lower).name
     ext = PurePosixPath(lower).suffix
+    if lower.endswith(PHP_TEMPLATE_SUFFIXES):
+        return "PHP"
     if name in BUILD_KINDS:
         kind = BUILD_KINDS[name]
         if kind.startswith("node"):
             return "JavaScript"
+        if kind.startswith("php"):
+            return "PHP"
         if kind.startswith("maven") or kind.startswith("gradle"):
             return "Java"
         if kind.startswith("python"):
@@ -126,6 +139,8 @@ def _build_kind_for_path(path: str) -> str:
     lower = path.lower()
     name = PurePosixPath(lower).name
     ext = PurePosixPath(lower).suffix
+    if name == "composer.json" and lower.startswith(("vendor/", "node_modules/")):
+        return ""
     if name in BUILD_KINDS:
         return BUILD_KINDS[name]
     return BUILD_KINDS.get(ext, "")
@@ -137,6 +152,7 @@ def _component_kind_from_build(kind: str) -> str:
         "dotnet_sln": "dotnet_solution",
         "dotnet_project": "dotnet_project",
         "node_package": "node_app",
+        "php_composer": "php_project",
         "maven_project": "java_project",
         "gradle_project": "java_project",
         "python_project": "python_project",
@@ -164,6 +180,11 @@ def _archetypes_for_paths(paths: list[str]) -> list[str]:
         found.append("database_scripts")
     if any(p.endswith((".ps1", ".bat", ".cmd", ".sh")) for p in lower_paths):
         found.append("batch_jobs")
+    if any(p.endswith((".php", ".phtml")) or p.endswith(PHP_TEMPLATE_SUFFIXES) for p in lower_paths):
+        if any(marker in p for p in lower_paths for marker in ("/controller/", "/controllers/", "/view/", "/views/", "/templates/", "/includes/")):
+            found.append("php_web_app")
+        else:
+            found.append("php_application")
     return found
 
 
@@ -242,6 +263,66 @@ def default_router_ruleset(*, repo: str = "", branch: str = "main", commit_sha: 
                 },
             },
             {
+                "rule_id": "R_PHP_LARAVEL",
+                "priority": 24,
+                "when": {"component_kind": "php_project", "language_includes": ["PHP"], "frameworks": ["laravel"]},
+                "then": {
+                    "attach_skill_packs": ["php_pack", "laravel_pack", "sql_pack"],
+                    "attach_agents": ["PHPAnalyzerAgent", "PHPRoutesAgent", "PHPSQLAgent"],
+                    "suggest_tracks": ["php_web_modernization"],
+                    "add_gating_questions": [
+                        "Confirm whether the target should remain server-rendered or move to React/Next.js.",
+                        "Confirm authentication/session strategy for the target runtime.",
+                    ],
+                    "set_chunking_profile": "php_web_standard",
+                },
+            },
+            {
+                "rule_id": "R_PHP_SYMFONY",
+                "priority": 24,
+                "when": {"component_kind": "php_project", "language_includes": ["PHP"], "frameworks": ["symfony"]},
+                "then": {
+                    "attach_skill_packs": ["php_pack", "symfony_pack", "sql_pack"],
+                    "attach_agents": ["PHPAnalyzerAgent", "PHPRoutesAgent", "PHPSQLAgent"],
+                    "suggest_tracks": ["php_web_modernization"],
+                    "add_gating_questions": [
+                        "Confirm whether the target should preserve the current controller/view split.",
+                        "Confirm session and middleware behavior that must remain compatible.",
+                    ],
+                    "set_chunking_profile": "php_web_standard",
+                },
+            },
+            {
+                "rule_id": "R_PHP_WORDPRESS",
+                "priority": 24,
+                "when": {"language_includes": ["PHP"], "frameworks": ["wordpress"]},
+                "then": {
+                    "attach_skill_packs": ["php_pack", "cms_pack"],
+                    "attach_agents": ["PHPAnalyzerAgent", "TemplateInventoryAgent"],
+                    "suggest_tracks": ["php_web_modernization"],
+                    "add_gating_questions": [
+                        "Confirm whether WordPress should be retained, upgraded, or replaced.",
+                        "Identify plugin/theme customizations that are business-critical.",
+                    ],
+                    "set_chunking_profile": "php_web_standard",
+                },
+            },
+            {
+                "rule_id": "R_PHP_CUSTOM",
+                "priority": 24,
+                "when": {"language_includes": ["PHP"], "frameworks": ["custom_php"], "archetypes": ["php_web_app"]},
+                "then": {
+                    "attach_skill_packs": ["php_pack", "sql_pack"],
+                    "attach_agents": ["PHPAnalyzerAgent", "PHPRoutesAgent", "PHPSQLAgent", "TemplateInventoryAgent"],
+                    "suggest_tracks": ["php_web_modernization"],
+                    "add_gating_questions": [
+                        "Confirm target architecture: Node/Nest API, Next.js full-stack, or modular TypeScript monolith.",
+                        "Confirm session/authentication handling requirements before migration planning.",
+                    ],
+                    "set_chunking_profile": "php_web_standard",
+                },
+            },
+            {
                 "rule_id": "R_TYPESCRIPT",
                 "priority": 26,
                 "when": {"component_kind": "node_app", "language_includes": ["TypeScript"]},
@@ -302,11 +383,18 @@ def _router_apply(component: dict[str, Any], ruleset: dict[str, Any]) -> dict[st
     chunking_profile = "default"
     confidence = 0.0
     comp_kind = _clean(component.get("component_kind"))
+    comp_framework = _clean(component.get("framework")).lower()
     langs = {str(row.get("language", "")) for row in component.get("language_mix", []) if isinstance(row, dict)}
     archetypes = set(component.get("archetypes") or [])
     for rule in sorted(ruleset.get("rules", []), key=lambda r: int(r.get("priority", 999))):
         when = rule.get("when", {}) if isinstance(rule.get("when", {}), dict) else {}
         if when.get("component_kind") and _clean(when.get("component_kind")) != comp_kind:
+            continue
+        required_framework = _clean(when.get("framework")).lower()
+        if required_framework and required_framework != comp_framework:
+            continue
+        required_frameworks = {str(x).strip().lower() for x in when.get("frameworks", []) if str(x).strip()}
+        if required_frameworks and comp_framework not in required_frameworks:
             continue
         required_langs = {str(x) for x in when.get("language_includes", []) if str(x)}
         if required_langs and not (required_langs & langs):
@@ -410,6 +498,16 @@ def build_landscape_artifacts(
         for dep in re.findall(r"\b[A-Za-z0-9_\-]+\.(?:OCX|DLL|TLB)\b", content, re.I):
             top_dependencies[dep.upper()] += 1
 
+    php_artifacts = build_php_landscape_artifacts(
+        repo=repo,
+        branch=branch,
+        commit_sha=commit_sha,
+        entries=files,
+        file_contents=file_contents,
+    )
+    php_profile = php_artifacts.get("php_framework_profile_v1", {}) if isinstance(php_artifacts.get("php_framework_profile_v1", {}), dict) else {}
+    php_route_hints = php_artifacts.get("php_route_hints_v1", {}) if isinstance(php_artifacts.get("php_route_hints_v1", {}), dict) else {}
+
     language_rows = []
     meaningful_loc = max(1, sum(v["loc"] for v in language_stats.values()))
     for language, stats in sorted(language_stats.items(), key=lambda item: (-item[1]["loc"], -item[1]["files"], item[0])):
@@ -455,6 +553,14 @@ def build_landscape_artifacts(
             "confidence": 0.9 if archetype in {"desktop_forms_vb6", "api_service"} else 0.75,
             "primary_evidence": [{"type": "path", "path": f"**/*{hint}", "confidence": 0.8} for hint in ARCTYPE_HINTS.get(archetype, [])[:2]],
             "notes": notes,
+        })
+
+    if int(php_profile.get("app_php_file_count", 0) or 0) > 0 and not any(row.get("archetype") in {"php_web_app", "php_application"} for row in archetype_rows):
+        archetype_rows.append({
+            "archetype": "php_application",
+            "confidence": round(float(php_profile.get("confidence", 0.55) or 0.55), 2),
+            "primary_evidence": [{"type": marker.get("type", "path"), "path": marker.get("value", ""), "confidence": marker.get("confidence", 0.6)} for marker in php_profile.get("markers", [])[:2]],
+            "notes": ["PHP application structure detected from directory and file signatures."],
         })
 
     datastore_rows = [
@@ -525,6 +631,25 @@ def build_landscape_artifacts(
             "recommendation": "Review the suggested tracks and confirm in-scope components before deep analysis.",
             "evidence": [{"type": "language", "path": row['language'], "confidence": row['confidence']} for row in language_rows[:4]],
         })
+    if int(php_profile.get("app_php_file_count", 0) or 0) > 0:
+        if str(php_profile.get("framework") or "") == "custom_php":
+            risk_rows.append({
+                "signal_id": "SIG_PHP_CUSTOM_001",
+                "severity": "medium",
+                "title": "Custom PHP application detected",
+                "description": "PHP application structure was detected without a dominant framework marker. Route, session, and template behavior may be implicit.",
+                "recommendation": "Use the PHP modernization lane and confirm target architecture before deep analysis.",
+                "evidence": [{"type": marker.get("type", "path"), "path": marker.get("value", ""), "confidence": marker.get("confidence", 0.6)} for marker in php_profile.get("markers", [])[:4]],
+            })
+        if php_route_hints.get("session_state_complexity") in {"medium", "high"}:
+            risk_rows.append({
+                "signal_id": "SIG_PHP_SESSION_001",
+                "severity": "medium" if php_route_hints.get("session_state_complexity") == "medium" else "high",
+                "title": "PHP session-coupled workflows detected",
+                "description": "Session-state usage was detected in sampled PHP files. Authentication and workflow state may be tightly coupled to the current runtime.",
+                "recommendation": "Confirm target session/auth design early in Define Scope.",
+                "evidence": [{"type": marker.get("type", "path"), "path": marker.get("value", ""), "confidence": marker.get("confidence", 0.6)} for marker in php_profile.get("markers", [])[:3]],
+            })
 
     ruleset = default_router_ruleset(repo=repo, branch=branch, commit_sha=commit_sha)
 
@@ -575,6 +700,7 @@ def build_landscape_artifacts(
                 "shared_foundation_candidate": row["kind"] in {"dotnet_sln", "dotnet_project"} and root.lower().startswith(('shared', 'common', 'lib')),
                 "confidence": 0.92 if row["kind"] in {"vb6_vbp", "dotnet_sln"} else 0.82,
                 "evidence": row.get("evidence", []),
+                "framework": "",
             }
             routed = _router_apply(component, ruleset)
             component["recommended_skill_packs"] = routed["skill_packs"]
@@ -630,6 +756,59 @@ def build_landscape_artifacts(
                 })
             component["suggested_tracks"] = suggested_tracks
             components.append(component)
+
+    if int(php_profile.get("app_php_file_count", 0) or 0) > 0 and not any(str(component.get("component_kind")) in {"php_project", "custom_php_app"} for component in components):
+        php_component = {
+            "component_id": "cmp_php_app",
+            "name": "PHP application",
+            "component_kind": "custom_php_app" if str(php_profile.get("framework") or "") == "custom_php" else "php_project",
+            "root_paths": php_profile.get("app_roots", [])[:6] or ["."],
+            "project_files": [],
+            "language_mix": [{"language": "PHP", "percent_loc": 100.0}],
+            "stats": {
+                "files": int(php_profile.get("app_php_file_count", 0) or 0),
+                "loc": language_stats.get("PHP", {}).get("loc", 0),
+                "blank_loc": 0,
+                "comment_loc": 0,
+                "estimated_tokens": language_stats.get("PHP", {}).get("estimated_tokens", 0),
+            },
+            "archetypes": [row.get("archetype") for row in archetype_rows if row.get("archetype") in {"php_web_app", "php_application"}] or ["php_application"],
+            "datastore_touch": [row["datastore"] for row in datastore_rows if row.get("datastore") in {"sqlserver", "mysql", "postgres", "oracle"}],
+            "dependency_footprint": {
+                "ocx": 0,
+                "com": 0,
+                "nuget": 0,
+                "npm": 0,
+                "composer": 1 if php_profile.get("uses_composer") else 0,
+            },
+            "risk_flags": ["custom_php_structure"] if str(php_profile.get("framework") or "") == "custom_php" else [],
+            "variant_candidate": False,
+            "shared_foundation_candidate": False,
+            "confidence": round(float(php_profile.get("confidence", 0.55) or 0.55), 2),
+            "evidence": [{"type": marker.get("type", "path"), "path": marker.get("value", ""), "confidence": marker.get("confidence", 0.6)} for marker in php_profile.get("markers", [])[:4]],
+            "framework": str(php_profile.get("framework") or ""),
+        }
+        routed = _router_apply(php_component, ruleset)
+        php_component["recommended_skill_packs"] = routed["skill_packs"]
+        php_component["recommended_agents"] = routed["agents"]
+        php_component["routing_rules_fired"] = routed["fired_rules"]
+        php_component["chunking_profile"] = routed["chunking_profile"]
+        php_component["suggested_tracks"] = [
+            {
+                "track_id": "TRK_cmp_php_app_001",
+                "title": "PHP web modernization",
+                "lane": routed["track_lanes"][0] if routed["track_lanes"] else "php_web_modernization",
+                "source_components": ["cmp_php_app"],
+                "suggested_target": "TypeScript modular monolith / Next.js + NestJS",
+                "recommended_skill_packs": routed["skill_packs"],
+                "quality_gates": ["Scope confirmed", "Architecture approved"],
+                "confidence": round(routed["confidence"], 2),
+                "why": f"Detected as {php_component['component_kind']} with framework profile {php_component['framework'] or 'custom_php'}.",
+                "risks": php_component["risk_flags"],
+                "gating_questions": routed["gating_questions"],
+            }
+        ]
+        components.append(php_component)
 
     extra_components: list[dict[str, Any]] = []
     if any(p.lower().endswith((".dsr", ".rpt")) for p in all_paths):
@@ -826,6 +1005,7 @@ def build_landscape_artifacts(
         "component_inventory_v1": component_inventory_v1,
         "modernization_track_plan_v1": modernization_track_plan_v1,
         "router_ruleset_v1": router_ruleset_v1,
+        **php_artifacts,
     }
 
 
