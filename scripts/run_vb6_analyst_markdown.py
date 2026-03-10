@@ -308,10 +308,30 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     backlog = _as_list(_as_dict(delivery_spec.get("backlog")).get("items"))
     appendix = _as_dict(report.get("appendix"))
     open_questions = _as_list(delivery_spec.get("open_questions"))
-    source_language = _clean(_as_dict(metadata.get("context_reference")).get("source_language") or output.get("source_language")).strip().lower()
+    report_source_language = _clean(_as_dict(metadata.get("context_reference")).get("source_language")).strip().lower()
+    raw_artifacts = _as_dict(report.get("raw_artifacts"))
+    source_language = _clean(report_source_language or output.get("source_language")).strip().lower()
     is_php_summary = source_language == "php" or any(
-        inventory.get(key) not in (None, "", 0) for key in ("controllers", "routes", "templates", "session_keys", "auth_touchpoints", "background_jobs", "file_io_flows")
+        inventory.get(key) not in (None, "", 0)
+        for key in ("controllers", "routes", "templates", "session_keys", "auth_touchpoints", "background_jobs", "file_io_flows")
+    ) or any(
+        key in raw_artifacts
+        for key in (
+            "php_framework_profile_v1",
+            "php_route_inventory_v1",
+            "php_controller_inventory_v1",
+            "php_template_inventory_v1",
+            "php_sql_catalog_v1",
+            "php_session_state_inventory_v1",
+            "php_authz_authn_inventory_v1",
+        )
     )
+
+    if is_php_summary:
+        if source_loc_total <= 0:
+            source_loc_total = _as_int(inventory.get("source_loc_total"), 0)
+        if source_files_scanned <= 0:
+            source_files_scanned = _as_int(inventory.get("source_files_scanned"), 0)
 
     if is_php_summary:
         inventory_summary_text = (

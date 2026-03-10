@@ -78,6 +78,43 @@ class PhpSummaryPathTest(unittest.TestCase):
         self.assertNotIn("DEC-UI-001", ids)
         self.assertEqual(report["metadata"]["context_reference"]["source_language"], "PHP")
 
+    def test_php_analyst_report_infers_php_mode_from_raw_artifacts(self):
+        output = {
+            "requirements_pack": {
+                "legacy_code_inventory": {
+                    "summary": "Detected PHP legacy application.",
+                    "modernization_readiness": {"score": 52, "risk_tier": "medium"},
+                    "source_loc_total": 11647,
+                    "source_files_scanned": 80,
+                    "database_tables": ["users", "orders"],
+                }
+            },
+            "raw_artifacts": {
+                "repo_landscape_v1": {
+                    "languages_detected": ["PHP"],
+                    "datastore_signals": [{"datastore": "mysql"}, {"datastore": "mq"}],
+                    "dependency_footprint": {"composer_package_count": 13},
+                },
+                "php_route_inventory_v1": {"route_count": 200, "entrypoint_count": 200},
+                "php_controller_inventory_v1": {"controller_count": 64},
+                "php_template_inventory_v1": {"template_count": 11},
+                "php_session_state_inventory_v1": {"session_key_count": 6},
+                "php_authz_authn_inventory_v1": {"auth_touchpoint_count": 8},
+                "php_background_job_inventory_v1": {"job_count": 1},
+                "php_file_io_inventory_v1": {"upload_file_count": 1, "export_file_count": 2},
+            },
+        }
+        report = build_analyst_report_v2(output)
+        inventory = report["decision_brief"]["at_a_glance"]["inventory_summary"]
+        self.assertEqual(inventory["controllers"], 64)
+        self.assertEqual(inventory["routes"], 200)
+        self.assertEqual(inventory["templates"], 11)
+        self.assertEqual(inventory["dependencies"], 13)
+        ids = {row["id"] for row in report["decision_brief"]["decisions_required"]["blocking"]}
+        self.assertIn("DEC-PHP-ARCH-001", ids)
+        self.assertNotIn("DEC-UI-001", ids)
+        self.assertEqual(report["metadata"]["context_reference"]["source_language"], "php")
+
 
 if __name__ == "__main__":
     unittest.main()

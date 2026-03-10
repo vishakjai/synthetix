@@ -43,13 +43,43 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _is_php_summary(*, safe: dict[str, Any], legacy_inventory: dict[str, Any], source_profile: dict[str, Any], skill: dict[str, Any]) -> bool:
+def _is_php_summary(
+    *,
+    safe: dict[str, Any],
+    legacy_inventory: dict[str, Any],
+    source_profile: dict[str, Any],
+    skill: dict[str, Any],
+    raw_artifacts: dict[str, Any] | None = None,
+) -> bool:
     language = _clean(source_profile.get("language") or safe.get("source_language")).lower()
     if language == "php":
         return True
     if isinstance(legacy_inventory.get("php_analysis", {}), dict) and legacy_inventory.get("php_analysis", {}):
         return True
-    return _clean(skill.get("selected_skill_id")).lower() == "php_legacy"
+    if _clean(skill.get("selected_skill_id")).lower() == "php_legacy":
+        return True
+    raw = _as_dict(raw_artifacts)
+    if any(
+        key in raw
+        for key in (
+            "php_framework_profile_v1",
+            "php_route_inventory_v1",
+            "php_controller_inventory_v1",
+            "php_template_inventory_v1",
+            "php_sql_catalog_v1",
+            "php_session_state_inventory_v1",
+            "php_authz_authn_inventory_v1",
+        )
+    ):
+        return True
+    repo_landscape = _as_dict(raw.get("repo_landscape_v1")) or _as_dict(raw.get("repo_landscape"))
+    language_mix = _as_list(repo_landscape.get("languages_detected"))
+    if any(_clean(row).lower() == "php" for row in language_mix):
+        return True
+    for row in _as_list(repo_landscape.get("application_archetypes")):
+        if "php" in _clean(_as_dict(row).get("archetype")).lower():
+            return True
+    return False
 
 
 def _mermaid_safe_token(value: Any, *, default: str = "item") -> str:
@@ -7786,7 +7816,17 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
 
     raw_artifacts = _as_dict(safe.get("raw_artifacts"))
     if _clean(raw_artifacts.get("raw_compiler_version")) != "2.7.0":
-        raw_artifacts = build_raw_artifact_set_v1(safe, generated_at=generated_at)
+        rebuilt_raw_artifacts = build_raw_artifact_set_v1(safe, generated_at=generated_at)
+        preserved_php_artifacts = {
+            key: value
+            for key, value in raw_artifacts.items()
+            if (key.startswith("php_") or key in {"repo_landscape_v1", "repo_landscape"})
+            and value not in ({}, [], None, "")
+        }
+        raw_artifacts = {
+            **rebuilt_raw_artifacts,
+            **preserved_php_artifacts,
+        }
     if prebuilt_is_current:
         return _attach_qa_report_v1(
             prebuilt,
@@ -7915,8 +7955,28 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
         source_target_profile = _as_dict(req_pack.get("source_target_modernization_profile"))
     source_profile = _as_dict(source_target_profile.get("source"))
     target_profile = _as_dict(source_target_profile.get("target"))
-    is_php_summary = _is_php_summary(safe=safe, legacy_inventory=legacy_inventory, source_profile=source_profile, skill=skill)
+    is_php_summary = _is_php_summary(
+        safe=safe,
+        legacy_inventory=legacy_inventory,
+        source_profile=source_profile,
+        skill=skill,
+        raw_artifacts=raw_artifacts,
+    )
     php_analysis = _as_dict(legacy_inventory.get("php_analysis"))
+    if is_php_summary and not php_analysis:
+        php_analysis = {
+            "framework_profile": _as_dict(raw_artifacts.get("php_framework_profile_v1")),
+            "route_inventory": _as_dict(raw_artifacts.get("php_route_inventory_v1")),
+            "controller_inventory": _as_dict(raw_artifacts.get("php_controller_inventory_v1")),
+            "template_inventory": _as_dict(raw_artifacts.get("php_template_inventory_v1")),
+            "sql_catalog": _as_dict(raw_artifacts.get("php_sql_catalog_v1")),
+            "session_state_inventory": _as_dict(raw_artifacts.get("php_session_state_inventory_v1")),
+            "authz_authn_inventory": _as_dict(raw_artifacts.get("php_authz_authn_inventory_v1")),
+            "include_graph": _as_dict(raw_artifacts.get("php_include_graph_v1")),
+            "background_job_inventory": _as_dict(raw_artifacts.get("php_background_job_inventory_v1")),
+            "file_io_inventory": _as_dict(raw_artifacts.get("php_file_io_inventory_v1")),
+            "validation_rules": _as_dict(raw_artifacts.get("php_validation_rules_v1")),
+        }
     php_routes = _as_dict(php_analysis.get("route_inventory"))
     php_controllers = _as_dict(php_analysis.get("controller_inventory"))
     php_templates = _as_dict(php_analysis.get("template_inventory"))

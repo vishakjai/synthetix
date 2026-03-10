@@ -45,6 +45,39 @@ class PhpMarkdownSummaryTest(unittest.TestCase):
         self.assertNotIn("0 form LOC, 0 module LOC, 0 class LOC", markdown)
         self.assertIn("Route/controller parity anchors", markdown)
 
+    def test_php_markdown_infers_php_mode_from_report_artifacts(self):
+        output = {
+            "requirements_pack": {
+                "legacy_code_inventory": {
+                    "summary": "Detected PHP legacy application.",
+                    "modernization_readiness": {"score": 52, "risk_tier": "medium"},
+                    "source_loc_total": 11647,
+                    "source_files_scanned": 80,
+                    "database_tables": ["users", "orders"],
+                }
+            },
+            "raw_artifacts": {
+                "repo_landscape_v1": {
+                    "languages_detected": ["PHP"],
+                    "datastore_signals": [{"datastore": "mysql"}],
+                    "dependency_footprint": {"composer_package_count": 13},
+                },
+                "php_route_inventory_v1": {"route_count": 200, "entrypoint_count": 200},
+                "php_controller_inventory_v1": {"controller_count": 64},
+                "php_template_inventory_v1": {"template_count": 11},
+                "php_session_state_inventory_v1": {"session_key_count": 6},
+                "php_authz_authn_inventory_v1": {"auth_touchpoint_count": 8},
+                "php_background_job_inventory_v1": {"job_count": 1},
+                "php_file_io_inventory_v1": {"upload_file_count": 1, "export_file_count": 2},
+            },
+        }
+        markdown = build_full_markdown(output, mode="full")
+        self.assertIn("64 controllers, 200 routes, 11 templates, 13 dependencies", markdown)
+        self.assertIn("11647 total LOC across 80 files", markdown)
+        self.assertNotIn("forms/usercontrols", markdown)
+        self.assertNotIn("DEC-UI-001", markdown)
+        self.assertIn("DEC-PHP-ARCH-001", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()
