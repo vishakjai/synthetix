@@ -444,15 +444,25 @@ function buildContext(data, moduleRegistry = []) {
   const activeScopeRows = asArray(data?.active_form_profile).length
     ? asArray(data?.active_form_profile)
     : asArray(data?.mapped_forms);
+  const moduleScopeRows = asArray(moduleRegistry)
+    .flatMap((module) => asArray(module?.source_forms).map((form) => ({
+      form,
+      display_name: form,
+    })));
+  const deferredScopeRows = asArray(moduleRegistry?._deferred_forms)
+    .map((item) => ({
+      form: item?.form,
+      display_name: item?.display_name || item?.form,
+    }));
   const scopeIn = uniqueStrings(
-    activeScopeRows
+    [...activeScopeRows, ...moduleScopeRows, ...deferredScopeRows]
       .map((f) => {
         const token = scopeToken(f.base_form || f.form || f.display_name || '');
         return mappedLabelsByToken.get(token)
           || clean(f.display_name || shortFormName(f.form || '') || f.form);
       })
       .filter(Boolean)
-  ).slice(0, 60);
+  ).slice(0, 80);
   const scopeOut = uniqueStrings([
     ...asArray(data?.excluded_unique).map((f) => f.form || f),
   ]);
@@ -1060,7 +1070,7 @@ function narrativeForModule(module, interactions, fieldRows, ruleRows) {
   const kind = norm(module.module_kind);
   const name = clean(module.business_name);
   const sourceForms = asArray(module?.source_forms).map((f) => norm(shortFormName(f)));
-  const isMainHub = sourceForms.some((f) => f === 'main' || f === 'menu' || f === 'mdi');
+  const isMainHub = kind === 'navigation' || sourceForms.every((f) => f === 'main' || f === 'menu' || f === 'mdi');
   const interactionHint = interactions.length ? clean(interactions[0]) : '';
   if (isMainHub) {
     return `${name} serves as the operational navigation hub after successful authentication, routing users to customer, transaction, and reporting workflows.`;
