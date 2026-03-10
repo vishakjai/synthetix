@@ -4663,8 +4663,8 @@ function renderDiscoverLandscape() {
           </span>
         </div>
         <div class="mt-2 grid gap-1 sm:grid-cols-4">
-          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Estimated tokens</strong><br/>${escapeHtml(String(analysisPlan.estimated_total_tokens || 0))}</div>
-          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Estimated cost</strong><br/>${escapeHtml(_formatUsd(analysisPlan.estimated_cost_usd))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Estimated Stage 1 analysis tokens</strong><br/>${escapeHtml(String(analysisPlan.estimated_total_tokens || 0))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Estimated Stage 1 analysis cost</strong><br/>${escapeHtml(_formatUsd(analysisPlan.estimated_cost_usd))}</div>
           <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Strategy</strong><br/>${escapeHtml(String(analysisPlan.llm_strategy || "n/a"))}</div>
           <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Chunks</strong><br/>${escapeHtml(String(analysisPlan.chunk_count || 0))}</div>
         </div>
@@ -7545,8 +7545,8 @@ function renderDiscoverAnalystBrief() {
       <p class="text-[11px] ${String(analysisPlan.analysis_mode || "").toLowerCase() === "large_repo" ? "text-amber-900" : "text-slate-700"}">
         Route=<strong>${escapeHtml(String(analysisPlan.analysis_mode || "standard"))}</strong>
         | Strategy=${escapeHtml(String(analysisPlan.llm_strategy || "n/a"))}
-        | Estimated tokens=${escapeHtml(String(analysisPlan.estimated_total_tokens || 0))}
-        | Estimated cost=${escapeHtml(_formatUsd(analysisPlan.estimated_cost_usd))}
+        | Estimated Stage 1 analysis tokens=${escapeHtml(String(analysisPlan.estimated_total_tokens || 0))}
+        | Estimated Stage 1 analysis cost=${escapeHtml(_formatUsd(analysisPlan.estimated_cost_usd))}
       </p>
       ${(Array.isArray(analysisPlan.analysis_mode_reasons) && analysisPlan.analysis_mode_reasons.length)
         ? `<p class="mt-1 text-[11px] ${String(analysisPlan.analysis_mode || "").toLowerCase() === "large_repo" ? "text-amber-900" : "text-slate-700"}"><strong>Route triggers:</strong> ${escapeHtml(analysisPlan.analysis_mode_reasons.join(" | "))}</p>`
