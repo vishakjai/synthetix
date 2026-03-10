@@ -4501,6 +4501,26 @@ function renderDiscoverLandscape() {
   const analysisReasons = Array.isArray(analysisPlan.analysis_mode_reasons) ? analysisPlan.analysis_mode_reasons : [];
   const analysisNotes = Array.isArray(analysisPlan.notes) ? analysisPlan.notes : [];
   const typeCounts = (repoSnapshot.counts_by_type && typeof repoSnapshot.counts_by_type === "object") ? repoSnapshot.counts_by_type : {};
+  const phpFrameworkProfile = (raw.php_framework_profile_v1 && typeof raw.php_framework_profile_v1 === "object") ? raw.php_framework_profile_v1 : {};
+  const phpRouteHints = (raw.php_route_hints_v1 && typeof raw.php_route_hints_v1 === "object") ? raw.php_route_hints_v1 : {};
+  const phpRouteHintRows = Array.isArray(phpRouteHints.routes) ? phpRouteHints.routes : [];
+  const phpSignalsHtml = phpFrameworkProfile.framework || phpRouteHintRows.length
+    ? `
+      <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
+        <p class="font-semibold text-slate-900">PHP application signals</p>
+        <div class="mt-2 grid gap-1 sm:grid-cols-4">
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Framework</strong><br/>${escapeHtml(String(phpFrameworkProfile.framework || "custom_php"))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>PHP files</strong><br/>${escapeHtml(String(phpFrameworkProfile.app_php_file_count || 0))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Controllers</strong><br/>${escapeHtml(String(phpFrameworkProfile.controller_count || 0))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Route hints</strong><br/>${escapeHtml(String(phpRouteHintRows.length || phpFrameworkProfile.route_hint_count || 0))}</div>
+        </div>
+        <p class="mt-2 text-[11px] text-slate-700">
+          Session complexity: <strong>${escapeHtml(String(phpRouteHints.session_state_complexity || "unknown"))}</strong>
+          · Suggested lane: <strong>${escapeHtml(String((trackRows[0] && (trackRows[0].lane || trackRows[0].title)) || "php_web_modernization"))}</strong>
+        </p>
+      </div>
+    `
+    : "";
   const hasLandscapeData = !!componentRows.length || !!trackRows.length || !!languageRows.length || !!buildRows.length || !!riskRows.length;
   if (landscapeMode !== "greenfield" && projectState !== "greenfield" && !repoUrl && !evidenceBundleId) {
     const html = `
@@ -4741,6 +4761,7 @@ function renderDiscoverLandscape() {
           <p class="font-semibold text-slate-900">${dependencyHeading}</p>
           <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
         </div>
+        ${phpSignalsHtml}
         ${analysisPlanHtml}
         ${inventorySummaryHtml}
         ${evidenceCoverageHtml}
@@ -5514,6 +5535,33 @@ function renderDiscoverInsights() {
   }
 
   if (el.discoverDataContent) {
+    const phpRouteInventory = (rawArtifacts.php_route_inventory && typeof rawArtifacts.php_route_inventory === "object")
+      ? rawArtifacts.php_route_inventory
+      : {};
+    const phpControllerInventory = (rawArtifacts.php_controller_inventory && typeof rawArtifacts.php_controller_inventory === "object")
+      ? rawArtifacts.php_controller_inventory
+      : {};
+    const phpTemplateInventory = (rawArtifacts.php_template_inventory && typeof rawArtifacts.php_template_inventory === "object")
+      ? rawArtifacts.php_template_inventory
+      : {};
+    const phpSqlCatalog = (rawArtifacts.php_sql_catalog && typeof rawArtifacts.php_sql_catalog === "object")
+      ? rawArtifacts.php_sql_catalog
+      : {};
+    const phpSessionInventory = (rawArtifacts.php_session_state_inventory && typeof rawArtifacts.php_session_state_inventory === "object")
+      ? rawArtifacts.php_session_state_inventory
+      : {};
+    const phpAuthInventory = (rawArtifacts.php_authz_authn_inventory && typeof rawArtifacts.php_authz_authn_inventory === "object")
+      ? rawArtifacts.php_authz_authn_inventory
+      : {};
+    const phpJobInventory = (rawArtifacts.php_background_job_inventory && typeof rawArtifacts.php_background_job_inventory === "object")
+      ? rawArtifacts.php_background_job_inventory
+      : {};
+    const phpFileIoInventory = (rawArtifacts.php_file_io_inventory && typeof rawArtifacts.php_file_io_inventory === "object")
+      ? rawArtifacts.php_file_io_inventory
+      : {};
+    const phpValidationRules = (rawArtifacts.php_validation_rules && typeof rawArtifacts.php_validation_rules === "object")
+      ? rawArtifacts.php_validation_rules
+      : {};
     const sourceProfile = (rawArtifacts.source_db_profile && typeof rawArtifacts.source_db_profile === "object")
       ? rawArtifacts.source_db_profile
       : {};
@@ -5580,6 +5628,23 @@ function renderDiscoverInsights() {
     const trendMetrics = (trendSnapshot.snapshot && typeof trendSnapshot.snapshot === "object" && typeof trendSnapshot.snapshot.metrics === "object")
       ? trendSnapshot.snapshot.metrics
       : {};
+    const phpRoutes = Array.isArray(phpRouteInventory.routes) ? phpRouteInventory.routes : [];
+    const phpControllers = Array.isArray(phpControllerInventory.controllers) ? phpControllerInventory.controllers : [];
+    const phpTemplates = Array.isArray(phpTemplateInventory.templates) ? phpTemplateInventory.templates : [];
+    const phpSqlStatements = Array.isArray(phpSqlCatalog.statements) ? phpSqlCatalog.statements : [];
+    const phpAuthChecks = Array.isArray(phpAuthInventory.auth_checks) ? phpAuthInventory.auth_checks : [];
+    const phpValidationRows = Array.isArray(phpValidationRules.rules) ? phpValidationRules.rules : [];
+    const phpHasDiscovery = !!(
+      phpRoutes.length
+      || phpControllers.length
+      || phpTemplates.length
+      || phpSqlStatements.length
+      || Object.keys(phpSessionInventory).length
+      || phpAuthChecks.length
+      || Object.keys(phpJobInventory).length
+      || Object.keys(phpFileIoInventory).length
+      || phpValidationRows.length
+    );
     const hasQualityBaseline = (
       projectMetrics.length > 0
       || typeMetrics.length > 0
@@ -5590,7 +5655,7 @@ function renderDiscoverInsights() {
       || violationRows.length > 0
     );
 
-    if (!tableCount && !sourceTables.length && !dbChecks.length && !hasQualityBaseline) {
+    if (!tableCount && !sourceTables.length && !dbChecks.length && !hasQualityBaseline && !phpHasDiscovery) {
       el.discoverDataContent.innerHTML = `<p class="text-slate-700">Run Analyst Brief to generate database archaeology artifacts.</p>`;
     } else {
       const badgeClass = (status) => {
@@ -5726,8 +5791,90 @@ function renderDiscoverInsights() {
           </div>
         </div>
       ` : "";
+      const phpRouteRows = phpRoutes.slice(0, 10).map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.method || "ANY"))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.path || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.handler || row?.action || ""))}</td>
+        </tr>
+      `).join("");
+      const phpControllerRows = phpControllers.slice(0, 10).map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.name || ""))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String((Array.isArray(row?.actions) ? row.actions.length : 0) || 0))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.framework || row?.base_class || "n/a"))}</td>
+        </tr>
+      `).join("");
+      const phpTemplateRows = phpTemplates.slice(0, 10).map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.path || row?.name || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(row?.template_type || row?.kind || "template"))}</td>
+          <td class="px-2 py-1 text-right">${escapeHtml(String(row?.loc || row?.line_count || 0))}</td>
+        </tr>
+      `).join("");
+      const phpSqlRows = phpSqlStatements.slice(0, 10).map((row) => `
+        <tr>
+          <td class="px-2 py-1">${escapeHtml(String(row?.operation || row?.kind || ""))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(Array.isArray(row?.tables) ? row.tables.slice(0, 3).join(", ") : (row?.table || "n/a")))}</td>
+          <td class="px-2 py-1">${escapeHtml(String(Array.isArray(row?.risk_flags) ? row.risk_flags.slice(0, 2).join(", ") : "none"))}</td>
+        </tr>
+      `).join("");
+      const phpSectionHtml = phpHasDiscovery ? `
+        <div class="mb-3 rounded border border-slate-300 bg-white p-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="font-semibold text-slate-900">PHP application structure</p>
+            <div class="flex flex-wrap gap-1">
+              <button type="button" class="btn-light rounded px-2 py-1 text-[11px] font-semibold" onclick="window.__downloadDiscoverArtifact && window.__downloadDiscoverArtifact('php_route_inventory')">Routes</button>
+              <button type="button" class="btn-light rounded px-2 py-1 text-[11px] font-semibold" onclick="window.__downloadDiscoverArtifact && window.__downloadDiscoverArtifact('php_controller_inventory')">Controllers</button>
+              <button type="button" class="btn-light rounded px-2 py-1 text-[11px] font-semibold" onclick="window.__downloadDiscoverArtifact && window.__downloadDiscoverArtifact('php_sql_catalog')">SQL</button>
+            </div>
+          </div>
+          <div class="mt-2 grid gap-2 sm:grid-cols-5">
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Routes</strong><br/>${escapeHtml(String(phpRouteInventory.route_count || phpRoutes.length))}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Controllers</strong><br/>${escapeHtml(String(phpControllerInventory.controller_count || phpControllers.length))}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Templates</strong><br/>${escapeHtml(String(phpTemplateInventory.template_count || phpTemplates.length))}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>SQL Statements</strong><br/>${escapeHtml(String(phpSqlCatalog.statement_count || phpSqlStatements.length))}</div>
+            <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Validation Rules</strong><br/>${escapeHtml(String(phpValidationRules.rule_count || phpValidationRows.length))}</div>
+          </div>
+          <div class="mt-2 grid gap-2 lg:grid-cols-2">
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-1 font-semibold text-slate-900">Route inventory (sample)</p>
+              <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Method</th><th class="px-2 py-1">Path</th><th class="px-2 py-1">Handler</th></tr></thead><tbody>${phpRouteRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No route rows.</td></tr>`}</tbody></table></div>
+            </div>
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-1 font-semibold text-slate-900">Controller inventory (sample)</p>
+              <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Controller</th><th class="px-2 py-1 text-right">Actions</th><th class="px-2 py-1">Framework</th></tr></thead><tbody>${phpControllerRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No controller rows.</td></tr>`}</tbody></table></div>
+            </div>
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-1 font-semibold text-slate-900">Template inventory (sample)</p>
+              <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Template</th><th class="px-2 py-1">Type</th><th class="px-2 py-1 text-right">LOC</th></tr></thead><tbody>${phpTemplateRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No template rows.</td></tr>`}</tbody></table></div>
+            </div>
+            <div class="rounded border border-slate-300 bg-slate-50 p-2">
+              <p class="mb-1 font-semibold text-slate-900">SQL touchpoints (sample)</p>
+              <div class="overflow-x-auto"><table class="w-full text-[11px]"><thead><tr class="text-left text-slate-600"><th class="px-2 py-1">Operation</th><th class="px-2 py-1">Tables</th><th class="px-2 py-1">Risk Flags</th></tr></thead><tbody>${phpSqlRows || `<tr><td class="px-2 py-1 text-slate-600" colspan="3">No SQL rows detected.</td></tr>`}</tbody></table></div>
+            </div>
+          </div>
+          <div class="mt-2 grid gap-2 lg:grid-cols-3">
+            <div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900">
+              <p class="font-semibold text-slate-900">Session and auth</p>
+              <p class="mt-1 text-slate-700">Session keys: <strong>${escapeHtml(String(phpSessionInventory.session_key_count || 0))}</strong> · uses session state: <strong>${phpSessionInventory.uses_session_state ? "yes" : "no"}</strong></p>
+              <p class="mt-1 text-slate-700">Auth checks: <strong>${escapeHtml(String(phpAuthInventory.auth_check_count || phpAuthChecks.length || 0))}</strong></p>
+            </div>
+            <div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900">
+              <p class="font-semibold text-slate-900">Background jobs</p>
+              <p class="mt-1 text-slate-700">Detected jobs: <strong>${escapeHtml(String(phpJobInventory.job_count || 0))}</strong></p>
+              <p class="mt-1 text-slate-700">Cron/CLI entry points are available in the exported artifact.</p>
+            </div>
+            <div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900">
+              <p class="font-semibold text-slate-900">File I/O</p>
+              <p class="mt-1 text-slate-700">Upload points: <strong>${escapeHtml(String(phpFileIoInventory.upload_file_count || 0))}</strong> · Export/download points: <strong>${escapeHtml(String(phpFileIoInventory.download_file_count || phpFileIoInventory.export_file_count || 0))}</strong></p>
+            </div>
+          </div>
+        </div>
+      ` : "";
 
       el.discoverDataContent.innerHTML = `
+        ${phpSectionHtml}
         <div class="grid gap-2 sm:grid-cols-5">
           <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Tables</strong><br/>${tableCount || sourceTables.length}</div>
           <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1"><strong>Columns</strong><br/>${columnCount || 0}</div>
@@ -10604,6 +10751,16 @@ async function downloadDiscoverArtifact(kind) {
     "third_party_usage",
     "trend_snapshot",
     "trend_series",
+    "php_route_inventory",
+    "php_controller_inventory",
+    "php_template_inventory",
+    "php_sql_catalog",
+    "php_session_state_inventory",
+    "php_authz_authn_inventory",
+    "php_include_graph",
+    "php_background_job_inventory",
+    "php_file_io_inventory",
+    "php_validation_rules",
   ]);
   const type = validKinds.has(String(kind || "")) ? String(kind) : "project_metrics";
   const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
@@ -10626,6 +10783,16 @@ async function downloadDiscoverArtifact(kind) {
     third_party_usage: "third_party_usage",
     trend_snapshot: "trend_snapshot",
     trend_series: "trend_series",
+    php_route_inventory: "php_route_inventory",
+    php_controller_inventory: "php_controller_inventory",
+    php_template_inventory: "php_template_inventory",
+    php_sql_catalog: "php_sql_catalog",
+    php_session_state_inventory: "php_session_state_inventory",
+    php_authz_authn_inventory: "php_authz_authn_inventory",
+    php_include_graph: "php_include_graph",
+    php_background_job_inventory: "php_background_job_inventory",
+    php_file_io_inventory: "php_file_io_inventory",
+    php_validation_rules: "php_validation_rules",
   };
   const localPayload = rawArtifacts?.[localKeyByType[type]];
   if (localPayload) {
@@ -10673,6 +10840,16 @@ async function downloadDiscoverArtifact(kind) {
     third_party_usage: `third_party_usage-${runId}.json`,
     trend_snapshot: `trend_snapshot-${runId}.json`,
     trend_series: `trend_series-${runId}.json`,
+    php_route_inventory: `php_route_inventory-${runId}.json`,
+    php_controller_inventory: `php_controller_inventory-${runId}.json`,
+    php_template_inventory: `php_template_inventory-${runId}.json`,
+    php_sql_catalog: `php_sql_catalog-${runId}.json`,
+    php_session_state_inventory: `php_session_state_inventory-${runId}.json`,
+    php_authz_authn_inventory: `php_authz_authn_inventory-${runId}.json`,
+    php_include_graph: `php_include_graph-${runId}.json`,
+    php_background_job_inventory: `php_background_job_inventory-${runId}.json`,
+    php_file_io_inventory: `php_file_io_inventory-${runId}.json`,
+    php_validation_rules: `php_validation_rules-${runId}.json`,
   };
   const filename = (match && match[1]) ? match[1] : fallbackByType[type];
   const url = window.URL.createObjectURL(blob);

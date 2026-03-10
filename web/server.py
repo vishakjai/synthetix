@@ -9978,6 +9978,16 @@ async def api_download_discover_artifact(request):
         "dead_form_refs": ("dead_form_refs", "dead_form_refs"),
         "dataenvironment_report_mapping": ("dataenvironment_report_mapping", "dataenvironment_report_mapping"),
         "static_risk_detectors": ("static_risk_detectors", "static_risk_detectors"),
+        "php_route_inventory": ("php_route_inventory", "php_route_inventory"),
+        "php_controller_inventory": ("php_controller_inventory", "php_controller_inventory"),
+        "php_template_inventory": ("php_template_inventory", "php_template_inventory"),
+        "php_sql_catalog": ("php_sql_catalog", "php_sql_catalog"),
+        "php_session_state_inventory": ("php_session_state_inventory", "php_session_state_inventory"),
+        "php_authz_authn_inventory": ("php_authz_authn_inventory", "php_authz_authn_inventory"),
+        "php_include_graph": ("php_include_graph", "php_include_graph"),
+        "php_background_job_inventory": ("php_background_job_inventory", "php_background_job_inventory"),
+        "php_file_io_inventory": ("php_file_io_inventory", "php_file_io_inventory"),
+        "php_validation_rules": ("php_validation_rules", "php_validation_rules"),
     }
     if artifact_type not in allowlist:
         return JSONResponse(
@@ -9989,7 +9999,10 @@ async def api_download_discover_artifact(request):
                     "dead_code, type_dependency_matrix, runtime_dependency_matrix, "
                     "third_party_usage, trend_snapshot, trend_series, mdb_inventory, form_loc_profile, "
                     "connection_string_variants, module_global_inventory, dead_form_refs, "
-                    "dataenvironment_report_mapping, static_risk_detectors"
+                    "dataenvironment_report_mapping, static_risk_detectors, php_route_inventory, "
+                    "php_controller_inventory, php_template_inventory, php_sql_catalog, "
+                    "php_session_state_inventory, php_authz_authn_inventory, php_include_graph, "
+                    "php_background_job_inventory, php_file_io_inventory, php_validation_rules"
                 ),
             },
             status_code=400,

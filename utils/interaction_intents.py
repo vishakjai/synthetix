@@ -59,6 +59,16 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
         "list the modules",
         "list rules",
         "list the rules",
+        "list routes",
+        "list the routes",
+        "which routes",
+        "what routes",
+        "list controllers",
+        "list the controllers",
+        "which controllers",
+        "what controllers",
+        "list templates",
+        "list the templates",
     )
 
     intent = "query"
@@ -136,6 +146,12 @@ def classify_interaction_intent(message: str) -> dict[str, Any]:
             inventory_kind = "forms"
         elif "rule" in lower or "business rule" in lower or "br-" in lower:
             inventory_kind = "rules"
+        elif "route" in lower:
+            inventory_kind = "routes"
+        elif "controller" in lower:
+            inventory_kind = "controllers"
+        elif "template" in lower or "view" in lower:
+            inventory_kind = "templates"
         elif "project" in lower:
             inventory_kind = "projects"
         elif "function" in lower or "procedure" in lower:

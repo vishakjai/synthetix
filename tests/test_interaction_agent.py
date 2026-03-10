@@ -117,6 +117,36 @@ class InteractionAgentTest(unittest.TestCase):
         self.assertIn("frmCustomer", response["answer"])
         self.assertNotIn("Top matches", response["answer"])
 
+    def test_php_inventory_question_lists_routes(self):
+        self.analyst_output["raw_artifacts"]["legacy_inventory"]["php_analysis"] = {
+            "route_inventory": {
+                "artifact_type": "php_route_inventory_v1",
+                "route_count": 2,
+                "routes": [
+                    {"method": "GET", "path": "/login", "handler": "AuthController@login"},
+                    {"method": "POST", "path": "/orders", "handler": "OrderController@store"},
+                ],
+            },
+            "controller_inventory": {
+                "artifact_type": "php_controller_inventory_v1",
+                "controller_count": 2,
+                "controllers": [
+                    {"name": "AuthController", "actions": ["login"]},
+                    {"name": "OrderController", "actions": ["store"]},
+                ],
+            },
+            "template_inventory": {
+                "artifact_type": "php_template_inventory_v1",
+                "template_count": 1,
+                "templates": [{"path": "views/login.php", "template_type": "php_view", "loc": 40}],
+            },
+        }
+        agent = self._make_agent()
+        response = agent.respond("Can you list the routes in the application?")
+        self.assertEqual(response["topic"], "inventory")
+        self.assertIn("I found 2 routes.", response["answer"])
+        self.assertIn("GET /login", response["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

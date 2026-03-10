@@ -176,6 +176,10 @@ class KnowledgeQueries:
         kind = _clean(inventory_kind).lower() or "modules"
         if kind == "rules":
             rows = self.store.query_nodes(self.engagement_id, node_type="BusinessRule", limit=2000)
+        elif kind == "routes":
+            rows = self.store.query_nodes(self.engagement_id, node_type="Route", limit=5000)
+        elif kind == "templates":
+            rows = self.store.query_nodes(self.engagement_id, node_type="Template", limit=5000)
         elif kind == "functions":
             rows = self.store.query_nodes(self.engagement_id, node_type="Function", limit=5000)
         else:
@@ -192,6 +196,9 @@ class KnowledgeQueries:
             project = _clean(props.get("project"))
             if kind == "forms":
                 if module_kind in {"module", "bas", "class", "cls"}:
+                    continue
+            if kind == "controllers":
+                if module_kind != "controller":
                     continue
             items.append(
                 {

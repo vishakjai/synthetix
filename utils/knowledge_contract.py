@@ -12,6 +12,8 @@ from typing import Any
 NODE_TYPES: tuple[str, ...] = (
     "Module",
     "Function",
+    "Route",
+    "Template",
     "BusinessRule",
     "DataEntity",
     "ComplianceControl",

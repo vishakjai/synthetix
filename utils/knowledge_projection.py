@@ -258,6 +258,93 @@ def build_knowledge_projection(
         module_id = module_ids.get((project.lower(), form_name.lower()))
         if module_id:
             builder.add_edge(edge_type="CONTAINS", source_node_id=module_id, target_node_id=function_id, confidence=0.85)
+
+    php_analysis = _as_dict(_as_dict(raw.get("legacy_inventory")).get("php_analysis"))
+    php_controllers = _as_list(_as_dict(php_analysis.get("controller_inventory")).get("controllers"))
+    php_routes = _as_list(_as_dict(php_analysis.get("route_inventory")).get("routes"))
+    php_templates = _as_list(_as_dict(php_analysis.get("template_inventory")).get("templates"))
+    php_controller_ids: dict[str, str] = {}
+
+    for row in php_controllers:
+        if not isinstance(row, dict):
+            continue
+        name = _clean(row.get("name"))
+        if not name:
+            continue
+        node_id = f"module:php_controller:{_slug(name)}"
+        php_controller_ids[name.lower()] = builder.add_node(
+            node_id=node_id,
+            node_type="Module",
+            name=name,
+            source_artifact_id="php_controller_inventory",
+            confidence=float(row.get("confidence", 0.8) or 0.8),
+            properties={
+                "project": _clean(row.get("project") or "php"),
+                "module_kind": "controller",
+                "path": _clean(row.get("path")),
+                "framework": _clean(row.get("framework") or row.get("base_class")),
+                "action_count": len(_as_list(row.get("actions"))),
+                "actions": [_clean(x) for x in _as_list(row.get("actions")) if _clean(x)],
+            },
+            provenance=[provenance_ref(artifact_id="php_controller_inventory", path=_clean(row.get("path")), note=name)],
+        )
+        if "php_controller_inventory" in artifact_nodes:
+            builder.add_edge(edge_type="SUPPORTED_BY", source_node_id=node_id, target_node_id=artifact_nodes["php_controller_inventory"], confidence=0.85)
+
+    for row in php_routes:
+        if not isinstance(row, dict):
+            continue
+        path = _clean(row.get("path"))
+        handler = _clean(row.get("handler") or row.get("action"))
+        route_name = f"{_clean(row.get('method') or 'ANY')} {path}".strip()
+        if not path and not handler:
+            continue
+        node_id = f"route:{_slug(route_name or handler)}"
+        builder.add_node(
+            node_id=node_id,
+            node_type="Route",
+            name=route_name or handler,
+            source_artifact_id="php_route_inventory",
+            confidence=float(row.get("confidence", 0.8) or 0.8),
+            properties={
+                "method": _clean(row.get("method") or "ANY"),
+                "path": path,
+                "handler": handler,
+                "project": _clean(row.get("project") or "php"),
+            },
+            provenance=[provenance_ref(artifact_id="php_route_inventory", path=_clean(row.get("source_file")), note=route_name or handler)],
+        )
+        if "php_route_inventory" in artifact_nodes:
+            builder.add_edge(edge_type="SUPPORTED_BY", source_node_id=node_id, target_node_id=artifact_nodes["php_route_inventory"], confidence=0.85)
+        handler_lower = handler.lower()
+        for controller_name, controller_id in php_controller_ids.items():
+            if controller_name in handler_lower:
+                builder.add_edge(edge_type="DEPENDS_ON", source_node_id=node_id, target_node_id=controller_id, confidence=0.7)
+                break
+
+    for row in php_templates:
+        if not isinstance(row, dict):
+            continue
+        name = _clean(row.get("path") or row.get("name"))
+        if not name:
+            continue
+        node_id = f"template:{_slug(name)}"
+        builder.add_node(
+            node_id=node_id,
+            node_type="Template",
+            name=name,
+            source_artifact_id="php_template_inventory",
+            confidence=float(row.get("confidence", 0.75) or 0.75),
+            properties={
+                "template_type": _clean(row.get("template_type") or row.get("kind")),
+                "path": _clean(row.get("path") or row.get("name")),
+                "loc": int(row.get("loc", row.get("line_count", 0)) or 0),
+                "project": _clean(row.get("project") or "php"),
+            },
+            provenance=[provenance_ref(artifact_id="php_template_inventory", path=_clean(row.get("path") or row.get("name")), note=_clean(row.get("template_type") or row.get("kind")))],
+        )
+        if "php_template_inventory" in artifact_nodes:
+            builder.add_edge(edge_type="SUPPORTED_BY", source_node_id=node_id, target_node_id=artifact_nodes["php_template_inventory"], confidence=0.8)
         if "procedure_summary" in artifact_nodes:
             builder.add_edge(edge_type="SUPPORTED_BY", source_node_id=function_id, target_node_id=artifact_nodes["procedure_summary"], confidence=0.8)
 
