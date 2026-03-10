@@ -13972,9 +13972,9 @@ function bindEvents() {
     if (!validateDiscoverStep(1) || !validateDiscoverStep(3) || !validateDiscoverStep(4)) return;
     setDiscoverStep(5);
   });
-  el.discoverRunAnalystBriefLandscape?.addEventListener("click", () => loadDiscoverAnalystBrief({ force: true }).catch((err) => {
-    state.discoverAnalystBrief.error = err.message;
-    renderDiscoverAnalystBrief();
+  el.discoverRunAnalystBriefLandscape?.addEventListener("click", () => loadDiscoverLandscape({ force: true }).catch((err) => {
+    state.discoverLandscape.error = err.message;
+    renderDiscoverLandscape();
     renderDiscoverStepper();
   }));
   el.discoverOpenLandscapeStepResults?.addEventListener("click", () => {
