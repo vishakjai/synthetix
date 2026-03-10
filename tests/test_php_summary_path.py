@@ -20,6 +20,18 @@ class PhpSummaryPathTest(unittest.TestCase):
         self.assertEqual(profile["composer_package_count"], 2)
         self.assertIn("monolog/monolog", profile["composer_packages"])
 
+    def test_php_framework_profile_falls_back_to_vendor_package_manifests(self):
+        entries = [
+            {"path": "vendor/sendgrid/sendgrid/composer.json", "type": "blob"},
+            {"path": "vendor/sendgrid/php-http-client/composer.json", "type": "blob"},
+            {"path": "Controller/PortalCustomerController.php", "type": "blob"},
+        ]
+        profile = detect_php_framework_profile(entries=entries, file_contents={})
+        self.assertTrue(profile["uses_composer"])
+        self.assertEqual(profile["composer_package_count"], 2)
+        self.assertIn("sendgrid/sendgrid", profile["composer_packages"])
+        self.assertIn("sendgrid/php-http-client", profile["composer_packages"])
+
     def test_php_analyst_report_uses_php_inventory_and_decisions(self):
         output = {
             "source_language": "PHP",

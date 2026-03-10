@@ -223,6 +223,16 @@ Respond ONLY with the JSON, no other text."""
         template_count = int(template_inventory.get("template_count", 0) or 0)
         sql_count = int(sql_catalog.get("statement_count", 0) or 0)
         session_keys = int(session_inventory.get("session_key_count", 0) or 0)
+        discover_cache = ((state or {}).get("integration_context", {}) if isinstance((state or {}).get("integration_context", {}), dict) else {}).get("discover_cache", {})
+        landscape = discover_cache.get("landscape", {}) if isinstance(discover_cache, dict) else {}
+        php_profile = landscape.get("php_framework_profile_v1", {}) if isinstance(landscape, dict) else {}
+        repo_landscape = landscape.get("repo_landscape_v1", {}) if isinstance(landscape, dict) else {}
+        dependency_footprint = repo_landscape.get("dependency_footprint", {}) if isinstance(repo_landscape, dict) else {}
+        php_dependency_count = int(
+            (php_profile.get("composer_package_count", 0) if isinstance(php_profile, dict) else 0)
+            or (dependency_footprint.get("composer_package_count", 0) if isinstance(dependency_footprint, dict) else 0)
+            or 0
+        )
 
         legacy_inventory = {
             "summary": (
@@ -282,8 +292,9 @@ Respond ONLY with the JSON, no other text."""
             "source_loc_classes": int(source_loc_metrics.get("classes_loc", 0) or 0),
             "source_files_scanned": int(source_loc_metrics.get("files_scanned", 0) or 0),
             "source_loc_by_file": [{"path": path, "loc": int(loc or 0)} for path, loc in sorted(source_loc_by_file.items())][:2000],
+            "php_dependency_count": php_dependency_count,
             "php_analysis": {
-                "framework": str(((state or {}).get("integration_context", {}) if isinstance((state or {}).get("integration_context", {}), dict) else {}).get("discover_cache", {}).get("landscape", {}).get("php_framework_profile_v1", {}).get("framework", "")).strip() or "custom_php",
+                "framework": str((php_profile.get("framework", "") if isinstance(php_profile, dict) else "")).strip() or "custom_php",
                 "route_inventory": route_inventory,
                 "controller_inventory": controller_inventory,
                 "template_inventory": template_inventory,

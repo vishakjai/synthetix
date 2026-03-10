@@ -55,6 +55,26 @@ class PhpExtractorsTest(unittest.TestCase):
         self.assertGreaterEqual(file_io["export_file_count"], 1)
         self.assertGreaterEqual(validation["file_count"], 1)
 
+    def test_extract_custom_php_entrypoints_and_template_references(self):
+        file_map = {
+            "dashboard/Recruiter_new.php": (
+                "<?php include(\"views/ViewHeader.php\"); "
+                "include('dashboard/elements/panel_links.php'); "
+                "$this->template = \"{$syspath}/src/templates/direct_hire_xml_gp.php\";"
+            ),
+            "Controller/PortalCustomerController.php": "<?php class PortalCustomerController { public function index() {} }",
+            "bin/msgQueueListner.php": "<?php include('/data/app/src/init.php');",
+        }
+        routes = extract_php_route_inventory(file_map)
+        templates = extract_php_template_inventory(file_map)
+
+        self.assertGreaterEqual(routes["route_count"], 2)
+        self.assertTrue(any(str(row.get("path")) == "dashboard/Recruiter_new.php" for row in routes["entrypoints"]))
+        template_paths = {row["path"] for row in templates["templates"]}
+        self.assertIn("views/ViewHeader.php", template_paths)
+        self.assertIn("dashboard/elements/panel_links.php", template_paths)
+        self.assertIn("{$syspath}/src/templates/direct_hire_xml_gp.php", template_paths)
+
 
 if __name__ == "__main__":
     unittest.main()

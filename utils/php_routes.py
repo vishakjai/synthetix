@@ -7,6 +7,14 @@ _ROUTE_CALL = re.compile(
     r"Route::(?P<method>get|post|put|patch|delete|options|any|match)\s*\(\s*['\"](?P<uri>[^'\"]+)['\"](?:\s*,\s*(?P<handler>[^\n\r\)]+))?",
     re.I,
 )
+_ENTRYPOINT_EXCLUDE = {"index.php", "config.php", "functions.php"}
+
+
+def _uri_from_path(path: str) -> str:
+    uri = "/" + str(path or "").replace("\\", "/").lstrip("/")
+    if uri.lower().endswith(".php"):
+        uri = uri[:-4]
+    return uri or "/"
 
 
 def _clean(value: Any) -> str:
@@ -62,7 +70,7 @@ def extract_php_route_inventory(file_map: dict[str, str]) -> dict[str, Any]:
             app_entry = topish or any(token in low for token in ("controller/", "controllers/", "/public/", "/admin/"))
             if app_entry and not any(token in low for token in ("view/", "views/", "template", "vendor/")):
                 name = normalized.rsplit("/", 1)[-1]
-                if name.lower() not in {"index.php", "config.php", "functions.php"}:
+                if name.lower() not in _ENTRYPOINT_EXCLUDE:
                     entrypoints.append(
                         {
                             "entrypoint": name,
@@ -73,6 +81,22 @@ def extract_php_route_inventory(file_map: dict[str, str]) -> dict[str, Any]:
 
     route_files = sorted(set(route_files))
     entrypoints = entrypoints[:200]
+    if not routes and entrypoints:
+        for row in entrypoints:
+            path = _clean(row.get("path"))
+            if not path:
+                continue
+            routes.append(
+                {
+                    "route_id": f"route:{len(routes)+1}",
+                    "method": "ANY",
+                    "uri": _uri_from_path(path),
+                    "handler": path,
+                    "source_file": path,
+                    "confidence": 0.55 if _clean(row.get("kind")) == "script_entry" else 0.65,
+                    "inferred": True,
+                }
+            )
     routes = routes[:500]
     return {
         "artifact_type": "php_route_inventory_v1",

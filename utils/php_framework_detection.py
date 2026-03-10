@@ -41,6 +41,24 @@ def _load_composer_packages(file_contents: dict[str, str]) -> set[str]:
     return packages
 
 
+def _load_vendor_packages(entries: list[dict[str, Any]]) -> set[str]:
+    packages: set[str] = set()
+    for row in entries or []:
+        if not isinstance(row, dict):
+            continue
+        path = _clean(row.get("path")).replace("\\", "/")
+        low = path.lower()
+        if not low.endswith("/composer.json"):
+            continue
+        parts = PurePosixPath(path).parts
+        if len(parts) >= 3 and parts[0].lower() == "vendor":
+            vendor = _clean(parts[1]).lower()
+            package = _clean(parts[2]).lower()
+            if vendor and package:
+                packages.add(f"{vendor}/{package}")
+    return packages
+
+
 def detect_php_framework_profile(
     *,
     entries: list[dict[str, Any]],
@@ -57,6 +75,7 @@ def detect_php_framework_profile(
     vendor_php_paths = [path for path in php_paths if path not in app_php_paths]
 
     composer_packages = _load_composer_packages(file_contents)
+    composer_packages.update(_load_vendor_packages(entries))
     controller_files = [
         path for path in app_php_paths
         if _path_matches(path, PHP_CONTROLLER_MARKERS)
