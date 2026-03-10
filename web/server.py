@@ -9194,7 +9194,81 @@ def _build_analyst_markdown_for_docgen(
         # Reuse the same markdown composer used by the CLI exporter so UI/CLI remain aligned.
         from scripts.run_vb6_analyst_markdown import build_full_markdown  # noqa: WPS433
 
-        return str(build_full_markdown(analyst_output, mode="full") or "").strip()
+        docgen_seed = copy.deepcopy(analyst_output)
+        source_language = _clean_text(
+            docgen_seed.get("source_language")
+            or _as_dict_safe(docgen_seed.get("legacy_code_inventory")).get("source_target_modernization_profile", {}).get("source", {}).get("language")
+        ).upper()
+        if source_language == "PHP":
+            # Force report regeneration so the markdown path uses the current PHP fallback logic
+            # rather than any stale report artifact stored on the run from an older deploy.
+            docgen_seed.pop("analyst_report_v2", None)
+            integration_context = pipeline_state.get("integration_context", {}) if isinstance(pipeline_state.get("integration_context", {}), dict) else {}
+            discover_cache = integration_context.get("discover_cache", {}) if isinstance(integration_context.get("discover_cache", {}), dict) else {}
+            landscape = discover_cache.get("landscape", {}) if isinstance(discover_cache.get("landscape", {}), dict) else {}
+            raw = docgen_seed.get("raw_artifacts", {}) if isinstance(docgen_seed.get("raw_artifacts", {}), dict) else {}
+            for key in ("repo_landscape_v1", "php_framework_profile_v1", "php_route_hints_v1", "component_inventory_v1", "modernization_track_plan_v1"):
+                value = landscape.get(key)
+                if isinstance(value, dict) and value:
+                    raw[key] = copy.deepcopy(value)
+            if raw:
+                docgen_seed["raw_artifacts"] = raw
+
+            php_profile = raw.get("php_framework_profile_v1", {}) if isinstance(raw.get("php_framework_profile_v1", {}), dict) else {}
+            php_hints = raw.get("php_route_hints_v1", {}) if isinstance(raw.get("php_route_hints_v1", {}), dict) else {}
+            repo_landscape = raw.get("repo_landscape_v1", {}) if isinstance(raw.get("repo_landscape_v1", {}), dict) else {}
+            scan_summary = repo_landscape.get("scan_summary", {}) if isinstance(repo_landscape.get("scan_summary", {}), dict) else {}
+            dep_footprint = repo_landscape.get("dependency_footprint", {}) if isinstance(repo_landscape.get("dependency_footprint", {}), dict) else {}
+
+            def _patch_php_inventory(container: dict[str, Any]) -> None:
+                if not isinstance(container, dict):
+                    return
+                controller_count = int(php_profile.get("controller_count", 0) or php_hints.get("estimated_controllers", 0) or 0)
+                route_count = int(php_hints.get("estimated_route_files", 0) or php_profile.get("route_file_count", 0) or 0)
+                template_count = int(php_profile.get("template_count", 0) or php_hints.get("estimated_templates", 0) or 0)
+                auth_touchpoints = int(php_profile.get("auth_touchpoint_estimate", 0) or 0)
+                source_loc_total = int(scan_summary.get("total_loc", 0) or scan_summary.get("loc_total", 0) or container.get("source_loc_total", 0) or 0)
+                source_files_scanned = int(scan_summary.get("total_files", 0) or container.get("source_files_scanned", 0) or 0)
+                dependency_count = int(
+                    container.get("php_dependency_count", 0)
+                    or php_profile.get("composer_package_count", 0)
+                    or dep_footprint.get("composer_package_count", 0)
+                    or 0
+                )
+                container["summary"] = (
+                    f"Discover cache indicates PHP legacy application with {controller_count} controllers, "
+                    f"{route_count} routes, {template_count} templates, 0 SQL statements, and 0 session keys."
+                )
+                container["source_loc_total"] = source_loc_total
+                container["source_files_scanned"] = source_files_scanned
+                container["php_dependency_count"] = dependency_count
+                php_analysis = container.get("php_analysis", {}) if isinstance(container.get("php_analysis", {}), dict) else {}
+                route_inventory = php_analysis.get("route_inventory", {}) if isinstance(php_analysis.get("route_inventory", {}), dict) else {}
+                controller_inventory = php_analysis.get("controller_inventory", {}) if isinstance(php_analysis.get("controller_inventory", {}), dict) else {}
+                template_inventory = php_analysis.get("template_inventory", {}) if isinstance(php_analysis.get("template_inventory", {}), dict) else {}
+                auth_inventory = php_analysis.get("authz_authn_inventory", {}) if isinstance(php_analysis.get("authz_authn_inventory", {}), dict) else {}
+                php_analysis["framework"] = _clean_text(php_profile.get("framework") or php_analysis.get("framework"))
+                route_inventory["route_count"] = int(route_inventory.get("route_count", 0) or route_count)
+                controller_inventory["controller_count"] = int(controller_inventory.get("controller_count", 0) or controller_count)
+                template_inventory["template_count"] = int(template_inventory.get("template_count", 0) or template_count)
+                auth_inventory["auth_touchpoint_count"] = int(auth_inventory.get("auth_touchpoint_count", 0) or auth_touchpoints)
+                php_analysis["route_inventory"] = route_inventory
+                php_analysis["controller_inventory"] = controller_inventory
+                php_analysis["template_inventory"] = template_inventory
+                php_analysis["authz_authn_inventory"] = auth_inventory
+                container["php_analysis"] = php_analysis
+
+            legacy_inventory = docgen_seed.get("legacy_code_inventory", {}) if isinstance(docgen_seed.get("legacy_code_inventory", {}), dict) else {}
+            _patch_php_inventory(legacy_inventory)
+            if legacy_inventory:
+                docgen_seed["legacy_code_inventory"] = legacy_inventory
+            requirements_pack = docgen_seed.get("requirements_pack", {}) if isinstance(docgen_seed.get("requirements_pack", {}), dict) else {}
+            req_legacy = requirements_pack.get("legacy_code_inventory", {}) if isinstance(requirements_pack.get("legacy_code_inventory", {}), dict) else {}
+            _patch_php_inventory(req_legacy)
+            requirements_pack["legacy_code_inventory"] = req_legacy
+            if requirements_pack:
+                docgen_seed["requirements_pack"] = requirements_pack
+        return str(build_full_markdown(docgen_seed, mode="full") or "").strip()
     except Exception as exc:
         raise RuntimeError(f"Unable to compose analyst markdown for docgen: {exc}") from exc
 
