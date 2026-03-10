@@ -109,6 +109,7 @@ from utils.symbol_index import build_symbol_index_v1  # noqa: E402
 from utils.repo_dependency_graph import build_global_dependency_graph_v1  # noqa: E402
 from utils.repo_componentizer import build_component_inventory_v1, build_chunk_manifest_v1  # noqa: E402
 from utils.large_repo_context import build_large_repo_context_v1  # noqa: E402
+from utils.analysis_estimator import build_analysis_plan_v1  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -4468,6 +4469,17 @@ def _resolve_legacy_code_from_repo_scan(
             file_contents=sample_contents,
             max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS,
         )
+        plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
+        analysis_plan_v1 = build_analysis_plan_v1(
+            snapshot_id=snapshot_id,
+            repo_snapshot=repo_snapshot_v1,
+            component_inventory=component_inventory_v1,
+            chunk_manifest=chunk_manifest_v1,
+            large_repo_context=large_repo_context_v1,
+            provider=plan_provider,
+            model=plan_model,
+            max_output_tokens=plan_output_tokens,
+        )
         payload = {
             "snapshot_id": snapshot_id,
             "owner": owner,
@@ -4501,6 +4513,7 @@ def _resolve_legacy_code_from_repo_scan(
             "component_inventory_v1": component_inventory_v1,
             "chunk_manifest_v1": chunk_manifest_v1,
             "legacy_chunk_context_v1": large_repo_context_v1,
+            "analysis_plan_v1": analysis_plan_v1,
             "bundle_summary": bundle_summary,
             "legacy_code": legacy_code,
         }
@@ -4802,6 +4815,17 @@ def _resolve_legacy_code_from_repo_scan(
             if large_repo_text:
                 legacy_code = large_repo_text
                 snapshot_payload["legacy_code"] = legacy_code
+        plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
+        snapshot_payload["analysis_plan_v1"] = build_analysis_plan_v1(
+            snapshot_id=snapshot_id,
+            repo_snapshot=snapshot_payload["repo_snapshot_v1"],
+            component_inventory=snapshot_payload["component_inventory_v1"],
+            chunk_manifest=snapshot_payload["chunk_manifest_v1"],
+            large_repo_context=snapshot_payload.get("legacy_chunk_context_v1", {}),
+            provider=plan_provider,
+            model=plan_model,
+            max_output_tokens=plan_output_tokens,
+        )
         _repo_snapshot_save(snapshot_id, snapshot_payload)
         _repo_snapshot_latest_ref_save(family_key, snapshot_id)
         emit(f"🗂️ Repo snapshot persisted: {snapshot_id} (bundle chars={len(legacy_code)})")
@@ -4987,6 +5011,18 @@ def _config_from_payload(payload: dict[str, Any]) -> PipelineConfig:
         cluster_name=str(payload.get("cluster_name", "agent-pipeline")),
         namespace=str(payload.get("namespace", "agent-app")),
     )
+
+
+def _default_llm_estimate_target() -> tuple[str, str, int]:
+    for provider in ("anthropic", "openai"):
+        try:
+            creds = SETTINGS_STORE.resolve_llm_credentials(provider)
+        except Exception:
+            continue
+        model = str(creds.get("model", "")).strip()
+        if model:
+            return provider, model, 6000
+    return "anthropic", "claude-sonnet-4-20250514", 6000
 
 
 def _llm_preflight_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6323,6 +6359,109 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             response_payload["analyst_report_v2"] = report
         return response_payload
 
+    def _attach_repo_scan_artifacts(
+        response_payload: dict[str, Any],
+        *,
+        repo_ref: str,
+        owner_ref: str,
+        repository_ref: str,
+        branch_ref: str,
+        commit_ref: str,
+        tree_entries: list[dict[str, Any]],
+        selected_entries: list[dict[str, Any]],
+        fetched_files: dict[str, str],
+        include_paths: list[str],
+        exclude_paths: list[str],
+        bundle_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            snapshot_id = hashlib.sha1(
+                f"discover::{repo_ref}::{branch_ref}::{commit_ref}::{','.join(sorted(str(row.get('path', '')).strip() for row in selected_entries if isinstance(row, dict)))}".encode("utf-8")
+            ).hexdigest()[:20]
+            routing = classify_repo_scan_mode(
+                [row for row in selected_entries if isinstance(row, dict)],
+                total_tree_entries=len(tree_entries or []),
+            )
+            repo_snapshot_v1 = build_repo_snapshot_v1(
+                snapshot_id=snapshot_id,
+                repo_url=repo_ref,
+                owner=owner_ref,
+                repository=repository_ref,
+                branch=branch_ref,
+                commit_sha=commit_ref,
+                tree_sha=commit_ref,
+                include_paths=include_paths,
+                exclude_paths=exclude_paths,
+                raw_entries=tree_entries,
+                selected_entries=selected_entries,
+                file_contents=fetched_files,
+                failed_paths=[],
+                reused_paths=[],
+                changed_paths=[],
+                compare_error="",
+                chunk_size=REPO_SCAN_CHUNK_SIZE,
+                chunk_workers=REPO_SCAN_CHUNK_WORKERS,
+                family_key="discover",
+                bundle_summary=bundle_summary,
+                analysis_mode=str(routing.get("analysis_mode", "standard")),
+                analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
+            )
+            symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=fetched_files)
+            dependency_graph_v1 = build_global_dependency_graph_v1(
+                snapshot_id=snapshot_id,
+                file_contents=fetched_files,
+                selected_entries=selected_entries,
+            )
+            component_inventory_v1 = build_component_inventory_v1(
+                snapshot_id=snapshot_id,
+                selected_entries=selected_entries,
+                file_contents=fetched_files,
+            )
+            chunk_manifest_v1 = build_chunk_manifest_v1(
+                snapshot_id=snapshot_id,
+                component_inventory=component_inventory_v1,
+                file_contents=fetched_files,
+            )
+            legacy_chunk_context_v1 = build_large_repo_context_v1(
+                snapshot_id=snapshot_id,
+                repo_snapshot=repo_snapshot_v1,
+                component_inventory=component_inventory_v1,
+                chunk_manifest=chunk_manifest_v1,
+                dependency_graph=dependency_graph_v1,
+                file_contents=fetched_files,
+                max_total_chars=int(bundle_summary.get("effective_max_chars", REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS),
+            )
+            plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
+            analysis_plan_v1 = build_analysis_plan_v1(
+                snapshot_id=snapshot_id,
+                repo_snapshot=repo_snapshot_v1,
+                component_inventory=component_inventory_v1,
+                chunk_manifest=chunk_manifest_v1,
+                large_repo_context=legacy_chunk_context_v1,
+                provider=plan_provider,
+                model=plan_model,
+                max_output_tokens=plan_output_tokens,
+            )
+        except Exception as exc:
+            response_payload.setdefault("repo_scan_artifact_error", f"repo scan artifact generation failed: {exc}")
+            return response_payload
+        raw = response_payload.get("raw_artifacts", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        raw.update(
+            {
+                "repo_snapshot_v1": repo_snapshot_v1,
+                "symbol_index_v1": symbol_index_v1,
+                "global_dependency_graph_v1": dependency_graph_v1,
+                "component_inventory_v1": component_inventory_v1,
+                "chunk_manifest_v1": chunk_manifest_v1,
+                "legacy_chunk_context_v1": legacy_chunk_context_v1,
+                "analysis_plan_v1": analysis_plan_v1,
+            }
+        )
+        response_payload["raw_artifacts"] = raw
+        return response_payload
+
     def _greenfield_summary_from_landscape(artifacts: dict[str, Any]) -> dict[str, Any]:
         landscape = artifacts.get("repo_landscape_v1", {}) if isinstance(artifacts.get("repo_landscape_v1", {}), dict) else {}
         components = artifacts.get("component_inventory_v1", {}) if isinstance(artifacts.get("component_inventory_v1", {}), dict) else {}
@@ -6535,6 +6674,20 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             tree_entries=[item for item in entries if isinstance(item, dict)],
             fetched_files=sample_contents,
         )
+        response_payload = _attach_repo_scan_artifacts(
+            response_payload,
+            repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
+            owner_ref=owner,
+            repository_ref=repository,
+            branch_ref=str(sample_tree.get("repo", {}).get("default_branch", "main")),
+            commit_ref="sample",
+            tree_entries=[item for item in entries if isinstance(item, dict)],
+            selected_entries=sample_entries,
+            fetched_files=sample_contents,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            bundle_summary=_compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)[1],
+        )
         return JSONResponse(response_payload)
 
     base_url, headers, authenticated = _github_request_context()
@@ -6627,6 +6780,20 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         commit_ref=str(tree_payload.get("sha") or repo_meta.get("default_branch") or ""),
         tree_entries=[item for item in raw_entries if isinstance(item, dict)],
         fetched_files=file_contents,
+    )
+    response_payload = _attach_repo_scan_artifacts(
+        response_payload,
+        repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
+        owner_ref=owner,
+        repository_ref=repository,
+        branch_ref=branch,
+        commit_ref=str(tree_payload.get("sha") or repo_meta.get("default_branch") or ""),
+        tree_entries=[item for item in raw_entries if isinstance(item, dict)],
+        selected_entries=selected_entries,
+        fetched_files=file_contents,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
+        bundle_summary=_compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)[1],
     )
     return JSONResponse(response_payload)
 

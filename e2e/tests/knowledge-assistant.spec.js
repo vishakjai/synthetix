@@ -1,28 +1,17 @@
 const { test, expect } = require("@playwright/test");
 
-test("knowledge assistant answers grounded run questions", async ({ page }) => {
+test("knowledge-grounded collaboration chat answers grounded run questions", async ({ page }) => {
   await page.route("**/api/settings", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
-      return;
-    }
+    if (route.request().method().toUpperCase() !== "GET") return route.continue();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        settings: {
-          llm: { providers: {} },
-        },
-      }),
+      body: JSON.stringify({ ok: true, settings: { llm: { providers: {} } } }),
     });
   });
 
   await page.route("**/api/runs", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
-      return;
-    }
+    if (route.request().method().toUpperCase() !== "GET") return route.continue();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -43,10 +32,7 @@ test("knowledge assistant answers grounded run questions", async ({ page }) => {
   });
 
   await page.route("**/api/runs/kg-e2e-run", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
-      return;
-    }
+    if (route.request().method().toUpperCase() !== "GET") return route.continue();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -70,40 +56,43 @@ test("knowledge assistant answers grounded run questions", async ({ page }) => {
   });
 
   await page.route("**/api/runs/kg-e2e-run/artifacts", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        artifacts: [],
-      }),
-    });
+    if (route.request().method().toUpperCase() !== "GET") return route.continue();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, artifacts: [] }) });
   });
 
   await page.route("**/api/runs/kg-e2e-run/logs?*", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        logs: ["Knowledge interaction ready."],
-      }),
-    });
+    if (route.request().method().toUpperCase() !== "GET") return route.continue();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, logs: ["Knowledge interaction ready."] }) });
   });
 
   await page.route("**/api/runs/kg-e2e-run/stages/*/collaboration", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
+    const method = route.request().method().toUpperCase();
+    if (method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          collaboration: {
+            stage: 2,
+            agent_name: "Architect Agent",
+            chat: [],
+            directives: [],
+            proposals: [],
+            decisions: [],
+            evidence: [],
+            llm_chat: { used: false, reason: "disabled" },
+          },
+        }),
+      });
       return;
     }
+    await route.continue();
+  });
+
+  await page.route("**/api/runs/kg-e2e-run/stages/*/collaboration/chat", async (route) => {
+    if (route.request().method().toUpperCase() !== "POST") return route.continue();
+    const payload = route.request().postDataJSON();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -112,40 +101,33 @@ test("knowledge assistant answers grounded run questions", async ({ page }) => {
         collaboration: {
           stage: 2,
           agent_name: "Architect Agent",
-          chat: [],
+          chat: [
+            {
+              id: "user_1",
+              role: "user",
+              stage: 2,
+              created_at: "2026-03-09T12:05:00Z",
+              message: String(payload.message || ""),
+            },
+            {
+              id: "assistant_1",
+              role: "assistant",
+              stage: 2,
+              created_at: "2026-03-09T12:05:02Z",
+              message: "frmdeposit is a legacy module for deposit entry and balance update handling.",
+              meta: {
+                source: "knowledge",
+                mode: "evidence-backed",
+                confidence: 0.82,
+                provenance: [{ artifact_id: "form_dossier", line: 42 }],
+              },
+            },
+          ],
           directives: [],
           proposals: [],
           decisions: [],
           evidence: [],
-        },
-      }),
-    });
-  });
-
-  await page.route("**/api/runs/kg-e2e-run/knowledge/interact", async (route) => {
-    if (route.request().method().toUpperCase() !== "POST") {
-      await route.continue();
-      return;
-    }
-    const payload = route.request().postDataJSON();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        projection: {
-          engagement_id: "kg-e2e-run",
-          source_mode: "repo_scan",
-        },
-        response: {
-          intent: "query",
-          topic: "module",
-          answer: `frmdeposit is a legacy module. Prompt: ${String(payload.message || "")}`,
-          confidence: 0.82,
-          mode: "evidence-backed",
-          provenance: [
-            { artifact_id: "form_dossier", path: "frmdeposit.frm", line: 42, note: "form_dossier:1" },
-          ],
+          llm_chat: { used: false, reason: "disabled" },
         },
       }),
     });
@@ -157,13 +139,14 @@ test("knowledge assistant answers grounded run questions", async ({ page }) => {
   await expect(page.locator("#run-history")).toBeVisible();
   await page.selectOption("#run-history", "kg-e2e-run");
   await page.click("#load-run");
-  await expect(page.locator("#pipeline-status-text")).not.toContainText("ERROR");
+  await expect(page.locator("#collab-chat-input")).toBeVisible();
 
-  await expect(page.locator("#knowledge-assistant-panel")).toBeVisible();
-  await page.fill("#knowledge-assistant-input", "What does frmdeposit do?");
-  await page.click("#knowledge-assistant-ask");
+  await page.fill("#collab-chat-input", "What does frmdeposit do?");
+  await page.click("#collab-chat-send");
 
-  await expect(page.locator("#knowledge-assistant-output")).toContainText("frmdeposit is a legacy module");
-  await expect(page.locator("#knowledge-assistant-status")).toContainText("Mode: evidence-backed");
-  await expect(page.locator("#knowledge-assistant-output")).toContainText("form_dossier");
+  const chatPane = page.locator("#collab-tab-content");
+  await expect(chatPane).toContainText("frmdeposit is a legacy module");
+  await expect(chatPane).toContainText("knowledge");
+  await expect(chatPane).toContainText("evidence-backed");
+  await expect(chatPane).toContainText("form_dossier:42");
 });

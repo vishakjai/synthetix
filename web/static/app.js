@@ -4362,6 +4362,17 @@ function _discoverLandscapeArtifacts() {
   };
 }
 
+function _discoverAnalysisPlanArtifact() {
+  const raw = _discoverRawArtifacts();
+  return (raw.analysis_plan_v1 && typeof raw.analysis_plan_v1 === "object") ? raw.analysis_plan_v1 : {};
+}
+
+function _formatUsd(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return "n/a";
+  return `$${num.toFixed(num < 1 ? 3 : 2)}`;
+}
+
 function renderDiscoverScopeGuidance() {
   if (!el.discoverScopeGuidance) return;
   const { landscape, components, tracks } = _discoverLandscapeArtifacts();
@@ -4451,6 +4462,7 @@ function renderDiscoverLandscape() {
   if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
   const analystView = state.discoverAnalystBrief || {};
   const raw = _discoverRawArtifacts();
+  const analysisPlan = _discoverAnalysisPlanArtifact();
   const integration = getIntegrationContext();
   const projectState = String(integration?.project_state_detected || state.projectState?.detected || "").trim().toLowerCase();
   const repoUrl = String(integration?.brownfield?.repo_url || "").trim();
@@ -4472,6 +4484,9 @@ function renderDiscoverLandscape() {
   const evidenceCoverage = (raw.evidence_coverage_report_v1 && typeof raw.evidence_coverage_report_v1 === "object") ? raw.evidence_coverage_report_v1 : {};
   const evidenceDimensions = (evidenceCoverage.dimensions && typeof evidenceCoverage.dimensions === "object") ? evidenceCoverage.dimensions : {};
   const evidenceBlockers = Array.isArray(evidenceCoverage.blockers) ? evidenceCoverage.blockers : [];
+  const analysisMode = String(analysisPlan.analysis_mode || "").trim().toLowerCase();
+  const analysisReasons = Array.isArray(analysisPlan.analysis_mode_reasons) ? analysisPlan.analysis_mode_reasons : [];
+  const analysisNotes = Array.isArray(analysisPlan.notes) ? analysisPlan.notes : [];
   const hasLandscapeData = !!componentRows.length || !!trackRows.length || !!languageRows.length || !!buildRows.length || !!riskRows.length;
   if (landscapeMode !== "greenfield" && projectState !== "greenfield" && !repoUrl && !evidenceBundleId) {
     const html = `
@@ -4632,6 +4647,32 @@ function renderDiscoverLandscape() {
       </div>
     `
     : "";
+  const analysisPlanHtml = Object.keys(analysisPlan).length
+    ? `
+      <div class="mt-2 rounded border ${analysisMode === "large_repo" ? "border-amber-300 bg-amber-50" : "border-slate-300 bg-slate-50"} p-2">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <p class="font-semibold ${analysisMode === "large_repo" ? "text-amber-950" : "text-slate-900"}">Analysis route</p>
+            <p class="text-[11px] ${analysisMode === "large_repo" ? "text-amber-900" : "text-slate-700"}">
+              <strong>${escapeHtml(String(analysisPlan.analysis_mode || "standard"))}</strong>
+              ${analysisMode === "large_repo" ? " — large-repo orchestration will be used for this substantial application." : ""}
+            </p>
+          </div>
+          <span class="rounded border ${String(analysisPlan.llm_rejection_risk || "").toLowerCase() === "high" ? "border-rose-300 bg-rose-50 text-rose-800" : String(analysisPlan.llm_rejection_risk || "").toLowerCase() === "medium" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-emerald-300 bg-emerald-50 text-emerald-800"} px-2 py-0.5 text-[10px] font-semibold uppercase">
+            LLM size risk: ${escapeHtml(String(analysisPlan.llm_rejection_risk || "unknown"))}
+          </span>
+        </div>
+        <div class="mt-2 grid gap-1 sm:grid-cols-4">
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Estimated tokens</strong><br/>${escapeHtml(String(analysisPlan.estimated_total_tokens || 0))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Estimated cost</strong><br/>${escapeHtml(_formatUsd(analysisPlan.estimated_cost_usd))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Strategy</strong><br/>${escapeHtml(String(analysisPlan.llm_strategy || "n/a"))}</div>
+          <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>Chunks</strong><br/>${escapeHtml(String(analysisPlan.chunk_count || 0))}</div>
+        </div>
+        ${analysisReasons.length ? `<p class="mt-2 text-[11px] ${analysisMode === "large_repo" ? "text-amber-900" : "text-slate-700"}"><strong>Why:</strong> ${escapeHtml(analysisReasons.join(" | "))}</p>` : ""}
+        ${analysisNotes.length ? `<ul class="mt-1 list-disc pl-4 text-[11px] ${analysisMode === "large_repo" ? "text-amber-900" : "text-slate-700"}">${analysisNotes.slice(0, 4).map((row) => `<li>${escapeHtml(String(row))}</li>`).join("")}</ul>` : ""}
+      </div>
+    `
+    : "";
 
   const landscapeHtml = `
     ${landscapeIntro ? `<div class="mb-2 rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px] text-slate-700">${landscapeIntro}</div>` : ""}
@@ -4663,6 +4704,7 @@ function renderDiscoverLandscape() {
           <p class="font-semibold text-slate-900">${dependencyHeading}</p>
           <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
         </div>
+        ${analysisPlanHtml}
         ${evidenceCoverageHtml}
         ${greenfieldSummaryHtml}
       </div>
@@ -7436,6 +7478,8 @@ function renderDiscoverAnalystBrief() {
   if (!el.discoverAnalystBriefStatus || !el.discoverAnalystBriefPreview) return;
   const view = state.discoverAnalystBrief || {};
   const sourceMode = modernizationSourceMode();
+  const raw = _discoverRawArtifacts();
+  const analysisPlan = (raw.analysis_plan_v1 && typeof raw.analysis_plan_v1 === "object") ? raw.analysis_plan_v1 : {};
   if (el.discoverRunAnalystBrief) {
     el.discoverRunAnalystBrief.disabled = !!view.loading;
     el.discoverRunAnalystBrief.textContent = view.loading ? "Running Analyst Brief..." : "Run Analyst Brief";
@@ -7495,6 +7539,20 @@ function renderDiscoverAnalystBrief() {
   const rpFunctional = Array.isArray(requirementsPack?.requirements?.functional) ? requirementsPack.requirements.functional : [];
   const rpControls = Array.isArray(requirementsPack?.compliance?.controls_triggered) ? requirementsPack.compliance.controls_triggered : [];
   const rpOpenQuestions = Array.isArray(requirementsPack?.open_questions) ? requirementsPack.open_questions : [];
+  const planSummary = Object.keys(analysisPlan).length ? `
+    <div class="mt-2 rounded-md border ${String(analysisPlan.analysis_mode || "").toLowerCase() === "large_repo" ? "border-amber-300 bg-amber-50" : "border-slate-300 bg-slate-50"} px-2 py-2">
+      <p class="font-semibold ${String(analysisPlan.analysis_mode || "").toLowerCase() === "large_repo" ? "text-amber-950" : "text-slate-900"}">Analysis plan</p>
+      <p class="text-[11px] ${String(analysisPlan.analysis_mode || "").toLowerCase() === "large_repo" ? "text-amber-900" : "text-slate-700"}">
+        Route=<strong>${escapeHtml(String(analysisPlan.analysis_mode || "standard"))}</strong>
+        | Strategy=${escapeHtml(String(analysisPlan.llm_strategy || "n/a"))}
+        | Estimated tokens=${escapeHtml(String(analysisPlan.estimated_total_tokens || 0))}
+        | Estimated cost=${escapeHtml(_formatUsd(analysisPlan.estimated_cost_usd))}
+      </p>
+      ${(Array.isArray(analysisPlan.analysis_mode_reasons) && analysisPlan.analysis_mode_reasons.length)
+        ? `<p class="mt-1 text-[11px] ${String(analysisPlan.analysis_mode || "").toLowerCase() === "large_repo" ? "text-amber-900" : "text-slate-700"}"><strong>Route triggers:</strong> ${escapeHtml(analysisPlan.analysis_mode_reasons.join(" | "))}</p>`
+        : ""}
+    </div>
+  ` : "";
 
   if (!overview && !caps.length && !components.length) {
     el.discoverAnalystBriefStatus.textContent = ["evidence", "hybrid"].includes(sourceMode)
@@ -7515,6 +7573,7 @@ function renderDiscoverAnalystBrief() {
     <p class="font-semibold text-slate-900">${overview}</p>
     ${Object.keys(legacySkillProfile).length ? `<p class="mt-1 text-[11px] text-slate-800"><strong>Selected legacy skill:</strong> ${escapeHtml(String(legacySkillProfile.selected_skill_name || "Generic Legacy Skill"))} (${escapeHtml(String(legacySkillProfile.selected_skill_id || "generic_legacy"))}), confidence=${escapeHtml(String(legacySkillProfile.confidence || "n/a"))}</p>` : ""}
     ${aasSummary ? `<p class="mt-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1 text-slate-900"><strong>Analyst AAS summary:</strong> ${escapeHtml(aasSummary)}</p>` : ""}
+    ${planSummary}
     <div class="mt-2 grid gap-2 sm:grid-cols-2">
       <div><p class="font-semibold text-slate-900">Likely functionality</p><ul class="mt-1 list-disc pl-4">${list(caps.slice(0, 8))}</ul></div>
       <div><p class="font-semibold text-slate-900">Input/output behavior</p><ul class="mt-1 list-disc pl-4">${list(io.slice(0, 6))}</ul></div>
