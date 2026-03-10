@@ -18,6 +18,12 @@ def _skill_to_source_metadata(skill_id: str) -> dict[str, str]:
             "runtime": "IIS on Windows",
             "source_codebase_type": "legacy_web",
         },
+        "php_legacy": {
+            "language": "PHP",
+            "ecosystem": "Legacy PHP web application",
+            "runtime": "PHP web runtime",
+            "source_codebase_type": "legacy_web",
+        },
         "dotnet_webforms_legacy": {
             "language": ".NET WebForms",
             "ecosystem": "ASP.NET WebForms",
@@ -71,6 +77,12 @@ def _risk_texts_for_skill(skill_id: str) -> list[str]:
             "COM/ActiveX dependencies can block direct portability and require replacement or wrappers.",
             "Event-driven form logic needs parity tests to preserve workflow behavior.",
             "Win32 API declares and late binding increase migration risk and testing scope.",
+        ]
+    if sid == "php_legacy":
+        return [
+            "Request/session-coupled workflows can hide business rules across controllers and templates.",
+            "Inline SQL and dynamic includes increase migration and security risk.",
+            "Authentication, uploads, and export behavior should be validated before target generation.",
         ]
     if sid == "asp_classic_legacy":
         return [

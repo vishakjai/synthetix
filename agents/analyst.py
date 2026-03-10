@@ -38,6 +38,16 @@ from utils.legacy_skills import (
 )
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1
 from utils.chunk_merge import build_chunk_qa_report_v1, build_merged_analysis_coverage_v1
+from utils.php_routes import extract_php_route_inventory
+from utils.php_controllers import extract_php_controller_inventory
+from utils.php_templates import extract_php_template_inventory
+from utils.php_sql import extract_php_sql_catalog
+from utils.php_sessions import extract_php_session_state_inventory
+from utils.php_auth import extract_php_auth_inventory
+from utils.php_includes import extract_php_include_graph
+from utils.php_jobs import extract_php_background_job_inventory
+from utils.php_file_io import extract_php_file_io_inventory
+from utils.php_validation import extract_php_validation_rules
 
 
 class AnalystAgent(BaseAgent):
@@ -80,6 +90,235 @@ You MUST respond with valid JSON in this exact structure:
 Keep questions concise and actionable. Provide 2-3 suggested answers per question
 so the user can quickly pick one or type their own.
 Respond ONLY with the JSON, no other text."""
+
+    def _build_php_compact_context(
+        self,
+        *,
+        bundle_file_map: dict[str, str],
+        target_lang: str,
+        state: dict[str, Any] | None,
+        legacy_skill_profile: dict[str, Any],
+        source_loc_metrics: dict[str, Any],
+        source_loc_by_file: dict[str, int],
+        repo_snapshot: dict[str, Any],
+        component_inventory: dict[str, Any],
+        chunk_manifest: dict[str, Any],
+        dependency_graph: dict[str, Any],
+        large_repo_context: dict[str, Any],
+        repo_bundle_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        route_inventory = extract_php_route_inventory(bundle_file_map)
+        controller_inventory = extract_php_controller_inventory(bundle_file_map)
+        template_inventory = extract_php_template_inventory(bundle_file_map)
+        sql_catalog = extract_php_sql_catalog(bundle_file_map)
+        session_inventory = extract_php_session_state_inventory(bundle_file_map)
+        auth_inventory = extract_php_auth_inventory(bundle_file_map)
+        include_graph = extract_php_include_graph(bundle_file_map)
+        job_inventory = extract_php_background_job_inventory(bundle_file_map)
+        file_io_inventory = extract_php_file_io_inventory(bundle_file_map)
+        validation_inventory = extract_php_validation_rules(bundle_file_map)
+
+        procedures = []
+        for row in controller_inventory.get("controllers", []) if isinstance(controller_inventory.get("controllers", []), list) else []:
+            if not isinstance(row, dict):
+                continue
+            cname = str(row.get("name", "")).strip()
+            for action in row.get("actions", []) if isinstance(row.get("actions", []), list) else []:
+                action_name = str(action).strip()
+                if cname and action_name:
+                    procedures.append(f"{cname}::{action_name}")
+        procedures = procedures[:1000]
+
+        database_tables: list[str] = []
+        risk_flags: set[str] = set()
+        for row in sql_catalog.get("statements", []) if isinstance(sql_catalog.get("statements", []), list) else []:
+            if not isinstance(row, dict):
+                continue
+            for table in row.get("tables", []) if isinstance(row.get("tables", []), list) else []:
+                token = str(table).strip()
+                if token and token not in database_tables:
+                    database_tables.append(token)
+            for flag in row.get("risk_flags", []) if isinstance(row.get("risk_flags", []), list) else []:
+                token = str(flag).strip()
+                if token:
+                    risk_flags.add(token)
+
+        pitfall_detectors: list[dict[str, Any]] = []
+        if risk_flags:
+            pitfall_detectors.append(
+                {
+                    "id": "PHP-SQL-001",
+                    "severity": "high" if "possible_unparameterized_query" in risk_flags else "medium",
+                    "count": len(risk_flags),
+                    "requires": ["sql_parameterization_plan"],
+                    "evidence": ", ".join(sorted(risk_flags)),
+                }
+            )
+        if bool(session_inventory.get("uses_session_state")):
+            pitfall_detectors.append(
+                {
+                    "id": "PHP-STATE-002",
+                    "severity": "medium",
+                    "count": int(session_inventory.get("session_key_count", 0) or 0),
+                    "requires": ["session_migration_strategy"],
+                    "evidence": "session_start/$_SESSION usage detected",
+                }
+            )
+        if int(file_io_inventory.get("upload_file_count", 0) or 0) > 0:
+            pitfall_detectors.append(
+                {
+                    "id": "PHP-FILE-003",
+                    "severity": "medium",
+                    "count": int(file_io_inventory.get("upload_file_count", 0) or 0),
+                    "requires": ["file_upload_security_plan"],
+                    "evidence": "upload entry points detected",
+                }
+            )
+
+        readiness_score = max(
+            20,
+            78
+            - (12 * len(pitfall_detectors))
+            - (8 if int(route_inventory.get("route_count", 0) or 0) == 0 and int(route_inventory.get("entrypoint_count", 0) or 0) > 20 else 0),
+        )
+        risk_tier = "high" if readiness_score < 45 else "medium" if readiness_score < 70 else "low"
+
+        source_target_profile = build_source_target_modernization_profile(
+            legacy_skill_profile=legacy_skill_profile,
+            legacy_inventory={"vb6_projects": [], "modernization_readiness": {"score": readiness_score, "risk_tier": risk_tier}},
+            state={**(state or {}), "modernization_language": target_lang or (state or {}).get("modernization_language", "")},
+        )
+
+        chunk_qa_report_v1 = build_chunk_qa_report_v1(
+            snapshot_id=str(repo_snapshot.get("snapshot_id", "")).strip() or "legacy-bundle",
+            chunk_manifest=chunk_manifest,
+            chunk_executions=[],
+            large_repo_context=large_repo_context,
+        )
+        merged_analysis_coverage_v1 = build_merged_analysis_coverage_v1(
+            snapshot_id=str(repo_snapshot.get("snapshot_id", "")).strip() or "legacy-bundle",
+            repo_scan_coverage={
+                "analysis_mode": str(repo_snapshot.get("analysis_mode", "standard") or "standard"),
+                "selected_file_count": int(repo_snapshot.get("selected_file_count", 0) or 0),
+                "fetched_file_count": int(repo_snapshot.get("fetched_file_count", 0) or 0),
+                "failed_fetch_count": int(repo_snapshot.get("failed_fetch_count", 0) or 0),
+                "failed_paths": repo_snapshot.get("failed_paths", []) if isinstance(repo_snapshot.get("failed_paths", []), list) else [],
+                "bundle_summary": repo_bundle_summary,
+                "chunk_count": int(chunk_manifest.get("chunk_count", 0) or 0),
+                "large_repo_context": {
+                    "included_chunk_count": int(large_repo_context.get("included_chunk_count", 0) or 0),
+                    "omitted_chunk_count": int(large_repo_context.get("omitted_chunk_count", 0) or 0),
+                },
+            },
+            chunk_qa_report=chunk_qa_report_v1,
+            forms_count_reported=0,
+            event_handler_count_exact=0,
+            bas_module_count=int(controller_inventory.get("controller_count", 0) or 0),
+        )
+
+        route_count = int(route_inventory.get("route_count", 0) or 0)
+        controller_count = int(controller_inventory.get("controller_count", 0) or 0)
+        template_count = int(template_inventory.get("template_count", 0) or 0)
+        sql_count = int(sql_catalog.get("statement_count", 0) or 0)
+        session_keys = int(session_inventory.get("session_key_count", 0) or 0)
+
+        legacy_inventory = {
+            "summary": (
+                f"Detected PHP legacy application with {controller_count} controllers, "
+                f"{route_count} routes, {template_count} templates, {sql_count} SQL statements, "
+                f"and {session_keys} session keys."
+            ),
+            "vb6_projects": [],
+            "forms": [],
+            "activex_controls": [],
+            "dll_dependencies": [],
+            "ocx_dependencies": [],
+            "event_handlers": [],
+            "project_members": list(bundle_file_map.keys())[:1000],
+            "database_tables": database_tables[:200],
+            "procedures": procedures,
+            "input_signals": sorted(
+                [name for name, count in session_inventory.get("superglobal_usage", {}).items() if int(count or 0) > 0]
+            )[:80]
+            if isinstance(session_inventory.get("superglobal_usage", {}), dict)
+            else [],
+            "side_effect_patterns": [
+                "session_state_mutation" if bool(session_inventory.get("uses_session_state")) else "",
+                "file_upload_handling" if int(file_io_inventory.get("upload_file_count", 0) or 0) > 0 else "",
+                "export_generation" if int(file_io_inventory.get("export_file_count", 0) or 0) > 0 else "",
+            ],
+            "ui_event_map": [],
+            "sql_query_catalog": [row.get("raw", "") for row in sql_catalog.get("statements", []) if isinstance(row, dict)][:120],
+            "connection_strings": [],
+            "database_file_references": [],
+            "connection_string_rows": [],
+            "database_file_reference_rows": [],
+            "module_global_declarations": [],
+            "com_surface_map": {},
+            "win32_declares": [],
+            "error_handling_profile": {},
+            "pitfall_detectors": pitfall_detectors,
+            "modernization_readiness": {
+                "score": readiness_score,
+                "risk_tier": risk_tier,
+                "recommended_strategy": {
+                    "id": "php_web_modularization",
+                    "name": "PHP web modernization",
+                    "rationale": "Controller, route, session, and SQL extraction indicate a web-centric modernization path.",
+                },
+                "required_actions": [
+                    "Confirm framework conventions and route ownership.",
+                    "Validate auth/session behavior before target generation.",
+                    "Parameterize or replace inline SQL during migration.",
+                ],
+            },
+            "source_target_modernization_profile": source_target_profile,
+            "project_business_summaries": [],
+            "source_loc_total": int(source_loc_metrics.get("total_loc", 0) or 0),
+            "source_loc_forms": 0,
+            "source_loc_modules": int(source_loc_metrics.get("modules_loc", 0) or 0),
+            "source_loc_classes": int(source_loc_metrics.get("classes_loc", 0) or 0),
+            "source_files_scanned": int(source_loc_metrics.get("files_scanned", 0) or 0),
+            "source_loc_by_file": [{"path": path, "loc": int(loc or 0)} for path, loc in sorted(source_loc_by_file.items())][:2000],
+            "php_analysis": {
+                "framework": str(((state or {}).get("integration_context", {}) if isinstance((state or {}).get("integration_context", {}), dict) else {}).get("discover_cache", {}).get("landscape", {}).get("php_framework_profile_v1", {}).get("framework", "")).strip() or "custom_php",
+                "route_inventory": route_inventory,
+                "controller_inventory": controller_inventory,
+                "template_inventory": template_inventory,
+                "sql_catalog": sql_catalog,
+                "session_state_inventory": session_inventory,
+                "authz_authn_inventory": auth_inventory,
+                "include_graph": include_graph,
+                "background_job_inventory": job_inventory,
+                "file_io_inventory": file_io_inventory,
+                "validation_rules": validation_inventory,
+                "chunk_qa_report_v1": chunk_qa_report_v1,
+                "merged_analysis_coverage_v1": merged_analysis_coverage_v1,
+            },
+            "chunk_qa_report_v1": chunk_qa_report_v1,
+            "merged_analysis_coverage_v1": merged_analysis_coverage_v1,
+        }
+        legacy_inventory["side_effect_patterns"] = [x for x in legacy_inventory["side_effect_patterns"] if x]
+        return {
+            "inline": False,
+            "chunk_count": max(1, int(chunk_manifest.get("chunk_count", 0) or 0)),
+            "summary": (
+                f"PHP legacy analysis completed. routes={route_count}, controllers={controller_count}, "
+                f"templates={template_count}, sql={sql_count}, session_keys={session_keys}, "
+                f"repo_mode={str(repo_snapshot.get('analysis_mode', 'standard') or 'standard')}."
+            ),
+            "seed_legacy_contract": [
+                {
+                    "function_name": proc,
+                    "inputs": legacy_inventory.get("input_signals", [])[:6],
+                    "outputs": database_tables[:6],
+                    "side_effects": legacy_inventory.get("side_effect_patterns", [])[:6],
+                }
+                for proc in procedures[:20]
+            ],
+            "inventory": legacy_inventory,
+            "legacy_skill_profile": legacy_skill_profile,
+        }
 
     @property
     def name(self) -> str:
@@ -1781,6 +2020,22 @@ Analyze this code chunk and extract behavior compactly.
             file_paths=bundle_paths,
             file_contents=(bundle_file_map if bundle_file_map else {"legacy_bundle": text[:50000]}),
         )
+        source_lang = str((state or {}).get("source_language", "") or "").strip().lower()
+        if legacy_skill_profile.get("selected_skill_id") == "php_legacy" or source_lang == "php":
+            return self._build_php_compact_context(
+                bundle_file_map=bundle_file_map,
+                target_lang=target_lang,
+                state=state,
+                legacy_skill_profile=legacy_skill_profile,
+                source_loc_metrics=source_loc_metrics,
+                source_loc_by_file=source_loc_by_file,
+                repo_snapshot=repo_snapshot,
+                component_inventory=component_inventory,
+                chunk_manifest=chunk_manifest,
+                dependency_graph=dependency_graph,
+                large_repo_context=large_repo_context,
+                repo_bundle_summary=repo_bundle_summary,
+            )
         if structured_chunk_inputs:
             inline = False
             chunk_inputs = [
@@ -3674,6 +3929,28 @@ BUSINESS OBJECTIVES:
                     if isinstance(rows, list):
                         for row in rows[:120]:
                             terms.update(self._tokenize_grounding_text(str(row)))
+        php_analysis = legacy_inventory.get("php_analysis", {})
+        if isinstance(php_analysis, dict):
+            route_inventory = php_analysis.get("route_inventory", {})
+            if isinstance(route_inventory, dict):
+                for row in route_inventory.get("routes", []) if isinstance(route_inventory.get("routes", []), list) else []:
+                    if not isinstance(row, dict):
+                        continue
+                    terms.update(self._tokenize_grounding_text(str(row.get("uri", ""))))
+                    terms.update(self._tokenize_grounding_text(str(row.get("handler", ""))))
+            controller_inventory = php_analysis.get("controller_inventory", {})
+            if isinstance(controller_inventory, dict):
+                for row in controller_inventory.get("controllers", []) if isinstance(controller_inventory.get("controllers", []), list) else []:
+                    if not isinstance(row, dict):
+                        continue
+                    terms.update(self._tokenize_grounding_text(str(row.get("name", ""))))
+                    for action in row.get("actions", []) if isinstance(row.get("actions", []), list) else []:
+                        terms.update(self._tokenize_grounding_text(str(action)))
+            template_inventory = php_analysis.get("template_inventory", {})
+            if isinstance(template_inventory, dict):
+                for row in template_inventory.get("templates", []) if isinstance(template_inventory.get("templates", []), list) else []:
+                    if isinstance(row, dict):
+                        terms.update(self._tokenize_grounding_text(str(row.get("name", ""))))
         return terms
 
     def _classify_requirement_grounding(
@@ -4982,6 +5259,10 @@ BUSINESS OBJECTIVES:
         projects_count = len(legacy_inventory.get("vb6_projects", [])) if isinstance(legacy_inventory.get("vb6_projects", []), list) else 0
         forms_count = len(legacy_inventory.get("forms", [])) if isinstance(legacy_inventory.get("forms", []), list) else 0
         activex_count = len(legacy_inventory.get("activex_controls", [])) if isinstance(legacy_inventory.get("activex_controls", []), list) else 0
+        php_analysis = legacy_inventory.get("php_analysis", {}) if isinstance(legacy_inventory.get("php_analysis", {}), dict) else {}
+        php_route_count = int(_route.get("route_count", 0) or 0) if isinstance((_route := php_analysis.get("route_inventory", {})), dict) else 0
+        php_controller_count = int(_ctrl.get("controller_count", 0) or 0) if isinstance((_ctrl := php_analysis.get("controller_inventory", {})), dict) else 0
+        php_template_count = int(_tpl.get("template_count", 0) or 0) if isinstance((_tpl := php_analysis.get("template_inventory", {})), dict) else 0
         legacy_skill = parsed.get("legacy_skill_profile", {}) if isinstance(parsed.get("legacy_skill_profile", {}), dict) else {}
         legacy_skill_id = str(legacy_skill.get("selected_skill_id", "")).strip()
         return (
@@ -4992,6 +5273,11 @@ BUSINESS OBJECTIVES:
             + (
                 f", VB6 projects={projects_count}, legacy forms={forms_count}, ActiveX/COM={activex_count}"
                 if projects_count or forms_count or activex_count
+                else ""
+            )
+            + (
+                f", PHP routes={php_route_count}, controllers={php_controller_count}, templates={php_template_count}"
+                if php_route_count or php_controller_count or php_template_count
                 else ""
             )
             + (f", skill={legacy_skill_id}" if legacy_skill_id else "")

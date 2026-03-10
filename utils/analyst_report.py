@@ -6312,6 +6312,7 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     req_pack = _as_dict(safe.get("requirements_pack"))
     legacy_inventory = _resolve_legacy_inventory(safe, req_pack)
     vb6_analysis = _resolve_vb6_analysis(safe, legacy_inventory)
+    php_analysis = _as_dict(legacy_inventory.get("php_analysis"))
     context_ref = _resolve_context_ref(safe, req_pack)
     source_target_profile = _as_dict(safe.get("source_target_modernization_profile")) or _as_dict(
         req_pack.get("source_target_modernization_profile")
@@ -7432,6 +7433,46 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         trend_snapshot=trend_snapshot_artifact,
         trend_series=trend_series_artifact,
     )
+    php_route_inventory_artifact = {
+        **_as_dict(php_analysis.get("route_inventory")),
+        "metadata": metadata_common,
+    }
+    php_controller_inventory_artifact = {
+        **_as_dict(php_analysis.get("controller_inventory")),
+        "metadata": metadata_common,
+    }
+    php_template_inventory_artifact = {
+        **_as_dict(php_analysis.get("template_inventory")),
+        "metadata": metadata_common,
+    }
+    php_sql_catalog_artifact = {
+        **_as_dict(php_analysis.get("sql_catalog")),
+        "metadata": metadata_common,
+    }
+    php_session_state_inventory_artifact = {
+        **_as_dict(php_analysis.get("session_state_inventory")),
+        "metadata": metadata_common,
+    }
+    php_authz_authn_inventory_artifact = {
+        **_as_dict(php_analysis.get("authz_authn_inventory")),
+        "metadata": metadata_common,
+    }
+    php_include_graph_artifact = {
+        **_as_dict(php_analysis.get("include_graph")),
+        "metadata": metadata_common,
+    }
+    php_background_job_inventory_artifact = {
+        **_as_dict(php_analysis.get("background_job_inventory")),
+        "metadata": metadata_common,
+    }
+    php_file_io_inventory_artifact = {
+        **_as_dict(php_analysis.get("file_io_inventory")),
+        "metadata": metadata_common,
+    }
+    php_validation_rules_artifact = {
+        **_as_dict(php_analysis.get("validation_rules")),
+        "metadata": metadata_common,
+    }
     canonical_project = _clean(_as_dict(projects_out[0]).get("name")) if projects_out else "Project 1"
     artifact_context = {
         "repo": repo,
@@ -7503,6 +7544,16 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "reporting_model": "artifact://analyst/raw/reporting_model/v1",
         "identity_access_model": "artifact://analyst/raw/identity_access_model/v1",
         "discover_review_checklist": "artifact://analyst/raw/discover_review_checklist/v1",
+        "php_route_inventory": "artifact://analyst/raw/php_route_inventory/v1",
+        "php_controller_inventory": "artifact://analyst/raw/php_controller_inventory/v1",
+        "php_template_inventory": "artifact://analyst/raw/php_template_inventory/v1",
+        "php_sql_catalog": "artifact://analyst/raw/php_sql_catalog/v1",
+        "php_session_state_inventory": "artifact://analyst/raw/php_session_state_inventory/v1",
+        "php_authz_authn_inventory": "artifact://analyst/raw/php_authz_authn_inventory/v1",
+        "php_include_graph": "artifact://analyst/raw/php_include_graph/v1",
+        "php_background_job_inventory": "artifact://analyst/raw/php_background_job_inventory/v1",
+        "php_file_io_inventory": "artifact://analyst/raw/php_file_io_inventory/v1",
+        "php_validation_rules": "artifact://analyst/raw/php_validation_rules/v1",
         "artifact_index": "artifact://analyst/raw/artifact_index/v1",
     }
     artifact_index = {
@@ -7569,6 +7620,22 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
             {"type": "reporting_model", "ref": refs["reporting_model"]},
             {"type": "identity_access_model", "ref": refs["identity_access_model"]},
             {"type": "discover_review_checklist", "ref": refs["discover_review_checklist"]},
+            *(
+                [
+                    {"type": "php_route_inventory", "ref": refs["php_route_inventory"]},
+                    {"type": "php_controller_inventory", "ref": refs["php_controller_inventory"]},
+                    {"type": "php_template_inventory", "ref": refs["php_template_inventory"]},
+                    {"type": "php_sql_catalog", "ref": refs["php_sql_catalog"]},
+                    {"type": "php_session_state_inventory", "ref": refs["php_session_state_inventory"]},
+                    {"type": "php_authz_authn_inventory", "ref": refs["php_authz_authn_inventory"]},
+                    {"type": "php_include_graph", "ref": refs["php_include_graph"]},
+                    {"type": "php_background_job_inventory", "ref": refs["php_background_job_inventory"]},
+                    {"type": "php_file_io_inventory", "ref": refs["php_file_io_inventory"]},
+                    {"type": "php_validation_rules", "ref": refs["php_validation_rules"]},
+                ]
+                if php_analysis
+                else []
+            ),
         ],
     }
 
@@ -7629,6 +7696,22 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
         "reporting_model": reporting_model_artifact,
         "identity_access_model": identity_access_model_artifact,
         "discover_review_checklist": discover_review_checklist_artifact,
+        **(
+            {
+                "php_route_inventory": php_route_inventory_artifact,
+                "php_controller_inventory": php_controller_inventory_artifact,
+                "php_template_inventory": php_template_inventory_artifact,
+                "php_sql_catalog": php_sql_catalog_artifact,
+                "php_session_state_inventory": php_session_state_inventory_artifact,
+                "php_authz_authn_inventory": php_authz_authn_inventory_artifact,
+                "php_include_graph": php_include_graph_artifact,
+                "php_background_job_inventory": php_background_job_inventory_artifact,
+                "php_file_io_inventory": php_file_io_inventory_artifact,
+                "php_validation_rules": php_validation_rules_artifact,
+            }
+            if php_analysis
+            else {}
+        ),
         "artifact_index": artifact_index,
     }
     for key, artifact in list(artifacts.items()):
