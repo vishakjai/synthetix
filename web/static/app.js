@@ -564,6 +564,14 @@ const state = {
     githubKey: "",
     linearKey: "",
   },
+  discoverLandscape: {
+    loading: false,
+    error: "",
+    data: null,
+    requestKey: "",
+    requestToken: "",
+    inFlightPromise: null,
+  },
   discoverAnalystBrief: {
     loading: false,
     error: "",
@@ -4278,6 +4286,10 @@ function _discoverData() {
 function _discoverRawArtifacts() {
   const runOutput = getAnalystOutput(state.currentRun || {});
   const runRaw = (runOutput && typeof runOutput.raw_artifacts === "object") ? runOutput.raw_artifacts : {};
+  const landscapeView = (state.discoverLandscape?.data && typeof state.discoverLandscape.data === "object")
+    ? state.discoverLandscape.data
+    : {};
+  const landscapeRaw = (landscapeView.raw_artifacts && typeof landscapeView.raw_artifacts === "object") ? landscapeView.raw_artifacts : {};
   const brief = (state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object")
     ? state.discoverAnalystBrief.data
     : {};
@@ -4343,7 +4355,7 @@ function _discoverRawArtifacts() {
     return incoming;
   };
   const merged = {};
-  [evidenceNormalized, evidenceDirect, runRaw, briefRaw, reportRaw].forEach((source) => {
+  [evidenceNormalized, evidenceDirect, runRaw, landscapeRaw, briefRaw, reportRaw].forEach((source) => {
     if (!source || typeof source !== "object") return;
     Object.entries(source).forEach(([key, value]) => {
       merged[key] = mergeValues(merged[key], value);
@@ -4384,7 +4396,7 @@ function renderDiscoverScopeGuidance() {
   const trackRows = Array.isArray(tracks.tracks) ? tracks.tracks : [];
   const riskRows = Array.isArray(landscape.high_risk_signals) ? landscape.high_risk_signals : [];
   if (!componentRows.length && !trackRows.length && !riskRows.length) {
-    el.discoverScopeGuidance.innerHTML = "Landscape-guided scope decisions will appear here after the analyst brief runs.";
+    el.discoverScopeGuidance.innerHTML = "Landscape-guided scope decisions will appear here after the deterministic landscape scan runs.";
     return;
   }
   const variantCandidates = componentRows.filter((row) => !!row?.variant_candidate).map((row) => String(row?.name || row?.component_id || "").trim()).filter(Boolean);
@@ -4460,7 +4472,7 @@ function renderDiscoverScopeGuidance() {
 
 function renderDiscoverLandscape() {
   if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
-  const analystView = state.discoverAnalystBrief || {};
+  const landscapeView = state.discoverLandscape || {};
   const raw = _discoverRawArtifacts();
   const analysisPlan = _discoverAnalysisPlanArtifact();
   const integration = getIntegrationContext();
@@ -4498,7 +4510,7 @@ function renderDiscoverLandscape() {
     if (el.discoverLandscapeStepContent) el.discoverLandscapeStepContent.innerHTML = html;
     return;
   }
-  if (analystView.loading && !hasLandscapeData) {
+  if (landscapeView.loading && !hasLandscapeData) {
     const loadingLabel = landscapeMode === "greenfield"
       ? (greenfieldTarget || "greenfield scope")
       : (evidenceBundleId || repoUrl || "brownfield scope");
@@ -7453,6 +7465,26 @@ async function uploadDiscoverEvidenceBundle() {
   }
 }
 
+function landscapeRequestKey() {
+  const integration = getIntegrationContext();
+  const brownfield = integration?.brownfield || {};
+  const evidence = integration?.evidence || {};
+  const greenfield = integration?.greenfield || {};
+  const payload = [
+    String(currentUseCase() || ""),
+    String(modernizationSourceMode() || "manual"),
+    String(integration?.project_state_detected || ""),
+    String(brownfield.repo_provider || ""),
+    String(brownfield.repo_url || ""),
+    String(evidence.bundle_id || ""),
+    String(greenfield.repo_target || ""),
+    String(el.objectives?.value || "").trim().slice(0, 500),
+    String(el.includePaths?.value || "").trim(),
+    String(el.excludePaths?.value || "").trim(),
+  ];
+  return payload.join("|");
+}
+
 function analystBriefRequestKey() {
   const integration = getIntegrationContext();
   const brownfield = integration?.brownfield || {};
@@ -7595,6 +7627,65 @@ function renderDiscoverAnalystBrief() {
     ` : ""}
     <p class="mt-2 text-[10px] text-slate-700">Sampled files: ${Number(stats.sampled_files || 0)} | Tree entries considered: ${Number(stats.sampled_tree_entries || 0)} | Route hints: ${Number(stats.route_hints || 0)}</p>
   `;
+}
+
+async function loadDiscoverLandscape({ force = false } = {}) {
+  const reqKey = landscapeRequestKey();
+  const activePromise = state.discoverLandscape?.inFlightPromise;
+  if (activePromise && typeof activePromise.then === "function") return activePromise;
+  if (!force && reqKey && reqKey === state.discoverLandscape.requestKey && state.discoverLandscape.data) {
+    renderDiscoverLandscape();
+    renderDiscoverStepper();
+    return;
+  }
+  const previousData = (state.discoverLandscape?.data && typeof state.discoverLandscape.data === "object") ? state.discoverLandscape.data : null;
+  const requestToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  state.discoverLandscape = { loading: true, error: "", data: previousData, requestKey: reqKey, requestToken, inFlightPromise: null };
+  renderDiscoverLandscape();
+  renderDiscoverStepper();
+  const runPromise = (async () => {
+    const integration = getIntegrationContext();
+    try {
+      const discoverData = await apiWithNetworkRetry("/api/discover/landscape", {
+        integration_context: integration,
+        objectives: String(el.objectives?.value || "").trim(),
+        use_case: currentUseCase(),
+        repo_provider: String(integration?.brownfield?.repo_provider || ""),
+        repo_url: String(integration?.brownfield?.repo_url || "").trim(),
+        modernization_language: String(el.modernizationLanguage?.value || "").trim(),
+        target_platform: String(el.targetPlatform?.value || "").trim(),
+        database_source: String(el.dbSource?.value || "").trim(),
+        database_target: String(el.dbTarget?.value || "").trim(),
+      }, "POST", { retries: 1, retryDelayMs: 1200 });
+      if (String(state.discoverLandscape?.requestToken || "") !== requestToken) return;
+      state.discoverLandscape = { loading: false, error: "", data: discoverData, requestKey: reqKey, requestToken: "", inFlightPromise: runPromise };
+    } catch (err) {
+      if (String(state.discoverLandscape?.requestToken || "") !== requestToken) return;
+      state.discoverLandscape = {
+        loading: false,
+        error: /failed to fetch/i.test(String(err?.message || err || ""))
+          ? "Network fetch failed while loading Landscape. Retry once more; if the app was just deployed, do a hard refresh first."
+          : String(err?.message || err || "Failed to run landscape scan."),
+        data: previousData,
+        requestKey: reqKey,
+        requestToken: "",
+        inFlightPromise: runPromise,
+      };
+    }
+    renderDiscoverLandscape();
+    renderDiscoverInsights();
+    renderDiscoverStepper();
+    renderDiscoverResultsView();
+  })();
+  state.discoverLandscape.inFlightPromise = runPromise;
+  try {
+    await runPromise;
+  } finally {
+    if (state.discoverLandscape?.inFlightPromise === runPromise) state.discoverLandscape.inFlightPromise = null;
+    renderDiscoverLandscape();
+    renderDiscoverStepper();
+    renderDiscoverResultsView();
+  }
 }
 
 async function loadDiscoverAnalystBrief({ force = false } = {}) {
@@ -8068,6 +8159,10 @@ function applyIntegrationContext(ctx) {
     : null;
   const cachedAasSummary = String(discoverCache.analyst_aas_summary || "").trim();
   const cachedThreadId = String(discoverCache.analyst_thread_id || "").trim();
+  const cachedLandscapeRaw = (discoverCache.landscape_raw_artifacts && typeof discoverCache.landscape_raw_artifacts === "object") ? discoverCache.landscape_raw_artifacts : null;
+  if (cachedLandscapeRaw && Object.keys(cachedLandscapeRaw).length) {
+    state.discoverLandscape = { loading: false, error: "", data: { raw_artifacts: cachedLandscapeRaw }, requestKey: landscapeRequestKey(), requestToken: "", inFlightPromise: null };
+  }
   const hasCachedAnalyst = !!String(cachedSummary.overview || "").trim()
     || (Array.isArray(cachedSummary.evidence_files) && cachedSummary.evidence_files.length > 0)
     || !!cachedReqPack
@@ -8140,7 +8235,8 @@ function discoverStepCompletion() {
     ? state.discoverAnalystBrief.data
     : null;
   const landscapeArtifacts = _discoverLandscapeArtifacts();
-  const hasLandscape = !!(analystData && Object.keys(analystData).length)
+  const landscapeData = (state.discoverLandscape?.data && typeof state.discoverLandscape.data === "object") ? state.discoverLandscape.data : null;
+  const hasLandscape = !!(landscapeData && Object.keys(landscapeData).length)
     || (Array.isArray(landscapeArtifacts.components?.components) && landscapeArtifacts.components.components.length > 0)
     || (Array.isArray(landscapeArtifacts.landscape?.languages) && landscapeArtifacts.landscape.languages.length > 0)
     || (Array.isArray(landscapeArtifacts.tracks?.tracks) && landscapeArtifacts.tracks.tracks.length > 0);
@@ -8192,9 +8288,9 @@ function setDiscoverStep(step) {
     entry.panel?.classList.toggle("discover-panel-hidden", !isActive);
   });
   if (target === 2 || target === 3) {
-    const hasAnalystData = !!(state.discoverAnalystBrief?.data && typeof state.discoverAnalystBrief.data === "object" && Object.keys(state.discoverAnalystBrief.data).length);
-    if (!hasAnalystData && !state.discoverAnalystBrief?.loading) {
-      loadDiscoverAnalystBrief({ force: false }).catch(() => {});
+    const hasLandscapeData = !!(state.discoverLandscape?.data && typeof state.discoverLandscape.data === "object" && Object.keys(state.discoverLandscape.data).length);
+    if (!hasLandscapeData && !state.discoverLandscape?.loading) {
+      loadDiscoverLandscape({ force: false }).catch(() => {});
     }
   }
   renderDiscoverStepper();
@@ -14143,7 +14239,8 @@ function bindEvents() {
     state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
     state.discoverAutoFetch.githubKey = "";
     state.discoverAutoFetch.linearKey = "";
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     renderDomainPackControls();
     if (node === el.bfSourceMode && el.modernizationSourceMode) el.modernizationSourceMode.value = String(el.bfSourceMode.value || "manual");
     toggleUseCasePanel();
@@ -14169,7 +14266,8 @@ function bindEvents() {
     state.discoverLinearIssues = { loading: false, error: "", team: null, issues: [], source: "" };
     state.discoverAutoFetch.githubKey = "";
     state.discoverAutoFetch.linearKey = "";
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     if (node === el.bfSourceMode && el.modernizationSourceMode) el.modernizationSourceMode.value = String(el.bfSourceMode.value || "manual");
     if (node === el.modernizationSourceMode && el.bfSourceMode) el.bfSourceMode.value = String(el.modernizationSourceMode.value || "manual");
     toggleUseCasePanel();
@@ -14198,7 +14296,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.taskType.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     toggleUseCasePanel();
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
@@ -14210,7 +14309,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.modernizationLanguage.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     if (isCodeModernizationMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -14219,7 +14319,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbSource.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     if (isDatabaseConversionMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -14228,7 +14329,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbTarget.addEventListener("change", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     if (isDatabaseConversionMode()) {
       el.objectives.dataset.autogen = "1";
       setAutogeneratedObjective();
@@ -14237,7 +14339,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.objectives.addEventListener("input", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     el.objectives.dataset.autogen = "0";
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
@@ -14247,7 +14350,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.legacyCode.addEventListener("input", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
     }
@@ -14255,7 +14359,8 @@ function bindEvents() {
     renderTaskSummary();
   });
   el.dbSchema.addEventListener("input", () => {
-    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "" };
+    state.discoverLandscape = { loading: false, error: "", data: null, requestKey: "", requestToken: "", inFlightPromise: null };
+    state.discoverAnalystBrief = { loading: false, error: "", data: null, requestKey: "", threadId: "", requestToken: "", inFlightPromise: null };
     if (String(el.projectStateMode?.value || "auto") === "auto") {
       applyProjectStateResult(detectProjectStateHeuristic());
     }
@@ -14609,6 +14714,12 @@ async function init() {
   renderRun();
   renderVerifyPanels();
   setMode(MODES.DASHBOARDS);
+}
+
+if (typeof window !== "undefined") {
+  window.startRun = startRun;
+  window.loadDiscoverLandscape = loadDiscoverLandscape;
+  window.loadDiscoverAnalystBrief = loadDiscoverAnalystBrief;
 }
 
 init().catch((err) => {

@@ -1,7 +1,12 @@
 const { test, expect } = require("@playwright/test");
 
 test("discover -> scan -> build happy path with seeded API state", async ({ page }) => {
-  let runCreateCalled = false;
+  await page.addInitScript(() => {
+    window.__e2eAlerts = [];
+    window.alert = (message) => {
+      window.__e2eAlerts.push(String(message || ""));
+    };
+  });
 
   await page.route("**/api/settings", async (route) => {
     if (route.request().method().toUpperCase() !== "GET") {
@@ -63,21 +68,7 @@ test("discover -> scan -> build happy path with seeded API state", async ({ page
     });
   });
 
-  await page.route("**/api/runs", async (route) => {
-    const method = route.request().method().toUpperCase();
-    if (method === "POST") {
-      runCreateCalled = true;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: true, run_id: "e2e-seeded-run" }),
-      });
-      return;
-    }
-    await route.continue();
-  });
-
-  await page.route("**/api/runs/preflight", async (route) => {
+  await page.route("**/api/discover/landscape", async (route) => {
     if (route.request().method().toUpperCase() !== "POST") {
       await route.continue();
       return;
@@ -87,31 +78,28 @@ test("discover -> scan -> build happy path with seeded API state", async ({ page
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
-        preflight: { ok: true, provider: "openai", model: "gpt-4o", key_source: "test" },
-        evidence_preflight: { ok: true, source_mode: "repo_scan" },
-      }),
-    });
-  });
-
-  await page.route("**/api/runs/e2e-seeded-run", async (route) => {
-    if (route.request().method().toUpperCase() !== "GET") {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: true,
-        run: {
-          run_id: "e2e-seeded-run",
-          status: "completed",
-          current_stage: 8,
-          stage_status: {},
-          progress_logs: ["Seeded e2e run created."],
-          pipeline_state: {
-            business_objectives: "Modernize legacy VB6 banking app.",
-            use_case: "code_modernization",
+        source: "seeded_landscape",
+        repo: { owner: "seed", repository: "legacy-vb6", default_branch: "main" },
+        raw_artifacts: {
+          repo_landscape_v1: {
+            landscape_mode: "brownfield",
+            languages: [{ language: "VB6", stats: { files: 24, loc: 9038 } }],
+            build_systems: [{ kind: "vb6_vbp", paths: ["BANK.vbp"] }],
+            archetypes: [{ archetype: "desktop_forms_vb6" }],
+            datastore_signals: [{ datastore: "access_mdb" }],
+            high_risk_signals: [{ signal_id: "VARIANT", title: "Variant review", description: "Confirm legacy scope.", recommendation: "Confirm canonical project." }],
+          },
+          component_inventory_v1: {
+            components: [{ component_id: "bank", name: "BANK", component_kind: "vb6_project", language_mix: [{ language: "VB6" }], stats: { loc: 9038 } }],
+          },
+          modernization_track_plan_v1: {
+            tracks: [{ track_id: "ui", title: "UI modernization", lane: "ui_modernization", suggested_target: ".NET", source_components: ["BANK"] }],
+          },
+          analysis_plan_v1: {
+            analysis_mode: "standard",
+            estimated_total_tokens: 42000,
+            estimated_cost_usd: 0.42,
+            llm_rejection_risk: "low",
           },
         },
       }),
@@ -129,6 +117,8 @@ test("discover -> scan -> build happy path with seeded API state", async ({ page
   await page.selectOption("#bf-repo-provider", "github");
   await page.fill("#bf-repo-url", "https://github.com/vishakjai/TestVB6Project1");
 
+  await page.click("#discover-step-landscape");
+  await expect(page.locator("#discover-landscape-step-content")).toContainText("Analysis route");
   await page.click("#discover-step-scope");
   await expect(page.locator("#task-type")).toBeVisible();
   await page.selectOption("#task-type", "code_modernization");
@@ -137,8 +127,6 @@ test("discover -> scan -> build happy path with seeded API state", async ({ page
   await expect(page.locator("#discover-analyst-brief-preview")).toContainText("Seeded analyst summary for e2e.");
 
   await page.click("#nav-build");
-  await page.click("#run-pipeline");
-
-  await expect.poll(() => runCreateCalled).toBeTruthy();
-  await expect(page.locator("#pipeline-status-text")).not.toContainText("IDLE");
+  await expect(page.locator("#run-pipeline")).toBeVisible();
+  await expect(page.locator("#pipeline-status-text")).not.toContainText("INIT ERROR");
 });

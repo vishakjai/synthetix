@@ -6213,6 +6213,178 @@ async def api_discover_github_tree(request):
     )
 
 
+def _attach_landscape_artifacts_to_payload(
+    response_payload: dict[str, Any],
+    *,
+    repo_ref: str,
+    branch_ref: str,
+    commit_ref: str,
+    tree_entries: list[dict[str, Any]],
+    fetched_files: dict[str, str],
+    include_paths: list[str],
+    exclude_paths: list[str],
+) -> dict[str, Any]:
+    try:
+        artifacts = build_landscape_artifacts(
+            repo=repo_ref,
+            branch=branch_ref or "main",
+            commit_sha=commit_ref,
+            entries=[row for row in tree_entries if isinstance(row, dict)],
+            file_contents=fetched_files,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+        )
+    except Exception as exc:
+        response_payload.setdefault("landscape_error", f"landscape generation failed: {exc}")
+        return response_payload
+    raw = response_payload.get("raw_artifacts", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    raw.update(artifacts)
+    response_payload["raw_artifacts"] = raw
+    report = response_payload.get("analyst_report_v2", {})
+    if isinstance(report, dict):
+        report_raw = report.get("raw_artifacts", {})
+        if not isinstance(report_raw, dict):
+            report_raw = {}
+        report_raw.update(artifacts)
+        report["raw_artifacts"] = report_raw
+        response_payload["analyst_report_v2"] = report
+    return response_payload
+
+
+def _attach_repo_scan_artifacts_to_payload(
+    response_payload: dict[str, Any],
+    *,
+    repo_ref: str,
+    owner_ref: str,
+    repository_ref: str,
+    branch_ref: str,
+    commit_ref: str,
+    tree_entries: list[dict[str, Any]],
+    selected_entries: list[dict[str, Any]],
+    fetched_files: dict[str, str],
+    include_paths: list[str],
+    exclude_paths: list[str],
+    bundle_summary: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        snapshot_id = hashlib.sha1(
+            f"discover::{repo_ref}::{branch_ref}::{commit_ref}::{','.join(sorted(str(row.get('path', '')).strip() for row in selected_entries if isinstance(row, dict)))}".encode("utf-8")
+        ).hexdigest()[:20]
+        routing = classify_repo_scan_mode(
+            [row for row in selected_entries if isinstance(row, dict)],
+            total_tree_entries=len(tree_entries or []),
+        )
+        repo_snapshot_v1 = build_repo_snapshot_v1(
+            snapshot_id=snapshot_id,
+            repo_url=repo_ref,
+            owner=owner_ref,
+            repository=repository_ref,
+            branch=branch_ref,
+            commit_sha=commit_ref,
+            tree_sha=commit_ref,
+            include_paths=include_paths,
+            exclude_paths=exclude_paths,
+            raw_entries=tree_entries,
+            selected_entries=selected_entries,
+            file_contents=fetched_files,
+            failed_paths=[],
+            reused_paths=[],
+            changed_paths=[],
+            compare_error="",
+            chunk_size=REPO_SCAN_CHUNK_SIZE,
+            chunk_workers=REPO_SCAN_CHUNK_WORKERS,
+            family_key="discover",
+            bundle_summary=bundle_summary,
+            analysis_mode=str(routing.get("analysis_mode", "standard")),
+            analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
+        )
+        symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=fetched_files)
+        dependency_graph_v1 = build_global_dependency_graph_v1(
+            snapshot_id=snapshot_id,
+            file_contents=fetched_files,
+            selected_entries=selected_entries,
+        )
+        component_inventory_v1 = build_component_inventory_v1(
+            snapshot_id=snapshot_id,
+            selected_entries=selected_entries,
+            file_contents=fetched_files,
+        )
+        chunk_manifest_v1 = build_chunk_manifest_v1(
+            snapshot_id=snapshot_id,
+            component_inventory=component_inventory_v1,
+            file_contents=fetched_files,
+        )
+        legacy_chunk_context_v1 = build_large_repo_context_v1(
+            snapshot_id=snapshot_id,
+            repo_snapshot=repo_snapshot_v1,
+            component_inventory=component_inventory_v1,
+            chunk_manifest=chunk_manifest_v1,
+            dependency_graph=dependency_graph_v1,
+            file_contents=fetched_files,
+            max_total_chars=int(bundle_summary.get("effective_max_chars", REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS),
+        )
+        plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
+        analysis_plan_v1 = build_analysis_plan_v1(
+            snapshot_id=snapshot_id,
+            repo_snapshot=repo_snapshot_v1,
+            component_inventory=component_inventory_v1,
+            chunk_manifest=chunk_manifest_v1,
+            large_repo_context=legacy_chunk_context_v1,
+            provider=plan_provider,
+            model=plan_model,
+            max_output_tokens=plan_output_tokens,
+        )
+    except Exception as exc:
+        response_payload.setdefault("repo_scan_artifact_error", f"repo scan artifact generation failed: {exc}")
+        return response_payload
+    raw = response_payload.get("raw_artifacts", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    raw.update(
+        {
+            "repo_snapshot_v1": repo_snapshot_v1,
+            "symbol_index_v1": symbol_index_v1,
+            "global_dependency_graph_v1": dependency_graph_v1,
+            "component_inventory_v1": component_inventory_v1,
+            "chunk_manifest_v1": chunk_manifest_v1,
+            "legacy_chunk_context_v1": legacy_chunk_context_v1,
+            "analysis_plan_v1": analysis_plan_v1,
+        }
+    )
+    response_payload["raw_artifacts"] = raw
+    return response_payload
+
+
+def _greenfield_summary_from_landscape(artifacts: dict[str, Any], objectives: str = "") -> dict[str, Any]:
+    landscape = artifacts.get("repo_landscape_v1", {}) if isinstance(artifacts.get("repo_landscape_v1", {}), dict) else {}
+    components = artifacts.get("component_inventory_v1", {}) if isinstance(artifacts.get("component_inventory_v1", {}), dict) else {}
+    tracks = artifacts.get("modernization_track_plan_v1", {}) if isinstance(artifacts.get("modernization_track_plan_v1", {}), dict) else {}
+    solution = landscape.get("solution_summary", {}) if isinstance(landscape.get("solution_summary", {}), dict) else {}
+    component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
+    track_rows = tracks.get("tracks", []) if isinstance(tracks.get("tracks", []), list) else []
+    risk_rows = landscape.get("high_risk_signals", []) if isinstance(landscape.get("high_risk_signals", []), list) else []
+    target_language_label = str(solution.get("target_language", "")).strip() or "the chosen target stack"
+    overview = (
+        str(objectives or "").strip()
+        or f"Greenfield solution landscape for {target_language_label} with {len(component_rows)} planned component(s) and {len(track_rows)} suggested delivery track(s)."
+    )
+    return {
+        "overview": overview,
+        "likely_capabilities": [str(row.get("title", "")).strip() for row in track_rows if str(row.get("title", "")).strip()][:8],
+        "input_output_contracts": [str(row.get("suggested_target", "")).strip() for row in track_rows if str(row.get("suggested_target", "")).strip()][:6],
+        "key_components": [str(row.get("name", "")).strip() for row in component_rows if str(row.get("name", "")).strip()][:8],
+        "interfaces": [str(row.get("title", "")).strip() for row in risk_rows if str(row.get("title", "")).strip()][:6],
+        "data_and_state": [str(row.get("datastore", "")).strip() for row in landscape.get("datastore_signals", []) if isinstance(row, dict) and str(row.get("datastore", "")).strip()][:6],
+        "domain_functions": [str(row.get("lane", "")).strip() for row in track_rows if str(row.get("lane", "")).strip()][:8],
+        "data_entities": [str(row.get("datastore", "")).strip() for row in landscape.get("datastore_signals", []) if isinstance(row, dict) and str(row.get("datastore", "")).strip()][:8],
+        "unknowns": [str(item).strip() for item in tracks.get("open_questions", []) if str(item).strip()][:8],
+        "evidence_files": [str(solution.get("repo_target", "")).strip()] if str(solution.get("repo_target", "")).strip() else [],
+        "stats": {"sampled_files": 0, "sampled_tree_entries": 0, "route_hints": len(track_rows)},
+    }
+
+
 async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> JSONResponse:
     integration_ctx = _extract_integration_context(payload)
     brownfield = integration_ctx.get("brownfield", {}) if isinstance(integration_ctx.get("brownfield", {}), dict) else {}
@@ -6322,177 +6494,6 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             response_payload["quality_gates"] = aas_result.get("quality_gates", [])
         return response_payload
 
-    def _attach_landscape_artifacts(
-        response_payload: dict[str, Any],
-        *,
-        repo_ref: str,
-        branch_ref: str,
-        commit_ref: str,
-        tree_entries: list[dict[str, Any]],
-        fetched_files: dict[str, str],
-    ) -> dict[str, Any]:
-        try:
-            artifacts = build_landscape_artifacts(
-                repo=repo_ref,
-                branch=branch_ref or "main",
-                commit_sha=commit_ref,
-                entries=[row for row in tree_entries if isinstance(row, dict)],
-                file_contents=fetched_files,
-                include_paths=include_paths,
-                exclude_paths=exclude_paths,
-            )
-        except Exception as exc:
-            response_payload.setdefault("landscape_error", f"landscape generation failed: {exc}")
-            return response_payload
-        raw = response_payload.get("raw_artifacts", {})
-        if not isinstance(raw, dict):
-            raw = {}
-        raw.update(artifacts)
-        response_payload["raw_artifacts"] = raw
-        report = response_payload.get("analyst_report_v2", {})
-        if isinstance(report, dict):
-            report_raw = report.get("raw_artifacts", {})
-            if not isinstance(report_raw, dict):
-                report_raw = {}
-            report_raw.update(artifacts)
-            report["raw_artifacts"] = report_raw
-            response_payload["analyst_report_v2"] = report
-        return response_payload
-
-    def _attach_repo_scan_artifacts(
-        response_payload: dict[str, Any],
-        *,
-        repo_ref: str,
-        owner_ref: str,
-        repository_ref: str,
-        branch_ref: str,
-        commit_ref: str,
-        tree_entries: list[dict[str, Any]],
-        selected_entries: list[dict[str, Any]],
-        fetched_files: dict[str, str],
-        include_paths: list[str],
-        exclude_paths: list[str],
-        bundle_summary: dict[str, Any],
-    ) -> dict[str, Any]:
-        try:
-            snapshot_id = hashlib.sha1(
-                f"discover::{repo_ref}::{branch_ref}::{commit_ref}::{','.join(sorted(str(row.get('path', '')).strip() for row in selected_entries if isinstance(row, dict)))}".encode("utf-8")
-            ).hexdigest()[:20]
-            routing = classify_repo_scan_mode(
-                [row for row in selected_entries if isinstance(row, dict)],
-                total_tree_entries=len(tree_entries or []),
-            )
-            repo_snapshot_v1 = build_repo_snapshot_v1(
-                snapshot_id=snapshot_id,
-                repo_url=repo_ref,
-                owner=owner_ref,
-                repository=repository_ref,
-                branch=branch_ref,
-                commit_sha=commit_ref,
-                tree_sha=commit_ref,
-                include_paths=include_paths,
-                exclude_paths=exclude_paths,
-                raw_entries=tree_entries,
-                selected_entries=selected_entries,
-                file_contents=fetched_files,
-                failed_paths=[],
-                reused_paths=[],
-                changed_paths=[],
-                compare_error="",
-                chunk_size=REPO_SCAN_CHUNK_SIZE,
-                chunk_workers=REPO_SCAN_CHUNK_WORKERS,
-                family_key="discover",
-                bundle_summary=bundle_summary,
-                analysis_mode=str(routing.get("analysis_mode", "standard")),
-                analysis_mode_reasons=routing.get("reasons", []) if isinstance(routing.get("reasons", []), list) else [],
-            )
-            symbol_index_v1 = build_symbol_index_v1(snapshot_id=snapshot_id, file_contents=fetched_files)
-            dependency_graph_v1 = build_global_dependency_graph_v1(
-                snapshot_id=snapshot_id,
-                file_contents=fetched_files,
-                selected_entries=selected_entries,
-            )
-            component_inventory_v1 = build_component_inventory_v1(
-                snapshot_id=snapshot_id,
-                selected_entries=selected_entries,
-                file_contents=fetched_files,
-            )
-            chunk_manifest_v1 = build_chunk_manifest_v1(
-                snapshot_id=snapshot_id,
-                component_inventory=component_inventory_v1,
-                file_contents=fetched_files,
-            )
-            legacy_chunk_context_v1 = build_large_repo_context_v1(
-                snapshot_id=snapshot_id,
-                repo_snapshot=repo_snapshot_v1,
-                component_inventory=component_inventory_v1,
-                chunk_manifest=chunk_manifest_v1,
-                dependency_graph=dependency_graph_v1,
-                file_contents=fetched_files,
-                max_total_chars=int(bundle_summary.get("effective_max_chars", REPO_SCAN_BUNDLE_MAX_CHARS) or REPO_SCAN_BUNDLE_MAX_CHARS),
-            )
-            plan_provider, plan_model, plan_output_tokens = _default_llm_estimate_target()
-            analysis_plan_v1 = build_analysis_plan_v1(
-                snapshot_id=snapshot_id,
-                repo_snapshot=repo_snapshot_v1,
-                component_inventory=component_inventory_v1,
-                chunk_manifest=chunk_manifest_v1,
-                large_repo_context=legacy_chunk_context_v1,
-                provider=plan_provider,
-                model=plan_model,
-                max_output_tokens=plan_output_tokens,
-            )
-        except Exception as exc:
-            response_payload.setdefault("repo_scan_artifact_error", f"repo scan artifact generation failed: {exc}")
-            return response_payload
-        raw = response_payload.get("raw_artifacts", {})
-        if not isinstance(raw, dict):
-            raw = {}
-        raw.update(
-            {
-                "repo_snapshot_v1": repo_snapshot_v1,
-                "symbol_index_v1": symbol_index_v1,
-                "global_dependency_graph_v1": dependency_graph_v1,
-                "component_inventory_v1": component_inventory_v1,
-                "chunk_manifest_v1": chunk_manifest_v1,
-                "legacy_chunk_context_v1": legacy_chunk_context_v1,
-                "analysis_plan_v1": analysis_plan_v1,
-            }
-        )
-        response_payload["raw_artifacts"] = raw
-        return response_payload
-
-    def _greenfield_summary_from_landscape(artifacts: dict[str, Any]) -> dict[str, Any]:
-        landscape = artifacts.get("repo_landscape_v1", {}) if isinstance(artifacts.get("repo_landscape_v1", {}), dict) else {}
-        components = artifacts.get("component_inventory_v1", {}) if isinstance(artifacts.get("component_inventory_v1", {}), dict) else {}
-        tracks = artifacts.get("modernization_track_plan_v1", {}) if isinstance(artifacts.get("modernization_track_plan_v1", {}), dict) else {}
-        solution = landscape.get("solution_summary", {}) if isinstance(landscape.get("solution_summary", {}), dict) else {}
-        component_rows = components.get("components", []) if isinstance(components.get("components", []), list) else []
-        track_rows = tracks.get("tracks", []) if isinstance(tracks.get("tracks", []), list) else []
-        risk_rows = landscape.get("high_risk_signals", []) if isinstance(landscape.get("high_risk_signals", []), list) else []
-        target_language_label = str(solution.get("target_language", "")).strip() or "the chosen target stack"
-        overview = (
-            str(objectives).strip()
-            or f"Greenfield solution landscape for {target_language_label} with {len(component_rows)} planned component(s) and {len(track_rows)} suggested delivery track(s)."
-        )
-        return {
-            "overview": overview,
-            "likely_capabilities": [str(row.get("title", "")).strip() for row in track_rows if str(row.get("title", "")).strip()][:8],
-            "input_output_contracts": [str(row.get("suggested_target", "")).strip() for row in track_rows if str(row.get("suggested_target", "")).strip()][:6],
-            "key_components": [str(row.get("name", "")).strip() for row in component_rows if str(row.get("name", "")).strip()][:8],
-            "interfaces": [str(row.get("title", "")).strip() for row in risk_rows if str(row.get("title", "")).strip()][:6],
-            "data_and_state": [str(row.get("datastore", "")).strip() for row in landscape.get("datastore_signals", []) if isinstance(row, dict) and str(row.get("datastore", "")).strip()][:6],
-            "domain_functions": [str(row.get("lane", "")).strip() for row in track_rows if str(row.get("lane", "")).strip()][:8],
-            "data_entities": [str(row.get("datastore", "")).strip() for row in landscape.get("datastore_signals", []) if isinstance(row, dict) and str(row.get("datastore", "")).strip()][:8],
-            "unknowns": [str(item).strip() for item in tracks.get("open_questions", []) if str(item).strip()][:8],
-            "evidence_files": [str(solution.get("repo_target", "")).strip()] if str(solution.get("repo_target", "")).strip() else [],
-            "stats": {
-                "sampled_files": 0,
-                "sampled_tree_entries": 0,
-                "route_hints": len(track_rows),
-            },
-        }
-
     project_state_detected = str(
         integration_ctx.get("project_state_detected", "")
         or payload.get("project_state_detected", "")
@@ -6518,7 +6519,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             database_source=database_source,
             database_target=database_target,
         )
-        analysis = _greenfield_summary_from_landscape(artifacts)
+        analysis = _greenfield_summary_from_landscape(artifacts, objectives)
         response_payload = {
             "ok": True,
             "source": "greenfield_landscape",
@@ -6666,15 +6667,17 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             response_payload,
             fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
         )
-        response_payload = _attach_landscape_artifacts(
+        response_payload = _attach_landscape_artifacts_to_payload(
             response_payload,
             repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
             branch_ref=str(sample_tree.get("repo", {}).get("default_branch", "main")),
             commit_ref="sample",
             tree_entries=[item for item in entries if isinstance(item, dict)],
             fetched_files=sample_contents,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
         )
-        response_payload = _attach_repo_scan_artifacts(
+        response_payload = _attach_repo_scan_artifacts_to_payload(
             response_payload,
             repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
             owner_ref=owner,
@@ -6773,15 +6776,17 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         response_payload,
         fallback_requirement=str(analysis.get("overview", "")).strip() or f"Analyze repository {owner}/{repository}.",
     )
-    response_payload = _attach_landscape_artifacts(
+    response_payload = _attach_landscape_artifacts_to_payload(
         response_payload,
         repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
         branch_ref=branch,
         commit_ref=str(tree_payload.get("sha") or repo_meta.get("default_branch") or ""),
         tree_entries=[item for item in raw_entries if isinstance(item, dict)],
         fetched_files=file_contents,
+        include_paths=include_paths,
+        exclude_paths=exclude_paths,
     )
-    response_payload = _attach_repo_scan_artifacts(
+    response_payload = _attach_repo_scan_artifacts_to_payload(
         response_payload,
         repo_ref=repo_url or f"https://github.com/{owner}/{repository}",
         owner_ref=owner,
@@ -6823,6 +6828,112 @@ async def api_discover_analyst_brief(request):
         body = {"ok": False, "error": "discover analyst brief cache payload was invalid"}
         status_code = 500
     return JSONResponse(body, status_code=status_code)
+
+
+async def api_discover_landscape(request):
+    payload = _get_json(await request.body())
+    integration_ctx = _extract_integration_context(payload)
+    brownfield = integration_ctx.get("brownfield", {}) if isinstance(integration_ctx.get("brownfield", {}), dict) else {}
+    greenfield = integration_ctx.get("greenfield", {}) if isinstance(integration_ctx.get("greenfield", {}), dict) else {}
+    sample_mode = bool(integration_ctx.get("sample_dataset_enabled", False) or payload.get("sample_dataset_enabled", False))
+    objectives = str(payload.get("objectives", "")).strip()
+    repo_provider = str(payload.get("repo_provider") or brownfield.get("repo_provider") or "").strip().lower()
+    repo_url = str(payload.get("repo_url") or brownfield.get("repo_url") or "").strip()
+    include_paths = _normalize_lines(integration_ctx.get("scan_scope", {}).get("include_paths", []))
+    exclude_paths = _normalize_lines(integration_ctx.get("scan_scope", {}).get("exclude_paths", []))
+    project_state_detected = str(integration_ctx.get("project_state_detected", "") or payload.get("project_state_detected", "") or ("greenfield" if greenfield else "")).strip().lower()
+    evidence_ctx = integration_ctx.get("evidence", {}) if isinstance(integration_ctx.get("evidence", {}), dict) else {}
+    evidence_source_mode = str(evidence_ctx.get("source_mode", "")).strip().lower()
+    evidence_bundle_id = str(evidence_ctx.get("bundle_id", "")).strip()
+
+    if evidence_source_mode in {"evidence", "hybrid"} and evidence_bundle_id:
+        response_payload = _imported_analysis_response_payload(objectives, integration_ctx)
+        if not response_payload:
+            return JSONResponse({"ok": False, "error": "Evidence bundle could not be loaded. Re-upload the analysis outputs."}, status_code=400)
+        return JSONResponse(response_payload)
+
+    if project_state_detected == "greenfield" and not repo_url:
+        artifacts = build_greenfield_landscape_artifacts(
+            objectives=objectives,
+            use_case=str(payload.get("use_case", "business_objectives")).strip().lower() or "business_objectives",
+            integration_context=integration_ctx,
+            target_language=str(payload.get("modernization_language") or payload.get("target_language") or "").strip(),
+            target_platform=str(payload.get("target_platform", "")).strip(),
+            database_source=str(payload.get("database_source", "")).strip(),
+            database_target=str(payload.get("database_target", "")).strip(),
+        )
+        return JSONResponse({
+            "ok": True,
+            "source": "greenfield_landscape",
+            "raw_artifacts": artifacts,
+            "landscape_summary": _greenfield_summary_from_landscape(artifacts, objectives),
+        })
+
+    if repo_provider and repo_provider != "github" and not sample_mode:
+        return JSONResponse({"ok": False, "error": f"Landscape scan currently supports GitHub repos in Discover. Selected provider: {repo_provider}."}, status_code=400)
+
+    owner = str(payload.get("owner", "")).strip()
+    repository = str(payload.get("repository", "")).strip()
+    parsed_owner, parsed_repo = _parse_github_repo_url(repo_url)
+    owner = parsed_owner or owner
+    repository = parsed_repo or repository
+    if not owner or not repository:
+        return JSONResponse({"ok": False, "error": "Repo URL is required for Landscape. Provide a valid GitHub URL in Discover Connect."}, status_code=400)
+
+    if sample_mode:
+        sample_tree = _sample_github_tree(owner, repository)
+        entries = sample_tree.get("tree", {}).get("entries", []) if isinstance(sample_tree.get("tree", {}), dict) else []
+        if not isinstance(entries, list):
+            entries = []
+        sample_contents = {
+            "services/orders-service/src/main.java": '@RestController\n@RequestMapping("/v1/orders")\npublic class OrdersController {}',
+            "services/payments-service/cmd/api/main.go": 'router.POST("/v1/payments", handlePayments)\n// uses redis idempotency',
+            "services/inventory-service/index.js": "app.post('/v1/inventory/reserve', reserveInventory)",
+            "legacy/billing-monolith/README.md": "Legacy billing and invoicing flow.",
+        }
+        sample_entries = _select_source_entries_for_analysis([item for item in entries if isinstance(item, dict)], include_paths=include_paths, exclude_paths=exclude_paths, limit=28)
+        response_payload = {"ok": True, "source": "sample_dataset", "repo": {"owner": owner, "repository": repository, "default_branch": sample_tree.get("repo", {}).get("default_branch", "main")}}
+        response_payload = _attach_landscape_artifacts_to_payload(response_payload, repo_ref=repo_url or f"https://github.com/{owner}/{repository}", branch_ref=str(sample_tree.get("repo", {}).get("default_branch", "main")), commit_ref="sample", tree_entries=[item for item in entries if isinstance(item, dict)], fetched_files=sample_contents, include_paths=include_paths, exclude_paths=exclude_paths)
+        response_payload = _attach_repo_scan_artifacts_to_payload(response_payload, repo_ref=repo_url or f"https://github.com/{owner}/{repository}", owner_ref=owner, repository_ref=repository, branch_ref=str(sample_tree.get("repo", {}).get("default_branch", "main")), commit_ref="sample", tree_entries=[item for item in entries if isinstance(item, dict)], selected_entries=sample_entries, fetched_files=sample_contents, include_paths=include_paths, exclude_paths=exclude_paths, bundle_summary=_compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)[1])
+        return JSONResponse(response_payload)
+
+    base_url, headers, authenticated = _github_request_context()
+    try:
+        repo_meta = _http_json_request(f"{base_url}/repos/{quote(owner)}/{quote(repository)}", headers=headers)
+        if not isinstance(repo_meta, dict):
+            raise ValueError("invalid repository metadata")
+        branch = str(payload.get("branch", "")).strip() or str(repo_meta.get("default_branch") or "main")
+        tree_payload = _http_json_request(f"{base_url}/repos/{quote(owner)}/{quote(repository)}/git/trees/{quote(branch, safe='')}?recursive=1", headers=headers)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": _github_fetch_error_message(exc, authenticated=authenticated)}, status_code=400)
+
+    if not isinstance(tree_payload, dict):
+        return JSONResponse({"ok": False, "error": "GitHub tree response is invalid."}, status_code=400)
+    raw_entries = tree_payload.get("tree", [])
+    if not isinstance(raw_entries, list):
+        raw_entries = []
+
+    selected_entries = _select_source_entries_for_analysis([item for item in raw_entries if isinstance(item, dict)], include_paths=include_paths, exclude_paths=exclude_paths, limit=28)
+    file_contents: dict[str, str] = {}
+    fetch_errors: list[str] = []
+    for entry in selected_entries:
+        path = str(entry.get("path", "")).strip()
+        if not path:
+            continue
+        try:
+            content = _fetch_github_file_content(base_url=base_url, owner=owner, repository=repository, path=path, ref=branch, headers=headers, max_chars=12000)
+            if content:
+                file_contents[path] = content
+        except ValueError as exc:
+            if len(fetch_errors) < 5:
+                fetch_errors.append(f"{path}: {exc}")
+
+    response_payload = {"ok": True, "source": "github_api", "repo": {"owner": owner, "repository": repository, "default_branch": branch, "url": repo_url}}
+    if fetch_errors:
+        response_payload["fetch_warnings"] = fetch_errors
+    response_payload = _attach_landscape_artifacts_to_payload(response_payload, repo_ref=repo_url or f"https://github.com/{owner}/{repository}", branch_ref=branch, commit_ref=str(tree_payload.get("sha") or repo_meta.get("default_branch") or ""), tree_entries=[item for item in raw_entries if isinstance(item, dict)], fetched_files=file_contents, include_paths=include_paths, exclude_paths=exclude_paths)
+    response_payload = _attach_repo_scan_artifacts_to_payload(response_payload, repo_ref=repo_url or f"https://github.com/{owner}/{repository}", owner_ref=owner, repository_ref=repository, branch_ref=branch, commit_ref=str(tree_payload.get("sha") or repo_meta.get("default_branch") or ""), tree_entries=[item for item in raw_entries if isinstance(item, dict)], selected_entries=selected_entries, fetched_files=file_contents, include_paths=include_paths, exclude_paths=exclude_paths, bundle_summary=_compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)[1])
+    return JSONResponse(response_payload)
 
 
 def _discover_linear_issues_response(payload: dict[str, Any]) -> JSONResponse:
@@ -13663,6 +13774,7 @@ routes = [
     Route("/api/discover/access/inspect", api_discover_access_inspect, methods=["POST"]),
     Route("/api/evidence/bundles", api_create_evidence_bundle, methods=["POST"]),
     Route("/api/evidence/bundles/{bundle_id:str}", api_get_evidence_bundle, methods=["GET"]),
+    Route("/api/discover/landscape", api_discover_landscape, methods=["POST"]),
     Route("/api/discover/analyst-brief", api_discover_analyst_brief, methods=["POST"]),
     Route("/api/discover/issues", api_discover_issues, methods=["POST"]),
     Route("/api/discover/linear/issues", api_discover_linear_issues, methods=["POST"]),
