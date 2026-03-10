@@ -2965,6 +2965,213 @@ Analyze this code chunk and extract behavior compactly.
             if isinstance(discover_cache.get("analyst_summary", {}), dict)
             else {}
         )
+        landscape = (
+            discover_cache.get("landscape", {})
+            if isinstance(discover_cache.get("landscape", {}), dict)
+            else {}
+        )
+        php_profile = (
+            landscape.get("php_framework_profile_v1", {})
+            if isinstance(landscape.get("php_framework_profile_v1", {}), dict)
+            else {}
+        )
+        php_routes = (
+            landscape.get("php_route_inventory_v1", {})
+            if isinstance(landscape.get("php_route_inventory_v1", {}), dict)
+            else {}
+        )
+        php_controllers = (
+            landscape.get("php_controller_inventory_v1", {})
+            if isinstance(landscape.get("php_controller_inventory_v1", {}), dict)
+            else {}
+        )
+        php_templates = (
+            landscape.get("php_template_inventory_v1", {})
+            if isinstance(landscape.get("php_template_inventory_v1", {}), dict)
+            else {}
+        )
+        php_sql = (
+            landscape.get("php_sql_catalog_v1", {})
+            if isinstance(landscape.get("php_sql_catalog_v1", {}), dict)
+            else {}
+        )
+        php_session = (
+            landscape.get("php_session_state_inventory_v1", {})
+            if isinstance(landscape.get("php_session_state_inventory_v1", {}), dict)
+            else {}
+        )
+        php_auth = (
+            landscape.get("php_authz_authn_inventory_v1", {})
+            if isinstance(landscape.get("php_authz_authn_inventory_v1", {}), dict)
+            else {}
+        )
+        php_include = (
+            landscape.get("php_include_graph_v1", {})
+            if isinstance(landscape.get("php_include_graph_v1", {}), dict)
+            else {}
+        )
+        php_jobs = (
+            landscape.get("php_background_job_inventory_v1", {})
+            if isinstance(landscape.get("php_background_job_inventory_v1", {}), dict)
+            else {}
+        )
+        php_file_io = (
+            landscape.get("php_file_io_inventory_v1", {})
+            if isinstance(landscape.get("php_file_io_inventory_v1", {}), dict)
+            else {}
+        )
+        php_validation = (
+            landscape.get("php_validation_rules_v1", {})
+            if isinstance(landscape.get("php_validation_rules_v1", {}), dict)
+            else {}
+        )
+        repo_landscape = (
+            landscape.get("repo_landscape_v1", {})
+            if isinstance(landscape.get("repo_landscape_v1", {}), dict)
+            else {}
+        )
+        php_dependency_count = int(
+            (php_profile.get("composer_package_count", 0) if isinstance(php_profile, dict) else 0)
+            or (
+                repo_landscape.get("dependency_footprint", {}).get("composer_package_count", 0)
+                if isinstance(repo_landscape.get("dependency_footprint", {}), dict)
+                else 0
+            )
+            or 0
+        )
+        if (
+            php_routes
+            or php_controllers
+            or php_templates
+            or php_sql
+            or php_session
+            or php_auth
+            or php_include
+            or php_jobs
+            or php_file_io
+            or php_validation
+            or php_dependency_count > 0
+            or "php" in [str(x).strip().lower() for x in (repo_landscape.get("languages_detected", []) if isinstance(repo_landscape.get("languages_detected", []), list) else [])]
+        ):
+            route_count = int(php_routes.get("route_count", 0) or php_routes.get("entrypoint_count", 0) or 0)
+            controller_count = int(php_controllers.get("controller_count", 0) or 0)
+            template_count = int(php_templates.get("template_count", 0) or 0)
+            sql_rows = php_sql.get("statements", []) if isinstance(php_sql.get("statements", []), list) else []
+            table_names: list[str] = []
+            for row in sql_rows[:500]:
+                if not isinstance(row, dict):
+                    continue
+                for table in row.get("tables", []) if isinstance(row.get("tables", []), list) else []:
+                    token = str(table).strip()
+                    if token and token not in table_names:
+                        table_names.append(token)
+            controller_rows = php_controllers.get("controllers", []) if isinstance(php_controllers.get("controllers", []), list) else []
+            procedures = []
+            for row in controller_rows[:1000]:
+                if not isinstance(row, dict):
+                    continue
+                cname = str(row.get("name", "")).strip()
+                for action in row.get("actions", []) if isinstance(row.get("actions", []), list) else []:
+                    action_name = str(action).strip()
+                    if cname and action_name:
+                        procedures.append(f"{cname}::{action_name}")
+            superglobal_usage = (
+                php_session.get("superglobal_usage", {})
+                if isinstance(php_session.get("superglobal_usage", {}), dict)
+                else {}
+            )
+            input_signals = [name for name, count in superglobal_usage.items() if str(name).strip() and int(count or 0) > 0]
+            side_effect_patterns = []
+            if bool(php_session.get("uses_session_state")):
+                side_effect_patterns.append("session_state_mutation")
+            if int(php_file_io.get("upload_file_count", 0) or 0) > 0:
+                side_effect_patterns.append("file_upload_handling")
+            if int(php_file_io.get("export_file_count", 0) or 0) > 0:
+                side_effect_patterns.append("export_generation")
+            source_loc_total = int(
+                repo_landscape.get("loc_total", 0)
+                or 0
+            )
+            source_files_scanned = int(
+                repo_landscape.get("file_count_total", 0)
+                or 0
+            )
+            source_loc_by_file = (
+                repo_landscape.get("selected_files", [])
+                if isinstance(repo_landscape.get("selected_files", []), list)
+                else []
+            )
+            return {
+                "summary": (
+                    f"Discover cache indicates PHP legacy application with {controller_count} controllers, "
+                    f"{route_count} routes, {template_count} templates, {len(sql_rows)} SQL statements, "
+                    f"and {int(php_session.get('session_key_count', 0) or 0)} session keys."
+                ),
+                "vb6_projects": [],
+                "forms": [],
+                "activex_controls": [],
+                "dependency_references": [],
+                "dll_dependencies": [],
+                "ocx_dependencies": [],
+                "event_handlers": [],
+                "event_handler_keys": [],
+                "event_handler_count_exact": 0,
+                "project_members": [str(row.get("path", "")).strip() for row in source_loc_by_file[:2000] if isinstance(row, dict) and str(row.get("path", "")).strip()],
+                "database_tables": table_names[:200],
+                "procedures": procedures[:1000],
+                "input_signals": input_signals[:80],
+                "side_effect_patterns": side_effect_patterns,
+                "ui_event_map": [],
+                "sql_query_catalog": [str(row.get("raw", "")).strip() for row in sql_rows[:120] if isinstance(row, dict) and str(row.get("raw", "")).strip()],
+                "connection_strings": [],
+                "database_file_references": [],
+                "connection_string_rows": [],
+                "database_file_reference_rows": [],
+                "module_global_declarations": [],
+                "com_surface_map": {},
+                "win32_declares": [],
+                "error_handling_profile": {},
+                "pitfall_detectors": [],
+                "modernization_readiness": (
+                    analyst_summary.get("modernization_readiness", {})
+                    if isinstance(analyst_summary.get("modernization_readiness", {}), dict)
+                    else {}
+                ),
+                "source_target_modernization_profile": (
+                    analyst_summary.get("source_target_modernization_profile", {})
+                    if isinstance(analyst_summary.get("source_target_modernization_profile", {}), dict)
+                    else {}
+                ),
+                "project_business_summaries": (
+                    analyst_summary.get("project_business_summaries", [])[:32]
+                    if isinstance(analyst_summary.get("project_business_summaries", []), list)
+                    else []
+                ),
+                "source_loc_total": source_loc_total,
+                "source_loc_forms": 0,
+                "source_loc_modules": 0,
+                "source_loc_classes": 0,
+                "source_files_scanned": source_files_scanned,
+                "source_loc_by_file": [
+                    {"path": str(row.get("path", "")).strip(), "loc": int(row.get("estimated_loc", 0) or 0)}
+                    for row in source_loc_by_file[:2000]
+                    if isinstance(row, dict) and str(row.get("path", "")).strip()
+                ],
+                "php_dependency_count": php_dependency_count,
+                "php_analysis": {
+                    "framework": str(php_profile.get("framework", "")).strip() or "custom_php",
+                    "route_inventory": php_routes,
+                    "controller_inventory": php_controllers,
+                    "template_inventory": php_templates,
+                    "sql_catalog": php_sql,
+                    "session_state_inventory": php_session,
+                    "authz_authn_inventory": php_auth,
+                    "include_graph": php_include,
+                    "background_job_inventory": php_jobs,
+                    "file_io_inventory": php_file_io,
+                    "validation_rules": php_validation,
+                },
+            }
         vb6 = analyst_summary.get("vb6_analysis", {}) if isinstance(analyst_summary.get("vb6_analysis", {}), dict) else {}
         if not vb6:
             return {}
@@ -3417,6 +3624,30 @@ Analyze this code chunk and extract behavior compactly.
         )
         skill = analyst_summary.get("legacy_skill_profile", {}) if isinstance(analyst_summary.get("legacy_skill_profile", {}), dict) else {}
         if not skill:
+            landscape = (
+                discover_cache.get("landscape", {})
+                if isinstance(discover_cache.get("landscape", {}), dict)
+                else {}
+            )
+            php_profile = (
+                landscape.get("php_framework_profile_v1", {})
+                if isinstance(landscape.get("php_framework_profile_v1", {}), dict)
+                else {}
+            )
+            repo_landscape = (
+                landscape.get("repo_landscape_v1", {})
+                if isinstance(landscape.get("repo_landscape_v1", {}), dict)
+                else {}
+            )
+            languages = [str(x).strip().lower() for x in (repo_landscape.get("languages_detected", []) if isinstance(repo_landscape.get("languages_detected", []), list) else [])]
+            if php_profile or "php" in languages:
+                framework = str(php_profile.get("framework", "")).strip() or "custom_php"
+                return {
+                    "selected_skill_id": "php_legacy",
+                    "selected_skill_name": "PHP Legacy Skill",
+                    "confidence": 0.75,
+                    "reasons": [f"Landscape indicates PHP legacy application ({framework})."],
+                }
             return {}
         return {
             "selected_skill_id": str(skill.get("selected_skill_id", "generic_legacy")).strip() or "generic_legacy",
@@ -5089,6 +5320,19 @@ BUSINESS OBJECTIVES:
         if isinstance(legacy_compact.get("inventory", {}), dict):
             compact_inventory = legacy_compact.get("inventory", {})
         if not compact_inventory:
+            legacy_code = str(state.get("legacy_code", "") or "").strip()
+            if legacy_code:
+                rebuilt_compact = self._build_legacy_compact_context(
+                    legacy_code,
+                    str(state.get("modernization_language", "") or "").strip(),
+                    state=state,
+                )
+                if isinstance(rebuilt_compact, dict):
+                    if isinstance(rebuilt_compact.get("inventory", {}), dict):
+                        compact_inventory = rebuilt_compact.get("inventory", {})
+                    if isinstance(rebuilt_compact.get("legacy_skill_profile", {}), dict):
+                        legacy_compact = {**legacy_compact, "legacy_skill_profile": rebuilt_compact.get("legacy_skill_profile", {})}
+        if not compact_inventory:
             compact_inventory = self._inventory_from_discover_cache(state)
         compact_skill = (
             legacy_compact.get("legacy_skill_profile", {})
@@ -5126,6 +5370,8 @@ BUSINESS OBJECTIVES:
                 out["proposed_additions"] = proposed_additions
         if compact_skill:
             out["legacy_skill_profile"] = compact_skill
+            if str(compact_skill.get("selected_skill_id", "")).strip() == "php_legacy" and not str(out.get("source_language", "")).strip():
+                out["source_language"] = "PHP"
 
         requirements_pack = self._build_requirements_pack(
             out,
@@ -5154,12 +5400,15 @@ BUSINESS OBJECTIVES:
             out["source_target_modernization_profile"] = requirements_pack.get("source_target_modernization_profile", {})
         if isinstance(requirements_pack.get("project_business_summaries", []), list):
             out["project_business_summaries"] = requirements_pack.get("project_business_summaries", [])[:32]
-        if isinstance(requirements_pack.get("legacy_code_inventory", {}), dict):
-            out["legacy_code_inventory"] = requirements_pack.get("legacy_code_inventory", {})
-        if isinstance(requirements_pack.get("vb6_analysis", {}), dict):
-            out["vb6_analysis"] = requirements_pack.get("vb6_analysis", {})
-        if isinstance(requirements_pack.get("legacy_skill_profile", {}), dict):
-            out["legacy_skill_profile"] = requirements_pack.get("legacy_skill_profile", {})
+        req_pack_inventory = requirements_pack.get("legacy_code_inventory", {})
+        if isinstance(req_pack_inventory, dict) and req_pack_inventory:
+            out["legacy_code_inventory"] = req_pack_inventory
+        req_pack_vb6 = requirements_pack.get("vb6_analysis", {})
+        if isinstance(req_pack_vb6, dict) and req_pack_vb6:
+            out["vb6_analysis"] = req_pack_vb6
+        req_pack_skill = requirements_pack.get("legacy_skill_profile", {})
+        if isinstance(req_pack_skill, dict) and req_pack_skill:
+            out["legacy_skill_profile"] = req_pack_skill
         if isinstance(out.get("legacy_code_inventory", {}), dict):
             rules = out.get("legacy_code_inventory", {}).get("business_rules_catalog", [])
             if isinstance(rules, list):

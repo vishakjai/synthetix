@@ -1,5 +1,7 @@
 import unittest
+from unittest.mock import Mock
 
+from agents.analyst import AnalystAgent
 from utils.analyst_report import build_analyst_report_v2
 from utils.php_framework_detection import detect_php_framework_profile
 
@@ -114,6 +116,65 @@ class PhpSummaryPathTest(unittest.TestCase):
         self.assertIn("DEC-PHP-ARCH-001", ids)
         self.assertNotIn("DEC-UI-001", ids)
         self.assertEqual(report["metadata"]["context_reference"]["source_language"], "php")
+
+    def test_php_inventory_falls_back_from_discover_cache_landscape(self):
+        agent = AnalystAgent(Mock())
+        state = {
+            "integration_context": {
+                "discover_cache": {
+                    "landscape": {
+                        "repo_landscape_v1": {
+                            "languages_detected": ["PHP"],
+                            "loc_total": 11647,
+                            "file_count_total": 80,
+                            "dependency_footprint": {"composer_package_count": 13},
+                            "selected_files": [
+                                {"path": "index.php", "estimated_loc": 120},
+                                {"path": "controllers/AuthController.php", "estimated_loc": 220},
+                            ],
+                        },
+                        "php_framework_profile_v1": {"framework": "custom_php", "composer_package_count": 13},
+                        "php_route_inventory_v1": {"route_count": 200, "entrypoint_count": 200},
+                        "php_controller_inventory_v1": {"controller_count": 64, "controllers": [{"name": "AuthController", "actions": ["login"]}]},
+                        "php_template_inventory_v1": {"template_count": 11},
+                        "php_sql_catalog_v1": {"statement_count": 40, "statements": [{"raw": "SELECT * FROM users", "tables": ["users"]}]},
+                        "php_session_state_inventory_v1": {"session_key_count": 6, "uses_session_state": True, "superglobal_usage": {"_SESSION": 4}},
+                        "php_authz_authn_inventory_v1": {"auth_touchpoint_count": 8},
+                        "php_include_graph_v1": {"edge_count": 4},
+                        "php_background_job_inventory_v1": {"job_count": 1},
+                        "php_file_io_inventory_v1": {"upload_file_count": 1, "export_file_count": 2},
+                        "php_validation_rules_v1": {"rule_count": 5},
+                    }
+                }
+            }
+        }
+        inventory = agent._inventory_from_discover_cache(state)
+        self.assertEqual(inventory["php_analysis"]["route_inventory"]["route_count"], 200)
+        self.assertEqual(inventory["php_analysis"]["controller_inventory"]["controller_count"], 64)
+        self.assertEqual(inventory["php_dependency_count"], 13)
+        self.assertEqual(inventory["source_loc_total"], 11647)
+
+    def test_php_finalize_output_rebuilds_compact_inventory_when_missing(self):
+        agent = AnalystAgent(Mock())
+        state = {
+            "legacy_code": "\n".join(
+                [
+                    "### FILE: index.php",
+                    "<?php session_start(); require 'views/home.php'; $db = new PDO($dsn);",
+                    "### FILE: controllers/AuthController.php",
+                    "<?php class AuthController { public function login() { $_SESSION['user_id']=1; } }",
+                    "### FILE: views/home.php",
+                    "<html><?php echo 'home'; ?></html>",
+                ]
+            ),
+            "modernization_language": "TypeScript",
+        }
+        finalized = agent._finalize_output({"functional_requirements": [], "non_functional_requirements": []}, {}, state)
+        inventory = finalized.get("legacy_code_inventory", {})
+        self.assertEqual(finalized.get("source_language"), "PHP")
+        self.assertEqual(finalized.get("legacy_skill_profile", {}).get("selected_skill_id"), "php_legacy")
+        self.assertTrue(isinstance(inventory.get("php_analysis", {}), dict))
+        self.assertGreaterEqual(inventory.get("php_analysis", {}).get("controller_inventory", {}).get("controller_count", 0), 1)
 
 
 if __name__ == "__main__":
