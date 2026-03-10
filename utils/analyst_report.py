@@ -43,6 +43,15 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _is_php_summary(*, safe: dict[str, Any], legacy_inventory: dict[str, Any], source_profile: dict[str, Any], skill: dict[str, Any]) -> bool:
+    language = _clean(source_profile.get("language") or safe.get("source_language")).lower()
+    if language == "php":
+        return True
+    if isinstance(legacy_inventory.get("php_analysis", {}), dict) and legacy_inventory.get("php_analysis", {}):
+        return True
+    return _clean(skill.get("selected_skill_id")).lower() == "php_legacy"
+
+
 def _mermaid_safe_token(value: Any, *, default: str = "item") -> str:
     raw = _clean(value)
     if not raw:
@@ -7901,6 +7910,30 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
         tables_touched.append(table)
     tables_touched = tables_touched[:12]
 
+    source_target_profile = _as_dict(safe.get("source_target_modernization_profile"))
+    if not source_target_profile:
+        source_target_profile = _as_dict(req_pack.get("source_target_modernization_profile"))
+    source_profile = _as_dict(source_target_profile.get("source"))
+    target_profile = _as_dict(source_target_profile.get("target"))
+    is_php_summary = _is_php_summary(safe=safe, legacy_inventory=legacy_inventory, source_profile=source_profile, skill=skill)
+    php_analysis = _as_dict(legacy_inventory.get("php_analysis"))
+    php_routes = _as_dict(php_analysis.get("route_inventory"))
+    php_controllers = _as_dict(php_analysis.get("controller_inventory"))
+    php_templates = _as_dict(php_analysis.get("template_inventory"))
+    php_sessions = _as_dict(php_analysis.get("session_state_inventory"))
+    php_auth = _as_dict(php_analysis.get("authz_authn_inventory"))
+    php_jobs = _as_dict(php_analysis.get("background_job_inventory"))
+    php_file_io = _as_dict(php_analysis.get("file_io_inventory"))
+    php_route_count = int(php_routes.get("route_count", 0) or 0)
+    php_controller_count = int(php_controllers.get("controller_count", 0) or 0)
+    php_template_count = int(php_templates.get("template_count", 0) or 0)
+    php_session_key_count = int(php_sessions.get("session_key_count", 0) or 0)
+    php_auth_touchpoints = int(php_auth.get("auth_touchpoint_count", 0) or 0)
+    php_job_count = int(php_jobs.get("job_count", 0) or 0)
+    php_file_io_count = int((php_file_io.get("upload_file_count", 0) or 0) + (php_file_io.get("export_file_count", 0) or 0))
+    landscape_dep = _as_dict(_as_dict(raw_artifacts.get("repo_landscape_v1")).get("dependency_footprint")) or _as_dict(_as_dict(raw_artifacts.get("repo_landscape")).get("dependency_footprint"))
+    php_dependency_count = int(legacy_inventory.get("php_dependency_count", 0) or landscape_dep.get("composer_package_count", 0) or 0)
+
     readiness_score = readiness.get("score")
     try:
         score = int(round(float(readiness_score)))
@@ -7976,29 +8009,79 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     open_questions_raw = _as_list(safe.get("open_questions")) or _as_list(req_pack.get("open_questions"))
     open_questions = [_normalize_open_question(row, idx) for idx, row in enumerate(open_questions_raw)]
 
-    blocking_decisions: list[dict[str, Any]] = [
-        {
-            "id": "DEC-UI-001",
-            "question": "Target UI framework selection for migrated forms",
-            "options": ["WinForms", "WPF", "Web UI"],
-            "default_recommendation": "WinForms for lowest event-model delta from VB6 unless UX redesign is in scope.",
-            "impact_if_wrong": "High rework risk in form/event parity and control migration.",
-        },
-        {
-            "id": "DEC-OCX-001",
-            "question": "ActiveX/OCX replacement strategy by dependency",
-            "options": ["Replace", "Wrap temporarily", "Isolate and defer"],
-            "default_recommendation": "Replace common controls and isolate only high-risk dependencies behind adapters.",
-            "impact_if_wrong": "Runtime regressions and release delays from unresolved control behavior.",
-        },
-        {
-            "id": "DEC-DB-001",
-            "question": "Database contract strategy during migration",
-            "options": ["Preserve schema/queries", "Introduce migration layer", "Redesign schema"],
-            "default_recommendation": "Preserve contracts initially and modernize behind a compatibility layer.",
-            "impact_if_wrong": "Business rule drift and data-side regressions.",
-        },
-    ]
+    if is_php_summary:
+        blocking_decisions: list[dict[str, Any]] = [
+            {
+                "id": "DEC-PHP-ARCH-001",
+                "question": "Target runtime and application architecture for the PHP modernization",
+                "options": ["TypeScript modular monolith", "Next.js + NestJS", "Node service decomposition"],
+                "default_recommendation": "Use a TypeScript modular monolith first unless there is a clear reason to decompose immediately.",
+                "impact_if_wrong": "Route/controller parity, auth flow, and delivery sequencing can drift early.",
+            },
+            {
+                "id": "DEC-PHP-DB-001",
+                "question": "Database contract strategy during PHP migration",
+                "options": ["Preserve schema/queries", "Introduce compatibility layer", "Redesign schema"],
+                "default_recommendation": "Preserve contracts initially and modernize behind a compatibility layer.",
+                "impact_if_wrong": "Business rule drift and data-side regressions.",
+            },
+        ]
+        datastore_rows = _as_list(_as_dict(raw_artifacts.get("repo_landscape_v1")).get("datastore_signals")) or _as_list(_as_dict(raw_artifacts.get("repo_landscape")).get("datastore_signals"))
+        operational_stores = [row for row in datastore_rows if isinstance(row, dict) and _clean(row.get("datastore")) in {"mysql", "sqlserver", "postgres", "oracle", "db2"}]
+        if len(operational_stores) > 1:
+            blocking_decisions.append(
+                {
+                    "id": "DEC-PHP-DATA-002",
+                    "question": "Dual-datastore migration strategy requires confirmation",
+                    "options": ["Preserve both datastores", "Consolidate later", "Consolidate during migration"],
+                    "default_recommendation": "Preserve both datastores during initial migration and define an explicit contract map.",
+                    "impact_if_wrong": "Cross-database workflow parity and reporting behavior may break.",
+                }
+            )
+        if any(isinstance(row, dict) and _clean(row.get("datastore")) == "mq" for row in datastore_rows) or php_job_count > 0:
+            blocking_decisions.append(
+                {
+                    "id": "DEC-PHP-ASYNC-003",
+                    "question": "Background job or queue listener migration strategy requires confirmation",
+                    "options": ["Preserve async processing", "Temporarily inline", "Defer async workloads"],
+                    "default_recommendation": "Preserve asynchronous behavior explicitly and inventory listeners/cron jobs before implementation.",
+                    "impact_if_wrong": "Hidden message processing and scheduled workflows may be lost.",
+                }
+            )
+        if php_session_key_count > 0 or php_auth_touchpoints > 0:
+            blocking_decisions.append(
+                {
+                    "id": "DEC-PHP-SESSION-004",
+                    "question": "Session and authentication migration approach must be confirmed",
+                    "options": ["Preserve session model", "Introduce token-based auth", "Hybrid transitional model"],
+                    "default_recommendation": "Model current session/auth behavior first, then move to a clearer target design with explicit compatibility rules.",
+                    "impact_if_wrong": "Authentication, authorization, and workflow state regressions.",
+                }
+            )
+    else:
+        blocking_decisions = [
+            {
+                "id": "DEC-UI-001",
+                "question": "Target UI framework selection for migrated forms",
+                "options": ["WinForms", "WPF", "Web UI"],
+                "default_recommendation": "WinForms for lowest event-model delta from VB6 unless UX redesign is in scope.",
+                "impact_if_wrong": "High rework risk in form/event parity and control migration.",
+            },
+            {
+                "id": "DEC-OCX-001",
+                "question": "ActiveX/OCX replacement strategy by dependency",
+                "options": ["Replace", "Wrap temporarily", "Isolate and defer"],
+                "default_recommendation": "Replace common controls and isolate only high-risk dependencies behind adapters.",
+                "impact_if_wrong": "Runtime regressions and release delays from unresolved control behavior.",
+            },
+            {
+                "id": "DEC-DB-001",
+                "question": "Database contract strategy during migration",
+                "options": ["Preserve schema/queries", "Introduce migration layer", "Redesign schema"],
+                "default_recommendation": "Preserve contracts initially and modernize behind a compatibility layer.",
+                "impact_if_wrong": "Business rule drift and data-side regressions.",
+            },
+        ]
     review_checks = _as_list(discover_review_checklist.get("checks"))
     review_by_id = {
         _clean(row.get("id")).lower(): row
@@ -8419,11 +8502,6 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
             continue
         trace_links.append({"from": from_id, "to": to_id, "type": link_type})
 
-    source_target_profile = _as_dict(safe.get("source_target_modernization_profile"))
-    if not source_target_profile:
-        source_target_profile = _as_dict(req_pack.get("source_target_modernization_profile"))
-    source_profile = _as_dict(source_target_profile.get("source"))
-    target_profile = _as_dict(source_target_profile.get("target"))
     repo_hint = _resolve_repo_hint(context_ref, source_profile)
 
     project_name = _clean(safe.get("project_name")) or _clean(_as_dict(req_pack.get("project")).get("name")) or "Untitled"
@@ -8497,6 +8575,109 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
         f"failed_review_checks={failed_review_count}) and extraction coverage. Lower scores across runs usually indicate improved "
         "detection coverage, not model instability."
     )
+    inventory_summary = {
+        "projects": len(vb6_projects),
+        "forms": forms_count,
+        "forms_referenced": forms_referenced,
+        "forms_unmapped": forms_unmapped,
+        "source_loc_total": source_loc_total,
+        "source_loc_forms": source_loc_forms,
+        "source_loc_modules": source_loc_modules,
+        "source_loc_classes": source_loc_classes,
+        "source_files_scanned": source_files_scanned,
+        "controls": controls_count,
+        "dependencies": len(dep_unique),
+        "event_handlers": event_handler_count_exact,
+        "tables_touched": tables_touched,
+    }
+    strategy_name_effective = strategy_name
+    strategy_rationale_effective = strategy_rationale
+    strategy_phases = [
+        {
+            "id": "PH0",
+            "title": "Baseline and equivalence harness",
+            "outcome": "Capture golden flows and baseline outputs.",
+            "exit_criteria": ["Golden flows agreed", "Baseline outputs captured", "Parity checks defined"],
+        },
+        {
+            "id": "PH1",
+            "title": "Incremental migration and dependency replacement",
+            "outcome": "Migrate forms/modules with dependency risk controls.",
+            "exit_criteria": ["P0 flows migrated", "Critical dependencies addressed", "Regression suite passing"],
+        },
+        {
+            "id": "PH2",
+            "title": "Hardening and release evidence",
+            "outcome": "Finalize quality gates and publish evidence pack.",
+            "exit_criteria": ["Quality gates pass", "Traceability complete", "Release readiness approved"],
+        },
+    ]
+    next_steps = [
+        {
+            "id": "NS-001",
+            "title": "Confirm blocking decisions and freeze modernization scope",
+            "owner_role": "Tech Lead",
+            "done_when": ["Blocking decisions approved", "Backlog dependencies resolved"],
+        },
+        {
+            "id": "NS-002",
+            "title": "Implement golden-flow harness for parity validation",
+            "owner_role": "QA Lead",
+            "done_when": ["Golden flow tests created", "Baseline artifacts stored"],
+        },
+    ]
+    if is_php_summary:
+        inventory_summary = {
+            "applications": 1 if (php_controller_count or php_route_count or php_template_count or source_files_scanned) else 0,
+            "controllers": php_controller_count,
+            "routes": php_route_count,
+            "templates": php_template_count,
+            "session_keys": php_session_key_count,
+            "auth_touchpoints": php_auth_touchpoints,
+            "background_jobs": php_job_count,
+            "file_io_flows": php_file_io_count,
+            "source_loc_total": source_loc_total,
+            "source_files_scanned": source_files_scanned,
+            "dependencies": php_dependency_count,
+            "tables_touched": tables_touched,
+        }
+        strategy_name_effective = _clean(strategy.get("name")) or "PHP web modernization"
+        strategy_rationale_effective = _clean(strategy.get("rationale")) or "Preserve route, session, query, and integration behavior first; then move the PHP application onto a typed target architecture."
+        strategy_phases = [
+            {
+                "id": "PH0",
+                "title": "Route, session, and data baseline",
+                "outcome": "Capture route inventory, session behavior, and SQL touchpoints.",
+                "exit_criteria": ["Routes inventoried", "Session/auth rules documented", "DB touchpoints confirmed"],
+            },
+            {
+                "id": "PH1",
+                "title": "Controller and service modernization",
+                "outcome": "Migrate controller workflows and extract reusable service boundaries.",
+                "exit_criteria": ["Priority workflows migrated", "Auth/session compatibility defined", "SQL contracts preserved"],
+            },
+            {
+                "id": "PH2",
+                "title": "Hardening and release evidence",
+                "outcome": "Finalize parity evidence, quality gates, and release documentation.",
+                "exit_criteria": ["Quality gates pass", "Route/session parity verified", "Release readiness approved"],
+            },
+        ]
+        next_steps = [
+            {
+                "id": "NS-001",
+                "title": "Confirm PHP target architecture and blocking decisions",
+                "owner_role": "Tech Lead",
+                "done_when": ["Runtime architecture approved", "Datastore/session decisions resolved"],
+            },
+            {
+                "id": "NS-002",
+                "title": "Inventory async processing and route parity evidence",
+                "owner_role": "QA Lead",
+                "done_when": ["Routes baselined", "Async listeners documented", "Parity checks defined"],
+            },
+        ]
+
     report = {
         "artifact_type": "analyst_report",
         "artifact_version": "2.0",
@@ -8541,6 +8722,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
                 "branch": _clean(context_ref.get("branch")) or "main",
                 "commit_sha": _clean(context_ref.get("commit_sha")),
                 "version_id": _clean(context_ref.get("version_id")),
+                "source_language": _clean(source_profile.get("language")) or ("php" if is_php_summary else "vb6"),
                 "scm_version": _clean(context_ref.get("scm_version")) or "1.0",
                 "cp_version": _clean(context_ref.get("cp_version")) or "1.0",
                 "ha_version": _clean(context_ref.get("ha_version")) or "1.0",
@@ -8558,66 +8740,20 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
                     "failed_review_checks": failed_review_count,
                     "forms_unmapped": forms_unmapped,
                 },
-                "inventory_summary": {
-                    "projects": len(vb6_projects),
-                    "forms": forms_count,
-                    "forms_referenced": forms_referenced,
-                    "forms_unmapped": forms_unmapped,
-                    "source_loc_total": source_loc_total,
-                    "source_loc_forms": source_loc_forms,
-                    "source_loc_modules": source_loc_modules,
-                    "source_loc_classes": source_loc_classes,
-                    "source_files_scanned": source_files_scanned,
-                    "controls": controls_count,
-                    "dependencies": len(dep_unique),
-                    "event_handlers": event_handler_count_exact,
-                    "tables_touched": tables_touched,
-                },
-                "headline": f"{strategy_name} recommended.",
+                "inventory_summary": inventory_summary,
+                "headline": f"{strategy_name_effective} recommended.",
             },
             "recommended_strategy": {
-                "name": strategy_name,
-                "rationale": strategy_rationale,
-                "phases": [
-                    {
-                        "id": "PH0",
-                        "title": "Baseline and equivalence harness",
-                        "outcome": "Capture golden flows and baseline outputs.",
-                        "exit_criteria": ["Golden flows agreed", "Baseline outputs captured", "Parity checks defined"],
-                    },
-                    {
-                        "id": "PH1",
-                        "title": "Incremental migration and dependency replacement",
-                        "outcome": "Migrate forms/modules with dependency risk controls.",
-                        "exit_criteria": ["P0 flows migrated", "Critical dependencies addressed", "Regression suite passing"],
-                    },
-                    {
-                        "id": "PH2",
-                        "title": "Hardening and release evidence",
-                        "outcome": "Finalize quality gates and publish evidence pack.",
-                        "exit_criteria": ["Quality gates pass", "Traceability complete", "Release readiness approved"],
-                    },
-                ],
+                "name": strategy_name_effective,
+                "rationale": strategy_rationale_effective,
+                "phases": strategy_phases,
             },
             "decisions_required": {
                 "blocking": blocking_decisions,
                 "non_blocking": non_blocking_decisions,
             },
             "top_risks": top_risks,
-            "next_steps": [
-                {
-                    "id": "NS-001",
-                    "title": "Confirm blocking decisions and freeze modernization scope",
-                    "owner_role": "Tech Lead",
-                    "done_when": ["Blocking decisions approved", "Backlog dependencies resolved"],
-                },
-                {
-                    "id": "NS-002",
-                    "title": "Implement golden-flow harness for parity validation",
-                    "owner_role": "QA Lead",
-                    "done_when": ["Golden flow tests created", "Baseline artifacts stored"],
-                },
-            ],
+            "next_steps": next_steps,
         },
         "delivery_spec": {
             "scope": {

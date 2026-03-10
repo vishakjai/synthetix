@@ -147,6 +147,8 @@ def detect_php_framework_profile(
         "route_file_count": len(route_files),
         "app_roots": app_roots,
         "uses_composer": bool(composer_packages),
+        "composer_package_count": len(composer_packages),
+        "composer_packages": sorted(composer_packages)[:32],
         "uses_session_state": session_refs > 0,
         "sql_touchpoint_estimate": raw_sql_refs,
         "auth_touchpoint_estimate": auth_refs,

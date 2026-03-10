@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from collections import Counter, defaultdict
@@ -144,6 +145,17 @@ def _build_kind_for_path(path: str) -> str:
     if name in BUILD_KINDS:
         return BUILD_KINDS[name]
     return BUILD_KINDS.get(ext, "")
+
+
+def _is_landscape_noise_path(path: str) -> bool:
+    lower = str(path or "").strip().lower()
+    if not lower:
+        return False
+    if lower.startswith("branchinfo/") and lower.endswith((".diff", ".patch", ".txt")):
+        return True
+    if lower.startswith(("docs/", "documentation/")) and lower.endswith((".doc", ".docx", ".pdf")):
+        return True
+    return False
 
 
 def _component_kind_from_build(kind: str) -> str:
@@ -434,7 +446,12 @@ def build_landscape_artifacts(
     file_contents = file_contents or {}
     include_paths = include_paths or []
     exclude_paths = exclude_paths or []
-    files = [row for row in entries if isinstance(row, dict) and str(row.get("type", "blob")) == "blob"]
+    files = [
+        row for row in entries
+        if isinstance(row, dict)
+        and str(row.get("type", "blob")) == "blob"
+        and not _is_landscape_noise_path(_clean(row.get("path")))
+    ]
     total_files = len(files)
     binary_files = 0
     total_loc = 0
@@ -573,14 +590,21 @@ def build_landscape_artifacts(
         for name, details in sorted(datastore_notes.items())
     ]
 
+    composer_package_count = int(php_profile.get("composer_package_count", 0) or 0)
+    composer_packages = [
+        str(name).strip()
+        for name in php_profile.get("composer_packages", [])
+        if str(name).strip()
+    ] if isinstance(php_profile.get("composer_packages", []), list) else []
     dep_footprint = {
         "ocx_count": sum(1 for p in all_paths if p.lower().endswith('.ocx')),
         "com_dll_count": sum(1 for p in all_paths if p.lower().endswith(('.dll', '.tlb'))),
         "nuget_package_count": sum(1 for p in all_paths if PurePosixPath(p).name.lower() in {'packages.config', 'project.assets.json'}),
         "npm_package_count": sum(1 for p in all_paths if PurePosixPath(p).name.lower() == 'package-lock.json'),
+        "composer_package_count": composer_package_count,
         "java_dependency_count": sum(1 for p in all_paths if PurePosixPath(p).name.lower() in {'pom.xml', 'build.gradle', 'build.gradle.kts'}),
         "python_dependency_count": sum(1 for p in all_paths if PurePosixPath(p).name.lower() in {'requirements.txt', 'pyproject.toml'}),
-        "top_dependencies": [name for name, _count in top_dependencies.most_common(8)],
+        "top_dependencies": composer_packages[:8] or [name for name, _count in top_dependencies.most_common(8)],
     }
 
     largest_file_rows = [
@@ -649,6 +673,24 @@ def build_landscape_artifacts(
                 "description": "Session-state usage was detected in sampled PHP files. Authentication and workflow state may be tightly coupled to the current runtime.",
                 "recommendation": "Confirm target session/auth design early in Define Scope.",
                 "evidence": [{"type": marker.get("type", "path"), "path": marker.get("value", ""), "confidence": marker.get("confidence", 0.6)} for marker in php_profile.get("markers", [])[:3]],
+            })
+        if any(row.get("datastore") == "mq" for row in datastore_rows):
+            risk_rows.append({
+                "signal_id": "SIG_PHP_ASYNC_001",
+                "severity": "medium",
+                "title": "Asynchronous or queue-backed PHP processing detected",
+                "description": "Queue or message-listener signals were detected in the PHP application. Background processing behavior must be preserved in the target design.",
+                "recommendation": "Add an async processing migration decision and inventory background message listeners before planning.",
+                "evidence": [row for row in datastore_rows if row.get("datastore") == "mq"][:2],
+            })
+        if len([row for row in datastore_rows if row.get("datastore") in {"mysql", "sqlserver", "postgres", "oracle", "db2"}]) > 1:
+            risk_rows.append({
+                "signal_id": "SIG_PHP_MULTI_DB_001",
+                "severity": "high",
+                "title": "Multiple operational datastores detected for PHP application",
+                "description": "The PHP application appears to use more than one operational datastore. Migration planning needs an explicit data-boundary and contract strategy.",
+                "recommendation": "Create a blocking architecture decision for dual-datastore handling before downstream planning or generation.",
+                "evidence": [row for row in datastore_rows if row.get("datastore") in {"mysql", "sqlserver", "postgres", "oracle", "db2"}][:3],
             })
 
     ruleset = default_router_ruleset(repo=repo, branch=branch, commit_sha=commit_sha)

@@ -207,6 +207,8 @@ def _path_language_hint(path: str) -> str:
     suffix = Path(path).suffix.lower()
     if suffix in VB6_SOURCE_EXTENSIONS:
         return "vb6"
+    if suffix in {".php", ".phtml"} or str(path).lower().endswith((".blade.php", ".twig", ".tpl.php")):
+        return "php"
     if suffix in {".py"}:
         return "python"
     if suffix in {".js", ".ts", ".tsx"}:

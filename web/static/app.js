@@ -1343,6 +1343,26 @@ function buildAnalystReportV2(output) {
   const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object")
     ? sourceTargetProfile.target
     : {};
+  const isPhpSummary = (
+    String(sourceProfile.language || safeOutput.source_language || "").trim().toLowerCase() === "php"
+    || (legacyInventory.php_analysis && typeof legacyInventory.php_analysis === "object" && Object.keys(legacyInventory.php_analysis).length > 0)
+    || String(skill.selected_skill_id || "").trim().toLowerCase() === "php_legacy"
+  );
+  const phpAnalysis = (legacyInventory.php_analysis && typeof legacyInventory.php_analysis === "object") ? legacyInventory.php_analysis : {};
+  const phpRouteInventory = (phpAnalysis.route_inventory && typeof phpAnalysis.route_inventory === "object") ? phpAnalysis.route_inventory : {};
+  const phpControllerInventory = (phpAnalysis.controller_inventory && typeof phpAnalysis.controller_inventory === "object") ? phpAnalysis.controller_inventory : {};
+  const phpTemplateInventory = (phpAnalysis.template_inventory && typeof phpAnalysis.template_inventory === "object") ? phpAnalysis.template_inventory : {};
+  const phpSessionInventory = (phpAnalysis.session_state_inventory && typeof phpAnalysis.session_state_inventory === "object") ? phpAnalysis.session_state_inventory : {};
+  const phpAuthInventory = (phpAnalysis.authz_authn_inventory && typeof phpAnalysis.authz_authn_inventory === "object") ? phpAnalysis.authz_authn_inventory : {};
+  const phpJobsInventory = (phpAnalysis.background_job_inventory && typeof phpAnalysis.background_job_inventory === "object") ? phpAnalysis.background_job_inventory : {};
+  const phpFileIoInventory = (phpAnalysis.file_io_inventory && typeof phpAnalysis.file_io_inventory === "object") ? phpAnalysis.file_io_inventory : {};
+  const phpRouteCount = Number(phpRouteInventory.route_count || 0);
+  const phpControllerCount = Number(phpControllerInventory.controller_count || 0);
+  const phpTemplateCount = Number(phpTemplateInventory.template_count || 0);
+  const phpSessionKeyCount = Number(phpSessionInventory.session_key_count || 0);
+  const phpAuthTouchpointCount = Number(phpAuthInventory.auth_touchpoint_count || 0);
+  const phpJobCount = Number(phpJobsInventory.job_count || 0);
+  const phpFileIoCount = Number((phpFileIoInventory.upload_file_count || 0) + (phpFileIoInventory.export_file_count || 0));
   const contextRef = (safeOutput.context_reference && typeof safeOutput.context_reference === "object")
     ? safeOutput.context_reference
     : ((reqPack.context_reference && typeof reqPack.context_reference === "object") ? reqPack.context_reference : {});
@@ -1546,7 +1566,22 @@ function buildAnalystReportV2(output) {
       evidence_refs: [],
     });
   });
-  const blockingDecisions = [
+  const blockingDecisions = isPhpSummary ? [
+    {
+      id: "DEC-PHP-ARCH-001",
+      question: "Target runtime and application architecture for the PHP modernization",
+      options: ["TypeScript modular monolith", "Next.js + NestJS", "Node service decomposition"],
+      default_recommendation: "Use a TypeScript modular monolith first unless there is a clear reason to decompose immediately.",
+      impact_if_wrong: "Route/controller parity, auth flow, and delivery sequencing can drift early.",
+    },
+    {
+      id: "DEC-PHP-DB-001",
+      question: "Database contract strategy during PHP migration",
+      options: ["Preserve schema/queries", "Introduce compatibility layer", "Redesign schema"],
+      default_recommendation: "Preserve contracts initially; migrate behind compatibility layer.",
+      impact_if_wrong: "Business rule drift and data-side regressions.",
+    },
+  ] : [
     {
       id: "DEC-UI-001",
       question: "Target UI framework selection for migrated forms",
@@ -1569,6 +1604,41 @@ function buildAnalystReportV2(output) {
       impact_if_wrong: "Business rule drift and data-side regressions.",
     },
   ];
+  const landscapeDependencyFootprint = (rawArtifacts.repo_landscape_v1?.dependency_footprint && typeof rawArtifacts.repo_landscape_v1.dependency_footprint === "object")
+    ? rawArtifacts.repo_landscape_v1.dependency_footprint
+    : ((rawArtifacts.repo_landscape?.dependency_footprint && typeof rawArtifacts.repo_landscape.dependency_footprint === "object") ? rawArtifacts.repo_landscape.dependency_footprint : {});
+  const phpDependencyCount = Number(legacyInventory.php_dependency_count || landscapeDependencyFootprint.composer_package_count || 0);
+  const datastoreRows = Array.isArray(rawArtifacts.repo_landscape_v1?.datastore_signals)
+    ? rawArtifacts.repo_landscape_v1.datastore_signals
+    : (Array.isArray(rawArtifacts.repo_landscape?.datastore_signals) ? rawArtifacts.repo_landscape.datastore_signals : []);
+  const phpOperationalDatastores = datastoreRows.filter((row) => ["mysql", "sqlserver", "postgres", "oracle", "db2"].includes(String(row?.datastore || "").trim()));
+  if (isPhpSummary && phpOperationalDatastores.length > 1) {
+    blockingDecisions.push({
+      id: "DEC-PHP-DATA-002",
+      question: "Dual-datastore migration strategy requires confirmation",
+      options: ["Preserve both datastores", "Consolidate later", "Consolidate during migration"],
+      default_recommendation: "Preserve both datastores during initial migration and define an explicit contract map.",
+      impact_if_wrong: "Cross-database workflow parity and reporting behavior may break.",
+    });
+  }
+  if (isPhpSummary && (datastoreRows.some((row) => String(row?.datastore || "").trim() === "mq") || phpJobCount > 0)) {
+    blockingDecisions.push({
+      id: "DEC-PHP-ASYNC-003",
+      question: "Background job or queue listener migration strategy requires confirmation",
+      options: ["Preserve async processing", "Temporarily inline", "Defer async workloads"],
+      default_recommendation: "Preserve asynchronous behavior explicitly and inventory listeners and cron jobs before implementation.",
+      impact_if_wrong: "Hidden message processing and scheduled workflows may be lost.",
+    });
+  }
+  if (isPhpSummary && (phpSessionKeyCount > 0 || phpAuthTouchpointCount > 0)) {
+    blockingDecisions.push({
+      id: "DEC-PHP-SESSION-004",
+      question: "Session and authentication migration approach must be confirmed",
+      options: ["Preserve session model", "Introduce token-based auth", "Hybrid transitional model"],
+      default_recommendation: "Model current session/auth behavior first, then move to a clearer target design with explicit compatibility rules.",
+      impact_if_wrong: "Authentication, authorization, and workflow state regressions.",
+    });
+  }
   openQuestions
     .filter((q) => q.severity === "blocker" || q.severity === "high")
     .slice(0, 3)
@@ -1656,6 +1726,56 @@ function buildAnalystReportV2(output) {
     scenario_ids: Array.isArray(entry?.bdd_scenarios) ? entry.bdd_scenarios.map((x) => String(x || "")).filter(Boolean) : [],
   })).filter((row) => row.requirement_id);
 
+  const inventorySummary = isPhpSummary ? {
+    applications: (phpControllerCount || phpRouteCount || phpTemplateCount || sourceFilesScanned) ? 1 : 0,
+    controllers: phpControllerCount,
+    routes: phpRouteCount,
+    templates: phpTemplateCount,
+    session_keys: phpSessionKeyCount,
+    auth_touchpoints: phpAuthTouchpointCount,
+    background_jobs: phpJobCount,
+    file_io_flows: phpFileIoCount,
+    source_loc_total: sourceLocTotal,
+    source_files_scanned: sourceFilesScanned,
+    dependencies: phpDependencyCount,
+    tables_touched: tablesTouched,
+  } : {
+    projects: projectCount,
+    forms: formsCount,
+    forms_referenced: formsReferenced,
+    forms_unmapped: formsUnmapped,
+    source_loc_total: sourceLocTotal,
+    source_loc_forms: sourceLocForms,
+    source_loc_modules: sourceLocModules,
+    source_loc_classes: sourceLocClasses,
+    source_files_scanned: sourceFilesScanned,
+    controls: controlsCount,
+    dependencies: dependencySet.length,
+    event_handlers: eventHandlersExact,
+    tables_touched: tablesTouched,
+  };
+  const strategyName = isPhpSummary
+    ? String(readiness.recommended_strategy?.name || "PHP web modernization")
+    : String(readiness.recommended_strategy?.name || "Phased modernization");
+  const strategyRationale = isPhpSummary
+    ? String(readiness.recommended_strategy?.rationale || "Preserve route, session, query, and integration behavior first; then move the PHP application onto a typed target architecture.")
+    : String(readiness.recommended_strategy?.rationale || "Preserve behavior first, then modernize in controlled phases.");
+  const strategyPhases = isPhpSummary ? [
+    { id: "PH0", title: "Route, session, and data baseline", outcome: "Capture route inventory, session behavior, and SQL touchpoints.", exit_criteria: ["Routes inventoried", "Session/auth rules documented", "DB touchpoints confirmed"] },
+    { id: "PH1", title: "Controller and service modernization", outcome: "Migrate controller workflows and extract reusable service boundaries.", exit_criteria: ["Priority workflows migrated", "Auth/session compatibility defined", "SQL contracts preserved"] },
+    { id: "PH2", title: "Hardening and release evidence", outcome: "Finalize parity evidence, quality gates, and release documentation.", exit_criteria: ["Quality gates pass", "Route/session parity verified", "Release readiness approved"] },
+  ] : [
+    { id: "PH0", title: "Baseline and equivalence harness", outcome: "Capture golden flows and baseline outputs.", exit_criteria: ["Golden flows agreed", "Baseline outputs captured", "Parity checks defined"] },
+    { id: "PH1", title: "Incremental migration and dependency replacement", outcome: "Migrate forms/modules with OCX/COM risk controls.", exit_criteria: ["P0 flows migrated", "Critical dependencies addressed", "Regression suite passing"] },
+    { id: "PH2", title: "Hardening and release evidence", outcome: "Finalize quality gates and publish evidence pack.", exit_criteria: ["Quality gates pass", "Traceability complete", "Release readiness approved"] },
+  ];
+  const nextSteps = isPhpSummary ? [
+    { id: "NS-001", title: "Confirm PHP target architecture and blocking decisions", owner_role: "Tech Lead", done_when: ["Runtime architecture approved", "Datastore/session decisions resolved"] },
+    { id: "NS-002", title: "Inventory async processing and route parity evidence", owner_role: "QA Lead", done_when: ["Routes baselined", "Async listeners documented", "Parity checks defined"] },
+  ] : [
+    { id: "NS-001", title: "Confirm blocking decisions and freeze modernization scope", owner_role: "Tech Lead", done_when: ["Blocking decisions approved", "Backlog dependencies resolved"] },
+    { id: "NS-002", title: "Implement golden flow harness for parity validation", owner_role: "QA Lead", done_when: ["Golden flow tests created", "Baseline artifacts stored"] },
+  ];
   const report = {
     artifact_type: "analyst_report",
     artifact_version: "2.0",
@@ -1679,6 +1799,7 @@ function buildAnalystReportV2(output) {
         branch: String(contextRef.branch || "main"),
         commit_sha: String(contextRef.commit_sha || ""),
         version_id: String(contextRef.version_id || ""),
+        source_language: isPhpSummary ? "php" : (String(sourceProfile.language || safeOutput.source_language || "vb6").trim().toLowerCase() || "vb6"),
         scm_version: String(contextRef.scm_version || "1.0"),
         cp_version: String(contextRef.cp_version || "1.0"),
         ha_version: String(contextRef.ha_version || "1.0"),
@@ -1689,65 +1810,21 @@ function buildAnalystReportV2(output) {
         readiness_score: readinessScore,
         risk_tier: normalizedRiskTier,
         inventory_summary: {
-          projects: projectCount,
-          forms: formsCount,
-          forms_referenced: formsReferenced,
-          forms_unmapped: formsUnmapped,
-          source_loc_total: sourceLocTotal,
-          source_loc_forms: sourceLocForms,
-          source_loc_modules: sourceLocModules,
-          source_loc_classes: sourceLocClasses,
-          source_files_scanned: sourceFilesScanned,
-          controls: controlsCount,
-          dependencies: dependencySet.length,
-          event_handlers: eventHandlersExact,
-          tables_touched: tablesTouched,
+          ...inventorySummary,
         },
-        headline: String(readiness.recommended_strategy?.name || "Phased modernization") + " recommended.",
+        headline: `${strategyName} recommended.`,
       },
       recommended_strategy: {
-        name: String(readiness.recommended_strategy?.name || "Phased modernization"),
-        rationale: String(readiness.recommended_strategy?.rationale || "Preserve behavior first, then modernize in controlled phases."),
-        phases: [
-          {
-            id: "PH0",
-            title: "Baseline and equivalence harness",
-            outcome: "Capture golden flows and baseline outputs.",
-            exit_criteria: ["Golden flows agreed", "Baseline outputs captured", "Parity checks defined"],
-          },
-          {
-            id: "PH1",
-            title: "Incremental migration and dependency replacement",
-            outcome: "Migrate forms/modules with OCX/COM risk controls.",
-            exit_criteria: ["P0 flows migrated", "Critical dependencies addressed", "Regression suite passing"],
-          },
-          {
-            id: "PH2",
-            title: "Hardening and release evidence",
-            outcome: "Finalize quality gates and publish evidence pack.",
-            exit_criteria: ["Quality gates pass", "Traceability complete", "Release readiness approved"],
-          },
-        ],
+        name: strategyName,
+        rationale: strategyRationale,
+        phases: strategyPhases,
       },
       decisions_required: {
         blocking: blockingDecisions.slice(0, 8),
         non_blocking: nonBlockingDecisions,
       },
       top_risks: topRiskDrivers.slice(0, 8),
-      next_steps: [
-        {
-          id: "NS-001",
-          title: "Confirm blocking decisions and freeze modernization scope",
-          owner_role: "Tech Lead",
-          done_when: ["Blocking decisions approved", "Backlog dependencies resolved"],
-        },
-        {
-          id: "NS-002",
-          title: "Implement golden flow harness for parity validation",
-          owner_role: "QA Lead",
-          done_when: ["Golden flow tests created", "Baseline artifacts stored"],
-        },
-      ],
+      next_steps: nextSteps,
     },
       delivery_spec: {
       scope: {
@@ -1911,6 +1988,8 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const appendix = report.appendix || {};
   const openQuestions = Array.isArray(report.delivery_spec?.open_questions) ? report.delivery_spec.open_questions : [];
 
+  const isPhpSummary = String(report?.metadata?.context_reference?.source_language || report?.context?.source_language || "").trim().toLowerCase() === "php"
+    || (report?.decision_brief?.at_a_glance?.inventory_summary && Object.prototype.hasOwnProperty.call(report.decision_brief.at_a_glance.inventory_summary, "routes"));
   const lines = [
     `# Modernization Brief - ${String(project.name || "Untitled Project")}`,
     "",
@@ -1927,8 +2006,12 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
     "|---|---|",
     `| Modernization readiness | ${String(glance.readiness_score ?? "n/a")}/100 |`,
     `| Risk tier | ${String(glance.risk_tier || "n/a")} |`,
-    `| Inventory | ${String(inventory.projects ?? 0)} project(s), ${String(inventory.forms ?? 0)} forms/usercontrols, ${String(inventory.dependencies ?? 0)} dependencies |`,
-    `| Lines of code scanned | ${String(sourceLocTotal)} total LOC (${String(sourceLocForms)} form LOC, ${String(sourceLocModules)} module LOC) across ${String(sourceFilesScanned)} files |`,
+    isPhpSummary
+      ? `| Inventory | ${String(inventory.applications ?? 0)} application(s), ${String(inventory.controllers ?? 0)} controllers, ${String(inventory.routes ?? 0)} routes, ${String(inventory.templates ?? 0)} templates, ${String(inventory.dependencies ?? 0)} Composer dependencies |`
+      : `| Inventory | ${String(inventory.projects ?? 0)} project(s), ${String(inventory.forms ?? 0)} forms/usercontrols, ${String(inventory.dependencies ?? 0)} dependencies |`,
+    isPhpSummary
+      ? `| Lines of code scanned | ${String(sourceLocTotal)} total LOC across ${String(sourceFilesScanned)} files |`
+      : `| Lines of code scanned | ${String(sourceLocTotal)} total LOC (${String(sourceLocForms)} form LOC, ${String(sourceLocModules)} module LOC) across ${String(sourceFilesScanned)} files |`,
     `| Data touchpoints | ${Array.isArray(inventory.tables_touched) ? inventory.tables_touched.join(", ") : ""} |`,
     `| Headline | ${String(glance.headline || "")} |`,
     "",
@@ -1962,11 +2045,15 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   if (!backlog.length) lines.push("| - | - | - | No backlog items generated | - |");
 
   lines.push("", "### Testing and Evidence");
-  lines.push("- Golden flows:");
-  (Array.isArray(testing.golden_flows) ? testing.golden_flows : []).forEach((flow) => {
-    lines.push(`  - ${String(flow.id || "GF")}: ${String(flow.name || "")} | entry=${String(flow.entrypoint || "")}`);
-  });
-  if (!Array.isArray(testing.golden_flows) || !testing.golden_flows.length) lines.push("  - None");
+  if (isPhpSummary) {
+    lines.push(`- Route/session parity baseline required for ${String(inventory.routes ?? 0)} route(s), ${String(inventory.session_keys ?? 0)} session key(s), and ${String(inventory.background_jobs ?? 0)} background job(s).`);
+  } else {
+    lines.push("- Golden flows:");
+    (Array.isArray(testing.golden_flows) ? testing.golden_flows : []).forEach((flow) => {
+      lines.push(`  - ${String(flow.id || "GF")}: ${String(flow.name || "")} | entry=${String(flow.entrypoint || "")}`);
+    });
+    if (!Array.isArray(testing.golden_flows) || !testing.golden_flows.length) lines.push("  - None");
+  }
   lines.push("- Quality gates:");
   (Array.isArray(testing.quality_gates) ? testing.quality_gates : []).forEach((gate) => {
     lines.push(`  - ${String(gate.id || "gate")}: ${String(gate.result || "warn").toUpperCase()} | ${String(gate.description || "")}`);
