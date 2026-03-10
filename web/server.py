@@ -3996,7 +3996,71 @@ def _select_source_entries_for_analysis(
             rank = 5
         priority_rank.append((rank, path, entry))
     priority_rank.sort(key=lambda row: (row[0], row[1]))
-    return [row[2] for row in priority_rank[: max(1, effective_limit)]]
+    effective_limit = max(1, effective_limit)
+
+    # Very large VB6 estates can contain hundreds of project descriptors. If we simply
+    # take the first N ranked files, `.vbp/.vbg` entries crowd out `.frm/.ctl/.bas/.cls`
+    # files and the analyst never sees the actual code-bearing forms/modules. For those
+    # estates, reserve a mixed selection by type first, then backfill with the remaining
+    # highest-priority files.
+    project_entries = [row[2] for row in priority_rank if str(row[1]).endswith((".vbp", ".vbg"))]
+    form_entries = [row[2] for row in priority_rank if str(row[1]).endswith((".frm", ".ctl"))]
+    class_entries = [row[2] for row in priority_rank if str(row[1]).endswith(".cls")]
+    module_entries = [row[2] for row in priority_rank if str(row[1]).endswith(".bas")]
+    companion_entries = [
+        row[2]
+        for row in priority_rank
+        if str(row[1]).endswith((".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
+    ]
+
+    large_vb6_selector = (
+        len(project_entries) > 20
+        or len(form_entries) > 80
+        or len(module_entries) + len(class_entries) > 120
+    )
+    if not large_vb6_selector:
+        return [row[2] for row in priority_rank[:effective_limit]]
+
+    quotas = [
+        (project_entries, min(len(project_entries), max(12, effective_limit // 10), 32)),
+        (form_entries, min(len(form_entries), max(60, effective_limit // 2))),
+        (class_entries, min(len(class_entries), max(20, effective_limit // 8))),
+        (module_entries, min(len(module_entries), max(30, effective_limit // 6))),
+        (companion_entries, min(len(companion_entries), max(6, effective_limit // 24))),
+    ]
+
+    selected: list[dict[str, Any]] = []
+    selected_paths: set[str] = set()
+
+    def add_rows(rows: list[dict[str, Any]], count: int) -> None:
+        if count <= 0 or len(selected) >= effective_limit:
+            return
+        for row in rows:
+            path = str(row.get("path", "")).strip().lower()
+            if not path or path in selected_paths:
+                continue
+            selected.append(row)
+            selected_paths.add(path)
+            if len(selected) >= effective_limit or count <= 1:
+                break
+            count -= 1
+
+    for rows, count in quotas:
+        add_rows(rows, count)
+        if len(selected) >= effective_limit:
+            break
+
+    if len(selected) < effective_limit:
+        for _rank, _path, row in priority_rank:
+            path = str(row.get("path", "")).strip().lower()
+            if not path or path in selected_paths:
+                continue
+            selected.append(row)
+            selected_paths.add(path)
+            if len(selected) >= effective_limit:
+                break
+
+    return selected[:effective_limit]
 
 
 def _legacy_bundle_bucket(path: str) -> str:
