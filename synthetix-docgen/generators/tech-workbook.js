@@ -256,6 +256,135 @@ const mkFooter = () => new Footer({
   })],
 });
 
+function hasPhpDocgen(data) {
+  return String(data?.meta?.source_language || '').trim().toLowerCase() === 'php'
+    || (data?.php_analysis && typeof data.php_analysis === 'object' && Object.keys(data.php_analysis).length > 0);
+}
+
+function phpTable(headers, widths, rows) {
+  const body = Array.isArray(rows) && rows.length
+    ? rows
+    : [[{ text: 'No rows available.', span: headers.length }]];
+  return new Table({
+    layout: TableLayoutType.FIXED,
+    width: { size: W, type: WidthType.DXA },
+    columnWidths: widths,
+    rows: [
+      new TableRow({ tableHeader: true, children: headers.map((h, i) => hCell(h, widths[i], C.SLATE)) }),
+      ...body.map((row) => new TableRow({
+        children: row.map((cellDef, idx) => {
+          if (cellDef && typeof cellDef === 'object' && cellDef.span) {
+            return new TableCell({
+              columnSpan: cellDef.span,
+              width: { size: widths.reduce((acc, n) => acc + n, 0), type: WidthType.DXA },
+              borders: allB(),
+              margins: MG,
+              children: [new Paragraph({ children: [new TextRun({ text: String(cellDef.text || '—'), font: 'Arial', size: 18, color: C.DGREY, italics: true })] })],
+            });
+          }
+          return cell(cellDef == null ? '—' : cellDef, widths[idx]);
+        }),
+      })),
+    ],
+  });
+}
+
+function buildPhpProjectInventory(data) {
+  const php = data.php_analysis || {};
+  const rows = [
+    ['Framework', php.framework || 'custom_php'],
+    ['Routes', String(data?.php_route_inventory?.route_count || 0)],
+    ['Controllers', String(data?.php_controller_inventory?.controller_count || 0)],
+    ['Templates', String(data?.php_template_inventory?.template_count || 0)],
+    ['SQL Statements', String(data?.php_sql_catalog?.statement_count || 0)],
+    ['Session Keys', String(data?.php_session_state_inventory?.session_key_count || 0)],
+    ['Auth Files', String(data?.php_authz_authn_inventory?.auth_file_count || 0)],
+    ['Background Jobs', String(data?.php_background_job_inventory?.job_count || 0)],
+    ['Files Scanned', String(data?.meta?.source_files_scanned || 0)],
+    ['Source LOC', String(data?.meta?.source_loc_total || 0)],
+  ];
+  return phpTable(['Metric', 'Value'], [3600, 6840], rows);
+}
+
+function buildPhpRouteInventory(data) {
+  const rows = (data?.php_route_inventory?.routes || []).slice(0, 300).map((route) => [
+    route.route_id || '—',
+    route.method || '—',
+    route.uri || '—',
+    route.handler || '—',
+    route.source_file || '—',
+  ]);
+  return phpTable(['Route ID', 'Method', 'URI', 'Handler', 'Source File'], [1100, 900, 2200, 2500, 3740], rows);
+}
+
+function buildPhpControllerInventory(data) {
+  const rows = (data?.php_controller_inventory?.controllers || []).slice(0, 240).map((ctrl) => [
+    ctrl.name || '—',
+    String(ctrl.action_count || 0),
+    (ctrl.actions || []).join(', ') || '—',
+    ctrl.path || '—',
+  ]);
+  return phpTable(['Controller', 'Actions', 'Action Names', 'Path'], [2200, 900, 3440, 3900], rows);
+}
+
+function buildPhpTemplateInventory(data) {
+  const rows = (data?.php_template_inventory?.templates || []).slice(0, 240).map((tpl) => [
+    tpl.name || '—',
+    tpl.engine || '—',
+    tpl.path || '—',
+  ]);
+  return phpTable(['Template', 'Engine', 'Path'], [2200, 1400, 6840], rows);
+}
+
+function buildPhpSqlCatalog(data) {
+  const rows = (data?.php_sql_catalog?.statements || []).slice(0, 400).map((stmt) => [
+    stmt.sql_id || '—',
+    stmt.kind || '—',
+    (stmt.tables || []).join(', ') || '—',
+    (stmt.risk_flags || []).join(', ') || 'none',
+    stmt.source_file || '—',
+  ]);
+  return phpTable(['SQL ID', 'Kind', 'Tables', 'Risk Flags', 'Source File'], [1100, 1000, 2500, 2040, 3800], rows);
+}
+
+function buildPhpSessionAuth(data) {
+  const session = data?.php_session_state_inventory || {};
+  const auth = data?.php_authz_authn_inventory || {};
+  const rows = [
+    ['Uses Session State', session.uses_session_state ? 'yes' : 'no'],
+    ['Session Start Files', (session.session_start_files || []).slice(0, 8).join(', ') || '—'],
+    ['Session Keys', (session.session_keys || []).slice(0, 20).join(', ') || '—'],
+    ['Auth Evidence Files', String(auth.auth_file_count || 0)],
+    ['Auth Signals', (auth.evidence || []).slice(0, 8).map((x) => `${x.path}: ${(x.signals || []).join(', ')}`).join(' | ') || '—'],
+  ];
+  return phpTable(['Item', 'Value'], [2600, 7840], rows);
+}
+
+function buildPhpIncludeJobsFileIo(data) {
+  const includeGraph = data?.php_include_graph || {};
+  const jobs = data?.php_background_job_inventory || {};
+  const fileIo = data?.php_file_io_inventory || {};
+  const rows = [
+    ['Include Edges', String(includeGraph.edge_count || 0)],
+    ['Background Jobs', String(jobs.job_count || 0)],
+    ['Job Paths', (jobs.jobs || []).slice(0, 12).map((x) => x.path).join(', ') || '—'],
+    ['Upload Files', (fileIo.upload_files || []).slice(0, 12).join(', ') || '—'],
+    ['Export Files', (fileIo.export_files || []).slice(0, 12).join(', ') || '—'],
+  ];
+  return phpTable(['Item', 'Value'], [2600, 7840], rows);
+}
+
+function buildPhpValidation(data) {
+  const rows = (data?.php_validation_rules?.entries || []).slice(0, 240).map((entry) => [
+    entry.path || '—',
+    String(entry.validation_signal_count || 0),
+    entry.uses_required_checks ? 'yes' : 'no',
+    entry.uses_regex_checks ? 'yes' : 'no',
+    entry.uses_filter_var ? 'yes' : 'no',
+  ]);
+  return phpTable(['Path', 'Signals', 'Required', 'Regex', 'filter_var'], [5000, 1100, 1100, 1100, 1140], rows);
+}
+
 // ── Cover ──────────────────────────────────────────────────────────────────
 function buildCover(data) {
   const { title, generated_at, repo_url } = data.meta;
@@ -1193,6 +1322,56 @@ function buildUiControlCoverage(data) {
 
 // ── Main export ────────────────────────────────────────────────────────────
 async function generateTechWb(data, outputPath) {
+  if (hasPhpDocgen(data)) {
+    const docTitle = data.meta.title || 'PHP Legacy System';
+    const evidenceModeNote = 'PHP technical workbook is generated from deterministic extraction of routes, controllers, templates, SQL, session state, auth signals, include graphs, jobs, file I/O, and validation rules.';
+    const doc = new Document({
+      styles: {
+        default: { document: { run: { font: 'Arial', size: 18 } } },
+      },
+      sections: [{
+        properties: {
+          page: { size: { width: 12240, height: 15840 }, margin: { top: 900, right: 900, bottom: 900, left: 900 } },
+        },
+        headers: { default: mkHeader(`${docTitle} — Technical Workbook`) },
+        footers: { default: mkFooter() },
+        children: [
+          ...buildCover(data),
+          h1('Index'),
+          para('Linked index for quick navigation across workbook sections.'),
+          new TableOfContents('Contents', { hyperlink: true, headingStyleRange: '1-3' }),
+          pb(),
+          h1('1. Project Inventory'),
+          para(evidenceModeNote, { color: C.AMBR, bold: true }),
+          sp(), buildPhpProjectInventory(data), pb(),
+          h1('2. Route Inventory'),
+          para('Discovered route files and route definitions extracted from the PHP application.'),
+          sp(), buildPhpRouteInventory(data), pb(),
+          h1('3. Controller Inventory'),
+          para('Controllers and action methods detected from the codebase.'),
+          sp(), buildPhpControllerInventory(data), pb(),
+          h1('4. Template Inventory'),
+          para('Templates/views detected from standard PHP view directories and template engines.'),
+          sp(), buildPhpTemplateInventory(data), pb(),
+          h1('5. SQL Catalog'),
+          para('SQL statements and risk flags extracted from PHP source files.'),
+          sp(), buildPhpSqlCatalog(data), pb(),
+          h1('6. Session and Authentication'),
+          para('Session state, superglobal usage, and auth/authorization evidence detected in the application.'),
+          sp(), buildPhpSessionAuth(data), pb(),
+          h1('7. Includes, Jobs, and File I/O'),
+          para('Include graph edges, background jobs, uploads, and export flows detected from the legacy PHP estate.'),
+          sp(), buildPhpIncludeJobsFileIo(data), pb(),
+          h1('8. Validation Rules'),
+          para('Validation signals detected from required checks, regex usage, and filter functions.'),
+          sp(), buildPhpValidation(data), pb(),
+        ],
+      }],
+    });
+    const buf = await Packer.toBuffer(doc);
+    fs.writeFileSync(outputPath, buf);
+    return;
+  }
   const docTitle    = data.meta.title || 'VB6 Banking System';
   const projectTable = buildProjectInventory(data);
   const ktTable      = buildKTech(data);

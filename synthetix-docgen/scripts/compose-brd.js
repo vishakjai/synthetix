@@ -1584,7 +1584,324 @@ function buildProcessMaps(moduleRegistry, data) {
   });
 }
 
+function hasPhpDocgen(data) {
+  return norm(data?.meta?.source_language) === 'php'
+    || (data?.php_analysis && typeof data.php_analysis === 'object' && Object.keys(data.php_analysis).length > 0);
+}
+
+function titleCaseWords(value) {
+  return clean(value)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function phpBusinessNameFromController(name) {
+  const base = clean(name).replace(/Controller$/i, '');
+  if (!base) return 'Web Workflow';
+  return `${titleCaseWords(base.replace(/([a-z])([A-Z])/g, '$1 $2'))} Workflow`;
+}
+
+function buildPhpModuleRegistry(data) {
+  const controllers = asArray(data?.php_controller_inventory?.controllers);
+  const routes = asArray(data?.php_route_inventory?.routes);
+  const groupedRoutes = new Map();
+  for (const route of routes) {
+    const handler = clean(route.handler);
+    const controller = clean(handler.split('@')[0]).replace(/^.*\\/, '') || 'Route';
+    if (!groupedRoutes.has(controller)) groupedRoutes.set(controller, []);
+    groupedRoutes.get(controller).push(route);
+  }
+  const modules = controllers.length ? controllers : Array.from(groupedRoutes.keys()).map((name, idx) => ({
+    controller_id: `controller:${idx + 1}`,
+    name,
+    path: '',
+    action_count: groupedRoutes.get(name)?.length || 0,
+    actions: groupedRoutes.get(name)?.map((r) => clean(r.uri)).filter(Boolean) || [],
+  }));
+  return modules.map((ctrl, idx) => {
+    const name = clean(ctrl.name) || `Controller ${idx + 1}`;
+    const moduleId = `MOD-${String(idx + 1).padStart(3, '0')}`;
+    return {
+      module_id: moduleId,
+      module_name_from_code: name,
+      state_key_name: name.replace(/[^A-Za-z0-9]+/g, '_').toUpperCase(),
+      business_name: phpBusinessNameFromController(name),
+      module_kind: /auth|login|session|user/i.test(name) ? 'authentication' : 'workflow',
+      short_description: `Business workflow implemented by ${name}.`,
+      confidence: 0.78,
+      include_in_brd: true,
+      source_forms: (groupedRoutes.get(name) || []).map((r) => `${clean(r.method || 'GET')} ${clean(r.uri || '/')}`),
+      source_path: clean(ctrl.path),
+    };
+  });
+}
+
+function buildPhpContext(data, moduleRegistry = []) {
+  const routes = asArray(data?.php_route_inventory?.routes);
+  const controllers = asArray(data?.php_controller_inventory?.controllers);
+  const templates = asArray(data?.php_template_inventory?.templates);
+  const sqlCount = parseCount(data?.php_sql_catalog?.statement_count);
+  const framework = clean(data?.php_analysis?.framework || 'custom_php');
+  const scopeIn = uniqueStrings([
+    ...routes.map((r) => `${clean(r.method || 'GET')} ${clean(r.uri || '/')}`),
+    ...controllers.map((c) => clean(c.name)),
+  ]).slice(0, 30);
+  return {
+    artifact: 'brd_context_v1',
+    purpose: 'Modernize the legacy PHP web application while preserving workflow behavior, security, and data access outcomes.',
+    intended_audience: 'Business analysts, product owners, delivery leads, and modernization engineering teams.',
+    scope_in: scopeIn,
+    scope_out: [],
+    scope_note: 'Scope is derived from detected routes, controllers, templates, and PHP application structure.',
+    assumptions: [
+      'Route files and controllers represent the primary workflow entry points for the legacy web application.',
+      'Session, authentication, and SQL evidence require business validation where implementation logic is distributed across includes and templates.',
+    ],
+    constraints: [
+      'Modernization must preserve route-level workflow behavior and security controls.',
+      'Inline SQL and session-coupled behavior must be re-designed into explicit target-state services and middleware.',
+    ],
+    stakeholders: ['Business sponsor', 'Operations lead', 'Security reviewer', 'Delivery lead', 'Modernization engineering lead'],
+    scope_validation: 'Scope is derived from deterministic PHP route, controller, template, SQL, session, and auth extraction.',
+    compliance_security_summary: [
+      'Authentication, authorization, and session behavior must be preserved or intentionally redesigned with explicit approval.',
+      'Inline SQL and file upload/export behavior require security hardening during migration.',
+    ],
+    dependencies: uniqueStrings([framework, ...templates.map((t) => clean(t.engine))]),
+    current_state_summary: `Legacy PHP ${framework} application with ${routes.length} routes, ${controllers.length} controllers, ${templates.length} templates, and ${sqlCount} extracted SQL statements.`,
+    target_state_summary: 'Deliver a TypeScript-based target architecture with explicit services, route handling, and hardened security/data access behavior.',
+    project_background: [
+      `The legacy web application currently exposes ${routes.length} route-level workflows through ${controllers.length} controllers and ${templates.length} templates.`,
+      `Static extraction identified ${sqlCount} SQL statements plus session, authentication, and file I/O behavior that must be preserved or redesigned.`,
+      'The modernization objective is to make route behavior, security controls, and validation logic explicit before build generation proceeds.',
+    ],
+    business_goals: [
+      'Preserve business workflow outcomes for web routes and controller actions.',
+      'Externalize security, validation, and data access logic into target-state components.',
+      'Create an auditable modernization baseline for PHP route, template, and session behavior.',
+    ],
+    definitions_and_acronyms: [
+      { term: 'BRD', definition: 'Business Requirements Document' },
+      { term: 'Route', definition: 'A web endpoint or entry path exposed by the legacy PHP application.' },
+      { term: 'Controller', definition: 'Application code that handles route requests and orchestrates business behavior.' },
+    ],
+  };
+}
+
+function buildPhpGeneralRequirements(data, moduleRegistry) {
+  const routeCount = parseCount(data?.php_route_inventory?.route_count);
+  const sqlCount = parseCount(data?.php_sql_catalog?.statement_count);
+  return {
+    artifact: 'brd_general_requirements_v1',
+    functional_requirements: [
+      `The target solution shall preserve ${routeCount} detected route-level workflows or approved replacements.`,
+      'The target solution shall externalize controller logic into maintainable application services.',
+      `The target solution shall preserve or replace ${sqlCount} extracted SQL touchpoints through secure, parameterized data access.`,
+      'The target solution shall preserve required authentication, authorization, and session-based workflow controls.',
+    ],
+    non_functional_requirements: [
+      'Target architecture shall provide auditable route-to-service traceability.',
+      'Security-sensitive data handling shall use parameterized queries and protected session/auth controls.',
+      'Validation behavior shall be explicit and testable in the target implementation.',
+    ],
+    compliance_requirements: [
+      'Access control behavior must be preserved or explicitly redesigned with approval.',
+      'File upload and export flows must be governed by validation and secure handling controls.',
+    ],
+    business_rules: [
+      'Only authenticated and authorized users may access protected operational workflows.',
+      'Input validation must be applied before data updates or file operations are committed.',
+    ],
+    display_requirements: [
+      'Web workflows must provide clear navigation, input capture, and error feedback for users.',
+      'Validation and authorization failures must be expressed in business-readable language.',
+    ],
+    validations: [
+      `${parseCount(data?.php_validation_rules?.file_count)} files contain explicit validation signals and must be reflected in target-state validation rules.`,
+    ],
+    notifications: [
+      'Authentication, validation, and file-operation failures must surface clear user feedback.',
+    ],
+    shared_integrations: uniqueStrings([
+      clean(data?.php_analysis?.framework || 'custom_php'),
+      parseCount(data?.php_background_job_inventory?.job_count) ? 'Background job execution' : '',
+      (parseCount(data?.php_file_io_inventory?.upload_file_count) || parseCount(data?.php_file_io_inventory?.export_file_count)) ? 'File upload/export handling' : '',
+    ]),
+  };
+}
+
+function buildPhpModuleDossiers(data, moduleRegistry) {
+  const routes = asArray(data?.php_route_inventory?.routes);
+  const validations = asArray(data?.php_validation_rules?.entries);
+  const sqlStatements = asArray(data?.php_sql_catalog?.statements);
+  const authEvidence = asArray(data?.php_authz_authn_inventory?.evidence);
+  return asArray(moduleRegistry).map((module) => {
+    const controllerName = clean(module.module_name_from_code);
+    const routeRows = routes.filter((r) => clean(clean(r.handler).split('@')[0]).replace(/^.*\\/, '') === controllerName);
+    const sourcePath = clean(module.source_path);
+    const validationRows = validations.filter((v) => clean(v.path) === sourcePath);
+    const sqlRows = sqlStatements.filter((s) => clean(s.source_file) === sourcePath);
+    const authRows = authEvidence.filter((a) => clean(a.path) === sourcePath);
+    const featureRows = routeRows.slice(0, 12).map((route, featureIdx) => ({
+      feature_id: `${module.module_id}-FEAT-${String(featureIdx + 1).padStart(3, '0')}`,
+      name: `${clean(route.method || 'GET')} ${clean(route.uri || '/')}`,
+      description: `The workflow handles ${clean(route.method || 'GET')} ${clean(route.uri || '/')} through ${clean(route.handler || controllerName)}.`,
+    }));
+    const businessRules = [];
+    if (validationRows.length) businessRules.push({
+      rule_id: `${module.module_id}-BR-001`,
+      statement: 'Input validation must be completed before request processing is committed.',
+      rationale: `${validationRows.length} validation evidence file(s) detected for this controller.`,
+      error_message: 'Validation failures must be surfaced to the user in business language.',
+    });
+    if (authRows.length) businessRules.push({
+      rule_id: `${module.module_id}-BR-002`,
+      statement: 'Protected workflows require authentication and applicable authorization checks before execution.',
+      rationale: `${authRows.length} auth evidence file(s) detected for this workflow module.`,
+      error_message: 'Unauthorized access must be blocked and logged.',
+    });
+    if (sqlRows.length) businessRules.push({
+      rule_id: `${module.module_id}-BR-003`,
+      statement: 'Data access within this workflow must be migrated to secure, parameterized query handling.',
+      rationale: `${sqlRows.length} SQL statement(s) detected for this controller.`,
+      error_message: 'Data operations must fail safely when query validation or security checks fail.',
+    });
+    return {
+      module_id: module.module_id,
+      module_kind: module.module_kind,
+      heading_title: module.business_name,
+      business_purpose: `Deliver the ${module.business_name.toLowerCase()} through the ${controllerName} controller and its associated routes.`,
+      narrative_overview: `The ${module.business_name.toLowerCase()} groups related web routes, controller actions, and supporting validation/auth behavior into one business workflow module.`,
+      user_stories: [{
+        story_id: `${module.module_id}-US-001`,
+        as_a: 'business user',
+        i_want: `to complete ${module.business_name.toLowerCase()} tasks through the web application`,
+        so_that: 'the required business outcome is completed with the correct validations and access controls in place.',
+      }],
+      features: featureRows.length ? featureRows : [{
+        feature_id: `${module.module_id}-FEAT-001`,
+        name: module.business_name,
+        description: `Controller-backed workflow module for ${controllerName}.`,
+      }],
+      business_rules: businessRules,
+      display_requirements: (featureRows.length ? featureRows : [{ name: module.business_name }]).slice(0, 6).map((feature, idx) => ({
+        display_id: `${module.module_id}-DISP-${String(idx + 1).padStart(3, '0')}`,
+        title: feature.name || module.business_name,
+        description: `The module provides a clear web entry point for ${feature.name || module.business_name} and related business actions.`,
+      })),
+      field_definitions: validationRows.slice(0, 8).map((row, idx) => ({
+        feature_id: featureRows[0]?.feature_id || `${module.module_id}-FEAT-001`,
+        field_id: `${module.module_id}-FIELD-${String(idx + 1).padStart(3, '0')}`,
+        field_label: clean(row.path.split('/').pop()),
+        business_meaning: `Validation-bearing input path in ${row.path}.`,
+        required: row.uses_required_checks ? 'Yes' : 'No',
+      })),
+      acceptance_criteria: [
+        { ac_id: `${module.module_id}-AC-001`, statement: 'Workflow routes are reachable through the documented URI and handler mapping.' },
+        { ac_id: `${module.module_id}-AC-002`, statement: businessRules.length ? 'Validation, access control, and data access rules are preserved in the target-state design.' : 'Workflow behavior is documented and ready for target-state design elaboration.' },
+      ],
+      dependencies: uniqueStrings([sourcePath, ...routeRows.map((r) => clean(r.source_file))]),
+      blockers: [],
+      open_questions: sqlRows.length ? [] : ['Confirm whether additional hidden data access exists outside the extracted SQL catalog.'],
+      interactions_with_module_ids: [],
+    };
+  });
+}
+
+function buildPhpProcessMaps(moduleRegistry) {
+  return asArray(moduleRegistry).map((module) => ({
+    module_id: module.module_id,
+    ref: `PM-${module.module_id}`,
+    flow_summary: `The ${module.business_name.toLowerCase()} begins at one or more detected web routes and is handled by the ${module.module_name_from_code} controller.`,
+    flow_steps: [
+      'User navigates to the documented route or submits a web request.',
+      'Controller action receives the request and applies validation and authorization checks.',
+      'Data access, file handling, or workflow updates are executed as required.',
+      'The application returns a rendered view, redirect, export, or success/error response.',
+    ],
+    diagram_source_type: 'mermaid',
+    diagram_source: `flowchart LR\n  A[Request] --> B[${module.business_name}]\n  B --> C[Validated outcome]`,
+    image_ref: '',
+    generated_at: new Date().toISOString(),
+  }));
+}
+
+function buildPhpAppendices(data) {
+  const sqlStatements = asArray(data?.php_sql_catalog?.statements);
+  const entities = uniqueStrings(sqlStatements.flatMap((s) => asArray(s.tables))).slice(0, 20).map((tbl) => ({
+    entity: tbl,
+    business_meaning: `Business data entity referenced by extracted PHP SQL touchpoints for ${tbl}.`,
+  }));
+  const includeEdges = asArray(data?.php_include_graph?.edges);
+  return {
+    artifact: 'brd_appendices_v1',
+    dependencies_and_integrations: uniqueStrings([
+      clean(data?.php_analysis?.framework || 'custom_php'),
+      parseCount(data?.php_background_job_inventory?.job_count) ? 'Background jobs / scheduled execution' : '',
+      (parseCount(data?.php_file_io_inventory?.upload_file_count) || parseCount(data?.php_file_io_inventory?.export_file_count)) ? 'File upload / export handling' : '',
+      includeEdges.length ? 'Legacy include/require dependencies' : '',
+    ]),
+    issue_log: uniqueStrings([
+      parseCount(data?.php_sql_catalog?.statement_count) ? '' : 'Q-SQL-001: SQL catalog is incomplete or absent and requires review before build commitments.',
+      parseCount(data?.php_session_state_inventory?.session_key_count) ? 'DEC-SESSION-001: Session behavior must be mapped to the target authentication/session model.' : '',
+      parseCount(data?.php_file_io_inventory?.upload_file_count) ? 'DEC-FILEIO-001: Upload and export workflows require target-state storage and validation design.' : '',
+    ]),
+    process_map_inventory: [],
+    data_entities: entities,
+    data_entities_note: 'Data entities are derived from extracted PHP SQL touchpoints and should be confirmed against the target-state schema design.',
+  };
+}
+
+function composePhpBrdPackage(data, options = {}) {
+  const projectMeta = buildProjectMeta(data, options);
+  const versionHistory = buildVersionHistory(projectMeta);
+  const moduleRegistry = buildPhpModuleRegistry(data);
+  const context = buildPhpContext(data, moduleRegistry);
+  const generalRequirements = buildPhpGeneralRequirements(data, moduleRegistry);
+  const moduleDossiers = buildPhpModuleDossiers(data, moduleRegistry);
+  const processMaps = buildPhpProcessMaps(moduleRegistry, data);
+  const appendices = buildPhpAppendices(data, moduleRegistry, processMaps);
+  const templateFamily = projectMeta.template_family || options.template_family || 'default';
+  const templateAnchorMap = getTemplateAnchorMap(templateFamily);
+  const brdPackage = {
+    artifact: 'brd_package_v1',
+    project_meta_ref: 'brd_project_meta_v1',
+    version_history_ref: 'brd_version_history_v1',
+    context_ref: 'brd_context_v1',
+    general_requirements_ref: 'brd_general_requirements_v1',
+    module_registry_ref: 'brd_module_registry_v1',
+    module_dossier_refs: asArray(moduleDossiers).map((d) => d.module_id),
+    appendices_ref: 'brd_appendices_v1',
+    ordered_sections: ['cover', 'version_history', 'module_inventory', 'context', 'project_description', 'general_requirements', 'modules', 'appendices'],
+    module_ordering: asArray(moduleRegistry).map((m) => m.module_id),
+    numbering_policy: 'stable_sequential',
+    render_policy: {
+      template_family: templateFamily,
+      template_anchor_map_id: templateAnchorMap.id,
+      preserve_heading_hierarchy: true,
+      business_language_only: true,
+      block_on_structural_fail: true,
+    },
+    export_policy: { require_approval: true, immutable_version_on_publish: true },
+  };
+  return {
+    brd_project_meta_v1: projectMeta,
+    brd_version_history_v1: versionHistory,
+    brd_context_v1: context,
+    brd_general_requirements_v1: generalRequirements,
+    brd_module_registry_v1: moduleRegistry,
+    brd_module_dossier_v1: moduleDossiers,
+    brd_appendices_v1: appendices,
+    brd_process_map_v1: processMaps,
+    brd_template_anchor_map_v1: templateAnchorMap,
+    brd_package_v1: brdPackage,
+  };
+}
+
 function composeBrdPackage(data, options = {}) {
+  if (hasPhpDocgen(data)) return composePhpBrdPackage(data, options);
   const projectMeta = buildProjectMeta(data, options);
   const versionHistory = buildVersionHistory(projectMeta);
   const moduleRegistry = buildModuleRegistry(data);

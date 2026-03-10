@@ -9256,10 +9256,27 @@ def _run_synthetix_docgen(
                 glance = _as_dict_safe(brief.get("at_a_glance"))
                 inv = _as_dict_safe(glance.get("inventory_summary"))
                 raw = _as_dict_safe(report.get("raw_artifacts"))
+                legacy_inventory = _as_dict_safe(raw.get("legacy_inventory"))
                 source_schema = _as_dict_safe(raw.get("source_schema_model"))
                 provenance = _as_dict_safe(source_schema.get("provenance"))
                 track_a = _as_dict_safe(provenance.get("track_a"))
                 route = _clean_text(track_a.get("route")).lower()
+                php_analysis = _as_dict_safe(
+                    legacy_inventory.get("php_analysis")
+                    or _as_dict_safe(_as_dict_safe(analyst_output.get("legacy_code_inventory")).get("php_analysis"))
+                    or _as_dict_safe(_as_dict_safe(_as_dict_safe(analyst_output.get("requirements_pack")).get("legacy_code_inventory")).get("php_analysis"))
+                )
+                source_target = _as_dict_safe(
+                    analyst_output.get("source_target_modernization_profile")
+                    or legacy_inventory.get("source_target_modernization_profile")
+                )
+                source_profile = _as_dict_safe(source_target.get("source"))
+                source_language = _clean_text(
+                    source_profile.get("language")
+                    or legacy_inventory.get("source_language")
+                    or analyst_output.get("source_language")
+                    or ("PHP" if php_analysis else "")
+                )
                 docgen_meta = {
                     "title": _clean_text(_as_dict_safe(report.get("metadata")).get("title")),
                     "repoUrl": _clean_text(_as_dict_safe(_as_dict_safe(report.get("metadata")).get("context_reference")).get("repo")),
@@ -9272,6 +9289,8 @@ def _run_synthetix_docgen(
                     "source_schema_route": route,
                     "mdb_detected": route == "mdb_direct_read",
                     "run_id": str(run_id or ""),
+                    "source_language": source_language,
+                    "php_analysis": php_analysis,
                 }
             except Exception:
                 docgen_meta = {}

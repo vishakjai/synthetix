@@ -2036,7 +2036,12 @@ function parseMd(mdContent, meta = {}) {
     source_files_scanned: Number(meta.source_files_scanned || sourceLoc.files || 0),
     mdb_detected: Boolean(meta.mdb_detected != null ? meta.mdb_detected : mdbSummary.mdb_detected),
     source_schema_route: String(meta.source_schema_route || mdbSummary.source_route || ''),
+    source_language: String(meta.source_language || '').trim(),
   };
+  const phpAnalysis = (meta && typeof meta.php_analysis === 'object' && meta.php_analysis)
+    ? meta.php_analysis
+    : {};
+  if (!headerMeta.source_language && phpAnalysis && Object.keys(phpAnalysis).length) headerMeta.source_language = 'PHP';
   const importedAnalysis = /Imported analysis bundle/i.test(headerMeta.repo_url)
     || /evidence-backed/i.test(preamble)
     || /behavior_coverage:\s*FAIL/i.test(preamble);
@@ -2216,6 +2221,18 @@ function parseMd(mdContent, meta = {}) {
     dataenvironment_report_mapping: dataenvironmentMappings,
     static_risk_detectors: staticRiskDetectors,
     control_inventory: controlInventory,
+
+    php_analysis: phpAnalysis,
+    php_route_inventory: phpAnalysis.route_inventory || {},
+    php_controller_inventory: phpAnalysis.controller_inventory || {},
+    php_template_inventory: phpAnalysis.template_inventory || {},
+    php_sql_catalog: phpAnalysis.sql_catalog || {},
+    php_session_state_inventory: phpAnalysis.session_state_inventory || {},
+    php_authz_authn_inventory: phpAnalysis.authz_authn_inventory || {},
+    php_include_graph: phpAnalysis.include_graph || {},
+    php_background_job_inventory: phpAnalysis.background_job_inventory || {},
+    php_file_io_inventory: phpAnalysis.file_io_inventory || {},
+    php_validation_rules: phpAnalysis.validation_rules || {},
   };
 }
 

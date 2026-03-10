@@ -274,6 +274,165 @@ const mkFooter = () => new Footer({
   })],
 });
 
+function hasPhpDocgen(data) {
+  return String(data?.meta?.source_language || '').trim().toLowerCase() === 'php'
+    || (data?.php_analysis && typeof data.php_analysis === 'object' && Object.keys(data.php_analysis).length > 0);
+}
+
+function phpRowsTable(headers, widths, rows) {
+  const body = Array.isArray(rows) && rows.length
+    ? rows
+    : [[{ text: 'No rows available.', span: headers.length }]];
+  return new Table({
+    width: { size: W, type: WidthType.DXA },
+    rows: [
+      new TableRow({ children: headers.map((h, i) => hCell(h, widths[i])) }),
+      ...body.map((row) => new TableRow({
+        children: row.map((cellDef, idx) => {
+          if (cellDef && typeof cellDef === 'object' && cellDef.span) {
+            return new TableCell({
+              columnSpan: cellDef.span,
+              width: { size: widths.reduce((acc, n) => acc + n, 0), type: WidthType.DXA },
+              borders: allB(),
+              margins: MG,
+              children: [new Paragraph({ children: [new TextRun({ text: String(cellDef.text || '—'), font: 'Arial', size: 18, color: C.DGREY, italics: true })] })],
+            });
+          }
+          return cell(cellDef == null ? '—' : cellDef, widths[idx]);
+        }),
+      })),
+    ],
+  });
+}
+
+function buildPhpExecSnapshot(data) {
+  const routes = data.php_route_inventory || {};
+  const controllers = data.php_controller_inventory || {};
+  const templates = data.php_template_inventory || {};
+  const sql = data.php_sql_catalog || {};
+  const validation = data.php_validation_rules || {};
+  const sessions = data.php_session_state_inventory || {};
+  const auth = data.php_authz_authn_inventory || {};
+  const qaRows = [
+    ['Framework', (data.php_analysis && data.php_analysis.framework) || 'custom_php'],
+    ['Routes', String(routes.route_count || 0)],
+    ['Controllers', String(controllers.controller_count || 0)],
+    ['Templates', String(templates.template_count || 0)],
+    ['SQL Statements', String(sql.statement_count || 0)],
+    ['Validation Files', String(validation.file_count || 0)],
+    ['Session Keys', String(sessions.session_key_count || 0)],
+    ['Auth Files', String(auth.auth_file_count || 0)],
+  ];
+  return phpRowsTable(['Metric', 'Value'], [3600, 6840], qaRows);
+}
+
+function buildPhpWorkflowInventory(data) {
+  const routes = Array.isArray(data?.php_route_inventory?.routes) ? data.php_route_inventory.routes : [];
+  const controllers = new Map((Array.isArray(data?.php_controller_inventory?.controllers) ? data.php_controller_inventory.controllers : [])
+    .map((c) => [String(c.name || '').trim(), c]));
+  const rows = routes.slice(0, 120).map((route) => {
+    const handler = String(route.handler || '').trim();
+    const ctrlName = handler.split('@')[0].replace(/^.*\\/, '').trim();
+    const ctrl = controllers.get(ctrlName) || {};
+    const purpose = handler
+      ? `Handles ${route.method || 'GET'} ${route.uri || '/'} through ${handler}.`
+      : `Entry route for ${route.method || 'GET'} ${route.uri || '/'}.`;
+    return [
+      `${route.method || 'GET'} ${route.uri || '/'}`,
+      ctrlName || '—',
+      purpose,
+      String(route.source_file || '—'),
+    ];
+  });
+  return phpRowsTable(['Workflow', 'Controller', 'Business Purpose', 'Evidence'], [1800, 1800, 4440, 2400], rows);
+}
+
+function buildPhpRulesSection(data) {
+  const validation = Array.isArray(data?.php_validation_rules?.entries) ? data.php_validation_rules.entries : [];
+  const auth = Array.isArray(data?.php_authz_authn_inventory?.evidence) ? data.php_authz_authn_inventory.evidence : [];
+  const rules = [];
+  validation.slice(0, 80).forEach((entry, idx) => {
+    rules.push([`BR-PHP-${idx + 1}`, entry.path || '—', `Validation logic detected (${entry.validation_signal_count || 0} signal(s)).`, [
+      entry.uses_required_checks ? 'required checks' : '',
+      entry.uses_regex_checks ? 'regex validation' : '',
+      entry.uses_filter_var ? 'filter_var usage' : '',
+    ].filter(Boolean).join(', ') || 'basic validation']);
+  });
+  auth.slice(0, 40).forEach((entry, idx) => {
+    rules.push([`BR-AUTH-${idx + 1}`, entry.path || '—', 'Authentication/authorization signal detected.', (entry.signals || []).join(', ') || 'auth signal']);
+  });
+  return phpRowsTable(['Rule ID', 'Source', 'Business Rule Summary', 'Signals'], [1200, 3000, 4200, 2040], rules);
+}
+
+function buildPhpTraceability(data) {
+  const routes = Array.isArray(data?.php_route_inventory?.routes) ? data.php_route_inventory.routes : [];
+  const sqlByFile = new Set((Array.isArray(data?.php_sql_catalog?.statements) ? data.php_sql_catalog.statements : []).map((s) => String(s.source_file || '').trim()));
+  const authByFile = new Set((Array.isArray(data?.php_authz_authn_inventory?.evidence) ? data.php_authz_authn_inventory.evidence : []).map((s) => String(s.path || '').trim()));
+  const validationByFile = new Set((Array.isArray(data?.php_validation_rules?.entries) ? data.php_validation_rules.entries : []).map((s) => String(s.path || '').trim()));
+  const rows = routes.slice(0, 120).map((route) => {
+    const source = String(route.source_file || '').trim();
+    let score = 0;
+    if (source) score += 25;
+    if (String(route.handler || '').trim()) score += 25;
+    if (sqlByFile.has(source)) score += 25;
+    if (authByFile.has(source) || validationByFile.has(source)) score += 25;
+    return [
+      `${route.method || 'GET'} ${route.uri || '/'}`,
+      String(route.handler || '—'),
+      sqlByFile.has(source) ? 'yes' : 'no',
+      (authByFile.has(source) || validationByFile.has(source)) ? 'yes' : 'no',
+      String(score),
+    ];
+  });
+  return phpRowsTable(['Workflow', 'Handler', 'SQL', 'Auth/Validation', 'Score'], [2400, 3000, 1000, 1840, 2200], rows);
+}
+
+function buildPhpRiskRegister(data) {
+  const rows = [];
+  (Array.isArray(data?.php_sql_catalog?.statements) ? data.php_sql_catalog.statements : []).slice(0, 120).forEach((stmt, idx) => {
+    const flags = Array.isArray(stmt.risk_flags) ? stmt.risk_flags : [];
+    if (!flags.length) return;
+    rows.push([
+      `RISK-PHP-SQL-${idx + 1}`,
+      stmt.source_file || '—',
+      'HIGH',
+      `SQL handling risk detected in ${stmt.kind || 'SQL'} statement touching ${(stmt.tables || []).join(', ') || 'unknown tables'}.`,
+      flags.join(', '),
+    ]);
+  });
+  const sessions = data?.php_session_state_inventory || {};
+  if (sessions.uses_session_state) {
+    rows.push([
+      'RISK-PHP-SESSION-001',
+      (sessions.session_start_files || []).slice(0, 3).join(', ') || 'session scope',
+      'MEDIUM',
+      'Legacy workflow depends on mutable PHP session state and requires parity review before target-state auth/session design.',
+      `${sessions.session_key_count || 0} session keys`,
+    ]);
+  }
+  const fileIo = data?.php_file_io_inventory || {};
+  if ((fileIo.upload_file_count || 0) > 0 || (fileIo.export_file_count || 0) > 0) {
+    rows.push([
+      'RISK-PHP-FILE-001',
+      [...(fileIo.upload_files || []), ...(fileIo.export_files || [])].slice(0, 3).join(', ') || 'file I/O',
+      'MEDIUM',
+      'File upload/export flows are present and require migration design for storage, validation, and access control.',
+      `uploads=${fileIo.upload_file_count || 0}, exports=${fileIo.export_file_count || 0}`,
+    ]);
+  }
+  return phpRowsTable(['Risk ID', 'Source', 'Severity', 'Description', 'Notes'], [1200, 2600, 1000, 3840, 1800], rows);
+}
+
+function buildPhpSprintMap(data) {
+  const controllers = Array.isArray(data?.php_controller_inventory?.controllers) ? data.php_controller_inventory.controllers : [];
+  const sqlByPath = new Set((Array.isArray(data?.php_sql_catalog?.statements) ? data.php_sql_catalog.statements : []).map((s) => String(s.source_file || '').trim()));
+  const rows = controllers.slice(0, 120).map((ctrl) => {
+    const sprint = sqlByPath.has(String(ctrl.path || '').trim()) ? 'Sprint 0 (Data/risk-first)' : 'Sprint 1 (Workflow migration)';
+    return [ctrl.name || '—', String(ctrl.action_count || 0), sprint, ctrl.path || '—'];
+  });
+  return phpRowsTable(['Controller', 'Actions', 'Recommended Sprint', 'Evidence'], [2400, 1200, 3000, 3840], rows);
+}
+
 // ── Cover page ─────────────────────────────────────────────────────────────
 function buildCover(data) {
   const { title, generated_at, repo_url } = data.meta;
@@ -850,6 +1009,44 @@ function buildRiskRegister(data) {
 
 // ── Main export ────────────────────────────────────────────────────────────
 async function generateBaBrief(data, outputPath) {
+  if (hasPhpDocgen(data)) {
+    const docTitle = data.meta.title || 'PHP Legacy System';
+    const evidenceModeNote = 'PHP legacy analysis is derived from deterministic route, controller, template, SQL, session, and auth extraction. Content is evidence-backed where structure exists and should be validated where behavioral detail is incomplete.';
+    const doc = new Document({
+      styles: {
+        default: { document: { run: { font: 'Arial', size: 19 } } },
+      },
+      sections: [{
+        properties: {
+          page: { size: { width: 12240, height: 15840 }, margin: { top: 900, right: 900, bottom: 900, left: 900 } },
+        },
+        headers: { default: mkHeader(`${docTitle} — Business Analyst Brief`) },
+        footers: { default: mkFooter() },
+        children: [
+          ...buildCover(data),
+          h1('1. Executive Snapshot'), sp(), buildPhpExecSnapshot(data), sp(), para(evidenceModeNote, { color: C.AMBR, bold: true }), pb(),
+          h1('2. Workflow Inventory — Business View'),
+          para('Routes are treated as workflow entry points and linked to controller handlers where available.'),
+          sp(), buildPhpWorkflowInventory(data), pb(),
+          h1('3. Business Rules and Validation Signals'),
+          para('Business-facing rules are inferred from validation, session, and authorization evidence extracted from the PHP codebase.'),
+          sp(), buildPhpRulesSection(data), pb(),
+          h1('4. Traceability Coverage'),
+          para('Coverage scores indicate whether a workflow has route, handler, SQL, and auth/validation evidence.'),
+          sp(), buildPhpTraceability(data), pb(),
+          h1('5. Risk Register'),
+          para('Risks are derived from SQL, session, and file I/O signals detected in the legacy PHP estate.'),
+          sp(), buildPhpRiskRegister(data), pb(),
+          h1('Appendix A. Delivery Sequencing'),
+          para('Initial sequencing groups PHP controllers by data risk and workflow complexity.'),
+          sp(), buildPhpSprintMap(data), pb(),
+        ],
+      }],
+    });
+    const buf = await Packer.toBuffer(doc);
+    fs.writeFileSync(outputPath, buf);
+    return;
+  }
   const { kpiTable, briefTable, decTable, s100, s80, s40, s0, avgScore } = buildExecSnapshot(data);
   const { kTable, k1Table, numExcluded, numExcludedEntries } = buildFormInventory(data);
   const ruleContent = buildRulesSection(data);
