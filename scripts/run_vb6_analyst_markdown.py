@@ -308,6 +308,31 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     backlog = _as_list(_as_dict(delivery_spec.get("backlog")).get("items"))
     appendix = _as_dict(report.get("appendix"))
     open_questions = _as_list(delivery_spec.get("open_questions"))
+    source_language = _clean(_as_dict(metadata.get("context_reference")).get("source_language") or output.get("source_language")).strip().lower()
+    is_php_summary = source_language == "php" or any(
+        inventory.get(key) not in (None, "", 0) for key in ("controllers", "routes", "templates", "session_keys", "auth_touchpoints", "background_jobs", "file_io_flows")
+    )
+
+    if is_php_summary:
+        inventory_summary_text = (
+            f"{_clean(inventory.get('applications') or 0)} application(s), "
+            f"{_clean(inventory.get('controllers') or 0)} controllers, "
+            f"{_clean(inventory.get('routes') or 0)} routes, "
+            f"{_clean(inventory.get('templates') or 0)} templates, "
+            f"{_clean(inventory.get('dependencies') or 0)} dependencies"
+        )
+        loc_summary_text = f"{source_loc_total} total LOC across {source_files_scanned} files"
+    else:
+        inventory_summary_text = (
+            f"{_clean(inventory.get('projects') or 0)} project(s), "
+            f"{_clean(inventory.get('forms') or 0)} forms/usercontrols, "
+            f"{_clean(inventory.get('dependencies') or 0)} dependencies"
+        )
+        loc_summary_text = (
+            f"{source_loc_total} total LOC "
+            f"({source_loc_forms} form LOC, {source_loc_modules} module LOC, {source_loc_classes} class LOC) "
+            f"across {source_files_scanned} files"
+        )
 
     lines: list[str] = [
         f"# Modernization Brief - {_clean(project.get('name')) or 'Untitled Project'}",
@@ -325,8 +350,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         "|---|---|",
         f"| Modernization readiness | {_clean(glance.get('readiness_score') or 'n/a')}/100 |",
         f"| Risk tier | {_clean(glance.get('risk_tier') or 'n/a')} |",
-        f"| Inventory | {_clean(inventory.get('projects') or 0)} project(s), {_clean(inventory.get('forms') or 0)} forms/usercontrols, {_clean(inventory.get('dependencies') or 0)} dependencies |",
-        f"| Lines of code scanned | {source_loc_total} total LOC ({source_loc_forms} form LOC, {source_loc_modules} module LOC, {source_loc_classes} class LOC) across {source_files_scanned} files |",
+        f"| Inventory | {inventory_summary_text} |",
+        f"| Lines of code scanned | {loc_summary_text} |",
         f"| Data touchpoints | {', '.join(_as_list(inventory.get('tables_touched')))} |",
         f"| Headline | {_escape_pipe(glance.get('headline'))} |",
         "",
@@ -378,7 +403,8 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     else:
         lines.append("| - | - | - | No backlog items generated | - |")
 
-    lines.extend(["", "### Testing and Evidence", "- Golden flows:"])
+    lines.extend(["", "### Testing and Evidence"])
+    lines.append("- Golden flows:" if not is_php_summary else "- Route/controller parity anchors:")
     golden_flows = _as_list(testing.get("golden_flows"))
     if golden_flows:
         for flow in golden_flows:
@@ -387,7 +413,7 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 f"  - {_clean(flow_d.get('id')) or 'GF'}: {_clean(flow_d.get('name'))} | entry={_clean(flow_d.get('entrypoint'))}"
             )
     else:
-        lines.append("  - None")
+        lines.append("  - None" if not is_php_summary else "  - None derived yet from the current PHP route/controller inventory.")
 
     lines.append("- Quality gates:")
     quality_gates = _as_list(testing.get("quality_gates"))
