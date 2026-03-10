@@ -7964,18 +7964,24 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     )
     php_analysis = _as_dict(legacy_inventory.get("php_analysis"))
     if is_php_summary and not php_analysis:
+        def _php_raw(*names: str) -> dict[str, Any]:
+            for name in names:
+                candidate = _as_dict(raw_artifacts.get(name))
+                if candidate:
+                    return candidate
+            return {}
         php_analysis = {
-            "framework_profile": _as_dict(raw_artifacts.get("php_framework_profile_v1")),
-            "route_inventory": _as_dict(raw_artifacts.get("php_route_inventory_v1")),
-            "controller_inventory": _as_dict(raw_artifacts.get("php_controller_inventory_v1")),
-            "template_inventory": _as_dict(raw_artifacts.get("php_template_inventory_v1")),
-            "sql_catalog": _as_dict(raw_artifacts.get("php_sql_catalog_v1")),
-            "session_state_inventory": _as_dict(raw_artifacts.get("php_session_state_inventory_v1")),
-            "authz_authn_inventory": _as_dict(raw_artifacts.get("php_authz_authn_inventory_v1")),
-            "include_graph": _as_dict(raw_artifacts.get("php_include_graph_v1")),
-            "background_job_inventory": _as_dict(raw_artifacts.get("php_background_job_inventory_v1")),
-            "file_io_inventory": _as_dict(raw_artifacts.get("php_file_io_inventory_v1")),
-            "validation_rules": _as_dict(raw_artifacts.get("php_validation_rules_v1")),
+            "framework_profile": _php_raw("php_framework_profile_v1", "php_framework_profile"),
+            "route_inventory": _php_raw("php_route_inventory_v1", "php_route_inventory"),
+            "controller_inventory": _php_raw("php_controller_inventory_v1", "php_controller_inventory"),
+            "template_inventory": _php_raw("php_template_inventory_v1", "php_template_inventory"),
+            "sql_catalog": _php_raw("php_sql_catalog_v1", "php_sql_catalog"),
+            "session_state_inventory": _php_raw("php_session_state_inventory_v1", "php_session_state_inventory"),
+            "authz_authn_inventory": _php_raw("php_authz_authn_inventory_v1", "php_authz_authn_inventory"),
+            "include_graph": _php_raw("php_include_graph_v1", "php_include_graph"),
+            "background_job_inventory": _php_raw("php_background_job_inventory_v1", "php_background_job_inventory"),
+            "file_io_inventory": _php_raw("php_file_io_inventory_v1", "php_file_io_inventory"),
+            "validation_rules": _php_raw("php_validation_rules_v1", "php_validation_rules"),
         }
     php_routes = _as_dict(php_analysis.get("route_inventory"))
     php_controllers = _as_dict(php_analysis.get("controller_inventory"))
@@ -8015,6 +8021,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     )
     php_auth_touchpoints = int(
         php_auth.get("auth_touchpoint_count", 0)
+        or php_auth.get("auth_file_count", 0)
         or php_framework_profile.get("auth_touchpoint_estimate", 0)
         or 0
     )

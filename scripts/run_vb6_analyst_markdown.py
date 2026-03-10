@@ -101,6 +101,59 @@ def _escape_pipe(value: Any) -> str:
     return _clean(value).replace("|", "\\|")
 
 
+def _php_artifact_bundle(raw_map: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "route_inventory": _as_dict(raw_map.get("php_route_inventory") or raw_map.get("php_route_inventory_v1")),
+        "controller_inventory": _as_dict(raw_map.get("php_controller_inventory") or raw_map.get("php_controller_inventory_v1")),
+        "template_inventory": _as_dict(raw_map.get("php_template_inventory") or raw_map.get("php_template_inventory_v1")),
+        "sql_catalog": _as_dict(raw_map.get("php_sql_catalog") or raw_map.get("php_sql_catalog_v1")),
+        "session_state_inventory": _as_dict(raw_map.get("php_session_state_inventory") or raw_map.get("php_session_state_inventory_v1")),
+        "authz_authn_inventory": _as_dict(raw_map.get("php_authz_authn_inventory") or raw_map.get("php_authz_authn_inventory_v1")),
+        "include_graph": _as_dict(raw_map.get("php_include_graph") or raw_map.get("php_include_graph_v1")),
+        "background_job_inventory": _as_dict(raw_map.get("php_background_job_inventory") or raw_map.get("php_background_job_inventory_v1")),
+        "file_io_inventory": _as_dict(raw_map.get("php_file_io_inventory") or raw_map.get("php_file_io_inventory_v1")),
+        "validation_rules": _as_dict(raw_map.get("php_validation_rules") or raw_map.get("php_validation_rules_v1")),
+    }
+
+
+def _has_php_summary_data(summary: dict[str, Any]) -> bool:
+    if not summary:
+        return False
+    routes = _as_dict(summary.get("route_inventory"))
+    controllers = _as_dict(summary.get("controller_inventory"))
+    templates = _as_dict(summary.get("template_inventory"))
+    sql_catalog = _as_dict(summary.get("sql_catalog"))
+    sessions = _as_dict(summary.get("session_state_inventory"))
+    authz = _as_dict(summary.get("authz_authn_inventory"))
+    jobs = _as_dict(summary.get("background_job_inventory"))
+    file_io = _as_dict(summary.get("file_io_inventory"))
+    validation = _as_dict(summary.get("validation_rules"))
+    include_graph = _as_dict(summary.get("include_graph"))
+    return any([
+        _as_int(routes.get("route_count"), 0) > 0,
+        _as_int(routes.get("entrypoint_count"), 0) > 0,
+        bool(_as_list(routes.get("routes"))),
+        _as_int(controllers.get("controller_count"), 0) > 0,
+        bool(_as_list(controllers.get("controllers"))),
+        _as_int(templates.get("template_count"), 0) > 0,
+        bool(_as_list(templates.get("templates"))),
+        _as_int(sql_catalog.get("statement_count"), 0) > 0,
+        bool(_as_list(sql_catalog.get("statements"))),
+        _as_int(sessions.get("session_key_count"), 0) > 0,
+        bool(sessions.get("uses_session_state")),
+        _as_int(authz.get("auth_touchpoint_count"), 0) > 0,
+        _as_int(authz.get("auth_file_count"), 0) > 0,
+        bool(_as_list(authz.get("evidence"))),
+        _as_int(jobs.get("job_count"), 0) > 0,
+        bool(_as_list(jobs.get("jobs"))),
+        _as_int(file_io.get("upload_file_count"), 0) > 0,
+        _as_int(file_io.get("export_file_count"), 0) > 0,
+        _as_int(validation.get("file_count"), 0) > 0,
+        bool(_as_list(validation.get("entries"))),
+        bool(_as_list(include_graph.get("edges"))),
+    ])
+
+
 def _dependency_name(value: Any) -> str:
     text = _clean(value)
     if not text:
@@ -1391,38 +1444,85 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             _add_discovered(orphan_project, orphan_form, "orphan_analysis")
 
     lines.append(f"- Legacy inventory: {'present' if raw.get('legacy_inventory') or hv.get('legacy_inventory') else 'missing'}")
-    lines.append(f"- Event map rows: {len(raw_event_map) or len(_as_list(hv.get('event_map')))}")
-    lines.append(f"- SQL catalog rows: {len(raw_sql) or len(_as_list(hv.get('sql_catalog')))}")
-    lines.append(f"- SQL map rows: {len(raw_sql_map)}")
-    lines.append(f"- Procedure summaries: {len(raw_procedures)}")
-    lines.append(f"- Form dossiers: {len(raw_form_dossiers)}")
-    lines.append(f"- Dependency rows: {len(raw_deps) or len(_as_list(hv.get('dependencies')))}")
-    lines.append(f"- Business rules: {len(raw_rules) or len(_as_list(hv.get('business_rules')))}")
-    lines.append(f"- Risk register rows: {len(raw_risks)}")
-    lines.append(f"- Orphan analysis rows: {len(raw_orphans)}")
-    lines.append(f"- Repo landscape variants: {len(raw_landscape)}")
-    lines.append(f"- Variant inventory rows: {len(raw_variant_inventory)}")
-    lines.append(f"- Constitution principles: {len(raw_constitution)}")
-    lines.append(f"- MDB inventory rows: {len(mdb_rows)}")
-    lines.append(f"- Form LOC profile rows: {len(form_loc_rows)}")
-    lines.append(f"- Designer LOC rows: {len(designer_loc_rows)}")
-    lines.append(f"- Connection string variants: {len(conn_variant_rows)}")
-    lines.append(f"- Module global inventory rows: {len(module_global_rows)}")
-    lines.append(f"- Dead form references: {len(dead_form_ref_rows)}")
-    lines.append(f"- DataEnvironment report mappings: {len(de_report_rows)}")
-    lines.append(f"- Static risk detector findings: {len(static_detector_rows)}")
-    lines.append(f"- Source data dictionary rows: {len(source_data_dictionary_rows)}")
     legacy_counts = _as_dict(_as_dict(raw.get("legacy_inventory")).get("summary")).get("counts", {})
     legacy_counts = _as_dict(legacy_counts)
-    lines.append(
-        "- Source LOC: {} total (forms={}, modules={}, classes={}) across {} file(s)".format(
-            _as_int(legacy_counts.get("source_loc_total"), 0),
-            _as_int(legacy_counts.get("source_loc_forms"), 0),
-            _as_int(legacy_counts.get("source_loc_modules"), 0),
-            _as_int(legacy_counts.get("source_loc_classes"), source_loc_classes),
-            _as_int(legacy_counts.get("source_files_scanned"), 0),
+    raw_legacy_summary = _as_dict(raw.get("legacy_inventory"))
+    php_summary = _as_dict(raw_legacy_summary.get("php_analysis"))
+    if not _has_php_summary_data(php_summary):
+        php_summary = _php_artifact_bundle(raw)
+    is_php_counts = _has_php_summary_data(php_summary) or _clean(_as_dict(_as_dict(report.get('metadata')).get('context_reference')).get('source_language')).lower() == 'php'
+    if is_php_counts:
+        php_route_rows = _as_list(_as_dict(php_summary.get('route_inventory')).get('routes'))
+        php_sql_rows = _as_list(_as_dict(php_summary.get('sql_catalog')).get('statements'))
+        php_rule_rows = _as_list(_as_dict(php_summary.get('validation_rules')).get('entries')) + _as_list(_as_dict(php_summary.get('authz_authn_inventory')).get('evidence'))
+        php_risk_rows = []
+        for row in php_sql_rows[:800]:
+            for risk in _as_list(_as_dict(row).get('risk_flags')):
+                risk = _clean(risk)
+                if risk and risk not in php_risk_rows:
+                    php_risk_rows.append(risk)
+        if bool(_as_dict(php_summary.get('session_state_inventory')).get('uses_session_state')) and 'session_state_mutation' not in php_risk_rows:
+            php_risk_rows.append('session_state_mutation')
+        if _as_int(_as_dict(php_summary.get('file_io_inventory')).get('upload_file_count'),0) > 0 and 'file_upload_handling' not in php_risk_rows:
+            php_risk_rows.append('file_upload_handling')
+        php_dep_count = _as_int(raw_legacy_summary.get('php_dependency_count'), 0)
+        if php_dep_count <= 0:
+            php_dep_count = _as_int(inventory.get('dependencies'), 0)
+        if php_dep_count <= 0:
+            php_dep_count = _as_int(_as_dict(_as_dict(raw.get('repo_landscape_v1') or raw.get('repo_landscape')).get('dependency_footprint')).get('composer_package_count'), 0)
+        lines.append(f"- Event map rows: {len(php_route_rows) or _as_int(_as_dict(php_summary.get('route_inventory')).get('route_count'),0) or _as_int(_as_dict(php_summary.get('route_inventory')).get('entrypoint_count'),0)}")
+        lines.append(f"- SQL catalog rows: {len(php_sql_rows) or _as_int(_as_dict(php_summary.get('sql_catalog')).get('statement_count'),0)}")
+        lines.append(f"- SQL map rows: 0")
+        lines.append(f"- Procedure summaries: {_as_int(_as_dict(php_summary.get('controller_inventory')).get('action_count'),0)}")
+        lines.append(f"- Form dossiers: 0")
+        lines.append(f"- Dependency rows: {php_dep_count}")
+        lines.append(f"- Business rules: {len(php_rule_rows)}")
+        lines.append(f"- Risk register rows: {len(php_risk_rows)}")
+        lines.append(f"- Orphan analysis rows: 0")
+        lines.append(f"- Repo landscape variants: {len(raw_landscape)}")
+        lines.append(f"- Variant inventory rows: {len(raw_variant_inventory)}")
+        lines.append(f"- Constitution principles: {len(raw_constitution)}")
+        lines.append(f"- MDB inventory rows: 0")
+        lines.append(f"- Form LOC profile rows: 0")
+        lines.append(f"- Designer LOC rows: 0")
+        lines.append(f"- Connection string variants: 0")
+        lines.append(f"- Module global inventory rows: 0")
+        lines.append(f"- Dead form references: 0")
+        lines.append(f"- DataEnvironment report mappings: 0")
+        lines.append(f"- Static risk detector findings: {len(php_risk_rows)}")
+        lines.append(f"- Source data dictionary rows: 0")
+        lines.append("- Source LOC: {} total across {} file(s)".format(source_loc_total, source_files_scanned))
+    else:
+        lines.append(f"- Event map rows: {len(raw_event_map) or len(_as_list(hv.get('event_map')))}")
+        lines.append(f"- SQL catalog rows: {len(raw_sql) or len(_as_list(hv.get('sql_catalog')))}")
+        lines.append(f"- SQL map rows: {len(raw_sql_map)}")
+        lines.append(f"- Procedure summaries: {len(raw_procedures)}")
+        lines.append(f"- Form dossiers: {len(raw_form_dossiers)}")
+        lines.append(f"- Dependency rows: {len(raw_deps) or len(_as_list(hv.get('dependencies')))}")
+        lines.append(f"- Business rules: {len(raw_rules) or len(_as_list(hv.get('business_rules')))}")
+        lines.append(f"- Risk register rows: {len(raw_risks)}")
+        lines.append(f"- Orphan analysis rows: {len(raw_orphans)}")
+        lines.append(f"- Repo landscape variants: {len(raw_landscape)}")
+        lines.append(f"- Variant inventory rows: {len(raw_variant_inventory)}")
+        lines.append(f"- Constitution principles: {len(raw_constitution)}")
+        lines.append(f"- MDB inventory rows: {len(mdb_rows)}")
+        lines.append(f"- Form LOC profile rows: {len(form_loc_rows)}")
+        lines.append(f"- Designer LOC rows: {len(designer_loc_rows)}")
+        lines.append(f"- Connection string variants: {len(conn_variant_rows)}")
+        lines.append(f"- Module global inventory rows: {len(module_global_rows)}")
+        lines.append(f"- Dead form references: {len(dead_form_ref_rows)}")
+        lines.append(f"- DataEnvironment report mappings: {len(de_report_rows)}")
+        lines.append(f"- Static risk detector findings: {len(static_detector_rows)}")
+        lines.append(f"- Source data dictionary rows: {len(source_data_dictionary_rows)}")
+        lines.append(
+            "- Source LOC: {} total (forms={}, modules={}, classes={}) across {} file(s)".format(
+                _as_int(legacy_counts.get("source_loc_total"), 0),
+                _as_int(legacy_counts.get("source_loc_forms"), 0),
+                _as_int(legacy_counts.get("source_loc_modules"), 0),
+                _as_int(legacy_counts.get("source_loc_classes"), source_loc_classes),
+                _as_int(legacy_counts.get("source_files_scanned"), 0),
+            )
         )
-    )
 
     include_detailed_appendix = mode != "summary"
     if not include_detailed_appendix:
@@ -1436,6 +1536,190 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     rule_rows = raw_rules or _as_list(hv.get("business_rules"))
     detector_rows = _as_list(_as_dict(raw.get("detector_findings")).get("findings"))
     artifact_index_rows = _as_list(_as_dict(raw.get("artifact_index")).get("artifacts"))
+
+    php_analysis = _as_dict(raw_legacy.get("php_analysis"))
+    if not _has_php_summary_data(php_analysis):
+        php_analysis = _php_artifact_bundle(raw)
+    is_php_md = _has_php_summary_data(php_analysis) or _clean(_as_dict(_as_dict(report.get("metadata")).get("context_reference")).get("source_language")).lower() == "php"
+    php_routes = _as_dict(php_analysis.get("route_inventory"))
+    php_controllers = _as_dict(php_analysis.get("controller_inventory"))
+    php_templates = _as_dict(php_analysis.get("template_inventory"))
+    php_sql = _as_dict(php_analysis.get("sql_catalog"))
+    php_sessions = _as_dict(php_analysis.get("session_state_inventory"))
+    php_auth = _as_dict(php_analysis.get("authz_authn_inventory"))
+    php_include = _as_dict(php_analysis.get("include_graph"))
+    php_jobs = _as_dict(php_analysis.get("background_job_inventory"))
+    php_file_io = _as_dict(php_analysis.get("file_io_inventory"))
+    php_validation = _as_dict(php_analysis.get("validation_rules"))
+
+    if is_php_md:
+        php_route_rows = _as_list(php_routes.get("routes"))
+        php_controller_rows = _as_list(php_controllers.get("controllers"))
+        php_template_rows = _as_list(php_templates.get("templates"))
+        php_sql_rows = _as_list(php_sql.get("statements"))
+        php_dep_count = _as_int(raw_legacy.get("php_dependency_count"), 0)
+        if php_dep_count <= 0:
+            php_dep_count = _as_int(inventory.get("dependencies"), 0)
+        if php_dep_count <= 0:
+            php_dep_count = _as_int(_as_dict(_as_dict(raw.get("repo_landscape_v1") or raw.get("repo_landscape")).get("dependency_footprint")).get("composer_package_count"), 0)
+        php_validation_rows = _as_list(php_validation.get("entries"))
+        php_auth_rows = _as_list(php_auth.get("evidence"))
+        php_job_rows = _as_list(php_jobs.get("jobs"))
+        php_upload_rows = _as_list(php_file_io.get("upload_files"))
+        php_export_rows = _as_list(php_file_io.get("export_files"))
+        php_include_edges = _as_list(php_include.get("edges"))
+        php_data_touchpoints = []
+        for row in php_sql_rows[:800]:
+            rr = _as_dict(row)
+            for table in _as_list(rr.get("tables")):
+                t = _clean(table)
+                if t and t not in php_data_touchpoints:
+                    php_data_touchpoints.append(t)
+        php_risk_descriptions = []
+        for row in php_sql_rows[:800]:
+            rr = _as_dict(row)
+            for risk in _as_list(rr.get("risk_flags")):
+                r = _clean(risk)
+                if r and r not in php_risk_descriptions:
+                    php_risk_descriptions.append(r)
+        if bool(php_sessions.get("uses_session_state")) and "session_state_mutation" not in php_risk_descriptions:
+            php_risk_descriptions.append("session_state_mutation")
+        if _as_int(php_file_io.get("upload_file_count"),0) > 0 and "file_upload_handling" not in php_risk_descriptions:
+            php_risk_descriptions.append("file_upload_handling")
+        lines.extend(["", "## Detailed Appendix", "", "### A. Legacy Inventory"])
+        lines.append(f"- Applications: {max(1, 1 if source_files_scanned or source_loc_total else 0)}")
+        lines.append(f"- Controllers: {_as_int(php_controllers.get('controller_count'), 0)}")
+        lines.append(f"- Routes: {_as_int(php_routes.get('route_count'), 0) or _as_int(php_routes.get('entrypoint_count'), 0)}")
+        lines.append(f"- Templates: {_as_int(php_templates.get('template_count'), 0)}")
+        lines.append(f"- Dependencies: {php_dep_count}")
+        lines.append(f"- Data touchpoints: {', '.join(php_data_touchpoints[:12]) or 'None detected'}")
+        lines.append("- Source LOC: {} total across {} file(s)".format(source_loc_total, source_files_scanned))
+
+        lines.extend(["", "### B. Dependency Inventory"])
+        if php_dep_count > 0 or php_include_edges:
+            lines.append(f"- Composer/package dependencies detected: {php_dep_count}")
+            lines.append(f"- Include/require edges detected: {len(php_include_edges)}")
+        else:
+            lines.append("- No PHP dependency rows available.")
+
+        lines.extend(["", "### C. Route Inventory"])
+        if php_route_rows:
+            lines.append("| Route ID | Method | URI | Handler | Source File |")
+            lines.append("|---|---|---|---|---|")
+            for row in php_route_rows[:600]:
+                r = _as_dict(row)
+                lines.append("| {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("route_id") or "n/a"),
+                    _escape_pipe(r.get("method") or "ANY"),
+                    _escape_pipe(r.get("uri") or "n/a"),
+                    _escape_pipe(r.get("handler") or "n/a"),
+                    _escape_pipe(r.get("source_file") or "n/a"),
+                ))
+        else:
+            lines.append("- No route inventory rows available.")
+
+        lines.extend(["", "### D. SQL Catalog"])
+        if php_sql_rows:
+            lines.append("| SQL ID | Kind | Tables | Query | Risk Flags |")
+            lines.append("|---|---|---|---|---|")
+            for row in php_sql_rows[:700]:
+                r = _as_dict(row)
+                lines.append("| {} | {} | {} | {} | {} |".format(
+                    _escape_pipe(r.get("sql_id") or "n/a"),
+                    _escape_pipe(r.get("kind") or "SQL"),
+                    _escape_pipe(", ".join(_as_list(r.get("tables"))[:6]) or "n/a"),
+                    _escape_pipe(r.get("raw") or "n/a"),
+                    _escape_pipe(", ".join(_as_list(r.get("risk_flags"))[:6]) or "n/a"),
+                ))
+        else:
+            lines.append("- No SQL rows available.")
+
+        lines.extend(["", "### E. Business Rules"])
+        if php_validation_rows or php_auth_rows:
+            lines.append("| Rule ID | Scope | Category | Business Meaning | Evidence |")
+            lines.append("|---|---|---|---|---|")
+            rid = 1
+            for row in php_validation_rows[:300]:
+                r = _as_dict(row)
+                signals = []
+                if r.get("uses_required_checks"): signals.append("required_checks")
+                if r.get("uses_regex_checks"): signals.append("regex_checks")
+                if r.get("uses_filter_var"): signals.append("filter_var")
+                lines.append("| {} | {} | {} | {} | {} |".format(
+                    f'BR-{rid:03d}',
+                    _escape_pipe(r.get('path') or 'n/a'),
+                    'Validation',
+                    _escape_pipe('Input validation and guard checks are implemented in this file.'),
+                    _escape_pipe(', '.join(signals) or f"signal_count={_as_int(r.get('validation_signal_count'),0)}"),
+                ))
+                rid += 1
+            for row in php_auth_rows[:300]:
+                r = _as_dict(row)
+                lines.append("| {} | {} | {} | {} | {} |".format(
+                    f'BR-{rid:03d}',
+                    _escape_pipe(r.get('path') or 'n/a'),
+                    'Authentication/Authorization',
+                    _escape_pipe('Authentication, authorization, or session-guard logic is implemented in this file.'),
+                    _escape_pipe(', '.join(_as_list(r.get('signals'))[:6]) or 'n/a'),
+                ))
+                rid += 1
+        else:
+            lines.append("- No PHP rule rows available.")
+
+        lines.extend(["", "### F. Risk Register"])
+        if php_risk_descriptions:
+            lines.append("| Risk ID | Severity | Description |")
+            lines.append("|---|---|---|")
+            for idx, risk in enumerate(php_risk_descriptions[:80], start=1):
+                sev = 'high' if any(tok in risk for tok in ['unparameterized','sql','upload']) else 'medium'
+                lines.append(f"| RISK-{idx:03d} | {sev} | {_escape_pipe(risk)} |")
+        else:
+            lines.append("- No PHP risk rows available.")
+
+        lines.extend(["", "### G. Static Risk Detector Findings"])
+        if php_risk_descriptions:
+            for risk in php_risk_descriptions[:80]:
+                lines.append(f"- {risk}")
+        else:
+            lines.append("- No PHP static risk detector findings available.")
+
+        lines.extend(["", "### H. Controllers"])
+        if php_controller_rows:
+            lines.append("| Controller | Path | Actions |")
+            lines.append("|---|---|---|")
+            for row in php_controller_rows[:400]:
+                r=_as_dict(row)
+                lines.append("| {} | {} | {} |".format(_escape_pipe(r.get('name') or 'n/a'), _escape_pipe(r.get('path') or 'n/a'), _escape_pipe(', '.join(_as_list(r.get('actions'))[:12]) or 'n/a')))
+        else:
+            lines.append("- No controller rows available.")
+
+        lines.extend(["", "### I. Templates"])
+        if php_template_rows:
+            lines.append("| Template | Path | Engine |")
+            lines.append("|---|---|---|")
+            for row in php_template_rows[:400]:
+                r=_as_dict(row)
+                lines.append("| {} | {} | {} |".format(_escape_pipe(r.get('name') or 'n/a'), _escape_pipe(r.get('path') or 'n/a'), _escape_pipe(r.get('engine') or 'php')))
+        else:
+            lines.append("- No template rows available.")
+
+        lines.extend(["", "### J. Session, Jobs, and File I/O"])
+        lines.append(f"- Session keys: {_as_int(php_sessions.get('session_key_count'), 0)}")
+        lines.append(f"- Auth evidence files: {_as_int(php_auth.get('auth_file_count'), 0)}")
+        lines.append(f"- Background jobs: {_as_int(php_jobs.get('job_count'), 0)}")
+        lines.append(f"- Upload files: {_as_int(php_file_io.get('upload_file_count'), 0)}")
+        lines.append(f"- Export files: {_as_int(php_file_io.get('export_file_count'), 0)}")
+
+        lines.extend(["", "### K. Artifact Index"])
+        if artifact_index_rows:
+            lines.append("| Type | Ref |")
+            lines.append("|---|---|")
+            for row in artifact_index_rows[:400]:
+                r = _as_dict(row)
+                lines.append(f"| {_escape_pipe(r.get('type'))} | {_escape_pipe(r.get('ref'))} |")
+        else:
+            lines.append("- No artifact index rows available.")
+        return "\n".join(lines)
 
     lines.extend(["", "## Detailed Appendix", "", "### A. Legacy Inventory"])
     lines.append(f"- Projects: {len(projects)}")
