@@ -3652,6 +3652,10 @@ def _discover_prefetch(base_url: str, objectives: str, repo_url: str) -> dict[st
         "repo_url": repo_url,
         "integration_context": integration,
     }
+    landscape_data = _http_json("POST", f"{base_url}/api/discover/landscape", payload=payload, timeout=300)
+    if not bool(landscape_data.get("ok")):
+        raise RuntimeError(f"Discover landscape failed: {_clean(landscape_data.get('error')) or landscape_data}")
+    landscape_raw = _as_dict(landscape_data.get("raw_artifacts"))
     data = _http_json("POST", f"{base_url}/api/discover/analyst-brief", payload=payload, timeout=300)
     if not bool(data.get("ok")):
         raise RuntimeError(f"Discover analyst brief failed: {_clean(data.get('error')) or data}")
@@ -3660,6 +3664,17 @@ def _discover_prefetch(base_url: str, objectives: str, repo_url: str) -> dict[st
     aas = _as_dict(data.get("aas"))
     requirements_pack = _as_dict(data.get("requirements_pack"))
     discover_cache = {
+        "landscape": {
+            "repo_landscape_v1": _as_dict(landscape_raw.get("repo_landscape_v1")),
+            "component_inventory_v1": _as_dict(landscape_raw.get("component_inventory_v1")),
+            "modernization_track_plan_v1": _as_dict(landscape_raw.get("modernization_track_plan_v1")),
+            "router_ruleset_v1": _as_dict(landscape_raw.get("router_ruleset_v1")),
+            "analysis_plan_v1": _as_dict(landscape_raw.get("analysis_plan_v1")),
+            "php_framework_profile_v1": _as_dict(landscape_raw.get("php_framework_profile_v1")),
+            "php_route_hints_v1": _as_dict(landscape_raw.get("php_route_hints_v1")),
+            "source": _clean(landscape_data.get("source")),
+            "repo": _as_dict(landscape_data.get("repo")),
+        },
         "analyst_source": _clean(data.get("source")),
         "analyst_repo": _as_dict(data.get("repo")),
         "analyst_thread_id": _clean(data.get("thread_id") or aas.get("thread_id")),
