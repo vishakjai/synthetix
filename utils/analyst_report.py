@@ -7722,7 +7722,11 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
             producer=producer,
             context=artifact_context,
         )
-    refs = {key: _artifact_ref(artifacts[key], refs[key]) for key in refs}
+    refs = {
+        key: _artifact_ref(artifacts[key], fallback)
+        for key, fallback in refs.items()
+        if key in artifacts
+    }
     for artifact in artifacts.values():
         artifact_context_ref = _as_dict(artifact.get("context"))
         artifact_context_ref["scope_lock_ref"] = refs.get("scope_lock", artifact_context_ref.get("scope_lock_ref", ""))
