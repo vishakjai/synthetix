@@ -8501,6 +8501,13 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         return None, None, None, "run not found"
     stage1 = _stage_output_snapshot(run_state, 1)
     if not isinstance(stage1, dict) or not stage1:
+        store = getattr(MANAGER, "store", None)
+        load_stage_snapshot = getattr(store, "load_stage_snapshot", None)
+        if callable(load_stage_snapshot):
+            persisted_stage1 = load_stage_snapshot(run_id, 1)
+            if isinstance(persisted_stage1, dict) and persisted_stage1:
+                stage1 = persisted_stage1
+    if not isinstance(stage1, dict) or not stage1:
         return None, None, None, "stage 1 output not available for run"
     raw_artifacts = stage1.get("raw_artifacts", {}) if isinstance(stage1.get("raw_artifacts", {}), dict) else {}
     chunk_manifest = None

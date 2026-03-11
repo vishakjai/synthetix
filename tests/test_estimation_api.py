@@ -109,6 +109,43 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_stage1")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_create_brownfield_estimate_from_persisted_stage_snapshot(self):
+        class _FakeStore:
+            def load_stage_snapshot(self, run_id, stage):
+                if run_id != "run_from_blob" or stage != 1:
+                    return None
+                return {
+                    "chunk_manifest_v1": load_artifact_json(FIXTURE_ROOT / "input" / "chunk_manifest.json"),
+                    "raw_artifacts": {
+                        "risk_register": load_artifact_json(FIXTURE_ROOT / "input" / "risk_register.json"),
+                        "traceability_scores_v1": load_artifact_json(FIXTURE_ROOT / "input" / "traceability_scores.json"),
+                    },
+                }
+
+        class _FakeManager:
+            store = _FakeStore()
+
+            def get_run(self, run_id):
+                if run_id != "run_from_blob":
+                    return None
+                return {"run_id": run_id, "status": "completed"}
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_from_blob",
+            "estimate_id": "estimate_from_blob",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_from_blob")
+        self.assertEqual(created["run_id"], "run_from_blob")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
+
     def test_estimate_intake_endpoint(self):
         resp = asyncio.run(
             server.api_estimate_intake(
