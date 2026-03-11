@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/estimate_summary_v1.schema.json",
+  "title": "estimate_summary_v1",
+  "type": "object",
+  "required": [
+    "meta",
+    "estimate"
+  ],
+  "properties": {
+    "meta": {
+      "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_envelope"
+    },
+    "estimate": {
+      "type": "object",
+      "required": [
+        "estimate_id",
+        "confidence_tier",
+        "team_model_selected",
+        "timeline",
+        "effort",
+        "cost",
+        "key_assumptions",
+        "blockers",
+        "artifact_refs"
+      ],
+      "properties": {
+        "estimate_id": {
+          "type": "string"
+        },
+        "confidence_tier": {
+          "type": "string",
+          "enum": [
+            "INDICATIVE",
+            "PLANNING",
+            "COMMITTED"
+          ]
+        },
+        "team_model_selected": {
+          "type": "string"
+        },
+        "team_model_comparison": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "team_model_id",
+              "timeline_weeks_p50",
+              "effort_hours_p50"
+            ],
+            "properties": {
+              "team_model_id": {
+                "type": "string"
+              },
+              "timeline_weeks_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "timeline_weeks_p90": {
+                "type": "number",
+                "minimum": 0
+              },
+              "effort_hours_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "notes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "timeline": {
+          "type": "object",
+          "required": [
+            "p10_weeks",
+            "p50_weeks",
+            "p90_weeks",
+            "phase_breakdown"
+          ],
+          "properties": {
+            "p10_weeks": {
+              "type": "number",
+              "minimum": 0
+            },
+            "p50_weeks": {
+              "type": "number",
+              "minimum": 0
+            },
+            "p90_weeks": {
+              "type": "number",
+              "minimum": 0
+            },
+            "phase_breakdown": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "phase",
+                  "p50_weeks"
+                ],
+                "properties": {
+                  "phase": {
+                    "type": "string"
+                  },
+                  "p50_weeks": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "effort": {
+          "type": "object",
+          "required": [
+            "total_hours",
+            "by_role"
+          ],
+          "properties": {
+            "total_hours": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+            },
+            "by_role": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "role",
+                  "hours"
+                ],
+                "properties": {
+                  "role": {
+                    "type": "string"
+                  },
+                  "hours": {
+                    "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "cost": {
+          "type": "object",
+          "properties": {
+            "currency": {
+              "type": "string",
+              "default": "USD"
+            },
+            "total_cost": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours",
+              "description": "Reuse range_hours; interpret as cost values"
+            },
+            "rate_card_ref": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "key_assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "risk_id",
+              "severity",
+              "title"
+            ],
+            "properties": {
+              "risk_id": {
+                "type": "string"
+              },
+              "severity": {
+                "$ref": "./common_artifact_defs_v1.schema.json#/$defs/severity"
+              },
+              "title": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "artifact_refs": {
+          "type": "object",
+          "required": [
+            "estimation_input",
+            "wbs",
+            "assumption_ledger",
+            "team_models"
+          ],
+          "properties": {
+            "estimation_input": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+            },
+            "wbs": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+            },
+            "assumption_ledger": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+            },
+            "team_models": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

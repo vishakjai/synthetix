@@ -1,0 +1,39 @@
+weekly_capacity_hours: 30
+models:
+  HUMAN_ONLY:
+    name: Fully Human
+    default_team:
+      BA: 0.5
+      DEV: 2
+      QA: 1
+      DEVOPS: 0.25
+    role_split:
+      BA: 0.15
+      DEV: 0.55
+      QA: 0.25
+      DEVOPS: 0.05
+    acceleration:
+      DISCOVERY: 1.0
+      DESIGN: 1.0
+      IMPLEMENT: 1.0
+      TEST: 1.0
+      DEPLOY: 1.0
+  HUMAN_LED_AGENT_ASSISTED:
+    name: Human-led, Agent-assisted
+    default_team:
+      BA: 0.5
+      DEV: 2
+      QA: 1
+      DEVOPS: 0.25
+    role_split:
+      BA: 0.15
+      DEV: 0.55
+      QA: 0.25
+      DEVOPS: 0.05
+    acceleration:
+      DISCOVERY: 1.0
+      DESIGN: 1.0
+      IMPLEMENT: 1.8
+      TEST: 1.5
+      DEPLOY: 1.0
+    hitl_gate_hours_per_chunk: 0

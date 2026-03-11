@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-03-10T00:00:00Z",
+  "risks": [
+    {
+      "id": "R-001",
+      "severity": "high",
+      "title": "SQL injection via string concatenation",
+      "applies_to_chunks": [
+        "chunk_001",
+        "chunk_002",
+        "chunk_003"
+      ],
+      "description": "Embedded SQL is constructed via string concatenation without parameterization.",
+      "impact": "Data exfiltration, unauthorized modification of banking records.",
+      "mitigation": "Move to parameterized queries/ORM; add input validation and query allow-lists."
+    },
+    {
+      "id": "R-002",
+      "severity": "medium",
+      "title": "MAX(id)+1 key generation race condition",
+      "applies_to_chunks": [
+        "chunk_001",
+        "chunk_002",
+        "chunk_003"
+      ],
+      "description": "IDs generated using MAX(id)+1 patterns; unsafe for concurrent usage.",
+      "impact": "Duplicate primary keys, inconsistent ledgers if multiple tellers.",
+      "mitigation": "Use DB identity/sequence; enforce unique constraints; add transactional inserts."
+    },
+    {
+      "id": "R-003",
+      "severity": "high",
+      "title": "Global shared ADODB recordsets in Common module",
+      "applies_to_chunks": [
+        "chunk_005"
+      ],
+      "description": "Shared recordsets and global connections used across forms; hidden coupling.",
+      "impact": "Hard-to-reason side effects; inconsistent state during migration.",
+      "mitigation": "Introduce per-request/per-unit-of-work data access; dependency inject connections."
+    },
+    {
+      "id": "R-004",
+      "severity": "medium",
+      "title": "PII handling and auditability gaps",
+      "applies_to_chunks": [
+        "chunk_003"
+      ],
+      "description": "CustomerService touches PII fields; logging/audit coverage uncertain.",
+      "impact": "Regulatory exposure; audit findings.",
+      "mitigation": "Define PII classification; add redaction and audit trail for reads/writes."
+    },
+    {
+      "id": "R-005",
+      "severity": "medium",
+      "title": "Reporting parity and legacy DataReports equivalents",
+      "applies_to_chunks": [
+        "chunk_004"
+      ],
+      "description": "Legacy reporting may rely on DataEnvironment/DataReport bindings.",
+      "impact": "Stakeholder disruption if reports change layout/values.",
+      "mitigation": "Inventory reports; define parity (pixel-perfect vs semantic); select replacement (SSRS/PowerBI/Crystal/etc)."
+    },
+    {
+      "id": "R-006",
+      "severity": "medium",
+      "title": "RBAC and admin authorization ambiguity",
+      "applies_to_chunks": [
+        "chunk_000"
+      ],
+      "description": "Role/permission model exists but enforcement patterns vary by form.",
+      "impact": "Privilege escalation in modernized app.",
+      "mitigation": "Extract access control rules; implement centralized authorization middleware; add tests."
+    }
+  ]
+}

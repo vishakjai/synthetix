@@ -1,0 +1,318 @@
+{
+  "generated_at": "2026-03-10T00:00:00Z",
+  "source": "chunk_manifest + risk_register + traceability_scores",
+  "wbs_items": [
+    {
+      "id": "WBS-CHUNK_000",
+      "kind": "BROWNFIELD_CHUNK",
+      "title": "Migrate Admin subsystem",
+      "chunk_ref": "chunk_000",
+      "line_count": 14233,
+      "tables_owned": [
+        "tblAuditTrail",
+        "tblBranches",
+        "tblComplianceChecks",
+        "tblPermissions",
+        "tblProductCategories",
+        "tblProductRates",
+        "tblProducts",
+        "tblRegulatoryReports",
+        "tblRoles",
+        "tblSystemConfig",
+        "tblUsers"
+      ],
+      "estimated_hours_likely": 475.0,
+      "complexity_points": 43.98,
+      "risk_counts": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "traceability_score": 72,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.2
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.1
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.5
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.15
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.05
+        }
+      ]
+    },
+    {
+      "id": "WBS-CHUNK_001",
+      "kind": "BROWNFIELD_CHUNK",
+      "title": "Migrate Payments subsystem",
+      "chunk_ref": "chunk_001",
+      "line_count": 7988,
+      "tables_owned": [
+        "tblDisbursements",
+        "tblPaymentMethods",
+        "tblPaymentSchedules",
+        "tblPayments",
+        "tblTransactions"
+      ],
+      "estimated_hours_likely": 170.6,
+      "complexity_points": 12.062,
+      "risk_counts": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "traceability_score": 58,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.2
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.1
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.5
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.15
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.05
+        }
+      ]
+    },
+    {
+      "id": "WBS-CHUNK_002",
+      "kind": "BROWNFIELD_CHUNK",
+      "title": "Migrate LoanProcessing subsystem",
+      "chunk_ref": "chunk_002",
+      "line_count": 6802,
+      "tables_owned": [
+        "tblCollateral",
+        "tblLoanAccounts",
+        "tblLoanApplications",
+        "tblLoanOfficers",
+        "tblLoanTypes"
+      ],
+      "estimated_hours_likely": 143.4,
+      "complexity_points": 10.135,
+      "risk_counts": {
+        "high": 1,
+        "medium": 1,
+        "low": 0
+      },
+      "traceability_score": 45,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.2
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.1
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.5
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.15
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.05
+        }
+      ]
+    },
+    {
+      "id": "WBS-CHUNK_003",
+      "kind": "BROWNFIELD_CHUNK",
+      "title": "Migrate CustomerService subsystem",
+      "chunk_ref": "chunk_003",
+      "line_count": 7951,
+      "tables_owned": [
+        "tblCustomerAddresses",
+        "tblCustomerContacts",
+        "tblCustomerNotes",
+        "tblCustomers"
+      ],
+      "estimated_hours_likely": 139.6,
+      "complexity_points": 10.654,
+      "risk_counts": {
+        "high": 1,
+        "medium": 2,
+        "low": 0
+      },
+      "traceability_score": 60,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.2
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.1
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.5
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.15
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.05
+        }
+      ]
+    },
+    {
+      "id": "WBS-CHUNK_004",
+      "kind": "BROWNFIELD_CHUNK",
+      "title": "Migrate Reporting subsystem",
+      "chunk_ref": "chunk_004",
+      "line_count": 8517,
+      "tables_owned": [
+        "tblReportConfigs",
+        "tblReportSchedules"
+      ],
+      "estimated_hours_likely": 91.1,
+      "complexity_points": 8.432,
+      "risk_counts": {
+        "high": 0,
+        "medium": 1,
+        "low": 0
+      },
+      "traceability_score": 75,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.2
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.1
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.5
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.15
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.05
+        }
+      ]
+    },
+    {
+      "id": "WBS-CHUNK_005",
+      "kind": "BROWNFIELD_CHUNK",
+      "title": "Migrate Common subsystem",
+      "chunk_ref": "chunk_005",
+      "line_count": 11854,
+      "tables_owned": [
+        "tblAuditLog",
+        "tblErrorLog",
+        "tblLookup"
+      ],
+      "estimated_hours_likely": 159.5,
+      "complexity_points": 15.41,
+      "risk_counts": {
+        "high": 1,
+        "medium": 0,
+        "low": 0
+      },
+      "traceability_score": 85,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.2
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.1
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.5
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.15
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.05
+        }
+      ]
+    },
+    {
+      "id": "WBS-SHARED-INFRA",
+      "kind": "SHARED",
+      "title": "Shared: CI/CD, environments, and baseline observability",
+      "estimated_hours_likely": 120.0,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.15
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.55
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.2
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.1
+        }
+      ]
+    },
+    {
+      "id": "WBS-SHARED-GOV",
+      "kind": "SHARED",
+      "title": "Shared: security, governance, and audit evidence pack",
+      "estimated_hours_likely": 80.0,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.25
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.25
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.3
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.2
+        }
+      ]
+    }
+  ]
+}

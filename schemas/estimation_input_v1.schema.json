@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/estimation_input_v1.schema.json",
+  "title": "estimation_input_v1",
+  "type": "object",
+  "required": [
+    "meta",
+    "intake",
+    "inputs",
+    "decisions",
+    "constraints"
+  ],
+  "properties": {
+    "meta": {
+      "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_envelope"
+    },
+    "intake": {
+      "type": "object",
+      "required": [
+        "mode",
+        "confidence_tier"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "brownfield",
+            "greenfield",
+            "natural_language"
+          ]
+        },
+        "confidence_tier": {
+          "type": "string",
+          "enum": [
+            "INDICATIVE",
+            "PLANNING",
+            "COMMITTED"
+          ]
+        },
+        "intake_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "business_need": {
+          "type": "string"
+        },
+        "tech_specs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "References/URIs to spec artifacts"
+        },
+        "source_artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+          }
+        },
+        "repo_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_bundle_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "decisions": {
+      "type": "object",
+      "properties": {
+        "target_stack": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "migration_strategy": {
+          "type": "string",
+          "enum": [
+            "rewrite",
+            "strangler",
+            "incremental_modernization",
+            "lift_and_shift",
+            "unknown"
+          ]
+        },
+        "quality_bar": {
+          "type": "string",
+          "enum": [
+            "parity",
+            "functional_parity",
+            "best_effort",
+            "unknown"
+          ]
+        },
+        "data_strategy": {
+          "type": "string",
+          "enum": [
+            "keep_db",
+            "migrate_db",
+            "unknown"
+          ]
+        },
+        "deployment_target": {
+          "type": "string",
+          "enum": [
+            "cloud_run",
+            "k8s",
+            "vm",
+            "on_prem",
+            "unknown"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "deadline_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "budget_cap_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "team_size_cap": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "security_constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "compliance_constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "preferred_delivery_cadence": {
+          "type": "string",
+          "enum": [
+            "2wk_sprints",
+            "1wk_sprints",
+            "kanban",
+            "unknown"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

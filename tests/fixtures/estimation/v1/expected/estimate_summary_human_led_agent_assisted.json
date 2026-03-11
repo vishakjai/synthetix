@@ -1,0 +1,65 @@
+{
+  "model_key": "HUMAN_LED_AGENT_ASSISTED",
+  "model_name": "Human-led, Agent-assisted",
+  "team": {
+    "BA": 0.5,
+    "DEV": 2,
+    "QA": 1,
+    "DEVOPS": 0.25
+  },
+  "weekly_capacity_hours": 30,
+  "total_hours_likely": 1004.9,
+  "total_hours_best": 854.1,
+  "total_hours_worst": 1256.1,
+  "timeline_weeks_likely": 9.9,
+  "timeline_weeks_best": 8.4,
+  "timeline_weeks_worst": 12.4,
+  "hours_by_role": {
+    "BA": 150.7,
+    "DEV": 552.7,
+    "QA": 251.2,
+    "DEVOPS": 50.2
+  },
+  "items": [
+    {
+      "id": "WBS-CHUNK_000",
+      "title": "Migrate Admin subsystem",
+      "hours_likely": 345.7
+    },
+    {
+      "id": "WBS-CHUNK_001",
+      "title": "Migrate Payments subsystem",
+      "hours_likely": 124.2
+    },
+    {
+      "id": "WBS-CHUNK_002",
+      "title": "Migrate LoanProcessing subsystem",
+      "hours_likely": 104.4
+    },
+    {
+      "id": "WBS-CHUNK_003",
+      "title": "Migrate CustomerService subsystem",
+      "hours_likely": 101.6
+    },
+    {
+      "id": "WBS-CHUNK_004",
+      "title": "Migrate Reporting subsystem",
+      "hours_likely": 66.3
+    },
+    {
+      "id": "WBS-CHUNK_005",
+      "title": "Migrate Common subsystem",
+      "hours_likely": 116.1
+    },
+    {
+      "id": "WBS-SHARED-INFRA",
+      "title": "Shared: CI/CD, environments, and baseline observability",
+      "hours_likely": 82.7
+    },
+    {
+      "id": "WBS-SHARED-GOV",
+      "title": "Shared: security, governance, and audit evidence pack",
+      "hours_likely": 64.0
+    }
+  ]
+}

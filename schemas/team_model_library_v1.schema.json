@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/team_model_library_v1.schema.json",
+  "title": "team_model_library_v1",
+  "type": "object",
+  "required": [
+    "meta",
+    "models"
+  ],
+  "properties": {
+    "meta": {
+      "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_envelope"
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "model_type",
+          "description",
+          "role_capacity",
+          "task_acceleration"
+        ],
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "model_type": {
+            "type": "string",
+            "enum": [
+              "HUMAN_ONLY",
+              "HUMAN_LED_AGENT_ASSISTED",
+              "AGENT_LED_HITL",
+              "BLEND"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "role_capacity": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "role",
+                "headcount",
+                "hours_per_week"
+              ],
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "PM",
+                    "BA",
+                    "ARCH",
+                    "DEV",
+                    "QA",
+                    "DEVOPS",
+                    "DBA",
+                    "SECURITY",
+                    "SME_REVIEWER"
+                  ]
+                },
+                "headcount": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "hours_per_week": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "task_acceleration": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "task_type",
+                "acceleration_factor"
+              ],
+              "properties": {
+                "task_type": {
+                  "type": "string",
+                  "enum": [
+                    "ANALYSIS",
+                    "DESIGN",
+                    "IMPLEMENTATION",
+                    "TESTING",
+                    "DOCUMENTATION",
+                    "REVIEW",
+                    "DEPLOYMENT"
+                  ]
+                },
+                "acceleration_factor": {
+                  "type": "number",
+                  "minimum": 1.0
+                },
+                "review_ratio": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1.0
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "hitl_gates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "gate_id",
+                "title",
+                "required_roles",
+                "hours"
+              ],
+              "properties": {
+                "gate_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "required_roles": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "hours": {
+                  "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+                },
+                "when": {
+                  "type": "string",
+                  "enum": [
+                    "end_of_phase",
+                    "per_wbs_item",
+                    "per_pr",
+                    "per_sprint"
+                  ]
+                },
+                "notes": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "rework_model": {
+            "type": "object",
+            "properties": {
+              "base_rework_probability": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "low_traceability_multiplier": {
+                "type": "number",
+                "minimum": 1.0
+              },
+              "high_risk_multiplier": {
+                "type": "number",
+                "minimum": 1.0
+              },
+              "rework_cost_multiplier": {
+                "type": "number",
+                "minimum": 0.0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

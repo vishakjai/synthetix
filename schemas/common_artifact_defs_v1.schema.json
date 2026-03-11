@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/common_artifact_defs_v1.schema.json",
+  "title": "common_artifact_defs_v1",
+  "$defs": {
+    "artifact_envelope": {
+      "type": "object",
+      "required": [
+        "artifact_type",
+        "artifact_version",
+        "artifact_id",
+        "generated_at",
+        "context"
+      ],
+      "properties": {
+        "artifact_type": {
+          "type": "string"
+        },
+        "artifact_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+$"
+        },
+        "artifact_id": {
+          "type": "string",
+          "pattern": "^art_[A-Za-z0-9_-]+$"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^(run|est)_[A-Za-z0-9_-]+$"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producer": {
+          "type": "object",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "engine_version": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "context": {
+          "type": "object",
+          "required": [
+            "stage",
+            "source_mode"
+          ],
+          "properties": {
+            "stage": {
+              "type": "string",
+              "enum": [
+                "Discover",
+                "Estimate",
+                "Plan",
+                "Build",
+                "Verify"
+              ]
+            },
+            "source_mode": {
+              "type": "string",
+              "enum": [
+                "repo",
+                "imported_analysis",
+                "hybrid",
+                "greenfield"
+              ]
+            },
+            "source_ref": {
+              "type": "string"
+            },
+            "tenant_id": {
+              "type": "string"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "engagement_id": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "range_hours": {
+      "type": "object",
+      "required": [
+        "p10",
+        "p50",
+        "p90"
+      ],
+      "properties": {
+        "p10": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p50": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p90": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifact_ref": {
+      "type": "object",
+      "required": [
+        "artifact_type",
+        "artifact_id",
+        "artifact_version"
+      ],
+      "properties": {
+        "artifact_type": {
+          "type": "string"
+        },
+        "artifact_id": {
+          "type": "string"
+        },
+        "artifact_version": {
+          "type": "string"
+        },
+        "uri": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

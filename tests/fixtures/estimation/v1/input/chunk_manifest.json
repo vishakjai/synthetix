@@ -1,0 +1,275 @@
+{
+  "generated_by": "Synthetix RepoDecomposer",
+  "config": {
+    "max_lines_per_chunk": 80000,
+    "min_lines_per_chunk": 5000,
+    "strategy": "hybrid",
+    "llm_context_tokens": 180000
+  },
+  "total_chunks": 6,
+  "chunks": [
+    {
+      "chunk_id": "chunk_000",
+      "name": "Admin",
+      "strategy_used": "hybrid",
+      "files": [
+        "Admin/modRoleMgmt.bas",
+        "Admin/frmUserMgmt.frm",
+        "Admin/modBranchMgmt.bas",
+        "Admin/modUserMgmt.bas",
+        "Admin/frmSystemConfig.frm",
+        "Admin/modSystemConfig.bas",
+        "Audit/modComplianceCheck.bas",
+        "Audit/modRegulatoryReporting.bas",
+        "Audit/modAuditEngine.bas",
+        "Audit/frmAuditViewer.frm",
+        "Products/frmProductSetup.frm",
+        "Products/modProductMgmt.bas",
+        "Products/frmRateConfig.frm",
+        "Products/modRateEngine.bas",
+        "Products/modProductValidation.bas"
+      ],
+      "line_count": 14233,
+      "estimated_tokens": 120980,
+      "tables_owned": [
+        "tblAuditTrail",
+        "tblBranches",
+        "tblComplianceChecks",
+        "tblPermissions",
+        "tblProductCategories",
+        "tblProductRates",
+        "tblProducts",
+        "tblRegulatoryReports",
+        "tblRoles",
+        "tblSystemConfig",
+        "tblUsers"
+      ],
+      "tables_referenced": [
+        "tblAuditTrail",
+        "tblBranches",
+        "tblComplianceChecks",
+        "tblPermissions",
+        "tblProductCategories",
+        "tblProductRates",
+        "tblProducts",
+        "tblRegulatoryReports",
+        "tblRoles",
+        "tblSystemConfig",
+        "tblUsers"
+      ],
+      "shared_modules_used": [],
+      "depends_on_chunks": [],
+      "complexity_score": 3.09,
+      "fits_in_context": true,
+      "recommended_agent_config": {
+        "mode": "single_pass",
+        "description": "Fits in one LLM context window. Run SourceSchemaAgent directly.",
+        "max_files_per_call": 0,
+        "estimated_api_calls": 1,
+        "parallelisable": true
+      },
+      "normalization_hint": "domain:admin"
+    },
+    {
+      "chunk_id": "chunk_001",
+      "name": "Payments",
+      "strategy_used": "hybrid",
+      "files": [
+        "Payments/modPaymentAllocation.bas",
+        "Payments/modPaymentProcessing.bas",
+        "Payments/modACHProcessing.bas",
+        "Payments/frmPaymentEntry.frm",
+        "Payments/modDisbursement.bas",
+        "Payments/frmReconciliation.frm",
+        "Payments/modPaymentReconciliation.bas",
+        "Payments/frmPaymentHistory.frm"
+      ],
+      "line_count": 7988,
+      "estimated_tokens": 67898,
+      "tables_owned": [
+        "tblDisbursements",
+        "tblPaymentMethods",
+        "tblPaymentSchedules",
+        "tblPayments",
+        "tblTransactions"
+      ],
+      "tables_referenced": [
+        "tblDisbursements",
+        "tblPaymentMethods",
+        "tblPaymentSchedules",
+        "tblPayments",
+        "tblTransactions"
+      ],
+      "shared_modules_used": [],
+      "depends_on_chunks": [],
+      "complexity_score": 1.51,
+      "fits_in_context": true,
+      "recommended_agent_config": {
+        "mode": "single_pass",
+        "description": "Fits in one LLM context window. Run SourceSchemaAgent directly.",
+        "max_files_per_call": 0,
+        "estimated_api_calls": 1,
+        "parallelisable": true
+      },
+      "normalization_hint": "domain:payments"
+    },
+    {
+      "chunk_id": "chunk_002",
+      "name": "LoanProcessing",
+      "strategy_used": "hybrid",
+      "files": [
+        "LoanProcessing/modLoanApproval.bas",
+        "LoanProcessing/frmLoanEntry.frm",
+        "LoanProcessing/modCreditCheck.bas",
+        "LoanProcessing/frmAmortSchedule.frm",
+        "LoanProcessing/modLoanCalc.bas",
+        "LoanProcessing/modLoanWorkflow.bas",
+        "LoanProcessing/frmLoanApproval.frm",
+        "LoanProcessing/modLoanDocuments.bas",
+        "LoanProcessing/modLoanAmortization.bas"
+      ],
+      "line_count": 6802,
+      "estimated_tokens": 57817,
+      "tables_owned": [
+        "tblCollateral",
+        "tblLoanAccounts",
+        "tblLoanApplications",
+        "tblLoanOfficers",
+        "tblLoanTypes"
+      ],
+      "tables_referenced": [
+        "tblCollateral",
+        "tblLoanAccounts",
+        "tblLoanApplications",
+        "tblLoanOfficers",
+        "tblLoanTypes"
+      ],
+      "shared_modules_used": [],
+      "depends_on_chunks": [],
+      "complexity_score": 1.49,
+      "fits_in_context": true,
+      "recommended_agent_config": {
+        "mode": "single_pass",
+        "description": "Fits in one LLM context window. Run SourceSchemaAgent directly.",
+        "max_files_per_call": 0,
+        "estimated_api_calls": 1,
+        "parallelisable": true
+      },
+      "normalization_hint": "domain:lending"
+    },
+    {
+      "chunk_id": "chunk_003",
+      "name": "CustomerService",
+      "strategy_used": "hybrid",
+      "files": [
+        "CustomerService/frmCustomerSearch.frm",
+        "CustomerService/modCustomerSearch.bas",
+        "CustomerService/modCustomerValidation.bas",
+        "CustomerService/modCustomerMgmt.bas",
+        "CustomerService/modKYC.bas",
+        "CustomerService/frmCustomerEntry.frm",
+        "CustomerService/modCreditProfile.bas",
+        "CustomerService/frmCustomerProfile.frm"
+      ],
+      "line_count": 7951,
+      "estimated_tokens": 67583,
+      "tables_owned": [
+        "tblCustomerAddresses",
+        "tblCustomerContacts",
+        "tblCustomerNotes",
+        "tblCustomers"
+      ],
+      "tables_referenced": [
+        "tblCustomerAddresses",
+        "tblCustomerContacts",
+        "tblCustomerNotes",
+        "tblCustomers"
+      ],
+      "shared_modules_used": [],
+      "depends_on_chunks": [],
+      "complexity_score": 1.34,
+      "fits_in_context": true,
+      "recommended_agent_config": {
+        "mode": "single_pass",
+        "description": "Fits in one LLM context window. Run SourceSchemaAgent directly.",
+        "max_files_per_call": 0,
+        "estimated_api_calls": 1,
+        "parallelisable": true
+      },
+      "normalization_hint": "domain:customer"
+    },
+    {
+      "chunk_id": "chunk_004",
+      "name": "Reporting",
+      "strategy_used": "hybrid",
+      "files": [
+        "Reporting/frmReportRunner.frm",
+        "Reporting/modReportEngine.bas",
+        "Reporting/modRegReport.bas",
+        "Reporting/modPortfolioReport.bas",
+        "Reporting/modReportExport.bas",
+        "Reporting/frmReportScheduler.frm",
+        "Reporting/modDelinquencyReport.bas"
+      ],
+      "line_count": 8517,
+      "estimated_tokens": 72394,
+      "tables_owned": [
+        "tblReportConfigs",
+        "tblReportSchedules"
+      ],
+      "tables_referenced": [
+        "tblReportConfigs",
+        "tblReportSchedules"
+      ],
+      "shared_modules_used": [],
+      "depends_on_chunks": [],
+      "complexity_score": 0.99,
+      "fits_in_context": true,
+      "recommended_agent_config": {
+        "mode": "single_pass",
+        "description": "Fits in one LLM context window. Run SourceSchemaAgent directly.",
+        "max_files_per_call": 0,
+        "estimated_api_calls": 1,
+        "parallelisable": true
+      },
+      "normalization_hint": "domain:reporting"
+    },
+    {
+      "chunk_id": "chunk_005",
+      "name": "Common",
+      "strategy_used": "hybrid",
+      "files": [
+        "Common/modValidation.bas",
+        "Common/modDatabase.bas",
+        "Common/modErrorHandler.bas",
+        "Common/modUtilities.bas",
+        "Common/modConstants.bas",
+        "Common/modSecurity.bas"
+      ],
+      "line_count": 11854,
+      "estimated_tokens": 100759,
+      "tables_owned": [
+        "tblAuditLog",
+        "tblErrorLog",
+        "tblLookup"
+      ],
+      "tables_referenced": [
+        "tblAuditLog",
+        "tblErrorLog",
+        "tblLookup"
+      ],
+      "shared_modules_used": [],
+      "depends_on_chunks": [],
+      "complexity_score": 1.3,
+      "fits_in_context": true,
+      "recommended_agent_config": {
+        "mode": "single_pass",
+        "description": "Fits in one LLM context window. Run SourceSchemaAgent directly.",
+        "max_files_per_call": 0,
+        "estimated_api_calls": 1,
+        "parallelisable": true
+      },
+      "normalization_hint": "domain:shared"
+    }
+  ]
+}

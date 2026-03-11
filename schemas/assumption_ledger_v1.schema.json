@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/assumption_ledger_v1.schema.json",
+  "title": "assumption_ledger_v1",
+  "type": "object",
+  "required": [
+    "meta",
+    "assumptions"
+  ],
+  "properties": {
+    "meta": {
+      "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_envelope"
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "category",
+          "statement",
+          "status",
+          "impact"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "GIVEN",
+              "ASSUMED",
+              "RISK_ADJUSTED",
+              "BLOCKER"
+            ]
+          },
+          "statement": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "resolved",
+              "accepted_risk"
+            ]
+          },
+          "impact": {
+            "type": "object",
+            "properties": {
+              "schedule_days_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "effort_hours_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cost_usd_p50": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "resolution": {
+            "type": "object",
+            "properties": {
+              "resolved_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "resolved_by": {
+                "type": "string"
+              },
+              "resolution_note": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "related_artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

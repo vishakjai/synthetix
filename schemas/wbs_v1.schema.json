@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/wbs_v1.schema.json",
+  "title": "wbs_v1",
+  "type": "object",
+  "required": [
+    "meta",
+    "wbs"
+  ],
+  "properties": {
+    "meta": {
+      "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_envelope"
+    },
+    "wbs": {
+      "type": "object",
+      "required": [
+        "wbs_id",
+        "items"
+      ],
+      "properties": {
+        "wbs_id": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "wbs_item_id",
+              "title",
+              "kind",
+              "phase",
+              "size_tier",
+              "effort_hours",
+              "roles",
+              "dependencies"
+            ],
+            "properties": {
+              "wbs_item_id": {
+                "type": "string"
+              },
+              "parent_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "FORM_MIGRATION",
+                  "MODULE_MIGRATION",
+                  "DEPENDENCY_REPLACEMENT",
+                  "DATA_MODEL",
+                  "DATA_MIGRATION",
+                  "REPORTING_MIGRATION",
+                  "RISK_REMEDIATION",
+                  "DISCOVERY_CLOSURE",
+                  "FOUNDATION",
+                  "INTEGRATION_POINT",
+                  "SECURITY_HARDENING",
+                  "QA_AUTOMATION",
+                  "CUTOVER",
+                  "PROJECT_MANAGEMENT",
+                  "GREENFIELD_FEATURE",
+                  "GREENFIELD_INTEGRATION"
+                ]
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "Discovery",
+                  "Design",
+                  "Build",
+                  "Verify",
+                  "Deploy",
+                  "Cutover"
+                ]
+              },
+              "scope_ref": {
+                "type": "object",
+                "properties": {
+                  "chunk_id": {
+                    "type": "string"
+                  },
+                  "project_id": {
+                    "type": "string"
+                  },
+                  "module_paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "tables_touched": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "size_tier": {
+                "type": "string",
+                "enum": [
+                  "XS",
+                  "S",
+                  "M",
+                  "L",
+                  "XL"
+                ]
+              },
+              "effort_hours": {
+                "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+              },
+              "effort_hours_risk_adjusted": {
+                "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+              },
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "role",
+                    "hours"
+                  ],
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "PM",
+                        "BA",
+                        "ARCH",
+                        "DEV",
+                        "QA",
+                        "DEVOPS",
+                        "DBA",
+                        "SECURITY",
+                        "SME_REVIEWER"
+                      ]
+                    },
+                    "hours": {
+                      "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "dependencies": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "risk_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "assumption_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "eligibility": {
+                "type": "object",
+                "properties": {
+                  "agent_led_hitl_allowed": {
+                    "type": "boolean"
+                  },
+                  "eligibility_reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "notes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
