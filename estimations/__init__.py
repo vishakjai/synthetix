@@ -1,4 +1,5 @@
 from .calibration import load_team_model_library
+from .intake import BrownfieldIntake, GreenfieldIntake, NaturalLanguageIntake
 from .kernel import (
     apply_team_model_to_wbs,
     apply_team_model_to_wbs_from_files,
@@ -18,8 +19,11 @@ from .types import (
 
 __all__ = [
     "AssumptionLedgerArtifact",
+    "BrownfieldIntake",
     "EstimateSummaryArtifact",
     "EstimationInputArtifact",
+    "GreenfieldIntake",
+    "NaturalLanguageIntake",
     "TeamModelLibrary",
     "TeamModelLibraryArtifact",
     "WBSArtifact",
