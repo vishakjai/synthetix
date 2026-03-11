@@ -8443,6 +8443,103 @@ async def api_list_runs(_request):
     return JSONResponse({"ok": True, "runs": MANAGER.list_runs(limit=60)})
 
 
+def _derive_traceability_scores_from_chunk_qa(chunk_qa_report: dict[str, Any]) -> dict[str, Any]:
+    rows = chunk_qa_report.get("chunks", []) if isinstance(chunk_qa_report.get("chunks", []), list) else []
+    by_chunk: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        chunk_id = str(row.get("chunk_id", "")).strip()
+        if not chunk_id:
+            continue
+        analyzed = bool(row.get("analyzed"))
+        checks = row.get("checks", []) if isinstance(row.get("checks", []), list) else []
+        pass_count = sum(1 for check in checks if isinstance(check, dict) and str(check.get("status", "")).upper() == "PASS")
+        warn_count = sum(1 for check in checks if isinstance(check, dict) and str(check.get("status", "")).upper() == "WARN")
+        if not analyzed:
+            score = 35
+        elif pass_count and not warn_count:
+            score = 80
+        elif pass_count:
+            score = 60
+        elif warn_count:
+            score = 45
+        else:
+            score = 60
+        by_chunk[chunk_id] = score
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "by_chunk": by_chunk,
+    }
+
+
+def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    run_state = MANAGER.get_run(run_id)
+    if not isinstance(run_state, dict):
+        return None, None, None, "run not found"
+    stage1 = _stage_output_snapshot(run_state, 1)
+    if not isinstance(stage1, dict) or not stage1:
+        return None, None, None, "stage 1 output not available for run"
+    raw_artifacts = stage1.get("raw_artifacts", {}) if isinstance(stage1.get("raw_artifacts", {}), dict) else {}
+    chunk_manifest = None
+    risk_register = None
+    traceability_scores = None
+
+    for candidate in (
+        stage1.get("chunk_manifest_v1"),
+        raw_artifacts.get("chunk_manifest_v1"),
+        raw_artifacts.get("chunk_manifest"),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            chunk_manifest = candidate
+            break
+
+    for candidate in (
+        raw_artifacts.get("risk_register"),
+        stage1.get("risk_register"),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            risk_register = candidate
+            break
+
+    for candidate in (
+        stage1.get("traceability_scores_v1"),
+        raw_artifacts.get("traceability_scores_v1"),
+        raw_artifacts.get("traceability_scores"),
+    ):
+        if isinstance(candidate, dict) and isinstance(candidate.get("by_chunk", {}), dict):
+            traceability_scores = candidate
+            break
+
+    if traceability_scores is None:
+        chunk_qa_report = None
+        for candidate in (
+            stage1.get("chunk_qa_report_v1"),
+            raw_artifacts.get("chunk_qa_report_v1"),
+            raw_artifacts.get("chunk_qa_report"),
+        ):
+            if isinstance(candidate, dict) and candidate:
+                chunk_qa_report = candidate
+                break
+        if isinstance(chunk_qa_report, dict):
+            traceability_scores = _derive_traceability_scores_from_chunk_qa(chunk_qa_report)
+
+    if traceability_scores is None and isinstance(chunk_manifest, dict):
+        chunks = chunk_manifest.get("chunks", []) if isinstance(chunk_manifest.get("chunks", []), list) else []
+        traceability_scores = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "by_chunk": {
+                str(row.get("chunk_id", "")).strip(): 50
+                for row in chunks
+                if isinstance(row, dict) and str(row.get("chunk_id", "")).strip()
+            },
+        }
+
+    if not isinstance(chunk_manifest, dict) or not isinstance(risk_register, dict) or not isinstance(traceability_scores, dict):
+        return None, None, None, "run is missing chunk manifest, risk register, or traceability coverage artifacts"
+    return chunk_manifest, risk_register, traceability_scores, None
+
+
 async def api_create_estimate(request):
     payload = _get_json(await request.body())
     mode = str(payload.get("mode", "")).strip().lower()
@@ -8456,13 +8553,18 @@ async def api_create_estimate(request):
     risk_register = payload.get("risk_register")
     traceability_scores = payload.get("traceability_scores")
     if not isinstance(chunk_manifest, dict) or not isinstance(risk_register, dict) or not isinstance(traceability_scores, dict):
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "brownfield estimates require chunk_manifest, risk_register, and traceability_scores objects",
-            },
-            status_code=400,
-        )
+        if run_id:
+            chunk_manifest, risk_register, traceability_scores, err = _resolve_brownfield_estimation_inputs_from_run(run_id)
+            if err:
+                return JSONResponse({"ok": False, "error": err}, status_code=400 if err != "run not found" else 404)
+        else:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "brownfield estimates require chunk_manifest, risk_register, and traceability_scores objects, or a run_id with stage 1 artifacts",
+                },
+                status_code=400,
+            )
     business_need = (
         str(payload.get("business_need", "")).strip()
         or "Modernize the brownfield application while preserving required business capability."

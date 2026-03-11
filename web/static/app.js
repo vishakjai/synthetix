@@ -10142,20 +10142,28 @@ async function createEstimateFromForm() {
     setEstimateStatus(`${mode} estimation is not implemented yet.`, true);
     return;
   }
+  const runId = String(el.estimateRunId?.value || "").trim();
+  const chunkManifestText = String(el.estimateChunkManifest?.value || "").trim();
+  const riskRegisterText = String(el.estimateRiskRegister?.value || "").trim();
+  const traceabilityText = String(el.estimateTraceabilityScores?.value || "").trim();
   let chunkManifest;
   let riskRegister;
   let traceabilityScores;
   try {
-    chunkManifest = parseEstimateJson(el.estimateChunkManifest?.value, "Chunk manifest");
-    riskRegister = parseEstimateJson(el.estimateRiskRegister?.value, "Risk register");
-    traceabilityScores = parseEstimateJson(el.estimateTraceabilityScores?.value, "Traceability scores");
+    if (chunkManifestText) chunkManifest = parseEstimateJson(chunkManifestText, "Chunk manifest");
+    if (riskRegisterText) riskRegister = parseEstimateJson(riskRegisterText, "Risk register");
+    if (traceabilityText) traceabilityScores = parseEstimateJson(traceabilityText, "Traceability scores");
   } catch (err) {
     setEstimateStatus(err.message, true);
     return;
   }
+  if (!runId && (!chunkManifest || !riskRegister || !traceabilityScores)) {
+    setEstimateStatus("Provide a run ID or paste chunk manifest, risk register, and traceability scores JSON.", true);
+    return;
+  }
   const payload = {
     mode,
-    run_id: String(el.estimateRunId?.value || "").trim() || undefined,
+    run_id: runId || undefined,
     estimate_id: String(el.estimateId?.value || "").trim() || undefined,
     business_need: String(el.estimateBusinessNeed?.value || "").trim() || "Modernize the brownfield application while preserving required business capability.",
     team_model_key: String(el.estimateTeamModel?.value || "HUMAN_ONLY").trim(),

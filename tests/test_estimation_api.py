@@ -26,10 +26,12 @@ class EstimationApiTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = Path(tempfile.mkdtemp(prefix="synthetix-estimation-api-"))
         self.original_store = server.ESTIMATION_STORE
+        self.original_manager = server.MANAGER
         server.ESTIMATION_STORE = EstimationStore(self.temp_dir)
 
     def tearDown(self) -> None:
         server.ESTIMATION_STORE = self.original_store
+        server.MANAGER = self.original_manager
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_create_and_fetch_brownfield_estimate(self):
@@ -61,6 +63,51 @@ class EstimationApiTest(unittest.TestCase):
         rows = json.loads(list_resp.body)["estimates"]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["estimate_id"], "estimate_api")
+
+    def test_create_brownfield_estimate_from_run_id_only(self):
+        class _FakeManager:
+            def get_run(self, run_id):
+                if run_id != "run_from_stage1":
+                    return None
+                return {
+                    "agent_results": [
+                        {
+                            "stage": 1,
+                            "output": {
+                                "chunk_manifest_v1": load_artifact_json(FIXTURE_ROOT / "input" / "chunk_manifest.json"),
+                                "raw_artifacts": {
+                                    "risk_register": load_artifact_json(FIXTURE_ROOT / "input" / "risk_register.json"),
+                                    "chunk_qa_report_v1": {
+                                        "chunks": [
+                                            {"chunk_id": "chunk_000", "analyzed": True, "checks": [{"status": "PASS"}]},
+                                            {"chunk_id": "chunk_001", "analyzed": True, "checks": [{"status": "WARN"}]},
+                                            {"chunk_id": "chunk_002", "analyzed": False, "checks": []},
+                                            {"chunk_id": "chunk_003", "analyzed": True, "checks": []},
+                                            {"chunk_id": "chunk_004", "analyzed": True, "checks": [{"status": "PASS"}]},
+                                            {"chunk_id": "chunk_005", "analyzed": True, "checks": [{"status": "PASS"}]},
+                                        ]
+                                    },
+                                },
+                            },
+                        }
+                    ]
+                }
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_from_stage1",
+            "estimate_id": "estimate_from_run",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_from_run")
+        self.assertEqual(created["run_id"], "run_from_stage1")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
 
 if __name__ == "__main__":
