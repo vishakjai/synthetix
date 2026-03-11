@@ -4801,7 +4801,8 @@ def _resolve_legacy_code_from_repo_scan(
 
         snapshot_seed = "|".join(
             [
-                "bundle_v4",
+                "bundle_v5",
+                "php_componentizer_v2",
                 "github",
                 owner.lower(),
                 repository.lower(),
