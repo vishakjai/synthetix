@@ -4593,8 +4593,9 @@ function renderDiscoverScopeGuidance() {
 function renderDiscoverLandscape() {
   if (!el.discoverLandscapeContent && !el.discoverLandscapeStepContent) return;
   const landscapeView = state.discoverLandscape || {};
-  const raw = _discoverRawArtifacts();
-  const analysisPlan = _discoverAnalysisPlanArtifact();
+  const landscapeRaw = (landscapeView.data && typeof landscapeView.data === "object" && landscapeView.data.raw_artifacts && typeof landscapeView.data.raw_artifacts === "object") ? landscapeView.data.raw_artifacts : {};
+  const raw = landscapeRaw;
+  const analysisPlan = (landscapeRaw.analysis_plan_v1 && typeof landscapeRaw.analysis_plan_v1 === "object") ? landscapeRaw.analysis_plan_v1 : _discoverAnalysisPlanArtifact();
   const repoSnapshot = (raw.repo_snapshot_v1 && typeof raw.repo_snapshot_v1 === "object") ? raw.repo_snapshot_v1 : {};
   const integration = getIntegrationContext();
   const projectState = String(integration?.project_state_detected || state.projectState?.detected || "").trim().toLowerCase();
@@ -14094,7 +14095,7 @@ function scheduleRunBootstrapRefresh(runId) {
     state.runBootstrapPollTimer = null;
   }
   let attempts = 0;
-  const maxAttempts = 10;
+  const maxAttempts = 45;
   state.runBootstrapPollTimer = setInterval(async () => {
     attempts += 1;
     try {
@@ -14106,12 +14107,13 @@ function scheduleRunBootstrapRefresh(runId) {
       const status = await fetchRunStatus(runId);
       applyRunStatus(status);
       await fetchRunLogs(runId);
-      renderRun();
       const latestStatus = String(state.currentRun?.status || status?.status || "").toLowerCase();
-      if (latestStatus && latestStatus !== "queued") {
+      const shouldHydrateSnapshot = !latestStatus || latestStatus === "queued" || attempts <= 5 || attempts % 3 === 0;
+      if (shouldHydrateSnapshot) {
         await fetchRunSnapshot(runId);
       }
-      if (!isActiveRunStatus(latestStatus) || attempts >= maxAttempts) {
+      renderRun();
+      if (!isActiveRunStatus(String(state.currentRun?.status || latestStatus || "").toLowerCase()) || attempts >= maxAttempts) {
         clearInterval(state.runBootstrapPollTimer);
         state.runBootstrapPollTimer = null;
       }
@@ -14121,7 +14123,7 @@ function scheduleRunBootstrapRefresh(runId) {
         state.runBootstrapPollTimer = null;
       }
     }
-  }, 1500);
+  }, 2000);
 }
 
 async function refreshRunHistory() {
