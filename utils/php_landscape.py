@@ -26,9 +26,9 @@ def build_php_landscape_artifacts(
     file_contents = file_contents or {}
     profile = detect_php_framework_profile(entries=entries, file_contents=file_contents)
     framework = str(profile.get("framework") or "custom_php")
-    route_inventory = extract_php_route_inventory(file_contents)
-    controller_inventory = extract_php_controller_inventory(file_contents)
-    template_inventory = extract_php_template_inventory(file_contents)
+    route_inventory = extract_php_route_inventory(file_contents, entries=entries)
+    controller_inventory = extract_php_controller_inventory(file_contents, entries=entries)
+    template_inventory = extract_php_template_inventory(file_contents, entries=entries)
     sql_catalog = extract_php_sql_catalog(file_contents)
     session_inventory = extract_php_session_state_inventory(file_contents)
     auth_inventory = extract_php_auth_inventory(file_contents)

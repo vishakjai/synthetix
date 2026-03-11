@@ -77,7 +77,7 @@ def _looks_like_template(path: str, *, semantic_hint: str = "") -> bool:
     )
 
 
-def extract_php_template_inventory(file_map: dict[str, str]) -> dict[str, Any]:
+def extract_php_template_inventory(file_map: dict[str, str], entries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     templates: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -98,6 +98,13 @@ def extract_php_template_inventory(file_map: dict[str, str]) -> dict[str, Any]:
             }
         )
         seen.add(normalized)
+
+    for row in entries or []:
+        if not isinstance(row, dict):
+            continue
+        normalized = _clean(row.get('path')).replace('\\', '/')
+        if _looks_like_template(normalized):
+            add_template(normalized, inferred=True)
 
     for path, body in (file_map or {}).items():
         normalized = str(path).replace('\\', '/')
@@ -127,5 +134,5 @@ def extract_php_template_inventory(file_map: dict[str, str]) -> dict[str, Any]:
     return {
         'artifact_type': 'php_template_inventory_v1',
         'template_count': len(templates),
-        'templates': templates[:500],
+        'templates': templates[:2000],
     }

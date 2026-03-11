@@ -114,6 +114,32 @@ class PhpExtractorsTest(unittest.TestCase):
         self.assertIn("dashboard/main.php", template_paths)
         self.assertIn("{$syspath}/src/eop_email_templates/eop_initiation_email_html.php", template_paths)
 
+    def test_extractors_merge_full_tree_entries_with_fetched_bodies(self):
+        file_map = {
+            "Controller/AuthController.php": "<?php class AuthController { public function login() {} }",
+            "routes/web.php": "<?php Route::get('/login', 'AuthController@login');",
+        }
+        entries = [
+            {"path": "Controller/AuthController.php", "type": "blob"},
+            {"path": "Controller/UserController.php", "type": "blob"},
+            {"path": "dashboard/elements/panel_links.php", "type": "blob"},
+            {"path": "views/login.php", "type": "blob"},
+            {"path": "routes/web.php", "type": "blob"},
+        ]
+
+        controllers = extract_php_controller_inventory(file_map, entries=entries)
+        templates = extract_php_template_inventory(file_map, entries=entries)
+        routes = extract_php_route_inventory(file_map, entries=entries)
+
+        self.assertGreaterEqual(controllers["controller_count"], 2)
+        self.assertGreaterEqual(templates["template_count"], 2)
+        self.assertGreaterEqual(routes["route_count"], 2)
+        controller_paths = {row["path"] for row in controllers["controllers"]}
+        self.assertIn("Controller/UserController.php", controller_paths)
+        template_paths = {row["path"] for row in templates["templates"]}
+        self.assertIn("dashboard/elements/panel_links.php", template_paths)
+        self.assertIn("views/login.php", template_paths)
+
 
 if __name__ == "__main__":
     unittest.main()

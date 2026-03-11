@@ -52,11 +52,30 @@ def _is_inferred_entrypoint(path: str) -> tuple[bool, str]:
     return False, ""
 
 
-def extract_php_route_inventory(file_map: dict[str, str]) -> dict[str, Any]:
+def extract_php_route_inventory(file_map: dict[str, str], entries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     route_files: list[str] = []
     routes: list[dict[str, Any]] = []
     entrypoints: list[dict[str, Any]] = []
     seen_route_keys: set[str] = set()
+    seen_entry_paths: set[str] = set()
+
+    for row in entries or []:
+        if not isinstance(row, dict):
+            continue
+        normalized = _clean(row.get("path")).replace("\\", "/")
+        if _is_route_file(normalized):
+            route_files.append(normalized)
+        allowed, kind = _is_inferred_entrypoint(normalized)
+        if allowed and not any(token in normalized.lower() for token in ("view/", "views/", "template", "dashboard/elements/", "vendor/")):
+            entrypoints.append(
+                {
+                    "entrypoint": normalized.rsplit("/", 1)[-1],
+                    "path": normalized,
+                    "kind": kind,
+                    "inferred": True,
+                }
+            )
+            seen_entry_paths.add(normalized)
 
     for path, body in (file_map or {}).items():
         if not isinstance(body, str):
@@ -87,34 +106,39 @@ def extract_php_route_inventory(file_map: dict[str, str]) -> dict[str, Any]:
         # Fallback entrypoints for custom PHP apps without explicit routing files.
         allowed, kind = _is_inferred_entrypoint(normalized)
         if allowed and not any(token in low for token in ("view/", "views/", "template", "dashboard/elements/", "vendor/")):
-            name = normalized.rsplit("/", 1)[-1]
-            entrypoints.append(
-                {
-                    "entrypoint": name,
-                    "path": normalized,
-                    "kind": kind,
-                }
-            )
+            if normalized not in seen_entry_paths:
+                name = normalized.rsplit("/", 1)[-1]
+                entrypoints.append(
+                    {
+                        "entrypoint": name,
+                        "path": normalized,
+                        "kind": kind,
+                    }
+                )
+                seen_entry_paths.add(normalized)
 
     route_files = sorted(set(route_files))
     entrypoints = entrypoints[:200]
-    if not routes and entrypoints:
-        for row in entrypoints:
-            path = _clean(row.get("path"))
-            if not path:
-                continue
-            routes.append(
-                {
-                    "route_id": f"route:{len(routes)+1}",
-                    "method": "ANY",
-                    "uri": _uri_from_path(path),
-                    "handler": path,
-                    "source_file": path,
-                    "confidence": 0.55 if _clean(row.get("kind")) == "script_entry" else 0.65,
-                    "inferred": True,
-                }
-            )
-    routes = routes[:500]
+    for row in entrypoints:
+        path = _clean(row.get("path"))
+        if not path:
+            continue
+        route_key = f"ANY:{_uri_from_path(path)}:{path}"
+        if route_key in seen_route_keys:
+            continue
+        seen_route_keys.add(route_key)
+        routes.append(
+            {
+                "route_id": f"route:{len(routes)+1}",
+                "method": "ANY",
+                "uri": _uri_from_path(path),
+                "handler": path,
+                "source_file": path,
+                "confidence": 0.55 if _clean(row.get("kind")) == "script_entry" else 0.65,
+                "inferred": True,
+            }
+        )
+    routes = routes[:2000]
     return {
         "artifact_type": "php_route_inventory_v1",
         "route_file_count": len(route_files),
