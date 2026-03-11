@@ -154,7 +154,7 @@ class PhpMarkdownSummaryTest(unittest.TestCase):
             },
         }
         markdown = build_full_markdown(output, mode="full")
-        self.assertIn("- Event map rows: 1", markdown)
+        self.assertIn("- Route rows: 1", markdown)
         self.assertIn("- SQL catalog rows: 1", markdown)
         self.assertIn("- Dependency rows: 3", markdown)
         self.assertIn("- Business rules: 2", markdown)

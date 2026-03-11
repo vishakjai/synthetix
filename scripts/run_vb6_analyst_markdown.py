@@ -29,6 +29,15 @@ _ANALYST_REPORT_MODULE = importlib.util.module_from_spec(_ANALYST_REPORT_SPEC)
 _ANALYST_REPORT_SPEC.loader.exec_module(_ANALYST_REPORT_MODULE)
 build_analyst_report_v2 = _ANALYST_REPORT_MODULE.build_analyst_report_v2
 
+from utils.markdown_php import (
+    build_php_appendix_metrics,
+    build_php_markdown_context,
+    has_php_summary_data as _external_has_php_summary_data,
+    php_artifact_bundle as _external_php_artifact_bundle,
+)
+from utils.markdown_vb6 import build_vb6_markdown_context
+from utils.php_landscape import build_php_landscape_artifacts
+
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8788"
 DEFAULT_REPO_URL = "https://github.com/vishakjai/TestVBProject1"
@@ -38,6 +47,8 @@ DEFAULT_OBJECTIVE = (
 )
 VB6_EXTENSIONS = {".cls", ".frm", ".frx", ".bas", ".ctl", ".ctx", ".vbp", ".vbg", ".res", ".ocx", ".dcx", ".dca", ".dsr", ".mdb", ".accdb"}
 VB6_TEXT_EXTENSIONS = {".cls", ".frm", ".bas", ".ctl", ".vbp", ".vbg", ".dca", ".dcx", ".dsr"}
+PHP_DIRECT_EXTENSIONS = {".php", ".sql", ".json", ".yaml", ".yml", ".md", ".txt", ".ini"}
+PHP_DIRECT_NAMES = {"composer.json", "composer.lock", ".env", ".htaccess"}
 
 
 def _utc_now() -> str:
@@ -75,6 +86,25 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _token_words(value: Any) -> set[str]:
+    text = _clean(value).lower()
+    if not text:
+        return set()
+    return {tok for tok in re.split(r"[^a-z0-9_]+", text) if tok}
+
+
+def _contains_token_words(text: str, candidates: tuple[str, ...] | list[str]) -> bool:
+    words = _token_words(text)
+    for candidate in candidates:
+        cand = _clean(candidate).lower()
+        if not cand:
+            continue
+        cand_words = tuple(tok for tok in re.split(r"[^a-z0-9_]+", cand) if tok)
+        if cand_words and all(tok in words for tok in cand_words):
+            return True
+    return False
+
+
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -102,56 +132,11 @@ def _escape_pipe(value: Any) -> str:
 
 
 def _php_artifact_bundle(raw_map: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "route_inventory": _as_dict(raw_map.get("php_route_inventory") or raw_map.get("php_route_inventory_v1")),
-        "controller_inventory": _as_dict(raw_map.get("php_controller_inventory") or raw_map.get("php_controller_inventory_v1")),
-        "template_inventory": _as_dict(raw_map.get("php_template_inventory") or raw_map.get("php_template_inventory_v1")),
-        "sql_catalog": _as_dict(raw_map.get("php_sql_catalog") or raw_map.get("php_sql_catalog_v1")),
-        "session_state_inventory": _as_dict(raw_map.get("php_session_state_inventory") or raw_map.get("php_session_state_inventory_v1")),
-        "authz_authn_inventory": _as_dict(raw_map.get("php_authz_authn_inventory") or raw_map.get("php_authz_authn_inventory_v1")),
-        "include_graph": _as_dict(raw_map.get("php_include_graph") or raw_map.get("php_include_graph_v1")),
-        "background_job_inventory": _as_dict(raw_map.get("php_background_job_inventory") or raw_map.get("php_background_job_inventory_v1")),
-        "file_io_inventory": _as_dict(raw_map.get("php_file_io_inventory") or raw_map.get("php_file_io_inventory_v1")),
-        "validation_rules": _as_dict(raw_map.get("php_validation_rules") or raw_map.get("php_validation_rules_v1")),
-    }
+    return _external_php_artifact_bundle(raw_map)
 
 
 def _has_php_summary_data(summary: dict[str, Any]) -> bool:
-    if not summary:
-        return False
-    routes = _as_dict(summary.get("route_inventory"))
-    controllers = _as_dict(summary.get("controller_inventory"))
-    templates = _as_dict(summary.get("template_inventory"))
-    sql_catalog = _as_dict(summary.get("sql_catalog"))
-    sessions = _as_dict(summary.get("session_state_inventory"))
-    authz = _as_dict(summary.get("authz_authn_inventory"))
-    jobs = _as_dict(summary.get("background_job_inventory"))
-    file_io = _as_dict(summary.get("file_io_inventory"))
-    validation = _as_dict(summary.get("validation_rules"))
-    include_graph = _as_dict(summary.get("include_graph"))
-    return any([
-        _as_int(routes.get("route_count"), 0) > 0,
-        _as_int(routes.get("entrypoint_count"), 0) > 0,
-        bool(_as_list(routes.get("routes"))),
-        _as_int(controllers.get("controller_count"), 0) > 0,
-        bool(_as_list(controllers.get("controllers"))),
-        _as_int(templates.get("template_count"), 0) > 0,
-        bool(_as_list(templates.get("templates"))),
-        _as_int(sql_catalog.get("statement_count"), 0) > 0,
-        bool(_as_list(sql_catalog.get("statements"))),
-        _as_int(sessions.get("session_key_count"), 0) > 0,
-        bool(sessions.get("uses_session_state")),
-        _as_int(authz.get("auth_touchpoint_count"), 0) > 0,
-        _as_int(authz.get("auth_file_count"), 0) > 0,
-        bool(_as_list(authz.get("evidence"))),
-        _as_int(jobs.get("job_count"), 0) > 0,
-        bool(_as_list(jobs.get("jobs"))),
-        _as_int(file_io.get("upload_file_count"), 0) > 0,
-        _as_int(file_io.get("export_file_count"), 0) > 0,
-        _as_int(validation.get("file_count"), 0) > 0,
-        bool(_as_list(validation.get("entries"))),
-        bool(_as_list(include_graph.get("edges"))),
-    ])
+    return _external_has_php_summary_data(summary)
 
 
 def _dependency_name(value: Any) -> str:
@@ -204,7 +189,15 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     if revised:
         return revised
 
-    report = build_analyst_report_v2(output)
+    raw_output = _as_dict(output.get("raw_artifacts"))
+    source_language_hint = _clean(output.get("source_language")).strip().lower()
+    is_php_output = source_language_hint == "php" or any(str(k).startswith("php_") for k in raw_output.keys())
+    if is_php_output and output.get("analyst_report_v2"):
+        rebuilt_output = dict(output)
+        rebuilt_output.pop("analyst_report_v2", None)
+        report = build_analyst_report_v2(rebuilt_output)
+    else:
+        report = build_analyst_report_v2(output)
     metadata = _as_dict(report.get("metadata"))
     project = _as_dict(metadata.get("project"))
     brief = _as_dict(report.get("decision_brief"))
@@ -364,48 +357,46 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     report_source_language = _clean(_as_dict(metadata.get("context_reference")).get("source_language")).strip().lower()
     raw_artifacts = _as_dict(report.get("raw_artifacts"))
     source_language = _clean(report_source_language or output.get("source_language")).strip().lower()
-    is_php_summary = source_language == "php" or any(
-        inventory.get(key) not in (None, "", 0)
-        for key in ("controllers", "routes", "templates", "session_keys", "auth_touchpoints", "background_jobs", "file_io_flows")
-    ) or any(
-        key in raw_artifacts
-        for key in (
-            "php_framework_profile_v1",
-            "php_route_inventory_v1",
-            "php_controller_inventory_v1",
-            "php_template_inventory_v1",
-            "php_sql_catalog_v1",
-            "php_session_state_inventory_v1",
-            "php_authz_authn_inventory_v1",
-        )
+    php_context = build_php_markdown_context(
+        report_source_language=report_source_language,
+        output_source_language=source_language,
+        inventory=inventory,
+        raw_artifacts=raw_artifacts,
+        source_loc_total=source_loc_total,
+        source_files_scanned=source_files_scanned,
     )
+    is_php_summary = bool(php_context.get("is_php"))
 
     if is_php_summary:
         if source_loc_total <= 0:
             source_loc_total = _as_int(inventory.get("source_loc_total"), 0)
         if source_files_scanned <= 0:
             source_files_scanned = _as_int(inventory.get("source_files_scanned"), 0)
-
-    if is_php_summary:
-        inventory_summary_text = (
-            f"{_as_int(inventory.get('applications'), 0)} application(s), "
-            f"{_as_int(inventory.get('controllers'), 0)} controllers, "
-            f"{_as_int(inventory.get('routes'), 0)} routes, "
-            f"{_as_int(inventory.get('templates'), 0)} templates, "
-            f"{_as_int(inventory.get('dependencies'), 0)} dependencies"
-        )
-        loc_summary_text = f"{source_loc_total} total LOC across {source_files_scanned} files"
+        inventory_summary_text = _clean(php_context.get("inventory_summary_text"))
+        loc_summary_text = _clean(php_context.get("loc_summary_text"))
+        project_name = _clean(project.get("name"))
+        project_objective = _clean(project.get("objective"))
+        if (
+            not project_name
+            or "vb6 modernization analysis" in project_name.lower()
+            or "legacy vb6 modernization" in project_name.lower()
+            or "vb6 to c#" in project_name.lower()
+            or project_name.lower() == "analyzed requirement"
+        ):
+            project["name"] = "PHP to TypeScript Modernization"
+        if not project_objective or "legacy vb6 repository" in project_objective.lower():
+            project["objective"] = "Analyze the legacy PHP repository to identify application structure, dependencies, routes, SQL behavior, and modernization-ready evidence."
     else:
-        inventory_summary_text = (
-            f"{_clean(inventory.get('projects') or 0)} project(s), "
-            f"{_clean(inventory.get('forms') or 0)} forms/usercontrols, "
-            f"{_clean(inventory.get('dependencies') or 0)} dependencies"
+        vb6_context = build_vb6_markdown_context(
+            inventory=inventory,
+            source_loc_total=source_loc_total,
+            source_loc_forms=source_loc_forms,
+            source_loc_modules=source_loc_modules,
+            source_loc_classes=source_loc_classes,
+            source_files_scanned=source_files_scanned,
         )
-        loc_summary_text = (
-            f"{source_loc_total} total LOC "
-            f"({source_loc_forms} form LOC, {source_loc_modules} module LOC, {source_loc_classes} class LOC) "
-            f"across {source_files_scanned} files"
-        )
+        inventory_summary_text = _clean(vb6_context.get("inventory_summary_text"))
+        loc_summary_text = _clean(vb6_context.get("loc_summary_text"))
 
     lines: list[str] = [
         f"# Modernization Brief - {_clean(project.get('name')) or 'Untitled Project'}",
@@ -463,13 +454,18 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     if backlog:
         for item in backlog[:80]:
             item_d = _as_dict(item)
-            ac = " / ".join(_as_list(item_d.get("acceptance_criteria"))[:2])
+            title_text = _clean(item_d.get("title") or item_d.get("outcome"))
+            ac_items = [_clean(x) for x in _as_list(item_d.get("acceptance_criteria"))[:2]]
+            if is_php_summary:
+                title_text = title_text.replace("C#", "TypeScript")
+                ac_items = [x.replace("C#", "TypeScript") for x in ac_items]
+            ac = " / ".join(ac_items)
             lines.append(
                 "| {} | {} | {} | {} | {} |".format(
                     _clean(item_d.get("id")),
                     _clean(item_d.get("priority")),
                     _clean(item_d.get("type")),
-                    _escape_pipe(item_d.get("title") or item_d.get("outcome")),
+                    _escape_pipe(title_text),
                     _escape_pipe(ac or "n/a"),
                 )
             )
@@ -493,8 +489,15 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
     if quality_gates:
         for gate in quality_gates:
             gate_d = _as_dict(gate)
+            gate_id = _clean(gate_d.get("id") or "gate")
+            gate_desc = _clean(gate_d.get("description"))
+            if is_php_summary:
+                if gate_id == "handler_inventory_completeness":
+                    gate_desc = "All analyzed controller handlers meet coverage threshold."
+                elif gate_id == "requirements_completeness" and "forms" in gate_desc.lower():
+                    gate_desc = gate_desc.replace("forms", "routes/controllers").replace("Forms", "Routes/controllers")
             lines.append(
-                f"  - {_clean(gate_d.get('id')) or 'gate'}: {(_clean(gate_d.get('result')) or 'warn').upper()} | {_clean(gate_d.get('description'))}"
+                f"  - {gate_id}: {(_clean(gate_d.get('result')) or 'warn').upper()} | {gate_desc}"
             )
     else:
         lines.append("  - None")
@@ -577,6 +580,32 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
 
     lines.extend(["", "## Evidence Appendix"])
     refs = _as_dict(appendix.get("artifact_refs"))
+    if is_php_summary:
+        raw_refs = _as_dict(raw_artifacts.get("artifact_refs") or raw.get("artifact_refs"))
+        php_ref_keys = [
+            "legacy_inventory",
+            "repo_landscape",
+            "scope_lock",
+            "php_route_inventory",
+            "php_controller_inventory",
+            "php_template_inventory",
+            "php_sql_catalog",
+            "php_session_state_inventory",
+            "php_authz_authn_inventory",
+            "php_include_graph",
+            "php_background_job_inventory",
+            "php_file_io_inventory",
+            "php_validation_rules",
+            "risk_register",
+            "artifact_index",
+        ]
+        php_refs: dict[str, Any] = {}
+        for key in php_ref_keys:
+            value = _clean(raw_refs.get(key))
+            if value:
+                php_refs[f"{key}_ref"] = value
+        if php_refs:
+            refs = php_refs
     for key, value in refs.items():
         if _clean(value):
             lines.append(f"- {key}: {_clean(value)}")
@@ -780,6 +809,16 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             return "Transaction History"
         if form_token.endswith("frmtransaction") or form_token.endswith("transaction"):
             return "Transaction Entry"
+        if "addinterest" in form_token:
+            return "Interest Posting"
+        if "checkbalance" in form_token:
+            return "Balance Inquiry"
+        if "closeaccount" in form_token or "closeacount" in form_token:
+            return "Account Closure"
+        if form_token in {"mdi", "main", "menu", "mdiform"} or form_token.startswith("mdi"):
+            return "Navigation Hub"
+        if "settings" in form_token or "accounttype" in form_token or "acctype" in form_token:
+            return "Account Type Maintenance"
         purpose_low = _clean(purpose).lower()
         if "deposit capture" in purpose_low:
             return "Deposit Capture"
@@ -801,43 +840,59 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 " ".join(_clean(x).lower() for x in (controls or []) if _clean(x)),
             ]
         )
-        if any(key in token_blob for key in ("login", "logi", "username", "password", "txtpass", "pass1", "credential")):
-            return "Password Management" if any(key in token_blob for key in ("txtpass", "pass1", "credential")) else "Authentication"
-        has_strong_transaction_signal = any(
-            key in token_blob for key in ("transction", "tbltransaction", "transaction ledger", "ledger")
-        )
+        token_words = _token_words(token_blob)
+        if (
+            "login" in token_words
+            or "logi" in token_words
+            or "username" in token_words
+            or "password" in token_words
+            or "txtpass" in token_words
+            or "pass1" in token_words
+            or "credential" in token_words
+        ):
+            return "Password Management" if {"txtpass", "pass1", "credential"} & token_words else "Authentication"
+        has_strong_transaction_signal = bool({"transction", "tbltransaction", "ledger"} & token_words) or "transaction ledger" in token_blob
         # Transaction/ledger semantics should win only on strong signals.
-        if has_strong_transaction_signal or ("debit" in token_blob and "credit" in token_blob):
+        if has_strong_transaction_signal or ({"debit", "credit"} <= token_words):
             return "Transaction Ledger"
-        if any(key in token_blob for key in ("withdraw", "debit")):
+        if {"withdraw", "debit"} & token_words:
             return "Withdrawal Processing"
-        if any(key in token_blob for key in ("deposit", "credit", "balancedt")) and not any(
-            key in token_blob for key in ("transaction", "transction", "debit")
-        ):
+        if ({"deposit", "credit", "balancedt"} & token_words) and not ({"transaction", "transction", "debit"} & token_words):
             return "Deposit Capture"
-        if any(key in token_blob for key in ("customer", "tblcustomer")) and any(
-            key in token_blob for key in ("interest", "min balance", "account type", "acctype")
+        if ("customer" in token_words or "tblcustomer" in token_words) and (
+            "interest" in token_words or "acctype" in token_words or "accounttype" in token_words or "account type" in token_blob
         ):
             return "Customer Management"
-        if any(key in token_blob for key in ("accounttype", "acctype")):
+        if "accounttype" in token_words or "acctype" in token_words or "settings" in token_words:
             return "Account Type Maintenance"
-        if any(key in token_blob for key in ("customer", "tblcustomer")):
-            return "Customer Management"
-        if any(key in token_blob for key in ("report", "datareport", "dataenvironment")):
-            return "Reporting"
-        if any(key in token_blob for key in ("search", "lookup", "find")):
-            return "Record Search"
-        if any(key in token_blob for key in ("main", "mdiform", "toolbar")):
-            return "Navigation Hub"
-        if any(key in token_blob for key in ("balance", "tblbalance")):
+        if "closeaccount" in token_words or "closeacount" in token_words:
+            return "Account Closure"
+        if "checkbalance" in token_words or "tblbalance" in token_words:
             return "Balance Inquiry"
-        if any(key in token_blob for key in ("timer", "progressbar", "splash")):
+        if "addinterest" in token_words or "interest" in token_words:
+            return "Interest Posting"
+        if "customer" in token_words or "tblcustomer" in token_words:
+            return "Customer Management"
+        if {"report", "datareport", "dataenvironment"} & token_words:
+            return "Reporting"
+        if {"search", "lookup", "find"} & token_words:
+            return "Record Search"
+        if {"main", "menu", "mdiform", "mdi", "toolbar"} & token_words:
+            return "Navigation Hub"
+        if {"balance", "tblbalance"} & token_words:
+            return "Balance Inquiry"
+        if {"timer", "progressbar", "splash"} & token_words:
             return "Splash/Loading"
         if is_generic_form and form_token == "form9":
             return "Authentication Entry"
         if is_generic_form and form_token == "form1":
             return "Navigation/Menu"
-        if is_generic_form and any(key in token_blob for key in ("dated", "datejoined", "dtpicker", "date 1", "from date", "to date")):
+        if is_generic_form and (
+            {"dated", "datejoined", "dtpicker"} & token_words
+            or "date 1" in token_blob
+            or "from date" in token_blob
+            or "to date" in token_blob
+        ):
             return "Date/Period Entry"
         cleaned_purpose = _clean(purpose).rstrip(".")
         if cleaned_purpose:
@@ -973,24 +1028,25 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
                 " ".join(_clean(_as_dict(r).get("statement")).lower() for r in rules),
             ]
         )
+        token_words = _token_words(token_blob)
         effects: list[str] = []
-        if any(x in token_blob for x in ["deposit", "amount deposited", "credit"]):
+        if ({"deposit", "credit"} & token_words) or "amount deposited" in token_blob:
             effects.append("Deposit transaction recorded.")
             effects.append("Account balance recalculated.")
-        if any(x in token_blob for x in ["withdraw", "amount withdrawn", "debit"]):
+        if ({"withdraw", "debit"} & token_words) or "amount withdrawn" in token_blob:
             effects.append("Withdrawal transaction recorded.")
             effects.append("Account balance recalculated.")
-        if any(x in token_blob for x in ["transaction ledger", "transction", "transaction"]):
+        if "transaction ledger" in token_blob or {"transction", "transaction"} & token_words:
             effects.append("Transaction history updated.")
-        if any(x in token_blob for x in ["customer management", "customer profile"]):
+        if "customer management" in token_blob or "customer profile" in token_blob:
             effects.append("Customer profile created or updated.")
-        if any(x in token_blob for x in ["account type", "acctype", "accounttype"]):
+        if "account type" in token_blob or "acctype" in token_words or "accounttype" in token_words:
             effects.append("Account type master data maintained.")
-        if any(x in token_blob for x in ["authentication", "login", "password"]):
+        if {"authentication", "login", "password"} & token_words:
             effects.append("User access is validated before workflow continuation.")
-        if any(x in token_blob for x in ["search", "lookup"]):
+        if {"search", "lookup"} & token_words:
             effects.append("Matching records displayed to the user.")
-        if any(x in token_blob for x in ["navigation hub", "main", "toolbar"]):
+        if "navigation hub" in token_blob or {"main", "menu", "mdi", "mdiform", "toolbar"} & token_words:
             effects.append("Navigation routes the user to selected module screens.")
         if not effects and db_tables:
             if any("balance" in _clean(t).lower() for t in db_tables):
@@ -1452,46 +1508,25 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         php_summary = _php_artifact_bundle(raw)
     is_php_counts = _has_php_summary_data(php_summary) or _clean(_as_dict(_as_dict(report.get('metadata')).get('context_reference')).get('source_language')).lower() == 'php'
     if is_php_counts:
-        php_route_rows = _as_list(_as_dict(php_summary.get('route_inventory')).get('routes'))
-        php_sql_rows = _as_list(_as_dict(php_summary.get('sql_catalog')).get('statements'))
-        php_rule_rows = _as_list(_as_dict(php_summary.get('validation_rules')).get('entries')) + _as_list(_as_dict(php_summary.get('authz_authn_inventory')).get('evidence'))
-        php_risk_rows = []
-        for row in php_sql_rows[:800]:
-            for risk in _as_list(_as_dict(row).get('risk_flags')):
-                risk = _clean(risk)
-                if risk and risk not in php_risk_rows:
-                    php_risk_rows.append(risk)
-        if bool(_as_dict(php_summary.get('session_state_inventory')).get('uses_session_state')) and 'session_state_mutation' not in php_risk_rows:
-            php_risk_rows.append('session_state_mutation')
-        if _as_int(_as_dict(php_summary.get('file_io_inventory')).get('upload_file_count'),0) > 0 and 'file_upload_handling' not in php_risk_rows:
-            php_risk_rows.append('file_upload_handling')
-        php_dep_count = _as_int(raw_legacy_summary.get('php_dependency_count'), 0)
-        if php_dep_count <= 0:
-            php_dep_count = _as_int(inventory.get('dependencies'), 0)
-        if php_dep_count <= 0:
-            php_dep_count = _as_int(_as_dict(_as_dict(raw.get('repo_landscape_v1') or raw.get('repo_landscape')).get('dependency_footprint')).get('composer_package_count'), 0)
-        lines.append(f"- Event map rows: {len(php_route_rows) or _as_int(_as_dict(php_summary.get('route_inventory')).get('route_count'),0) or _as_int(_as_dict(php_summary.get('route_inventory')).get('entrypoint_count'),0)}")
-        lines.append(f"- SQL catalog rows: {len(php_sql_rows) or _as_int(_as_dict(php_summary.get('sql_catalog')).get('statement_count'),0)}")
-        lines.append(f"- SQL map rows: 0")
-        lines.append(f"- Procedure summaries: {_as_int(_as_dict(php_summary.get('controller_inventory')).get('action_count'),0)}")
-        lines.append(f"- Form dossiers: 0")
-        lines.append(f"- Dependency rows: {php_dep_count}")
-        lines.append(f"- Business rules: {len(php_rule_rows)}")
-        lines.append(f"- Risk register rows: {len(php_risk_rows)}")
-        lines.append(f"- Orphan analysis rows: 0")
-        lines.append(f"- Repo landscape variants: {len(raw_landscape)}")
-        lines.append(f"- Variant inventory rows: {len(raw_variant_inventory)}")
-        lines.append(f"- Constitution principles: {len(raw_constitution)}")
-        lines.append(f"- MDB inventory rows: 0")
-        lines.append(f"- Form LOC profile rows: 0")
-        lines.append(f"- Designer LOC rows: 0")
-        lines.append(f"- Connection string variants: 0")
-        lines.append(f"- Module global inventory rows: 0")
-        lines.append(f"- Dead form references: 0")
-        lines.append(f"- DataEnvironment report mappings: 0")
-        lines.append(f"- Static risk detector findings: {len(php_risk_rows)}")
-        lines.append(f"- Source data dictionary rows: 0")
-        lines.append("- Source LOC: {} total across {} file(s)".format(source_loc_total, source_files_scanned))
+        php_metrics = build_php_appendix_metrics(
+            php_summary=php_summary,
+            dependency_count=_as_int(php_context.get("php_dependency_count"), 0),
+            source_loc_total=source_loc_total,
+            source_files_scanned=source_files_scanned,
+        )
+        lines.append(f"- Route rows: {php_metrics['event_map_rows']}")
+        lines.append(f"- Controller rows: {_as_int(_as_dict(php_summary.get('controller_inventory')).get('controller_count'),0)}")
+        lines.append(f"- Template rows: {_as_int(_as_dict(php_summary.get('template_inventory')).get('template_count'),0)}")
+        lines.append(f"- SQL catalog rows: {php_metrics['sql_catalog_rows']}")
+        lines.append(f"- Dependency rows: {php_metrics['dependency_rows']}")
+        lines.append(f"- Business rules: {php_metrics['business_rule_rows']}")
+        lines.append(f"- Risk register rows: {php_metrics['risk_register_rows']}")
+        lines.append(f"- Session keys: {_as_int(_as_dict(php_summary.get('session_state_inventory')).get('session_key_count'),0)}")
+        lines.append(f"- Background jobs: {_as_int(_as_dict(php_summary.get('background_job_inventory')).get('job_count'),0)}")
+        lines.append(f"- Upload files: {_as_int(_as_dict(php_summary.get('file_io_inventory')).get('upload_file_count'),0)}")
+        lines.append(f"- Export files: {_as_int(_as_dict(php_summary.get('file_io_inventory')).get('export_file_count'),0)}")
+        lines.append(f"- Static risk detector findings: {php_metrics['static_risk_rows']}")
+        lines.append("- Source LOC: {} total across {} file(s)".format(php_metrics['source_loc_total'], php_metrics['source_files_scanned']))
     else:
         lines.append(f"- Event map rows: {len(raw_event_map) or len(_as_list(hv.get('event_map')))}")
         lines.append(f"- SQL catalog rows: {len(raw_sql) or len(_as_list(hv.get('sql_catalog')))}")
@@ -1568,13 +1603,6 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
         php_upload_rows = _as_list(php_file_io.get("upload_files"))
         php_export_rows = _as_list(php_file_io.get("export_files"))
         php_include_edges = _as_list(php_include.get("edges"))
-        php_data_touchpoints = []
-        for row in php_sql_rows[:800]:
-            rr = _as_dict(row)
-            for table in _as_list(rr.get("tables")):
-                t = _clean(table)
-                if t and t not in php_data_touchpoints:
-                    php_data_touchpoints.append(t)
         php_risk_descriptions = []
         for row in php_sql_rows[:800]:
             rr = _as_dict(row)
@@ -1586,6 +1614,14 @@ def build_full_markdown(output: dict[str, Any], mode: str = "full") -> str:
             php_risk_descriptions.append("session_state_mutation")
         if _as_int(php_file_io.get("upload_file_count"),0) > 0 and "file_upload_handling" not in php_risk_descriptions:
             php_risk_descriptions.append("file_upload_handling")
+
+        php_data_touchpoints = []
+        for row in php_sql_rows[:800]:
+            rr = _as_dict(row)
+            for table in _as_list(rr.get("tables")):
+                t = _clean(table)
+                if t and t not in php_data_touchpoints:
+                    php_data_touchpoints.append(t)
         lines.extend(["", "## Detailed Appendix", "", "### A. Legacy Inventory"])
         lines.append(f"- Applications: {max(1, 1 if source_files_scanned or source_loc_total else 0)}")
         lines.append(f"- Controllers: {_as_int(php_controllers.get('controller_count'), 0)}")
@@ -3584,23 +3620,54 @@ def _clone_repo(repo_url: str) -> Path:
 def _build_legacy_bundle_from_repo(repo_dir: Path, max_text_chars: int = 40000) -> tuple[str, dict[str, Any]]:
     sections: list[str] = []
     file_rows: list[dict[str, Any]] = []
+    php_landscape_entries: list[dict[str, Any]] = []
+    php_landscape_contents: dict[str, str] = {}
 
-    files = sorted(
+    vb6_files = sorted(
         [p for p in repo_dir.rglob("*") if p.is_file() and p.suffix.lower() in VB6_EXTENSIONS],
         key=lambda p: p.as_posix().lower(),
     )
-    if not files:
-        raise RuntimeError(f"No VB6 files found in repository: {repo_dir}")
+    if vb6_files:
+        files = vb6_files
+        source_lane = "vb6"
+        text_exts = VB6_TEXT_EXTENSIONS
+    else:
+        php_files = sorted(
+            [
+                p
+                for p in repo_dir.rglob("*")
+                if p.is_file()
+                and (
+                    p.suffix.lower() in PHP_DIRECT_EXTENSIONS
+                    or p.name.lower() in PHP_DIRECT_NAMES
+                )
+                and not any(
+                    token in p.as_posix().lower()
+                    for token in ("/vendor/", "/branchinfo/", "/docs/", "/doc/", "/tests/", "/test/")
+                )
+            ],
+            key=lambda p: p.as_posix().lower(),
+        )
+        if not php_files:
+            raise RuntimeError(f"No supported legacy source files found in repository: {repo_dir}")
+        files = php_files
+        source_lane = "php"
+        text_exts = PHP_DIRECT_EXTENSIONS
 
     for path in files:
         rel = path.relative_to(repo_dir).as_posix()
         ext = path.suffix.lower()
         size = path.stat().st_size
-        row = {"path": rel, "extension": ext, "size_bytes": size, "is_text": ext in VB6_TEXT_EXTENSIONS}
+        row = {
+            "path": rel,
+            "extension": ext,
+            "size_bytes": size,
+            "is_text": ext in text_exts or path.name.lower() in PHP_DIRECT_NAMES,
+        }
         file_rows.append(row)
 
         header = f"### FILE: {rel}"
-        if ext in VB6_TEXT_EXTENSIONS:
+        if row["is_text"]:
             text = path.read_text(encoding="utf-8", errors="replace")
             if len(text) > max_text_chars:
                 text = text[:max_text_chars] + "\n... [truncated]"
@@ -3608,19 +3675,67 @@ def _build_legacy_bundle_from_repo(repo_dir: Path, max_text_chars: int = 40000) 
         else:
             sections.append(f"{header}\n[binary file: {size} bytes]")
 
+    if source_lane == "php":
+        for path in repo_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(repo_dir).as_posix()
+            rel_low = rel.lower()
+            if rel_low.startswith(".git/"):
+                continue
+            if any(token in rel_low for token in ("/branchinfo/", "/docs/", "/doc/", "/tests/", "/test/")):
+                continue
+            php_landscape_entries.append(
+                {
+                    "path": rel,
+                    "type": "blob",
+                    "size": path.stat().st_size,
+                }
+            )
+            name_low = path.name.lower()
+            should_read = (
+                name_low == "composer.json"
+                or rel_low.endswith(("/web.php", "/api.php", "/routes.php"))
+                or "controller/" in rel_low
+                or "controllers/" in rel_low
+                or "/templates/" in rel_low
+                or "/views/" in rel_low
+                or rel_low.endswith((".blade.php", ".twig", ".tpl.php", ".phtml"))
+            )
+            if should_read:
+                try:
+                    php_landscape_contents[rel] = path.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+
     counts_by_ext: dict[str, int] = {}
     for row in file_rows:
         ext = str(row["extension"])
         counts_by_ext[ext] = counts_by_ext.get(ext, 0) + 1
 
     summary = {
+        "source_lane": source_lane,
         "total_files": len(file_rows),
         "counts_by_extension": counts_by_ext,
         "text_files": sum(1 for r in file_rows if r["is_text"]),
         "binary_files": sum(1 for r in file_rows if not r["is_text"]),
     }
+    landscape_artifacts: dict[str, Any] = {}
+    if source_lane == "php":
+        landscape_artifacts = build_php_landscape_artifacts(
+            repo=str(repo_dir),
+            branch="main",
+            commit_sha="",
+            entries=php_landscape_entries,
+            file_contents=php_landscape_contents,
+        )
+        php_profile = _as_dict(landscape_artifacts.get("php_framework_profile_v1"))
+        summary["php_dependency_count"] = _as_int(php_profile.get("composer_package_count"), 0)
     bundle = "\n\n".join(sections)
-    return bundle, {"summary": summary, "files": file_rows}
+    result = {"summary": summary, "files": file_rows}
+    if landscape_artifacts:
+        result["landscape"] = landscape_artifacts
+    return bundle, result
 
 
 def _discover_prefetch(base_url: str, objectives: str, repo_url: str) -> dict[str, Any]:
@@ -4030,6 +4145,13 @@ def run_and_export_direct(args: argparse.Namespace) -> int:
             "local_bundle_inventory": inventory.get("summary", {}),
             "sample_dataset_enabled": False,
         }
+        if _clean(_as_dict(inventory.get("summary")).get("source_lane")).lower() == "php":
+            state["source_language"] = "PHP"
+            landscape = _as_dict(inventory.get("landscape"))
+            if landscape:
+                state["integration_context"]["discover_cache"] = {
+                    "landscape": landscape,
+                }
 
         result_state = run_single_stage(cfg, state, stage_index=0)
         analyst_output = _as_dict(result_state.get("analyst_output"))

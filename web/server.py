@@ -4039,7 +4039,15 @@ def _select_source_entries_for_analysis(
         1 for entry in candidate_entries
         if str(entry.get("path", "")).lower().endswith((".vbp", ".vbg", ".frm", ".frx", ".bas", ".cls", ".ctl", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
     )
-    effective_limit = max(limit, 220) if vb6_file_hits >= 8 else limit
+    php_file_hits = sum(
+        1 for entry in candidate_entries
+        if str(entry.get("path", "")).lower().endswith(".php")
+    )
+    effective_limit = limit
+    if vb6_file_hits >= 8:
+        effective_limit = max(effective_limit, 220)
+    elif php_file_hits >= 80:
+        effective_limit = max(effective_limit, 220)
 
     priority_rank = []
     for entry in candidate_entries:
@@ -4086,13 +4094,68 @@ def _select_source_entries_for_analysis(
         for row in priority_rank
         if str(row[1]).endswith((".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
     ]
+    route_entries = [
+        row[2]
+        for row in priority_rank
+        if str(row[1]).endswith(".php")
+        and (
+            "/routes/" in str(row[1])
+            or str(row[1]).endswith(("/index.php", "/web.php", "/api.php"))
+            or str(Path(str(row[1])).name).lower() in {"index.php", "web.php", "api.php"}
+        )
+    ]
+    controller_entries = [
+        row[2]
+        for row in priority_rank
+        if str(row[1]).endswith(".php")
+        and (
+            "/controller/" in str(row[1])
+            or str(Path(str(row[1])).name).lower().endswith("controller.php")
+        )
+    ]
+    template_entries = [
+        row[2]
+        for row in priority_rank
+        if str(row[1]).endswith(".php")
+        and any(
+            token in str(row[1])
+            for token in (
+                "/views/",
+                "/templates/",
+                "/dashboard/",
+                "/mail_templates/",
+                "/email_templates/",
+            )
+        )
+    ]
+    php_support_entries = [
+        row[2]
+        for row in priority_rank
+        if str(row[1]).endswith(".php")
+        and any(
+            token in str(row[1])
+            for token in (
+                "/utility/",
+                "/report/",
+                "/includes/",
+                "/model/",
+                "/service/",
+                "/api/",
+            )
+        )
+    ]
 
     large_vb6_selector = (
         len(project_entries) > 20
         or len(form_entries) > 80
         or len(module_entries) + len(class_entries) > 120
     )
-    if not large_vb6_selector:
+    large_php_selector = (
+        php_file_hits > 120
+        or len(controller_entries) > 60
+        or len(template_entries) > 40
+    )
+    if not large_vb6_selector and not large_php_selector:
         return [row[2] for row in priority_rank[:effective_limit]]
 
     quotas = [
@@ -4119,10 +4182,22 @@ def _select_source_entries_for_analysis(
                 break
             count -= 1
 
-    for rows, count in quotas:
-        add_rows(rows, count)
-        if len(selected) >= effective_limit:
-            break
+    if large_vb6_selector:
+        for rows, count in quotas:
+            add_rows(rows, count)
+            if len(selected) >= effective_limit:
+                break
+    elif large_php_selector:
+        php_quotas = [
+            (route_entries, min(len(route_entries), max(8, effective_limit // 20))),
+            (controller_entries, min(len(controller_entries), max(90, effective_limit // 2))),
+            (template_entries, min(len(template_entries), max(40, effective_limit // 5))),
+            (php_support_entries, min(len(php_support_entries), max(50, effective_limit // 4))),
+        ]
+        for rows, count in php_quotas:
+            add_rows(rows, count)
+            if len(selected) >= effective_limit:
+                break
 
     if len(selected) < effective_limit:
         for _rank, _path, row in priority_rank:
@@ -4147,6 +4222,38 @@ def _legacy_bundle_bucket(path: str) -> str:
         return "class"
     if lower.endswith(".bas"):
         return "module"
+    if lower.endswith(".php"):
+        if any(token in lower for token in ("/routes/", "/public/", "/admin/")) or lower.endswith(("/index.php", "/web.php", "/api.php")):
+            return "php_route"
+        if "/controller/" in lower or "/controllers/" in lower or Path(lower).name.endswith("controller.php"):
+            return "php_controller"
+        if any(
+            token in lower
+            for token in (
+                "/views/",
+                "/templates/",
+                "/dashboard/elements/",
+                "/mail_templates/",
+                "/email_templates/",
+                "/eop_email_templates/",
+            )
+        ):
+            return "php_template"
+        if any(
+            token in lower
+            for token in (
+                "/utility/",
+                "/report/",
+                "/includes/",
+                "/model/",
+                "/service/",
+                "/api/",
+                "/classes/",
+                "/bin/",
+            )
+        ):
+            return "php_support"
+        return "php_other"
     if lower.endswith((".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb")):
         return "companion"
     return "other"
@@ -4158,8 +4265,13 @@ def _legacy_bundle_order_key(path: str) -> tuple[int, str]:
         "form": 1,
         "class": 2,
         "module": 3,
-        "companion": 4,
-        "other": 5,
+        "php_route": 0,
+        "php_controller": 1,
+        "php_template": 2,
+        "php_support": 3,
+        "php_other": 4,
+        "companion": 5,
+        "other": 6,
     }
     normalized = str(path or "").strip().replace("\\", "/").lower()
     return (bucket_order.get(_legacy_bundle_bucket(normalized), 9), normalized)
@@ -4175,12 +4287,22 @@ def _compose_legacy_code_bundle(
         for path in available_paths
         if str(path).lower().endswith((".vbp", ".vbg", ".frm", ".ctl", ".cls", ".bas", ".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"))
     )
+    php_source_hits = sum(
+        1
+        for path in available_paths
+        if str(path).lower().endswith(".php")
+    )
     projected_chars = sum(len(str(file_contents.get(path, "") or "")) + len(str(path)) + 16 for path in available_paths)
     effective_max = int(max_total_chars or 0)
     if vb6_source_hits >= 12:
         # Large VB6 estates lose coverage if we flatten them into the old 420k cap.
         # Keep the bundle bounded, but allow enough room for deterministic per-file extraction.
         effective_max = max(effective_max, min(max(projected_chars, 900000), 2400000))
+    elif php_source_hits >= 80:
+        # Large PHP estates need enough room to keep controllers plus view/template context
+        # in the bounded bundle. Keep it capped, but do not let the old 420k limit force
+        # template-heavy files out of analysis.
+        effective_max = max(effective_max, min(max(projected_chars, 900000), 2200000))
 
     chunks: list[str] = []
     total = 0
@@ -4254,6 +4376,7 @@ def _repo_snapshot_family_key(
     seed = "|".join(
         [
             "bundle_v4",
+            "php_bundle_order_v2",
             owner.lower().strip(),
             repository.lower().strip(),
             branch.lower().strip(),
@@ -6841,6 +6964,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
             exclude_paths=exclude_paths,
             bundle_summary=_compose_legacy_code_bundle(sample_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)[1],
         )
+        response_payload = _refresh_php_discover_payload(response_payload)
         return JSONResponse(response_payload)
 
     base_url, headers, authenticated = _github_request_context()
@@ -6950,6 +7074,7 @@ async def _api_discover_analyst_brief_impl(request, payload: dict[str, Any]) -> 
         exclude_paths=exclude_paths,
         bundle_summary=_compose_legacy_code_bundle(file_contents, max_total_chars=REPO_SCAN_BUNDLE_MAX_CHARS)[1],
     )
+    response_payload = _refresh_php_discover_payload(response_payload)
     return JSONResponse(response_payload)
 
 
@@ -9271,6 +9396,87 @@ def _build_analyst_markdown_for_docgen(
         return str(build_full_markdown(docgen_seed, mode="full") or "").strip()
     except Exception as exc:
         raise RuntimeError(f"Unable to compose analyst markdown for docgen: {exc}") from exc
+
+
+def _refresh_php_discover_payload(response_payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(response_payload, dict):
+        return response_payload
+    raw = response_payload.get("raw_artifacts", {}) if isinstance(response_payload.get("raw_artifacts", {}), dict) else {}
+    repo_landscape = raw.get("repo_landscape_v1", {}) if isinstance(raw.get("repo_landscape_v1", {}), dict) else {}
+    php_profile = raw.get("php_framework_profile_v1", {}) if isinstance(raw.get("php_framework_profile_v1", {}), dict) else {}
+    php_hints = raw.get("php_route_hints_v1", {}) if isinstance(raw.get("php_route_hints_v1", {}), dict) else {}
+    if not php_profile and not php_hints:
+        return response_payload
+
+    dep_footprint = repo_landscape.get("dependency_footprint", {}) if isinstance(repo_landscape.get("dependency_footprint", {}), dict) else {}
+    scan_summary = repo_landscape.get("scan_summary", {}) if isinstance(repo_landscape.get("scan_summary", {}), dict) else {}
+    controller_count = int(php_profile.get("controller_count", 0) or php_hints.get("estimated_controllers", 0) or 0)
+    route_count = int(php_hints.get("estimated_route_files", 0) or php_profile.get("route_file_count", 0) or 0)
+    template_count = int(php_profile.get("template_count", 0) or php_hints.get("estimated_templates", 0) or 0)
+    session_key_count = int(php_profile.get("session_key_count", 0) or 0)
+    auth_touchpoints = int(php_profile.get("auth_touchpoint_estimate", 0) or 0)
+    dependency_count = int(
+        dep_footprint.get("composer_package_count", 0)
+        or php_profile.get("composer_package_count", 0)
+        or 0
+    )
+    source_loc_total = int(scan_summary.get("total_loc", 0) or scan_summary.get("loc_total", 0) or 0)
+    source_files_scanned = int(scan_summary.get("total_files", 0) or 0)
+
+    def _patch_inventory(container: dict[str, Any]) -> dict[str, Any]:
+        patched = dict(container) if isinstance(container, dict) else {}
+        patched["summary"] = (
+            f"Discover cache indicates PHP legacy application with {controller_count} controllers, "
+            f"{route_count} routes, {template_count} templates, and {dependency_count} composer dependencies."
+        )
+        patched["source_loc_total"] = source_loc_total
+        patched["source_files_scanned"] = source_files_scanned
+        patched["php_dependency_count"] = dependency_count
+        patched["source_target_modernization_profile"] = patched.get("source_target_modernization_profile", {})
+        php_analysis = patched.get("php_analysis", {}) if isinstance(patched.get("php_analysis", {}), dict) else {}
+        framework = _clean_text(php_profile.get("framework") or php_analysis.get("framework")) or "custom_php"
+        route_inventory = php_analysis.get("route_inventory", {}) if isinstance(php_analysis.get("route_inventory", {}), dict) else {}
+        controller_inventory = php_analysis.get("controller_inventory", {}) if isinstance(php_analysis.get("controller_inventory", {}), dict) else {}
+        template_inventory = php_analysis.get("template_inventory", {}) if isinstance(php_analysis.get("template_inventory", {}), dict) else {}
+        session_inventory = php_analysis.get("session_state_inventory", {}) if isinstance(php_analysis.get("session_state_inventory", {}), dict) else {}
+        auth_inventory = php_analysis.get("authz_authn_inventory", {}) if isinstance(php_analysis.get("authz_authn_inventory", {}), dict) else {}
+        route_inventory.setdefault("artifact_type", "php_route_inventory")
+        route_inventory["route_count"] = int(route_inventory.get("route_count", 0) or route_count)
+        controller_inventory.setdefault("artifact_type", "php_controller_inventory")
+        controller_inventory["controller_count"] = int(controller_inventory.get("controller_count", 0) or controller_count)
+        template_inventory.setdefault("artifact_type", "php_template_inventory")
+        template_inventory["template_count"] = int(template_inventory.get("template_count", 0) or template_count)
+        session_inventory.setdefault("artifact_type", "php_session_state_inventory")
+        session_inventory["session_key_count"] = int(session_inventory.get("session_key_count", 0) or session_key_count)
+        auth_inventory.setdefault("artifact_type", "php_authz_authn_inventory")
+        auth_inventory["auth_touchpoint_count"] = int(auth_inventory.get("auth_touchpoint_count", 0) or auth_touchpoints)
+        php_analysis["framework"] = framework
+        php_analysis["route_inventory"] = route_inventory
+        php_analysis["controller_inventory"] = controller_inventory
+        php_analysis["template_inventory"] = template_inventory
+        php_analysis["session_state_inventory"] = session_inventory
+        php_analysis["authz_authn_inventory"] = auth_inventory
+        patched["php_analysis"] = php_analysis
+        return patched
+
+    legacy_inventory = _patch_inventory(response_payload.get("legacy_code_inventory", {}))
+    response_payload["legacy_code_inventory"] = legacy_inventory
+    requirements_pack = response_payload.get("requirements_pack", {}) if isinstance(response_payload.get("requirements_pack", {}), dict) else {}
+    req_legacy = _patch_inventory(requirements_pack.get("legacy_code_inventory", {}))
+    requirements_pack["legacy_code_inventory"] = req_legacy
+    response_payload["requirements_pack"] = requirements_pack
+    response_payload["source_language"] = "PHP"
+
+    report_seed = dict(response_payload)
+    report_seed["legacy_code_inventory"] = legacy_inventory
+    report_seed["requirements_pack"] = requirements_pack
+    rebuilt_raw = build_raw_artifact_set_v1(report_seed)
+    if not isinstance(rebuilt_raw, dict):
+        rebuilt_raw = {}
+    rebuilt_raw.update(raw)
+    response_payload["raw_artifacts"] = rebuilt_raw
+    response_payload["analyst_report_v2"] = build_analyst_report_v2({**report_seed, "raw_artifacts": rebuilt_raw})
+    return response_payload
 
 
 def _ensure_synthetix_docgen_dependencies() -> None:

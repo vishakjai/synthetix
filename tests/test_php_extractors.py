@@ -68,12 +68,51 @@ class PhpExtractorsTest(unittest.TestCase):
         routes = extract_php_route_inventory(file_map)
         templates = extract_php_template_inventory(file_map)
 
-        self.assertGreaterEqual(routes["route_count"], 2)
-        self.assertTrue(any(str(row.get("path")) == "dashboard/Recruiter_new.php" for row in routes["entrypoints"]))
+        self.assertGreaterEqual(routes["route_count"], 1)
+        self.assertTrue(any(str(row.get("path")) == "Controller/PortalCustomerController.php" for row in routes["entrypoints"]))
+        self.assertFalse(any(str(row.get("path")) == "dashboard/Recruiter_new.php" for row in routes["entrypoints"]))
+        self.assertFalse(any(str(row.get("path")) == "bin/msgQueueListner.php" for row in routes["entrypoints"]))
         template_paths = {row["path"] for row in templates["templates"]}
         self.assertIn("views/ViewHeader.php", template_paths)
         self.assertIn("dashboard/elements/panel_links.php", template_paths)
         self.assertIn("{$syspath}/src/templates/direct_hire_xml_gp.php", template_paths)
+
+    def test_extract_magicbox_style_template_patterns(self):
+        file_map = {
+            "Controller/PortalExternController.php": (
+                "<?php class PortalExternController { "
+                "public function login() { return $this->renderPage('extern_login_new.php'); } "
+                "}"
+            ),
+            "Utility/Email_message.php": (
+                "<?php class Email_message { "
+                "protected $renderfilename = null;"
+                "public function build() { "
+                "if (is_null($this->renderfilename)) { $this->renderfilename = 'views/EmailResult.php'; } "
+                "return View::renderFile($this->renderfilename, ['model' => $this]); } }"
+            ),
+            "Utility/Dashboard.php": (
+                "<?php class Dashboard { "
+                "public function render() { "
+                "$file = 'dashboard/elements/dashboard_element_custom.php'; include($file); "
+                "include('dashboard/main.php'); } }"
+            ),
+            "Controller/Contractor_placementEntityController.php": (
+                "<?php class Contractor_placementEntityController { "
+                "public function send() { "
+                "$this->mail_content = $this->getTemplateContent(\"{$syspath}/src/eop_email_templates/eop_initiation_email_html.php\"); "
+                "} }"
+            ),
+        }
+
+        templates = extract_php_template_inventory(file_map)
+        template_paths = {row["path"] for row in templates["templates"]}
+
+        self.assertIn("extern_login_new.php", template_paths)
+        self.assertIn("views/EmailResult.php", template_paths)
+        self.assertIn("dashboard/elements/dashboard_element_custom.php", template_paths)
+        self.assertIn("dashboard/main.php", template_paths)
+        self.assertIn("{$syspath}/src/eop_email_templates/eop_initiation_email_html.php", template_paths)
 
 
 if __name__ == "__main__":

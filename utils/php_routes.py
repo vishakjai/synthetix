@@ -7,7 +7,8 @@ _ROUTE_CALL = re.compile(
     r"Route::(?P<method>get|post|put|patch|delete|options|any|match)\s*\(\s*['\"](?P<uri>[^'\"]+)['\"](?:\s*,\s*(?P<handler>[^\n\r\)]+))?",
     re.I,
 )
-_ENTRYPOINT_EXCLUDE = {"index.php", "config.php", "functions.php"}
+_ENTRYPOINT_EXCLUDE = {"config.php", "functions.php"}
+_ENTRYPATH_EXCLUDE_TOKENS = ("branchinfo/", "/docs/", "/doc/", "/vendor/", "/tests/", "/test/")
 
 
 def _uri_from_path(path: str) -> str:
@@ -30,6 +31,25 @@ def _is_route_file(path: str) -> bool:
         or low.endswith("api.php")
         or low.endswith("routing.php")
     )
+
+
+def _is_inferred_entrypoint(path: str) -> tuple[bool, str]:
+    normalized = str(path or "").replace("\\", "/")
+    low = normalized.lower()
+    name = normalized.rsplit("/", 1)[-1].lower()
+    if not low.endswith(".php"):
+        return False, ""
+    if any(token in low for token in _ENTRYPATH_EXCLUDE_TOKENS):
+        return False, ""
+    if name in _ENTRYPOINT_EXCLUDE:
+        return False, ""
+    if "/controller/" in low or "/controllers/" in low or name.endswith("controller.php"):
+        return True, "controller_entry"
+    if any(token in low for token in ("/public/", "/admin/")):
+        return True, "script_entry"
+    if name in {"index.php", "web.php", "api.php"}:
+        return True, "script_entry"
+    return False, ""
 
 
 def extract_php_route_inventory(file_map: dict[str, str]) -> dict[str, Any]:
@@ -65,19 +85,16 @@ def extract_php_route_inventory(file_map: dict[str, str]) -> dict[str, Any]:
                 )
 
         # Fallback entrypoints for custom PHP apps without explicit routing files.
-        if low.endswith(".php") and not low.startswith("vendor/"):
-            topish = normalized.count("/") <= 2
-            app_entry = topish or any(token in low for token in ("controller/", "controllers/", "/public/", "/admin/"))
-            if app_entry and not any(token in low for token in ("view/", "views/", "template", "vendor/")):
-                name = normalized.rsplit("/", 1)[-1]
-                if name.lower() not in _ENTRYPOINT_EXCLUDE:
-                    entrypoints.append(
-                        {
-                            "entrypoint": name,
-                            "path": normalized,
-                            "kind": "script_entry" if topish else "controller_entry",
-                        }
-                    )
+        allowed, kind = _is_inferred_entrypoint(normalized)
+        if allowed and not any(token in low for token in ("view/", "views/", "template", "dashboard/elements/", "vendor/")):
+            name = normalized.rsplit("/", 1)[-1]
+            entrypoints.append(
+                {
+                    "entrypoint": name,
+                    "path": normalized,
+                    "kind": kind,
+                }
+            )
 
     route_files = sorted(set(route_files))
     entrypoints = entrypoints[:200]

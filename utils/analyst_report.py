@@ -43,6 +43,13 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _token_words(value: Any) -> set[str]:
+    text = _clean(value).lower()
+    if not text:
+        return set()
+    return {tok for tok in re.split(r"[^a-z0-9_]+", text) if tok}
+
+
 def _is_php_summary(
     *,
     safe: dict[str, Any],
@@ -2753,14 +2760,18 @@ def _infer_form_purpose(
     form_tokens = _clean(form_name).lower()
     form_specific_mappings = [
         (("login", "logi"), "Authentication and credential validation workflow."),
+        (("splash",), "Application startup and splash workflow."),
         (("deposit",), "Deposit capture and balance posting workflow."),
         (("withdraw",), "Withdrawal processing and balance deduction workflow."),
+        (("checkbalance", "balance"), "Balance inquiry and reconciliation workflow."),
+        (("addinterest", "interest"), "Interest calculation and posting workflow."),
+        (("closeaccount", "closeacount"), "Account closure and settlement workflow."),
         (("transaction", "transction"), "Transaction ledger management and adjustment workflow."),
-        (("accounttype", "acctype"), "Account type maintenance and account setup workflow."),
+        (("settings", "accounttype", "acctype"), "Account type maintenance and account setup workflow."),
         (("customer",), "Customer profile onboarding and maintenance workflow."),
         (("search",), "Record search and retrieval workflow."),
         (("report",), "Operational reporting and statement generation workflow."),
-        (("main", "mdiform"), "Application navigation and module routing workflow."),
+        (("main", "mdiform", "mdi", "menu"), "Application navigation and module routing workflow."),
     ]
     for keys, description in form_specific_mappings:
         if any(token in form_tokens for token in keys):
@@ -2784,18 +2795,22 @@ def _infer_form_purpose(
     mappings = [
         (("login", "logi", "password", "username"), "Authentication and credential validation workflow."),
         (("txtpass", "pass1", "credential"), "Password and credential management workflow."),
+        (("splash",), "Application startup and splash workflow."),
         (("deposit", "credit"), "Deposit capture and balance posting workflow."),
         (("withdraw", "debit"), "Withdrawal processing and balance deduction workflow."),
+        (("checkbalance", "tblbalance"), "Balance inquiry and reconciliation workflow."),
+        (("addinterest", "interest"), "Interest calculation and posting workflow."),
+        (("closeaccount", "closeacount"), "Account closure and settlement workflow."),
         (("transaction", "transction", "tbltransaction"), "Transaction ledger management and adjustment workflow."),
-        (("accounttype", "acctype"), "Account type maintenance and account setup workflow."),
+        (("settings", "accounttype", "acctype"), "Account type maintenance and account setup workflow."),
         (("customer", "tblcustomer"), "Customer profile onboarding and maintenance workflow."),
-        (("balance", "balancedt", "tblbalance"), "Balance inquiry and reconciliation workflow."),
         (("report", "datareport", "dataenvironment"), "Operational reporting and statement generation workflow."),
         (("search", "find"), "Record search and retrieval workflow."),
-        (("main", "mdiform", "toolbar"), "Application navigation and module routing workflow."),
+        (("main", "mdiform", "mdi", "menu", "toolbar"), "Application navigation and module routing workflow."),
     ]
+    token_words = _token_words(text_tokens)
     for keys, description in mappings:
-        if any(token in text_tokens for token in keys):
+        if any(token in text_tokens or token in token_words for token in keys):
             return description
     if _clean(current_purpose):
         return current_purpose
@@ -2811,9 +2826,17 @@ def _infer_form_alias(
     controls: list[str] | None = None,
 ) -> str:
     form_token = _clean(form_name).lower()
-    if form_token in {"main", "mdiform"}:
+    if form_token in {"main", "mdiform", "mdi", "menu"}:
         return "Navigation Hub"
     is_generic_form = bool(re.fullmatch(r"(form\d+|frm\d+)", form_token))
+    if "addinterest" in form_token:
+        return "Interest Posting"
+    if "checkbalance" in form_token:
+        return "Balance Inquiry"
+    if "closeaccount" in form_token or "closeacount" in form_token:
+        return "Account Closure"
+    if "settings" in form_token or "accounttype" in form_token or "acctype" in form_token:
+        return "Account Type Maintenance"
     purpose_low = _clean(purpose).lower()
     if "deposit capture" in purpose_low:
         return "Deposit Capture"
@@ -2835,43 +2858,51 @@ def _infer_form_alias(
             " ".join(_clean(c).lower() for c in (controls or [])),
         ]
     )
-    if any(token in token_blob for token in ("login", "logi", "username", "password", "txtpass", "pass1", "credential")):
-        return "Password Management" if any(token in token_blob for token in ("txtpass", "pass1", "credential")) else "Authentication"
-    has_strong_transaction_signal = any(
-        token in token_blob for token in ("transction", "tbltransaction", "transaction ledger", "ledger")
-    )
+    token_words = _token_words(token_blob)
+    if {"login", "logi", "username", "password", "txtpass", "pass1", "credential"} & token_words:
+        return "Password Management" if {"txtpass", "pass1", "credential"} & token_words else "Authentication"
+    has_strong_transaction_signal = bool({"transction", "tbltransaction", "ledger"} & token_words) or "transaction ledger" in token_blob
     # Transaction/ledger semantics should win only on strong signals.
-    if has_strong_transaction_signal or ("debit" in token_blob and "credit" in token_blob):
+    if has_strong_transaction_signal or ({"debit", "credit"} <= token_words):
         return "Transaction Ledger"
-    if any(token in token_blob for token in ("withdraw", "debit")):
+    if {"withdraw", "debit"} & token_words:
         return "Withdrawal Processing"
-    if any(token in token_blob for token in ("deposit", "credit", "balancedt")) and not any(
-        token in token_blob for token in ("transaction", "transction", "debit")
-    ):
+    if ({"deposit", "credit", "balancedt"} & token_words) and not ({"transaction", "transction", "debit"} & token_words):
         return "Deposit Capture"
-    if any(token in token_blob for token in ("customer", "tblcustomer")) and any(
-        token in token_blob for token in ("interest", "min balance", "account type", "acctype")
+    if ("customer" in token_words or "tblcustomer" in token_words) and (
+        "interest" in token_words or "acctype" in token_words or "accounttype" in token_words or "account type" in token_blob
     ):
         return "Customer Management"
-    if any(token in token_blob for token in ("accounttype", "acctype")):
+    if {"settings", "accounttype", "acctype"} & token_words:
         return "Account Type Maintenance"
-    if any(token in token_blob for token in ("customer", "tblcustomer")):
-        return "Customer Management"
-    if any(token in token_blob for token in ("report", "datareport", "dataenvironment")):
-        return "Reporting"
-    if any(token in token_blob for token in ("search", "lookup", "find")):
-        return "Search"
-    if any(token in token_blob for token in ("main", "mdiform", "toolbar")):
-        return "Navigation Hub"
-    if any(token in token_blob for token in ("balance", "tblbalance")):
+    if "closeaccount" in token_words or "closeacount" in token_words:
+        return "Account Closure"
+    if "checkbalance" in token_words or "tblbalance" in token_words:
         return "Balance Inquiry"
-    if any(token in token_blob for token in ("timer", "progressbar", "splash")):
+    if "addinterest" in token_words or "interest" in token_words:
+        return "Interest Posting"
+    if "customer" in token_words or "tblcustomer" in token_words:
+        return "Customer Management"
+    if {"report", "datareport", "dataenvironment"} & token_words:
+        return "Reporting"
+    if {"search", "lookup", "find"} & token_words:
+        return "Search"
+    if {"main", "mdiform", "mdi", "menu", "toolbar"} & token_words:
+        return "Navigation Hub"
+    if {"balance", "tblbalance"} & token_words:
+        return "Balance Inquiry"
+    if {"timer", "progressbar", "splash"} & token_words:
         return "Splash/Loading"
     if is_generic_form and form_token == "form9":
         return "Authentication Entry"
     if is_generic_form and form_token == "form1":
         return "Navigation/Menu"
-    if is_generic_form and any(token in token_blob for token in ("dated", "datejoined", "dtpicker", "date 1", "from date", "to date")):
+    if is_generic_form and (
+        {"dated", "datejoined", "dtpicker"} & token_words
+        or "date 1" in token_blob
+        or "from date" in token_blob
+        or "to date" in token_blob
+    ):
         return "Date/Period Entry"
     fallback = _clean(purpose).replace("workflow.", "").replace("workflow", "").strip(" -.")
     if fallback.lower() in {
@@ -7778,7 +7809,7 @@ def build_raw_artifact_set_v1(output: dict[str, Any], *, generated_at: str | Non
     return {
         **artifacts,
         "artifact_refs": refs,
-        "raw_compiler_version": "2.7.0",
+        "raw_compiler_version": "2.7.1",
     }
 
 
@@ -7795,7 +7826,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
     prebuilt_is_current = (
         _clean(prebuilt.get("artifact_type")) == "analyst_report"
         and _clean(prebuilt.get("artifact_version")) == "2.0"
-        and prebuilt_compiler == "2.7.0"
+        and prebuilt_compiler == "2.7.1"
     )
     prebuilt_qa = _as_dict(prebuilt.get("qa_report_v1"))
     prebuilt_qa_is_current = _clean(prebuilt_qa.get("qa_runtime_version")) == QA_RUNTIME_VERSION
@@ -7815,7 +7846,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
         skill = _as_dict(req_pack.get("legacy_skill_profile"))
 
     raw_artifacts = _as_dict(safe.get("raw_artifacts"))
-    if _clean(raw_artifacts.get("raw_compiler_version")) != "2.7.0":
+    if _clean(raw_artifacts.get("raw_compiler_version")) != "2.7.1":
         rebuilt_raw_artifacts = build_raw_artifact_set_v1(safe, generated_at=generated_at)
         preserved_php_artifacts = {
             key: value
@@ -8818,7 +8849,7 @@ def build_analyst_report_v2(output: dict[str, Any], *, generated_at: str | None 
             },
         },
         "metadata": {
-            "compiler_version": "2.7.0",
+            "compiler_version": "2.7.1",
             "project": {
                 "name": project_name,
                 "objective": objective,

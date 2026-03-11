@@ -1683,8 +1683,32 @@ SOURCE RESPONSE:
                 " ".join(str(x or "").lower() for x in handlers[:20]),
             ]
         )
+        form_low = str(form_name or "").lower()
+        if any(token in form_low for token in ("splash",)):
+            return "Application startup and splash workflow"
+        if any(token in form_low for token in ("login", "logi")):
+            return "User authentication and sign-in flow"
+        if "deposit" in form_low:
+            return "Deposit capture and balance posting workflow"
+        if "withdraw" in form_low:
+            return "Withdrawal processing and balance deduction workflow"
+        if "checkbalance" in form_low:
+            return "Balance inquiry and reconciliation workflow"
+        if "addinterest" in form_low or re.search(r"(^|[^a-z])interest([^a-z]|$)", form_low):
+            return "Interest calculation and posting workflow"
+        if "closeaccount" in form_low or "closeacount" in form_low:
+            return "Account closure and settlement workflow"
+        if "transaction" in form_low or "transction" in form_low:
+            return "Transaction ledger management and adjustment workflow"
+        if any(token in form_low for token in ("settings", "accounttype", "acctype")):
+            return "Account type maintenance and account setup workflow"
+        if any(token in form_low for token in ("report", "statement", "monthly")):
+            return "Operational reporting and statement generation workflow"
+        if any(token in form_low for token in ("search", "lookup", "find")):
+            return "Record search and retrieval workflow"
+        if form_low in {"mdi", "main", "menu", "mdiform"} or form_low.startswith("mdi"):
+            return "Application navigation and module routing workflow"
         mapping = [
-            ("login", "User authentication and sign-in flow"),
             ("auth", "Authentication and access-control workflow"),
             ("customer", "Customer profile lookup and maintenance"),
             ("account", "Account details and account operations"),

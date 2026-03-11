@@ -4,12 +4,20 @@ import re
 from typing import Any
 
 TEMPLATE_SUFFIXES = ('.phtml', '.blade.php', '.twig', '.tpl', '.tpl.php', '.php')
-_TEMPLATE_REF_RE = re.compile(
-    r"(?:include|include_once|require|require_once|renderFile|view)\s*\(\s*['\"](?P<path>[^'\"]+\.(?:php|phtml|twig|tpl(?:\.php)?))['\"]",
+_LITERAL_TEMPLATE_REF_RE = re.compile(
+    r"(?P<call>include|include_once|require|require_once|renderFile|view|renderPage|getTemplateContent)\s*\(\s*['\"](?P<path>[^'\"]+\.(?:php|phtml|twig|tpl(?:\.php)?))['\"]",
     re.I,
 )
-_ASSIGNMENT_REF_RE = re.compile(
-    r"(?:template|view)\s*=\s*['\"](?P<path>[^'\"]+\.(?:php|phtml|twig|tpl(?:\.php)?))['\"]",
+_PROPERTY_ASSIGNMENT_REF_RE = re.compile(
+    r"(?:template|view|renderfilename)\s*=\s*['\"](?P<path>[^'\"]+\.(?:php|phtml|twig|tpl(?:\.php)?))['\"]",
+    re.I,
+)
+_VARIABLE_ASSIGNMENT_REF_RE = re.compile(
+    r"(?P<name>\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"](?P<path>[^'\"]+\.(?:php|phtml|twig|tpl(?:\.php)?))['\"]",
+    re.I,
+)
+_VARIABLE_TEMPLATE_CALL_RE = re.compile(
+    r"(?:include|include_once|require|require_once|renderFile|view|renderPage|getTemplateContent)\s*\(\s*(?P<name>\$[A-Za-z_][A-Za-z0-9_]*)\s*[\),]",
     re.I,
 )
 
@@ -18,16 +26,55 @@ def _clean(value: Any) -> str:
     return str(value or '').strip()
 
 
-def _looks_like_template(path: str) -> bool:
+def _looks_like_template(path: str, *, semantic_hint: str = "") -> bool:
     low = str(path or "").replace("\\", "/").lower()
     if not low.endswith(TEMPLATE_SUFFIXES):
         return False
-    if any(token in low for token in ('/view', '/views', '/template', '/templates', '/resources/views', '/dashboard/elements/')):
+    if semantic_hint.lower() in {"renderpage", "gettemplatecontent", "renderfile"}:
         return True
-    if low.startswith(('view/', 'views/', 'template/', 'templates/', 'resources/views/', 'dashboard/elements/')):
+    if any(
+        token in low
+        for token in (
+            '/view',
+            '/views',
+            '/template',
+            '/templates',
+            '/resources/views',
+            '/dashboard/elements/',
+            '/dashboard/',
+            '/src/templates/',
+            '/src/eop_email_templates/',
+            '/src/onb_mail_templates/',
+            '/email_templates/',
+            '/mail_templates/',
+        )
+    ):
+        return True
+    if low.startswith(
+        (
+            'view/',
+            'views/',
+            'template/',
+            'templates/',
+            'resources/views/',
+            'dashboard/elements/',
+            'dashboard/',
+            'src/templates/',
+            'src/eop_email_templates/',
+            'src/onb_mail_templates/',
+            'email_templates/',
+            'mail_templates/',
+        )
+    ):
         return True
     name = low.rsplit('/', 1)[-1]
-    return name.startswith('view') or 'template' in name
+    return (
+        name.startswith('view')
+        or 'template' in name
+        or name.startswith('extern_')
+        or name.startswith('report')
+        or name.endswith('_html.php')
+    )
 
 
 def extract_php_template_inventory(file_map: dict[str, str]) -> dict[str, Any]:
@@ -58,11 +105,25 @@ def extract_php_template_inventory(file_map: dict[str, str]) -> dict[str, Any]:
             add_template(normalized)
         if not isinstance(body, str):
             continue
-        for pattern in (_TEMPLATE_REF_RE, _ASSIGNMENT_REF_RE):
-            for match in pattern.finditer(body):
-                ref = _clean(match.group('path'))
-                if _looks_like_template(ref):
-                    add_template(ref, source_file=normalized, inferred=True)
+        variable_templates: dict[str, str] = {}
+        for match in _VARIABLE_ASSIGNMENT_REF_RE.finditer(body):
+            ref = _clean(match.group('path'))
+            if _looks_like_template(ref):
+                variable_templates[_clean(match.group('name'))] = ref
+                add_template(ref, source_file=normalized, inferred=True)
+        for match in _PROPERTY_ASSIGNMENT_REF_RE.finditer(body):
+            ref = _clean(match.group('path'))
+            if _looks_like_template(ref):
+                add_template(ref, source_file=normalized, inferred=True)
+        for match in _LITERAL_TEMPLATE_REF_RE.finditer(body):
+            ref = _clean(match.group('path'))
+            semantic_hint = _clean(match.group('call'))
+            if _looks_like_template(ref, semantic_hint=semantic_hint):
+                add_template(ref, source_file=normalized, inferred=True)
+        for match in _VARIABLE_TEMPLATE_CALL_RE.finditer(body):
+            ref = variable_templates.get(_clean(match.group('name')))
+            if ref:
+                add_template(ref, source_file=normalized, inferred=True)
     return {
         'artifact_type': 'php_template_inventory_v1',
         'template_count': len(templates),
