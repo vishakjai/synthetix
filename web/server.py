@@ -2376,7 +2376,9 @@ class PipelineRunManager:
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         record = self._hydrate_record(run_id) or self._get_record(run_id)
         if record:
-            return self._record_payload(record)
+            payload = self._record_payload(record)
+            _maybe_rescue_queued_payload(run_id, payload)
+            return payload
 
         persisted = self.store.load_run(run_id)
         if not persisted:
@@ -2463,7 +2465,12 @@ class PipelineRunManager:
         }
 
     def list_runs(self, limit: int = 40) -> list[dict[str, Any]]:
-        return self.store.list_runs(limit=limit)
+        runs = self.store.list_runs(limit=limit)
+        for row in runs:
+            run_id = str(row.get("run_id", "")).strip()
+            if run_id:
+                _maybe_rescue_queued_payload(run_id, row)
+        return runs
 
 
 MANAGER = PipelineRunManager(RUN_STORE)
@@ -8104,6 +8111,17 @@ def _maybe_rescue_queued_run(run_id: str, persisted: dict[str, Any]) -> None:
         daemon=True,
         name=f"run-worker-rescue-{run_id}",
     ).start()
+
+
+def _maybe_rescue_queued_payload(run_id: str, payload: dict[str, Any] | None) -> None:
+    if not isinstance(payload, dict):
+        return
+    persisted = {
+        "pipeline_status": str(payload.get("status", payload.get("pipeline_status", "")) or ""),
+        "saved_at": str(payload.get("updated_at", payload.get("saved_at", "")) or ""),
+        "pipeline_state": payload.get("pipeline_state", {}) if isinstance(payload.get("pipeline_state", {}), dict) else {},
+    }
+    _maybe_rescue_queued_run(run_id, persisted)
 
 
 def _current_stage_from_status_map(stage_status: dict[int, str], pipeline_state: dict[str, Any] | None = None) -> int:
