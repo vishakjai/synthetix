@@ -230,6 +230,7 @@ def _build_estimate_summary_payload(
     risk_register: dict[str, Any],
 ) -> dict[str, Any]:
     role_totals = dict(model_summary.get("hours_by_role") or {})
+    total_likely = float(model_summary.get("total_hours_likely") or 0.0)
     high_risks = [
         {
             "risk_id": str(risk.get("risk_id") or risk.get("id") or f"risk_{idx+1}"),
@@ -256,19 +257,40 @@ def _build_estimate_summary_payload(
                     "timeline_weeks_p50": float(model_summary.get("timeline_weeks_likely") or 0.0),
                     "timeline_weeks_p90": float(model_summary.get("timeline_weeks_worst") or 0.0),
                     "effort_hours_p50": float(model_summary.get("total_hours_likely") or 0.0),
-                    "notes": [str(model_summary.get("model_name") or team_model_key)],
+                    "notes": [str(model_summary.get("model_name") or team_model_key)] + [str(x) for x in list(model_summary.get("notes") or [])],
                 }
             ],
             "timeline": {
+                "total_weeks": {
+                    "p10": float(model_summary.get("timeline_weeks_best") or 0.0),
+                    "p50": float(model_summary.get("timeline_weeks_likely") or 0.0),
+                    "p90": float(model_summary.get("timeline_weeks_worst") or 0.0),
+                },
                 "p10_weeks": float(model_summary.get("timeline_weeks_best") or 0.0),
                 "p50_weeks": float(model_summary.get("timeline_weeks_likely") or 0.0),
                 "p90_weeks": float(model_summary.get("timeline_weeks_worst") or 0.0),
                 "phase_breakdown": [
                     {
-                        "phase": "Build",
-                        "p50_weeks": float(model_summary.get("timeline_weeks_likely") or 0.0),
-                        "notes": ["Deterministic estimate from brownfield chunk WBS."],
-                    }
+                        "phase": "Discovery & Design",
+                        "p10_weeks": round(float(model_summary.get("timeline_weeks_best") or 0.0) * 0.25, 1),
+                        "p50_weeks": round(float(model_summary.get("timeline_weeks_likely") or 0.0) * 0.25, 1),
+                        "p90_weeks": round(float(model_summary.get("timeline_weeks_worst") or 0.0) * 0.25, 1),
+                        "notes": ["Discovery, design, and architecture alignment."],
+                    },
+                    {
+                        "phase": "Build & Validation",
+                        "p10_weeks": round(float(model_summary.get("timeline_weeks_best") or 0.0) * 0.65, 1),
+                        "p50_weeks": round(float(model_summary.get("timeline_weeks_likely") or 0.0) * 0.65, 1),
+                        "p90_weeks": round(float(model_summary.get("timeline_weeks_worst") or 0.0) * 0.65, 1),
+                        "notes": ["Implementation, testing, and remediation."],
+                    },
+                    {
+                        "phase": "Cutover & Stabilization",
+                        "p10_weeks": round(float(model_summary.get("timeline_weeks_best") or 0.0) * 0.10, 1),
+                        "p50_weeks": round(float(model_summary.get("timeline_weeks_likely") or 0.0) * 0.10, 1),
+                        "p90_weeks": round(float(model_summary.get("timeline_weeks_worst") or 0.0) * 0.10, 1),
+                        "notes": ["Deployment, cutover, and hypercare."],
+                    },
                 ],
             },
             "effort": {
@@ -284,6 +306,16 @@ def _build_estimate_summary_payload(
                     }
                     for role, hours in role_totals.items()
                 ],
+            },
+            "staffing": {
+                "roles": {
+                    role: {
+                        "allocation_pct": round((float(hours) / total_likely) * 100.0, 1) if total_likely else 0.0,
+                        "hours_p50": round(float(hours), 1),
+                        "fte": round(float((model_summary.get("team") or {}).get(role) or 0.0), 2),
+                    }
+                    for role, hours in role_totals.items()
+                }
             },
             "cost": {"currency": "USD"},
             "key_assumptions": [str(row.get("statement") or "") for row in list(assumption_ledger.get("assumptions") or [])[:5]],
@@ -385,4 +417,3 @@ def build_brownfield_estimate(
         estimate_summary=summary_payload,
         assumption_ledger=ledger_payload,
     )
-

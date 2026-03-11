@@ -8768,6 +8768,30 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         else {}
     )
     pipeline_state = run_state.get("pipeline_state", {}) if isinstance(run_state.get("pipeline_state", {}), dict) else {}
+    pipeline_repo_snapshot = (
+        pipeline_state.get("repo_snapshot", {})
+        if isinstance(pipeline_state.get("repo_snapshot", {}), dict)
+        else {}
+    )
+    pipeline_analyst_output = (
+        pipeline_state.get("analyst_output", {})
+        if isinstance(pipeline_state.get("analyst_output", {}), dict)
+        else {}
+    )
+    agent_results = pipeline_state.get("agent_results", {})
+    pipeline_agent_stage1 = {}
+    if isinstance(agent_results, dict):
+        stage1_entry = agent_results.get(1, {})
+        if isinstance(stage1_entry, dict):
+            pipeline_agent_stage1 = stage1_entry.get("output", {}) if isinstance(stage1_entry.get("output", {}), dict) else {}
+    elif isinstance(agent_results, list):
+        for row in agent_results:
+            if not isinstance(row, dict):
+                continue
+            stage_idx = row.get("stage")
+            if stage_idx == 1 or str(stage_idx).strip() == "1":
+                pipeline_agent_stage1 = row.get("output", {}) if isinstance(row.get("output", {}), dict) else {}
+                break
     pipeline_integration = (
         copy.deepcopy(pipeline_state.get("integration_context", {}))
         if isinstance(pipeline_state.get("integration_context", {}), dict)
@@ -8819,8 +8843,18 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         analyst_summary.get("chunk_manifest_v1"),
         analyst_summary.get("raw_artifacts", {}).get("chunk_manifest_v1") if isinstance(analyst_summary.get("raw_artifacts", {}), dict) else None,
         stage1.get("chunk_manifest_v1"),
+        stage1.get("legacy_code_inventory", {}).get("chunk_manifest_v1") if isinstance(stage1.get("legacy_code_inventory", {}), dict) else None,
         raw_artifacts.get("chunk_manifest_v1"),
         raw_artifacts.get("chunk_manifest"),
+        pipeline_analyst_output.get("chunk_manifest_v1"),
+        pipeline_analyst_output.get("legacy_code_inventory", {}).get("chunk_manifest_v1") if isinstance(pipeline_analyst_output.get("legacy_code_inventory", {}), dict) else None,
+        pipeline_agent_stage1.get("chunk_manifest_v1"),
+        pipeline_agent_stage1.get("legacy_code_inventory", {}).get("chunk_manifest_v1") if isinstance(pipeline_agent_stage1.get("legacy_code_inventory", {}), dict) else None,
+        pipeline_repo_snapshot.get("chunk_manifest_v1"),
+        integration_context.get("repo_scan_cache", {}).get("repo_snapshot", {}).get("chunk_manifest_v1")
+            if isinstance(integration_context.get("repo_scan_cache", {}), dict)
+            and isinstance(integration_context.get("repo_scan_cache", {}).get("repo_snapshot", {}), dict)
+            else None,
         landscape.get("chunk_manifest_v1"),
         landscape.get("chunk_manifest"),
     ):
@@ -8840,6 +8874,10 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         analyst_summary.get("raw_artifacts", {}).get("risk_register") if isinstance(analyst_summary.get("raw_artifacts", {}), dict) else None,
         raw_artifacts.get("risk_register"),
         stage1.get("risk_register"),
+        pipeline_analyst_output.get("risk_register"),
+        pipeline_analyst_output.get("raw_artifacts", {}).get("risk_register") if isinstance(pipeline_analyst_output.get("raw_artifacts", {}), dict) else None,
+        pipeline_agent_stage1.get("risk_register"),
+        pipeline_agent_stage1.get("raw_artifacts", {}).get("risk_register") if isinstance(pipeline_agent_stage1.get("raw_artifacts", {}), dict) else None,
     ):
         if isinstance(candidate, dict) and candidate:
             risk_register = candidate
@@ -8853,6 +8891,10 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         stage1.get("traceability_scores_v1"),
         raw_artifacts.get("traceability_scores_v1"),
         raw_artifacts.get("traceability_scores"),
+        pipeline_analyst_output.get("traceability_scores_v1"),
+        pipeline_analyst_output.get("raw_artifacts", {}).get("traceability_scores_v1") if isinstance(pipeline_analyst_output.get("raw_artifacts", {}), dict) else None,
+        pipeline_agent_stage1.get("traceability_scores_v1"),
+        pipeline_agent_stage1.get("raw_artifacts", {}).get("traceability_scores_v1") if isinstance(pipeline_agent_stage1.get("raw_artifacts", {}), dict) else None,
     ):
         if isinstance(candidate, dict) and isinstance(candidate.get("by_chunk", {}), dict):
             traceability_scores = candidate
@@ -8864,6 +8906,10 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
             stage1.get("chunk_qa_report_v1"),
             raw_artifacts.get("chunk_qa_report_v1"),
             raw_artifacts.get("chunk_qa_report"),
+            pipeline_analyst_output.get("chunk_qa_report_v1"),
+            pipeline_analyst_output.get("raw_artifacts", {}).get("chunk_qa_report_v1") if isinstance(pipeline_analyst_output.get("raw_artifacts", {}), dict) else None,
+            pipeline_agent_stage1.get("chunk_qa_report_v1"),
+            pipeline_agent_stage1.get("raw_artifacts", {}).get("chunk_qa_report_v1") if isinstance(pipeline_agent_stage1.get("raw_artifacts", {}), dict) else None,
         ):
             if isinstance(candidate, dict) and candidate:
                 chunk_qa_report = candidate

@@ -172,6 +172,46 @@ def _buffer_weeks(wbs: dict[str, Any]) -> float:
     return 1.0 if high_risk_count >= 2 else 0.5
 
 
+def _architect_required(wbs: dict[str, Any]) -> bool:
+    chunk_count = 0
+    high_risk_count = 0
+    low_traceability_count = 0
+    for item in list(wbs.get("wbs_items") or []):
+        if str(item.get("kind", "")).upper() == "BROWNFIELD_CHUNK":
+            chunk_count += 1
+        risk_counts = item.get("risk_counts") or {}
+        high_risk_count += int(risk_counts.get("high") or 0)
+        traceability_score = int(item.get("traceability_score") or 100)
+        if traceability_score < 40:
+            low_traceability_count += 1
+    return chunk_count >= 3 or high_risk_count >= 2 or low_traceability_count >= 2
+
+
+def _normalized_team_profile(
+    default_team: dict[str, Any],
+    role_split: dict[str, Any],
+    *,
+    architect_required: bool,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    team = {str(role): float(fte) for role, fte in default_team.items()}
+    split = {str(role): float(share) for role, share in role_split.items()}
+    notes: list[str] = []
+    if not architect_required:
+        return team, split, notes
+
+    notes.append("Architect role activated by chunk/risk/traceability thresholds.")
+    team["ARCH"] = max(float(team.get("ARCH", 0.0) or 0.0), 0.25)
+    # Rebalance the existing split deterministically so total share remains 1.0.
+    split = {
+        "BA": 0.15,
+        "ARCH": 0.10,
+        "DEV": 0.45,
+        "QA": 0.25,
+        "DEVOPS": 0.05,
+    }
+    return team, split, notes
+
+
 def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, model_key: str) -> dict[str, Any]:
     models = library.models
     if model_key not in models:
@@ -181,6 +221,12 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
     acceleration = dict(model.get("acceleration") or {})
     role_split = dict(model.get("role_split") or {})
     default_team = dict(model.get("default_team") or {})
+    architect_required = _architect_required(wbs)
+    default_team, role_split, model_notes = _normalized_team_profile(
+        default_team,
+        role_split,
+        architect_required=architect_required,
+    )
     weekly_capacity_hours = float(library.weekly_capacity_hours)
 
     item_summaries: list[dict[str, Any]] = []
@@ -216,6 +262,8 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
         "model_key": model_key,
         "model_name": model.get("name", model_key),
         "team": default_team,
+        "architect_required": architect_required,
+        "notes": model_notes,
         "weekly_capacity_hours": int(weekly_capacity_hours) if weekly_capacity_hours.is_integer() else weekly_capacity_hours,
         "total_hours_likely": total_likely,
         "total_hours_best": total_best,

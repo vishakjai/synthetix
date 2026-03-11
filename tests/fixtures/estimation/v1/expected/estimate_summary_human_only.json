@@ -3,20 +3,26 @@
   "model_name": "Fully Human",
   "team": {
     "BA": 0.5,
-    "DEV": 2,
-    "QA": 1,
-    "DEVOPS": 0.25
+    "DEV": 2.0,
+    "QA": 1.0,
+    "DEVOPS": 0.25,
+    "ARCH": 0.25
   },
+  "architect_required": true,
+  "notes": [
+    "Architect role activated by chunk/risk/traceability thresholds."
+  ],
   "weekly_capacity_hours": 30,
   "total_hours_likely": 1379.2,
   "total_hours_best": 1172.3,
   "total_hours_worst": 1724.0,
-  "timeline_weeks_likely": 13.3,
-  "timeline_weeks_best": 11.3,
-  "timeline_weeks_worst": 16.6,
+  "timeline_weeks_likely": 12.5,
+  "timeline_weeks_best": 10.6,
+  "timeline_weeks_worst": 15.6,
   "hours_by_role": {
     "BA": 206.9,
-    "DEV": 758.6,
+    "ARCH": 137.9,
+    "DEV": 620.6,
     "QA": 344.8,
     "DEVOPS": 69.0
   },

@@ -3,20 +3,26 @@
   "model_name": "Human-led, Agent-assisted",
   "team": {
     "BA": 0.5,
-    "DEV": 2,
-    "QA": 1,
-    "DEVOPS": 0.25
+    "DEV": 2.0,
+    "QA": 1.0,
+    "DEVOPS": 0.25,
+    "ARCH": 0.25
   },
+  "architect_required": true,
+  "notes": [
+    "Architect role activated by chunk/risk/traceability thresholds."
+  ],
   "weekly_capacity_hours": 30,
   "total_hours_likely": 1004.9,
   "total_hours_best": 854.1,
   "total_hours_worst": 1256.1,
-  "timeline_weeks_likely": 9.9,
-  "timeline_weeks_best": 8.4,
-  "timeline_weeks_worst": 12.4,
+  "timeline_weeks_likely": 9.4,
+  "timeline_weeks_best": 7.9,
+  "timeline_weeks_worst": 11.7,
   "hours_by_role": {
     "BA": 150.7,
-    "DEV": 552.7,
+    "ARCH": 100.5,
+    "DEV": 452.2,
     "QA": 251.2,
     "DEVOPS": 50.2
   },

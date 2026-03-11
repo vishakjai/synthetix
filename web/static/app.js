@@ -10015,13 +10015,29 @@ function estimateSummaryHtml(summary) {
   const effort = estimate?.effort || {};
   const timeline = estimate?.timeline || {};
   const roles = estimate?.staffing?.roles || {};
-  const topRisks = Array.isArray(estimate?.top_risks) ? estimate.top_risks : [];
-  const roleRows = Object.entries(roles)
-    .map(([role, payload]) => {
-      const pct = Number(payload?.allocation_pct || 0);
-      return `<div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">${escapeHtml(role)}</p><p class="mt-1 text-sm font-semibold text-slate-900">${pct}%</p></div>`;
-    })
-    .join("");
+  const roleList = Array.isArray(effort?.by_role) ? effort.by_role : [];
+  const phaseRows = Array.isArray(timeline?.phase_breakdown) ? timeline.phase_breakdown : [];
+  const topRisks = Array.isArray(estimate?.risks) ? estimate.risks : [];
+  const roleRows = roleList.length
+    ? roleList.map((entry) => {
+      const role = String(entry?.role || "");
+      const staffing = roles?.[role] || {};
+      return `<tr class="border-b border-slate-200">
+        <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(role)}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(entry?.hours?.p50 ?? "0"))}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(staffing?.fte ?? "0"))}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(staffing?.allocation_pct ?? "0"))}%</td>
+      </tr>`;
+    }).join("")
+    : "";
+  const phaseTableRows = phaseRows.length
+    ? phaseRows.map((phase) => `<tr class="border-b border-slate-200">
+        <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(phase.phase || "")}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(phase.p50_weeks ?? "0"))}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(phase.p90_weeks ?? "0"))}</td>
+        <td class="py-2 pr-3">${escapeHtml((phase.notes || []).join(" | "))}</td>
+      </tr>`).join("")
+    : "";
   const riskRows = topRisks.length
     ? topRisks.slice(0, 5).map((risk) => `<li><span class="font-semibold">${escapeHtml(String(risk.severity || "medium").toUpperCase())}</span> ${escapeHtml(risk.title || risk.risk_id || "Risk")}</li>`).join("")
     : `<li>No top risks recorded.</li>`;
@@ -10033,8 +10049,16 @@ function estimateSummaryHtml(summary) {
       <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Timeline (p50)</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(String(timeline.total_weeks?.p50 ?? "n/a"))} wks</p></div>
     </div>
     <div class="mt-3">
-      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Role loading</p>
-      <div class="mt-2 grid gap-2 sm:grid-cols-3">${roleRows || `<div class="rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No staffing profile recorded.</div>`}</div>
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Role plan</p>
+      ${roleRows ? `<div class="mt-2 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
+        <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Role</th><th class="py-2 pr-3">Hours (p50)</th><th class="py-2 pr-3">FTE</th><th class="py-2 pr-3">Allocation</th></tr></thead>
+        <tbody>${roleRows}</tbody></table></div>` : `<div class="mt-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No staffing profile recorded.</div>`}
+    </div>
+    <div class="mt-3">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Timeline view</p>
+      ${phaseTableRows ? `<div class="mt-2 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
+        <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Phase</th><th class="py-2 pr-3">Weeks (p50)</th><th class="py-2 pr-3">Weeks (p90)</th><th class="py-2 pr-3">Notes</th></tr></thead>
+        <tbody>${phaseTableRows}</tbody></table></div>` : `<div class="mt-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No phase timeline recorded.</div>`}
     </div>
     <div class="mt-3">
       <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Top risks</p>

@@ -83,6 +83,29 @@
             "phase_breakdown"
           ],
           "properties": {
+            "total_weeks": {
+              "type": "object",
+              "required": [
+                "p10",
+                "p50",
+                "p90"
+              ],
+              "properties": {
+                "p10": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "p50": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "p90": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            },
             "p10_weeks": {
               "type": "number",
               "minimum": 0
@@ -107,7 +130,15 @@
                   "phase": {
                     "type": "string"
                   },
+                  "p10_weeks": {
+                    "type": "number",
+                    "minimum": 0
+                  },
                   "p50_weeks": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "p90_weeks": {
                     "type": "number",
                     "minimum": 0
                   },
@@ -148,6 +179,33 @@
                   },
                   "hours": {
                     "$ref": "./common_artifact_defs_v1.schema.json#/$defs/range_hours"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "staffing": {
+          "type": "object",
+          "properties": {
+            "roles": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "allocation_pct": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "hours_p50": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "fte": {
+                    "type": "number",
+                    "minimum": 0
                   }
                 },
                 "additionalProperties": false

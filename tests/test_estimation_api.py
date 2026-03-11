@@ -329,6 +329,60 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_components")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_create_brownfield_estimate_from_pipeline_repo_snapshot_and_list_agent_results(self):
+        chunk_manifest = load_artifact_json(FIXTURE_ROOT / "input" / "chunk_manifest.json")
+        risk_register = load_artifact_json(FIXTURE_ROOT / "input" / "risk_register.json")
+
+        class _FakeManager:
+            store = object()
+
+            def get_run(self, run_id):
+                if run_id != "run_from_pipeline_snapshot":
+                    return None
+                return {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "integration_context": {
+                        "repo_scan_cache": {
+                            "repo_snapshot": {
+                                "chunk_manifest_v1": chunk_manifest,
+                            }
+                        }
+                    },
+                    "pipeline_state": {
+                        "repo_snapshot": {
+                            "chunk_manifest_v1": chunk_manifest,
+                        },
+                        "analyst_output": {
+                            "raw_artifacts": {
+                                "risk_register": risk_register,
+                            }
+                        },
+                        "agent_results": [
+                            {
+                                "stage": 1,
+                                "output": {},
+                            }
+                        ],
+                    },
+                }
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_from_pipeline_snapshot",
+            "estimate_id": "estimate_from_pipeline_snapshot",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_from_pipeline_snapshot")
+        self.assertEqual(created["run_id"], "run_from_pipeline_snapshot")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
+
     def test_estimate_intake_endpoint(self):
         resp = asyncio.run(
             server.api_estimate_intake(
