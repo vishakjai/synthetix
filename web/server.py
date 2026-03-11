@@ -115,6 +115,7 @@ from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
 )
+from estimations import EstimationStore, build_brownfield_estimate  # noqa: E402
 from utils.legacy_skills import (  # noqa: E402
     extract_vb6_signals as legacy_extract_vb6_signals,
     build_vb6_readiness_assessment,
@@ -132,6 +133,7 @@ TEAM_DATA_ROOT = Path(
 TEAM_DATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 RUN_STORE = build_pipeline_run_store(str(ROOT / "pipeline_runs"))
+ESTIMATION_STORE = EstimationStore(ROOT / "pipeline_runs")
 SETTINGS_STORE = SettingsStore(str(TEAM_DATA_ROOT))
 TEAM_STORE = TeamStore(
     str(TEAM_DATA_ROOT),
@@ -8441,6 +8443,92 @@ async def api_list_runs(_request):
     return JSONResponse({"ok": True, "runs": MANAGER.list_runs(limit=60)})
 
 
+async def api_create_estimate(request):
+    payload = _get_json(await request.body())
+    mode = str(payload.get("mode", "")).strip().lower()
+    run_id = str(payload.get("run_id", "")).strip() or None
+    estimate_id = str(payload.get("estimate_id", "")).strip() or None
+    if mode not in {"brownfield", "greenfield", "natural_language"}:
+        return JSONResponse({"ok": False, "error": "mode must be brownfield, greenfield, or natural_language"}, status_code=400)
+    if mode != "brownfield":
+        return JSONResponse({"ok": False, "error": f"{mode} estimation intake is not implemented yet"}, status_code=501)
+    chunk_manifest = payload.get("chunk_manifest")
+    risk_register = payload.get("risk_register")
+    traceability_scores = payload.get("traceability_scores")
+    if not isinstance(chunk_manifest, dict) or not isinstance(risk_register, dict) or not isinstance(traceability_scores, dict):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "brownfield estimates require chunk_manifest, risk_register, and traceability_scores objects",
+            },
+            status_code=400,
+        )
+    business_need = (
+        str(payload.get("business_need", "")).strip()
+        or "Modernize the brownfield application while preserving required business capability."
+    )
+    team_model_key = str(payload.get("team_model_key", "HUMAN_ONLY")).strip() or "HUMAN_ONLY"
+    try:
+        result = build_brownfield_estimate(
+            chunk_manifest=chunk_manifest,
+            risk_register=risk_register,
+            traceability_scores=traceability_scores,
+            business_need=business_need,
+            store=ESTIMATION_STORE,
+            run_id=run_id,
+            estimate_id=estimate_id,
+            team_model_key=team_model_key,
+        )
+    except KeyError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"estimate generation failed: {exc}"}, status_code=500)
+    return JSONResponse(
+        {
+            "ok": True,
+            "estimate_id": result.estimate_id,
+            "run_id": result.run_id,
+            "estimate_summary": result.estimate_summary,
+            "artifacts": {
+                "estimation_input": str(result.paths.estimation_input_path),
+                "wbs": str(result.paths.wbs_path),
+                "assumption_ledger": str(result.paths.assumption_ledger_path),
+                "estimate_summary": str(result.paths.estimate_summary_path),
+            },
+        }
+    )
+
+
+async def api_get_estimate(request):
+    estimate_id = str(request.path_params.get("estimate_id", "")).strip()
+    if not estimate_id:
+        return JSONResponse({"ok": False, "error": "estimate_id is required"}, status_code=400)
+    estimate_root = ESTIMATION_STORE.find_estimate(estimate_id)
+    if not estimate_root:
+        return JSONResponse({"ok": False, "error": "estimate not found"}, status_code=404)
+    paths = {
+        "estimation_input": estimate_root / "estimation_input_v1.json",
+        "wbs": estimate_root / "wbs_v1.json",
+        "assumption_ledger": estimate_root / "assumption_ledger_v1.json",
+        "estimate_summary": estimate_root / "estimate_summary_v1.json",
+    }
+    return JSONResponse(
+        {
+            "ok": True,
+            "estimate_id": estimate_id,
+            "meta": ESTIMATION_STORE.load_meta(estimate_root) or {},
+            "artifacts": {name: ESTIMATION_STORE.load_artifact(path) for name, path in paths.items()},
+        }
+    )
+
+
+async def api_list_run_estimates(request):
+    run_id = str(request.path_params.get("run_id", "")).strip()
+    if not run_id:
+        return JSONResponse({"ok": False, "error": "run_id is required"}, status_code=400)
+    return JSONResponse({"ok": True, "run_id": run_id, "estimates": ESTIMATION_STORE.list_estimates(run_id=run_id)})
+
+
 async def api_approve_run(request):
     run_id = request.path_params.get("run_id", "")
     payload = _get_json(await request.body())
@@ -14420,6 +14508,8 @@ routes = [
     Route("/api/work-items", api_list_work_items, methods=["GET"]),
     Route("/api/work-items", api_create_work_item, methods=["POST"]),
     Route("/api/work-items/{item_id:str}/status", api_set_work_item_status, methods=["POST"]),
+    Route("/api/estimates", api_create_estimate, methods=["POST"]),
+    Route("/api/estimates/{estimate_id:str}", api_get_estimate, methods=["GET"]),
     Route("/api/runs/preflight", api_run_preflight, methods=["POST"]),
     Route("/api/runs", api_list_runs, methods=["GET"]),
     Route("/api/runs", api_start_run, methods=["POST"]),
@@ -14435,6 +14525,7 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-markdown", api_download_analyst_markdown, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/estimates", api_list_run_estimates, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/module", api_get_run_knowledge_module, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/rule", api_get_run_knowledge_rule, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/blast-radius", api_get_run_knowledge_blast_radius, methods=["GET"]),

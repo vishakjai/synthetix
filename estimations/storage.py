@@ -78,3 +78,32 @@ class EstimationStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             return None
+
+    def load_meta(self, estimate_root: Path) -> dict[str, Any] | None:
+        return self.load_artifact(estimate_root / "meta.json")
+
+    def list_estimates(self, *, run_id: str | None = None) -> list[dict[str, Any]]:
+        base = self.root / run_id / "estimates" if run_id else self.root / "_estimates"
+        if not base.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for child in sorted(base.iterdir(), key=lambda p: p.name):
+            if not child.is_dir():
+                continue
+            meta = self.load_meta(child) or {}
+            meta["estimate_id"] = meta.get("estimate_id") or child.name
+            meta["path"] = str(child)
+            rows.append(meta)
+        return rows
+
+    def find_estimate(self, estimate_id: str) -> Path | None:
+        standalone = self.root / "_estimates" / estimate_id
+        if standalone.exists():
+            return standalone
+        for run_dir in self.root.iterdir():
+            if not run_dir.is_dir() or run_dir.name.startswith("_"):
+                continue
+            candidate = run_dir / "estimates" / estimate_id
+            if candidate.exists():
+                return candidate
+        return None
