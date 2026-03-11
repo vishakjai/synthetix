@@ -8579,6 +8579,125 @@ def _derive_traceability_scores_from_chunk_qa(chunk_qa_report: dict[str, Any]) -
     }
 
 
+def _synthesize_chunk_manifest_for_estimation(
+    *,
+    run_id: str,
+    stage1: dict[str, Any],
+    raw_artifacts: dict[str, Any],
+    landscape: dict[str, Any],
+) -> dict[str, Any] | None:
+    candidates = (
+        raw_artifacts.get("component_inventory_v1"),
+        stage1.get("component_inventory_v1"),
+        landscape.get("component_inventory_v1"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not candidate:
+            continue
+        components = candidate.get("components", []) if isinstance(candidate.get("components", []), list) else []
+        chunks: list[dict[str, Any]] = []
+        for idx, comp in enumerate(components, start=1):
+            if not isinstance(comp, dict):
+                continue
+            component_id = str(comp.get("component_id", "")).strip() or f"component_{idx:03d}"
+            component_name = str(comp.get("name", "")).strip() or component_id
+            component_type = str(comp.get("component_type", "")).strip() or "support"
+            paths = [str(p).replace("\\", "/").strip() for p in comp.get("paths", []) if str(p).strip()]
+            estimated_loc = int(comp.get("estimated_loc", 0) or 0)
+            if estimated_loc <= 0:
+                estimated_loc = int(comp.get("file_count", 0) or len(paths)) * 40
+            risk_flags = comp.get("risk_flags", []) if isinstance(comp.get("risk_flags", []), list) else []
+            complexity_score = 1.0 + min(4.0, (len(paths) / 12.0) + (len(risk_flags) * 0.5))
+            chunks.append(
+                {
+                    "chunk_id": f"chunk::{component_id}::1",
+                    "snapshot_id": str(candidate.get("snapshot_id", "")).strip() or run_id,
+                    "component_id": component_id,
+                    "component_name": component_name,
+                    "component_type": component_type,
+                    "paths": paths[:500],
+                    "line_count": estimated_loc,
+                    "estimated_loc": estimated_loc,
+                    "complexity_score": round(complexity_score, 2),
+                    "tables_owned": [],
+                    "counts_by_type": {},
+                    "priority": 2,
+                    "depends_on": [],
+                    "coverage_expectations": {},
+                }
+            )
+        if chunks:
+            return {
+                "artifact_type": "chunk_manifest_v1",
+                "snapshot_id": str(candidate.get("snapshot_id", "")).strip() or run_id,
+                "chunk_count": len(chunks),
+                "chunks": chunks,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "source": "estimation_synthesized_from_component_inventory",
+            }
+
+    repo_snapshot = None
+    for candidate in (
+        landscape.get("repo_snapshot_v1"),
+        landscape.get("repo_snapshot"),
+        raw_artifacts.get("repo_snapshot_v1"),
+        raw_artifacts.get("repo_snapshot"),
+        stage1.get("repo_snapshot_v1"),
+        stage1.get("repo_snapshot"),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            repo_snapshot = candidate
+            break
+    if isinstance(repo_snapshot, dict):
+        manifest = repo_snapshot.get("manifest", []) if isinstance(repo_snapshot.get("manifest", []), list) else []
+        if manifest:
+            chunks: list[dict[str, Any]] = []
+            batch: list[dict[str, Any]] = []
+            for row in manifest:
+                if not isinstance(row, dict):
+                    continue
+                batch.append(row)
+                if len(batch) >= 25:
+                    chunks.append(batch)
+                    batch = []
+            if batch:
+                chunks.append(batch)
+            if chunks:
+                chunk_rows: list[dict[str, Any]] = []
+                for idx, rows in enumerate(chunks, start=1):
+                    paths = [str(r.get("path", "")).replace("\\", "/").strip() for r in rows if str(r.get("path", "")).strip()]
+                    estimated_loc = sum(int(r.get("estimated_loc", 0) or 0) for r in rows)
+                    if estimated_loc <= 0:
+                        estimated_loc = len(paths) * 40
+                    chunk_rows.append(
+                        {
+                            "chunk_id": f"chunk::snapshot::{idx}",
+                            "snapshot_id": str(repo_snapshot.get("snapshot_id", "")).strip() or run_id,
+                            "component_id": f"snapshot::{idx}",
+                            "component_name": f"Repository Slice {idx}",
+                            "component_type": "repo_slice",
+                            "paths": paths,
+                            "line_count": estimated_loc,
+                            "estimated_loc": estimated_loc,
+                            "complexity_score": 1.0 + min(4.0, len(paths) / 15.0),
+                            "tables_owned": [],
+                            "counts_by_type": {},
+                            "priority": 2,
+                            "depends_on": [],
+                            "coverage_expectations": {},
+                        }
+                    )
+                return {
+                    "artifact_type": "chunk_manifest_v1",
+                    "snapshot_id": str(repo_snapshot.get("snapshot_id", "")).strip() or run_id,
+                    "chunk_count": len(chunk_rows),
+                    "chunks": chunk_rows,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "estimation_synthesized_from_repo_snapshot",
+                }
+    return None
+
+
 def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, str | None]:
     run_state = MANAGER.get_run(run_id)
     if not isinstance(run_state, dict):
@@ -8621,6 +8740,13 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         if isinstance(candidate, dict) and candidate:
             chunk_manifest = candidate
             break
+    if chunk_manifest is None:
+        chunk_manifest = _synthesize_chunk_manifest_for_estimation(
+            run_id=run_id,
+            stage1=stage1,
+            raw_artifacts=raw_artifacts,
+            landscape=landscape,
+        )
 
     for candidate in (
         raw_artifacts.get("risk_register"),

@@ -185,6 +185,57 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_landscape")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_create_brownfield_estimate_from_run_component_inventory_only(self):
+        class _FakeManager:
+            def get_run(self, run_id):
+                if run_id != "run_from_components":
+                    return None
+                return {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "integration_context": {
+                        "discover_cache": {
+                            "landscape": {
+                                "component_inventory_v1": {
+                                    "snapshot_id": "snap_components",
+                                    "components": [
+                                        {
+                                            "component_id": "vb6::bank",
+                                            "name": "BANK",
+                                            "component_type": "vb6_project",
+                                            "paths": ["BankApp1/BANK.vbp", "BankApp1/frmdeposit.frm", "BankApp1/Module1.bas"],
+                                            "estimated_loc": 3200,
+                                            "risk_flags": ["shared_module_review"],
+                                        }
+                                    ],
+                                }
+                            }
+                        }
+                    },
+                    "agent_results": [
+                        {
+                            "stage": 1,
+                            "output": {},
+                        }
+                    ],
+                }
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_from_components",
+            "estimate_id": "estimate_from_components",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_from_components")
+        self.assertEqual(created["run_id"], "run_from_components")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
+
     def test_estimate_intake_endpoint(self):
         resp = asyncio.run(
             server.api_estimate_intake(
