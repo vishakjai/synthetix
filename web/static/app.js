@@ -15,6 +15,7 @@ const MODES = {
   DASHBOARDS: "dashboards",
   DISCOVER: "discover",
   PLAN: "plan",
+  ESTIMATES: "estimates",
   BUILD: "build",
   VERIFY: "verify",
   SETTINGS: "settings",
@@ -25,6 +26,7 @@ const el = {
   navHome: document.getElementById("nav-home"),
   navWork: document.getElementById("nav-work"),
   navTeam: document.getElementById("nav-team"),
+  navEstimates: document.getElementById("nav-estimates"),
   navBuild: document.getElementById("nav-build"),
   navHistory: document.getElementById("nav-history"),
   navSettings: document.getElementById("nav-settings"),
@@ -37,6 +39,7 @@ const el = {
   homeScreen: document.getElementById("home-screen"),
   workScreen: document.getElementById("work-screen"),
   teamScreen: document.getElementById("team-screen"),
+  estimatesScreen: document.getElementById("estimates-screen"),
   planPanelTeamCreation: document.getElementById("plan-panel-team-creation"),
   planPanelAgentStudio: document.getElementById("plan-panel-agent-studio"),
   historyScreen: document.getElementById("history-screen"),
@@ -532,6 +535,22 @@ const el = {
   diagramClose: document.getElementById("diagram-close"),
   diagramDownloadSvg: document.getElementById("diagram-download-svg"),
   diagramDownloadMmd: document.getElementById("diagram-download-mmd"),
+  estimateStatus: document.getElementById("estimate-status"),
+  estimateMode: document.getElementById("estimate-mode"),
+  estimateRunId: document.getElementById("estimate-run-id"),
+  estimateId: document.getElementById("estimate-id"),
+  estimateTeamModel: document.getElementById("estimate-team-model"),
+  estimateBusinessNeed: document.getElementById("estimate-business-need"),
+  estimateChunkManifest: document.getElementById("estimate-chunk-manifest"),
+  estimateRiskRegister: document.getElementById("estimate-risk-register"),
+  estimateTraceabilityScores: document.getElementById("estimate-traceability-scores"),
+  estimateCreateBtn: document.getElementById("estimate-create-btn"),
+  estimateLoadRunBtn: document.getElementById("estimate-load-run-btn"),
+  estimateRefreshList: document.getElementById("estimate-refresh-list"),
+  estimateList: document.getElementById("estimate-list"),
+  estimateSummary: document.getElementById("estimate-summary"),
+  estimateAssumptions: document.getElementById("estimate-assumptions"),
+  estimateWbs: document.getElementById("estimate-wbs"),
 };
 
 const state = {
@@ -631,6 +650,14 @@ const state = {
     tab: "persona",
     draftByAgent: {},
     evalByAgent: {},
+  },
+  estimation: {
+    loading: false,
+    error: "",
+    currentEstimateId: "",
+    currentEstimate: null,
+    listByRun: {},
+    loadedRunId: "",
   },
   teamBuilder: {
     stageAgentIds: {},
@@ -9911,6 +9938,7 @@ function toModeButtonState(mode) {
     [MODES.DASHBOARDS]: el.navHome,
     [MODES.DISCOVER]: el.navWork,
     [MODES.PLAN]: el.navTeam,
+    [MODES.ESTIMATES]: el.navEstimates,
     [MODES.BUILD]: el.navBuild,
     [MODES.VERIFY]: el.navHistory,
     [MODES.SETTINGS]: el.navSettings,
@@ -9933,17 +9961,247 @@ function setPlanTab(tabName) {
   });
 }
 
+function syncEstimateDefaultsFromCurrentRun() {
+  if (!el.estimateRunId) return;
+  if (!String(el.estimateRunId.value || "").trim() && state.currentRunId) {
+    el.estimateRunId.value = state.currentRunId;
+  }
+  if (!String(el.estimateBusinessNeed?.value || "").trim()) {
+    el.estimateBusinessNeed.value = "Modernize the brownfield application while preserving required business capability.";
+  }
+}
+
+function setEstimateStatus(message, isError = false) {
+  if (!el.estimateStatus) return;
+  el.estimateStatus.textContent = String(message || "").trim() || "Ready.";
+  el.estimateStatus.className = `mt-2 text-xs ${isError ? "text-rose-700" : "text-slate-700"}`;
+}
+
+function parseEstimateJson(raw, label) {
+  const text = String(raw || "").trim();
+  if (!text) {
+    throw new Error(`${label} JSON is required.`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${label} JSON is invalid.`);
+  }
+}
+
+function estimateSummaryHtml(summary) {
+  const estimate = summary?.estimate || {};
+  const effort = estimate?.effort || {};
+  const timeline = estimate?.timeline || {};
+  const roles = estimate?.staffing?.roles || {};
+  const topRisks = Array.isArray(estimate?.top_risks) ? estimate.top_risks : [];
+  const roleRows = Object.entries(roles)
+    .map(([role, payload]) => {
+      const pct = Number(payload?.allocation_pct || 0);
+      return `<div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">${escapeHtml(role)}</p><p class="mt-1 text-sm font-semibold text-slate-900">${pct}%</p></div>`;
+    })
+    .join("");
+  const riskRows = topRisks.length
+    ? topRisks.slice(0, 5).map((risk) => `<li><span class="font-semibold">${escapeHtml(String(risk.severity || "medium").toUpperCase())}</span> ${escapeHtml(risk.title || risk.risk_id || "Risk")}</li>`).join("")
+    : `<li>No top risks recorded.</li>`;
+  return `
+    <div class="grid gap-2 sm:grid-cols-4">
+      <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Confidence</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(estimate.confidence_tier || "n/a")}</p></div>
+      <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Team model</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(estimate.team_model_selected || "n/a")}</p></div>
+      <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Effort (p50)</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(String(effort.total_hours?.p50 ?? "n/a"))} hrs</p></div>
+      <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Timeline (p50)</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(String(timeline.total_weeks?.p50 ?? "n/a"))} wks</p></div>
+    </div>
+    <div class="mt-3">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Role loading</p>
+      <div class="mt-2 grid gap-2 sm:grid-cols-3">${roleRows || `<div class="rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No staffing profile recorded.</div>`}</div>
+    </div>
+    <div class="mt-3">
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Top risks</p>
+      <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-800">${riskRows}</ul>
+    </div>
+  `;
+}
+
+function estimateAssumptionsHtml(ledger) {
+  const rows = Array.isArray(ledger?.assumptions) ? ledger.assumptions : [];
+  if (!rows.length) return "No assumptions loaded.";
+  return rows.map((row) => `
+    <div class="rounded-lg border border-slate-300 bg-white p-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">${escapeHtml(row.id || "ASSUME")}</span>
+        <span class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-800">${escapeHtml(row.category || "ASSUMED")}</span>
+        <span class="rounded border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] text-slate-800">${escapeHtml(row.status || "open")}</span>
+      </div>
+      <p class="mt-1 text-xs text-slate-800">${escapeHtml(row.statement || "")}</p>
+    </div>
+  `).join("");
+}
+
+function estimateWbsHtml(wbs) {
+  const items = Array.isArray(wbs?.wbs?.items) ? wbs.wbs.items : [];
+  if (!items.length) return "No WBS loaded.";
+  return `
+    <div class="overflow-auto">
+      <table class="min-w-full border-collapse text-left text-xs">
+        <thead>
+          <tr class="border-b border-slate-300 text-slate-600">
+            <th class="py-2 pr-3">Item</th>
+            <th class="py-2 pr-3">Kind</th>
+            <th class="py-2 pr-3">Phase</th>
+            <th class="py-2 pr-3">Size</th>
+            <th class="py-2 pr-3">Hours (p50)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((item) => `
+            <tr class="border-b border-slate-200">
+              <td class="py-2 pr-3">
+                <div class="font-semibold text-slate-900">${escapeHtml(item.title || item.wbs_item_id || "")}</div>
+                <div class="text-[11px] text-slate-600">${escapeHtml(item.wbs_item_id || "")}</div>
+              </td>
+              <td class="py-2 pr-3">${escapeHtml(item.kind || "")}</td>
+              <td class="py-2 pr-3">${escapeHtml(item.phase || "")}</td>
+              <td class="py-2 pr-3">${escapeHtml(item.size_tier || "")}</td>
+              <td class="py-2 pr-3">${escapeHtml(String(item.effort_hours?.p50 ?? "0"))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderEstimateDetails(payload) {
+  state.estimation.currentEstimate = payload || null;
+  state.estimation.currentEstimateId = String(payload?.estimate_id || payload?.meta?.estimate_id || payload?.meta?.estimate?.estimate_id || "").trim();
+  if (el.estimateSummary) el.estimateSummary.innerHTML = payload?.artifacts?.estimate_summary ? estimateSummaryHtml(payload.artifacts.estimate_summary) : "No estimate loaded.";
+  if (el.estimateAssumptions) el.estimateAssumptions.innerHTML = payload?.artifacts?.assumption_ledger ? estimateAssumptionsHtml(payload.artifacts.assumption_ledger) : "No assumptions loaded.";
+  if (el.estimateWbs) el.estimateWbs.innerHTML = payload?.artifacts?.wbs ? estimateWbsHtml(payload.artifacts.wbs) : "No WBS loaded.";
+}
+
+function renderEstimateList() {
+  if (!el.estimateList) return;
+  const runId = String(el.estimateRunId?.value || "").trim();
+  const rows = state.estimation.listByRun[runId] || [];
+  if (!runId) {
+    el.estimateList.innerHTML = `<div class="rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-700">Provide a run id to browse saved estimates.</div>`;
+    return;
+  }
+  if (!rows.length) {
+    el.estimateList.innerHTML = `<div class="rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-700">No estimates found for ${escapeHtml(runId)}.</div>`;
+    return;
+  }
+  el.estimateList.innerHTML = rows.map((row) => `
+    <div class="rounded-lg border border-slate-300 bg-white p-2">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div class="text-xs font-semibold text-slate-900">${escapeHtml(row.estimate_id || "estimate")}</div>
+          <div class="text-[11px] text-slate-600">${escapeHtml(row.created_at || row.updated_at || "n/a")}</div>
+        </div>
+        <button class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold" data-estimate-load-id="${escapeHtml(row.estimate_id || "")}">Load</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function loadRunEstimates() {
+  const runId = String(el.estimateRunId?.value || "").trim();
+  if (!runId) {
+    setEstimateStatus("Run ID is required to load run-scoped estimates.", true);
+    renderEstimateList();
+    return;
+  }
+  setEstimateStatus(`Loading estimates for ${runId}...`);
+  try {
+    const data = await api(`/api/runs/${encodeURIComponent(runId)}/estimates`, null);
+    state.estimation.listByRun[runId] = Array.isArray(data.estimates) ? data.estimates : [];
+    state.estimation.loadedRunId = runId;
+    renderEstimateList();
+    setEstimateStatus(`Loaded ${state.estimation.listByRun[runId].length} estimate(s) for ${runId}.`);
+  } catch (err) {
+    setEstimateStatus(`Estimate list load failed: ${err.message}`, true);
+  }
+}
+
+async function loadEstimateById(estimateId) {
+  const id = String(estimateId || "").trim();
+  if (!id) return;
+  setEstimateStatus(`Loading estimate ${id}...`);
+  try {
+    const data = await api(`/api/estimates/${encodeURIComponent(id)}`, null);
+    renderEstimateDetails(data);
+    setEstimateStatus(`Loaded estimate ${id}.`);
+  } catch (err) {
+    setEstimateStatus(`Estimate load failed: ${err.message}`, true);
+  }
+}
+
+async function createEstimateFromForm() {
+  const mode = String(el.estimateMode?.value || "brownfield").trim();
+  if (mode !== "brownfield") {
+    setEstimateStatus(`${mode} estimation is not implemented yet.`, true);
+    return;
+  }
+  let chunkManifest;
+  let riskRegister;
+  let traceabilityScores;
+  try {
+    chunkManifest = parseEstimateJson(el.estimateChunkManifest?.value, "Chunk manifest");
+    riskRegister = parseEstimateJson(el.estimateRiskRegister?.value, "Risk register");
+    traceabilityScores = parseEstimateJson(el.estimateTraceabilityScores?.value, "Traceability scores");
+  } catch (err) {
+    setEstimateStatus(err.message, true);
+    return;
+  }
+  const payload = {
+    mode,
+    run_id: String(el.estimateRunId?.value || "").trim() || undefined,
+    estimate_id: String(el.estimateId?.value || "").trim() || undefined,
+    business_need: String(el.estimateBusinessNeed?.value || "").trim() || "Modernize the brownfield application while preserving required business capability.",
+    team_model_key: String(el.estimateTeamModel?.value || "HUMAN_ONLY").trim(),
+    chunk_manifest: chunkManifest,
+    risk_register: riskRegister,
+    traceability_scores: traceabilityScores,
+  };
+  setEstimateStatus("Creating estimate...");
+  try {
+    const data = await api("/api/estimates", payload);
+    renderEstimateDetails({
+      estimate_id: data.estimate_id,
+      meta: data.meta || {},
+      artifacts: {
+        estimate_summary: data.estimate_summary,
+      },
+    });
+    if (payload.run_id) {
+      await loadRunEstimates();
+    }
+    if (data.estimate_id && !String(el.estimateId?.value || "").trim() && el.estimateId) {
+      el.estimateId.value = data.estimate_id;
+    }
+    await loadEstimateById(data.estimate_id);
+    setEstimateStatus(`Created estimate ${data.estimate_id}.`);
+  } catch (err) {
+    setEstimateStatus(`Estimate create failed: ${err.message}`, true);
+  }
+}
+
 function setMode(mode) {
   state.mode = mode;
   el.homeScreen.classList.toggle("hidden", mode !== MODES.DASHBOARDS);
   el.workScreen.classList.toggle("hidden", !(mode === MODES.DISCOVER || mode === MODES.BUILD));
   el.teamScreen.classList.toggle("hidden", mode !== MODES.PLAN);
+  el.estimatesScreen.classList.toggle("hidden", mode !== MODES.ESTIMATES);
   el.historyScreen.classList.toggle("hidden", mode !== MODES.VERIFY);
   el.settingsScreen?.classList.toggle("hidden", mode !== MODES.SETTINGS);
   toModeButtonState(mode);
   if (mode === MODES.DISCOVER) setWizardStep(1);
   if (mode === MODES.BUILD) setWizardStep(2);
   if (mode === MODES.PLAN) setPlanTab(state.planTab || "team_creation");
+  if (mode === MODES.ESTIMATES) {
+    syncEstimateDefaultsFromCurrentRun();
+    renderEstimateList();
+  }
   if (mode === MODES.VERIFY || mode === MODES.PLAN) refreshTasks().catch(() => {});
   if (mode === MODES.VERIFY) renderVerifyPanels();
   if (mode === MODES.SETTINGS) loadSettings().catch((err) => setSettingsMessage(`Settings load failed: ${err.message}`, true));
@@ -14133,6 +14391,7 @@ function bindEvents() {
     setMode(MODES.DISCOVER);
   });
   el.navTeam.addEventListener("click", () => setMode(MODES.PLAN));
+  el.navEstimates?.addEventListener("click", () => setMode(MODES.ESTIMATES));
   el.navBuild?.addEventListener("click", () => setMode(MODES.BUILD));
   el.navHistory.addEventListener("click", () => setMode(MODES.VERIFY));
   el.navSettings?.addEventListener("click", () => setMode(MODES.SETTINGS));
@@ -14140,6 +14399,22 @@ function bindEvents() {
   el.homeWorkBtn.addEventListener("click", () => setMode(MODES.DISCOVER));
   el.homeTeamBtn.addEventListener("click", () => setMode(MODES.PLAN));
   el.homeHistoryBtn.addEventListener("click", () => setMode(MODES.VERIFY));
+  el.estimateCreateBtn?.addEventListener("click", () => {
+    createEstimateFromForm().catch((err) => setEstimateStatus(`Estimate create failed: ${err.message}`, true));
+  });
+  el.estimateLoadRunBtn?.addEventListener("click", () => {
+    loadRunEstimates().catch((err) => setEstimateStatus(`Estimate list load failed: ${err.message}`, true));
+  });
+  el.estimateRefreshList?.addEventListener("click", () => {
+    loadRunEstimates().catch((err) => setEstimateStatus(`Estimate list load failed: ${err.message}`, true));
+  });
+  el.estimateList?.addEventListener("click", (evt) => {
+    const target = evt.target;
+    if (!(target instanceof HTMLElement)) return;
+    const estimateId = target.getAttribute("data-estimate-load-id");
+    if (!estimateId) return;
+    loadEstimateById(estimateId).catch((err) => setEstimateStatus(`Estimate load failed: ${err.message}`, true));
+  });
 
   el.contextDrawerToggle?.addEventListener("click", () => {
     const hidden = el.contextDrawer?.classList.toggle("hidden-drawer");
