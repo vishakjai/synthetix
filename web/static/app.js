@@ -4629,8 +4629,17 @@ function renderDiscoverLandscape() {
   const phpJobsInventory = (raw.php_background_job_inventory_v1 && typeof raw.php_background_job_inventory_v1 === "object") ? raw.php_background_job_inventory_v1 : {};
   const phpSqlInventory = (raw.php_sql_catalog_v1 && typeof raw.php_sql_catalog_v1 === "object") ? raw.php_sql_catalog_v1 : {};
   const phpRouteHintRows = Array.isArray(phpRouteHints.routes) ? phpRouteHints.routes : [];
-  const isPhpLandscape = !!(phpFrameworkProfile.framework || phpRouteInventory.route_count || phpControllerInventory.controller_count || phpTemplateInventory.template_count);
-  const phpSignalsHtml = phpFrameworkProfile.framework || phpRouteHintRows.length
+  const hasPhpLanguageSignal = languageRows.some((row) => String(row?.language || "").trim().toLowerCase() === "php");
+  const hasPhpArchetypeSignal = archetypeRows.some((row) => String(row?.archetype || "").trim().toLowerCase().includes("php"));
+  const hasPhpComponentSignal = componentRows.some((row) =>
+    Array.isArray(row?.language_mix) && row.language_mix.some((item) => String(item?.language || "").trim().toLowerCase() === "php")
+  );
+  const hasPhpCountSignal = Number(phpFrameworkProfile.app_php_file_count || phpFrameworkProfile.php_file_count || 0) > 0
+    || Number(phpControllerInventory.controller_count || phpFrameworkProfile.controller_count || 0) > 0
+    || Number(phpRouteInventory.route_count || phpRouteHints.estimated_route_files || 0) > 0
+    || Number(phpTemplateInventory.template_count || phpFrameworkProfile.template_count || 0) > 0;
+  const isPhpLandscape = hasPhpLanguageSignal || hasPhpArchetypeSignal || hasPhpComponentSignal || hasPhpCountSignal;
+  const phpSignalsHtml = isPhpLandscape && (phpFrameworkProfile.framework || phpRouteHintRows.length || hasPhpCountSignal)
     ? `
       <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
         <p class="font-semibold text-slate-900">PHP application signals</p>
@@ -13917,14 +13926,7 @@ async function fetchRunSnapshot(runId) {
   invalidateCollaborationCache(data.run?.run_id || runId);
   state.currentRun = data.run;
   if (data.run?.run_id) state.dashboardRunDetails[data.run.run_id] = data.run;
-  try {
-    const logsData = await api(`/api/runs/${runId}/logs?limit=400`, null);
-    if (Array.isArray(logsData?.logs)) {
-      state.currentRun.progress_logs = logsData.logs;
-    }
-  } catch (_err) {
-    // Tail logs are optional; keep snapshot usable even if the logs endpoint is unavailable.
-  }
+  await fetchRunLogs(runId);
   state.selectedStage = determineCurrentStage(state.currentRun);
   const p = state.currentRun?.pipeline_state || {};
   if (p && typeof p === "object") {
@@ -13947,6 +13949,18 @@ async function fetchRunSnapshot(runId) {
   renderRun();
   renderPerspectiveDashboard();
   return data.run;
+}
+
+async function fetchRunLogs(runId) {
+  if (!runId || !state.currentRun) return;
+  try {
+    const logsData = await api(`/api/runs/${runId}/logs?limit=400`, null);
+    if (Array.isArray(logsData?.logs)) {
+      state.currentRun.progress_logs = logsData.logs;
+    }
+  } catch (_err) {
+    // Tail logs are optional; keep snapshot/status usable even if the logs endpoint is unavailable.
+  }
 }
 
 async function fetchRunStatus(runId) {
@@ -14089,9 +14103,15 @@ function scheduleRunBootstrapRefresh(runId) {
         state.runBootstrapPollTimer = null;
         return;
       }
-      const run = await fetchRunSnapshot(runId);
+      const status = await fetchRunStatus(runId);
+      applyRunStatus(status);
+      await fetchRunLogs(runId);
       renderRun();
-      if (!isActiveRunStatus(run?.status || "") || attempts >= maxAttempts) {
+      const latestStatus = String(state.currentRun?.status || status?.status || "").toLowerCase();
+      if (latestStatus && latestStatus !== "queued") {
+        await fetchRunSnapshot(runId);
+      }
+      if (!isActiveRunStatus(latestStatus) || attempts >= maxAttempts) {
         clearInterval(state.runBootstrapPollTimer);
         state.runBootstrapPollTimer = null;
       }
