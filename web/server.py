@@ -8585,6 +8585,7 @@ def _synthesize_chunk_manifest_for_estimation(
     stage1: dict[str, Any],
     raw_artifacts: dict[str, Any],
     landscape: dict[str, Any],
+    analyst_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     candidates = (
         raw_artifacts.get("component_inventory_v1"),
@@ -8693,8 +8694,56 @@ def _synthesize_chunk_manifest_for_estimation(
                     "chunk_count": len(chunk_rows),
                     "chunks": chunk_rows,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "source": "estimation_synthesized_from_repo_snapshot",
-                }
+                "source": "estimation_synthesized_from_repo_snapshot",
+            }
+
+    legacy_inventory = {}
+    for candidate in (
+        analyst_summary.get("legacy_code_inventory") if isinstance(analyst_summary, dict) else None,
+        stage1.get("legacy_code_inventory"),
+        stage1.get("requirements_pack", {}).get("legacy_code_inventory") if isinstance(stage1.get("requirements_pack", {}), dict) else None,
+    ):
+        if isinstance(candidate, dict) and candidate:
+            legacy_inventory = candidate
+            break
+    if legacy_inventory:
+        file_count = int(
+            legacy_inventory.get("source_files_scanned", 0)
+            or legacy_inventory.get("file_count", 0)
+            or 0
+        )
+        total_loc = int(
+            legacy_inventory.get("source_loc_total", 0)
+            or legacy_inventory.get("total_loc", 0)
+            or 0
+        )
+        if file_count > 0 or total_loc > 0:
+            estimated_loc = total_loc if total_loc > 0 else max(40, file_count * 40)
+            return {
+                "artifact_type": "chunk_manifest_v1",
+                "snapshot_id": run_id,
+                "chunk_count": 1,
+                "chunks": [
+                    {
+                        "chunk_id": f"chunk::inventory::{run_id}",
+                        "snapshot_id": run_id,
+                        "component_id": f"inventory::{run_id}",
+                        "component_name": "Legacy Application Inventory",
+                        "component_type": "legacy_inventory",
+                        "paths": [],
+                        "line_count": estimated_loc,
+                        "estimated_loc": estimated_loc,
+                        "complexity_score": 2.0,
+                        "tables_owned": [],
+                        "counts_by_type": {"files": file_count},
+                        "priority": 2,
+                        "depends_on": [],
+                        "coverage_expectations": {},
+                    }
+                ],
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "source": "estimation_synthesized_from_legacy_inventory",
+            }
     return None
 
 
@@ -8718,6 +8767,16 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         if isinstance(run_state.get("integration_context", {}), dict)
         else {}
     )
+    queued_request = (
+        run_state.get("pipeline_state", {}).get("queued_request", {})
+        if isinstance(run_state.get("pipeline_state", {}), dict)
+        and isinstance(run_state.get("pipeline_state", {}).get("queued_request", {}), dict)
+        else {}
+    )
+    if not integration_context:
+        queued_integration = queued_request.get("integration_context", {})
+        if isinstance(queued_integration, dict) and queued_integration:
+            integration_context = queued_integration
     if not integration_context and isinstance(run_state.get("pipeline_state", {}), dict):
         integration_context = (
             run_state.get("pipeline_state", {}).get("integration_context", {})
@@ -8726,11 +8785,14 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         )
     discover_cache = integration_context.get("discover_cache", {}) if isinstance(integration_context.get("discover_cache", {}), dict) else {}
     landscape = discover_cache.get("landscape", {}) if isinstance(discover_cache.get("landscape", {}), dict) else {}
+    analyst_summary = discover_cache.get("analyst_summary", {}) if isinstance(discover_cache.get("analyst_summary", {}), dict) else {}
     chunk_manifest = None
     risk_register = None
     traceability_scores = None
 
     for candidate in (
+        analyst_summary.get("chunk_manifest_v1"),
+        analyst_summary.get("raw_artifacts", {}).get("chunk_manifest_v1") if isinstance(analyst_summary.get("raw_artifacts", {}), dict) else None,
         stage1.get("chunk_manifest_v1"),
         raw_artifacts.get("chunk_manifest_v1"),
         raw_artifacts.get("chunk_manifest"),
@@ -8746,9 +8808,11 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
             stage1=stage1,
             raw_artifacts=raw_artifacts,
             landscape=landscape,
+            analyst_summary=analyst_summary,
         )
 
     for candidate in (
+        analyst_summary.get("raw_artifacts", {}).get("risk_register") if isinstance(analyst_summary.get("raw_artifacts", {}), dict) else None,
         raw_artifacts.get("risk_register"),
         stage1.get("risk_register"),
     ):
@@ -8759,6 +8823,8 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         risk_register = {"risks": []}
 
     for candidate in (
+        analyst_summary.get("traceability_scores_v1"),
+        analyst_summary.get("raw_artifacts", {}).get("traceability_scores_v1") if isinstance(analyst_summary.get("raw_artifacts", {}), dict) else None,
         stage1.get("traceability_scores_v1"),
         raw_artifacts.get("traceability_scores_v1"),
         raw_artifacts.get("traceability_scores"),

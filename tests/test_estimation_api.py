@@ -185,6 +185,49 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_landscape")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_create_brownfield_estimate_from_queued_request_analyst_summary_inventory_only(self):
+        class _FakeManager:
+            def get_run(self, run_id):
+                if run_id != "run_from_queued_summary":
+                    return None
+                return {
+                    "run_id": run_id,
+                    "status": "queued",
+                    "pipeline_state": {
+                        "queued_request": {
+                            "integration_context": {
+                                "discover_cache": {
+                                    "analyst_summary": {
+                                        "legacy_code_inventory": {
+                                            "source_files_scanned": 49,
+                                            "source_loc_total": 9038,
+                                        },
+                                        "raw_artifacts": {
+                                            "risk_register": {"risks": []},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_from_queued_summary",
+            "estimate_id": "estimate_from_queued_summary",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_from_queued_summary")
+        self.assertEqual(created["run_id"], "run_from_queued_summary")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
+
     def test_create_brownfield_estimate_from_run_component_inventory_only(self):
         class _FakeManager:
             def get_run(self, run_id):
