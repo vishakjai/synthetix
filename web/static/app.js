@@ -615,6 +615,7 @@ const state = {
   currentRun: null,
   eventSource: null,
   runSnapshotPollTimer: null,
+  runBootstrapPollTimer: null,
   selectedStage: 1,
   impactDiffTab: "topology",
   cityOverlay: "none",
@@ -13898,6 +13899,10 @@ function stopStreaming() {
     clearInterval(state.runSnapshotPollTimer);
     state.runSnapshotPollTimer = null;
   }
+  if (state.runBootstrapPollTimer) {
+    clearInterval(state.runBootstrapPollTimer);
+    state.runBootstrapPollTimer = null;
+  }
 }
 
 function upsertLog(line) {
@@ -14066,6 +14071,37 @@ async function syncRun(runId) {
   } catch (err) {
     el.pipelineStatusText.textContent = `ERROR: ${err.message}`;
   }
+}
+
+function scheduleRunBootstrapRefresh(runId) {
+  if (!runId) return;
+  if (state.runBootstrapPollTimer) {
+    clearInterval(state.runBootstrapPollTimer);
+    state.runBootstrapPollTimer = null;
+  }
+  let attempts = 0;
+  const maxAttempts = 10;
+  state.runBootstrapPollTimer = setInterval(async () => {
+    attempts += 1;
+    try {
+      if (!state.currentRunId || state.currentRunId !== runId) {
+        clearInterval(state.runBootstrapPollTimer);
+        state.runBootstrapPollTimer = null;
+        return;
+      }
+      const run = await fetchRunSnapshot(runId);
+      renderRun();
+      if (!isActiveRunStatus(run?.status || "") || attempts >= maxAttempts) {
+        clearInterval(state.runBootstrapPollTimer);
+        state.runBootstrapPollTimer = null;
+      }
+    } catch (_err) {
+      if (attempts >= maxAttempts) {
+        clearInterval(state.runBootstrapPollTimer);
+        state.runBootstrapPollTimer = null;
+      }
+    }
+  }, 1500);
 }
 
 async function refreshRunHistory() {
@@ -14436,6 +14472,10 @@ async function startRun() {
   );
   setMode(MODES.BUILD);
   renderRun();
+  if (isActiveRunStatus(String(data.status || "").toLowerCase())) {
+    startStreaming(data.run_id);
+    scheduleRunBootstrapRefresh(data.run_id);
+  }
 
   Promise.allSettled([refreshRunHistory(), syncRun(data.run_id)]).then((results) => {
     const failed = results.filter((row) => row.status === "rejected");
