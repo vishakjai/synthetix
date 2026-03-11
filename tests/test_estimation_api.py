@@ -228,6 +228,56 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_queued_summary")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_create_brownfield_estimate_prefers_pipeline_integration_discover_cache(self):
+        class _FakeManager:
+            def get_run(self, run_id):
+                if run_id != "run_with_pipeline_discover_cache":
+                    return None
+                return {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "integration_context": {
+                        "brownfield": {"repo_url": "https://example.com/repo.git"},
+                    },
+                    "pipeline_state": {
+                        "integration_context": {
+                            "discover_cache": {
+                                "landscape": {
+                                    "component_inventory_v1": {
+                                        "snapshot_id": "snap_pipeline",
+                                        "components": [
+                                            {
+                                                "component_id": "comp::1",
+                                                "name": "Component A",
+                                                "component_type": "vb6_project",
+                                                "paths": ["ComponentA/main.frm"],
+                                                "estimated_loc": 1200,
+                                                "risk_flags": [],
+                                            }
+                                        ],
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_with_pipeline_discover_cache",
+            "estimate_id": "estimate_pipeline_discover_cache",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_pipeline_discover_cache")
+        self.assertEqual(created["run_id"], "run_with_pipeline_discover_cache")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
+
     def test_create_brownfield_estimate_from_run_component_inventory_only(self):
         class _FakeManager:
             def get_run(self, run_id):

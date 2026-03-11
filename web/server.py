@@ -8763,26 +8763,51 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         stage1 = {}
     raw_artifacts = stage1.get("raw_artifacts", {}) if isinstance(stage1.get("raw_artifacts", {}), dict) else {}
     integration_context = (
-        run_state.get("integration_context", {})
+        copy.deepcopy(run_state.get("integration_context", {}))
         if isinstance(run_state.get("integration_context", {}), dict)
         else {}
     )
+    pipeline_state = run_state.get("pipeline_state", {}) if isinstance(run_state.get("pipeline_state", {}), dict) else {}
+    pipeline_integration = (
+        copy.deepcopy(pipeline_state.get("integration_context", {}))
+        if isinstance(pipeline_state.get("integration_context", {}), dict)
+        else {}
+    )
+    if pipeline_integration:
+        merged_integration = copy.deepcopy(pipeline_integration)
+        merged_integration.update(integration_context)
+        discover_cache_primary = (
+            pipeline_integration.get("discover_cache", {})
+            if isinstance(pipeline_integration.get("discover_cache", {}), dict)
+            else {}
+        )
+        discover_cache_secondary = (
+            integration_context.get("discover_cache", {})
+            if isinstance(integration_context.get("discover_cache", {}), dict)
+            else {}
+        )
+        if discover_cache_primary or discover_cache_secondary:
+            merged_discover = copy.deepcopy(discover_cache_primary)
+            merged_discover.update(discover_cache_secondary)
+            if isinstance(discover_cache_primary.get("landscape", {}), dict) and discover_cache_primary.get("landscape"):
+                merged_discover["landscape"] = copy.deepcopy(discover_cache_primary.get("landscape", {}))
+            if isinstance(discover_cache_secondary.get("landscape", {}), dict) and discover_cache_secondary.get("landscape"):
+                merged_discover["landscape"] = copy.deepcopy(discover_cache_secondary.get("landscape", {}))
+            if isinstance(discover_cache_primary.get("analyst_summary", {}), dict) and discover_cache_primary.get("analyst_summary"):
+                merged_discover["analyst_summary"] = copy.deepcopy(discover_cache_primary.get("analyst_summary", {}))
+            if isinstance(discover_cache_secondary.get("analyst_summary", {}), dict) and discover_cache_secondary.get("analyst_summary"):
+                merged_discover["analyst_summary"] = copy.deepcopy(discover_cache_secondary.get("analyst_summary", {}))
+            merged_integration["discover_cache"] = merged_discover
+        integration_context = merged_integration
     queued_request = (
-        run_state.get("pipeline_state", {}).get("queued_request", {})
-        if isinstance(run_state.get("pipeline_state", {}), dict)
-        and isinstance(run_state.get("pipeline_state", {}).get("queued_request", {}), dict)
+        pipeline_state.get("queued_request", {})
+        if isinstance(pipeline_state.get("queued_request", {}), dict)
         else {}
     )
     if not integration_context:
         queued_integration = queued_request.get("integration_context", {})
         if isinstance(queued_integration, dict) and queued_integration:
             integration_context = queued_integration
-    if not integration_context and isinstance(run_state.get("pipeline_state", {}), dict):
-        integration_context = (
-            run_state.get("pipeline_state", {}).get("integration_context", {})
-            if isinstance(run_state.get("pipeline_state", {}).get("integration_context", {}), dict)
-            else {}
-        )
     discover_cache = integration_context.get("discover_cache", {}) if isinstance(integration_context.get("discover_cache", {}), dict) else {}
     landscape = discover_cache.get("landscape", {}) if isinstance(discover_cache.get("landscape", {}), dict) else {}
     analyst_summary = discover_cache.get("analyst_summary", {}) if isinstance(discover_cache.get("analyst_summary", {}), dict) else {}
