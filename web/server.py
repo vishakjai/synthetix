@@ -992,7 +992,25 @@ class PipelineRunManager:
         pipeline_state = persisted.get("pipeline_state", {}) if isinstance(persisted.get("pipeline_state", {}), dict) else {}
         queued = pipeline_state.get("queued_request", {}) if isinstance(pipeline_state.get("queued_request", {}), dict) else {}
         if not queued:
-            return {"ok": False, "error": "queued request payload missing"}
+            reason = "queued request payload missing"
+            try:
+                progress_logs = persisted.get("progress_logs", []) if isinstance(persisted.get("progress_logs", []), list) else []
+                failure_line = f"❌ Run could not be launched from queue: {reason}"
+                if failure_line not in progress_logs:
+                    progress_logs = list(progress_logs) + [failure_line]
+                failed_state = dict(pipeline_state)
+                failed_state["workflow_state"] = "FAILED"
+                self.store.finalize_run(
+                    run_id=rid,
+                    status="failed",
+                    pipeline_state=failed_state,
+                    stage_status={int(k): v for k, v in persisted.get("stage_status", {}).items() if str(k).isdigit()} if isinstance(persisted.get("stage_status", {}), dict) else {},
+                    progress_logs=progress_logs,
+                    error_message=reason,
+                )
+            except Exception:
+                pass
+            return {"ok": False, "error": reason}
 
         cfg_summary = queued.get("config_summary", {}) if isinstance(queued.get("config_summary", {}), dict) else {}
         try:
