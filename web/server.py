@@ -8507,9 +8507,22 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
             persisted_stage1 = load_stage_snapshot(run_id, 1)
             if isinstance(persisted_stage1, dict) and persisted_stage1:
                 stage1 = persisted_stage1
-    if not isinstance(stage1, dict) or not stage1:
-        return None, None, None, "stage 1 output not available for run"
+    if not isinstance(stage1, dict):
+        stage1 = {}
     raw_artifacts = stage1.get("raw_artifacts", {}) if isinstance(stage1.get("raw_artifacts", {}), dict) else {}
+    integration_context = (
+        run_state.get("integration_context", {})
+        if isinstance(run_state.get("integration_context", {}), dict)
+        else {}
+    )
+    if not integration_context and isinstance(run_state.get("pipeline_state", {}), dict):
+        integration_context = (
+            run_state.get("pipeline_state", {}).get("integration_context", {})
+            if isinstance(run_state.get("pipeline_state", {}).get("integration_context", {}), dict)
+            else {}
+        )
+    discover_cache = integration_context.get("discover_cache", {}) if isinstance(integration_context.get("discover_cache", {}), dict) else {}
+    landscape = discover_cache.get("landscape", {}) if isinstance(discover_cache.get("landscape", {}), dict) else {}
     chunk_manifest = None
     risk_register = None
     traceability_scores = None
@@ -8518,6 +8531,8 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         stage1.get("chunk_manifest_v1"),
         raw_artifacts.get("chunk_manifest_v1"),
         raw_artifacts.get("chunk_manifest"),
+        landscape.get("chunk_manifest_v1"),
+        landscape.get("chunk_manifest"),
     ):
         if isinstance(candidate, dict) and candidate:
             chunk_manifest = candidate
@@ -8530,6 +8545,8 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         if isinstance(candidate, dict) and candidate:
             risk_register = candidate
             break
+    if risk_register is None:
+        risk_register = {"risks": []}
 
     for candidate in (
         stage1.get("traceability_scores_v1"),
@@ -8564,8 +8581,10 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
             },
         }
 
-    if not isinstance(chunk_manifest, dict) or not isinstance(risk_register, dict) or not isinstance(traceability_scores, dict):
+    if not isinstance(chunk_manifest, dict) or not isinstance(traceability_scores, dict):
         return None, None, None, "run is missing chunk manifest, risk register, or traceability coverage artifacts"
+    if not isinstance(risk_register, dict):
+        risk_register = {"risks": []}
     return chunk_manifest, risk_register, traceability_scores, None
 
 

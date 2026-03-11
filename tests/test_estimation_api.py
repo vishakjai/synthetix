@@ -146,6 +146,45 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_blob")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_create_brownfield_estimate_from_run_landscape_chunk_manifest_only(self):
+        class _FakeManager:
+            def get_run(self, run_id):
+                if run_id != "run_from_landscape":
+                    return None
+                return {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "integration_context": {
+                        "discover_cache": {
+                            "landscape": {
+                                "chunk_manifest_v1": load_artifact_json(FIXTURE_ROOT / "input" / "chunk_manifest.json"),
+                            }
+                        }
+                    },
+                    "agent_results": [
+                        {
+                            "stage": 1,
+                            "output": {},
+                        }
+                    ],
+                }
+
+        server.MANAGER = _FakeManager()
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_from_landscape",
+            "estimate_id": "estimate_from_landscape",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+        }
+        create_resp = asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        self.assertEqual(create_resp.status_code, 200)
+        created = json.loads(create_resp.body)
+        self.assertTrue(created["ok"])
+        self.assertEqual(created["estimate_id"], "estimate_from_landscape")
+        self.assertEqual(created["run_id"], "run_from_landscape")
+        self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
+
     def test_estimate_intake_endpoint(self):
         resp = asyncio.run(
             server.api_estimate_intake(
