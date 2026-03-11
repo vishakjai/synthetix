@@ -4590,7 +4590,13 @@ function renderDiscoverLandscape() {
   const typeCounts = (repoSnapshot.counts_by_type && typeof repoSnapshot.counts_by_type === "object") ? repoSnapshot.counts_by_type : {};
   const phpFrameworkProfile = (raw.php_framework_profile_v1 && typeof raw.php_framework_profile_v1 === "object") ? raw.php_framework_profile_v1 : {};
   const phpRouteHints = (raw.php_route_hints_v1 && typeof raw.php_route_hints_v1 === "object") ? raw.php_route_hints_v1 : {};
+  const phpRouteInventory = (raw.php_route_inventory_v1 && typeof raw.php_route_inventory_v1 === "object") ? raw.php_route_inventory_v1 : {};
+  const phpControllerInventory = (raw.php_controller_inventory_v1 && typeof raw.php_controller_inventory_v1 === "object") ? raw.php_controller_inventory_v1 : {};
+  const phpTemplateInventory = (raw.php_template_inventory_v1 && typeof raw.php_template_inventory_v1 === "object") ? raw.php_template_inventory_v1 : {};
+  const phpJobsInventory = (raw.php_background_job_inventory_v1 && typeof raw.php_background_job_inventory_v1 === "object") ? raw.php_background_job_inventory_v1 : {};
+  const phpSqlInventory = (raw.php_sql_catalog_v1 && typeof raw.php_sql_catalog_v1 === "object") ? raw.php_sql_catalog_v1 : {};
   const phpRouteHintRows = Array.isArray(phpRouteHints.routes) ? phpRouteHints.routes : [];
+  const isPhpLandscape = !!(phpFrameworkProfile.framework || phpRouteInventory.route_count || phpControllerInventory.controller_count || phpTemplateInventory.template_count);
   const phpSignalsHtml = phpFrameworkProfile.framework || phpRouteHintRows.length
     ? `
       <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
@@ -4730,7 +4736,12 @@ function renderDiscoverLandscape() {
   const buildHeading = landscapeMode === "greenfield" ? "Planned targets" : "Build systems";
   const archetypeHeading = landscapeMode === "greenfield" ? "Planned archetypes" : "Application archetypes";
   const datastoreHeading = landscapeMode === "greenfield" ? "Planned datastores" : "Datastores";
-  const dependencyHeading = landscapeMode === "greenfield" ? "Planning signals" : "Dependency footprint";
+  const dependencyHeading = landscapeMode === "greenfield" ? "Planning signals" : (isPhpLandscape ? "Package footprint" : "Dependency footprint");
+  const dependencyBodyHtml = landscapeMode === "greenfield"
+    ? `<p class="mt-1 text-[11px] text-slate-700">Planning artifact signals will appear here as target stack details are provided.</p>`
+    : isPhpLandscape
+      ? `<p class="mt-1 text-[11px] text-slate-700">Composer=${escapeHtml(String(dependencyFootprint.composer_package_count || phpFrameworkProfile.composer_package_count || 0))} · NPM=${escapeHtml(String(dependencyFootprint.npm_package_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>`
+      : `<p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>`;
   const landscapeIntro = landscapeMode === "greenfield"
     ? `Greenfield landscape derived from scope inputs${greenfieldTarget ? ` for ${escapeHtml(greenfieldTarget)}` : ""}.`
     : "";
@@ -4794,25 +4805,37 @@ function renderDiscoverLandscape() {
       </div>
     `
     : "";
-  const inventorySummaryHtml = Object.keys(typeCounts).length
+  const inventorySummaryHtml = (isPhpLandscape || Object.keys(typeCounts).length)
     ? `
       <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
         <div class="flex items-start justify-between gap-2">
           <div>
             <p class="font-semibold text-slate-900">Source inventory</p>
-            <p class="text-[11px] text-slate-700">Selected legacy files by detected type.</p>
+            <p class="text-[11px] text-slate-700">${isPhpLandscape ? "Selected PHP legacy files and promoted application structures." : "Selected legacy files by detected type."}</p>
           </div>
           <button type="button" class="btn-light rounded px-2 py-1 text-[11px] font-semibold" onclick="window.__downloadDiscoverArtifact && window.__downloadDiscoverArtifact('repo_snapshot')">Export file inventory</button>
         </div>
         <div class="mt-2 grid gap-1 sm:grid-cols-3 lg:grid-cols-6">
-          ${[
-            ["Projects", Number(typeCounts.project || 0) + Number(typeCounts.project_group || 0)],
-            ["Forms", Number(typeCounts.form || 0)],
-            ["UserControls", Number(typeCounts.usercontrol || 0)],
-            ["Modules", Number(typeCounts.module || 0)],
-            ["Classes", Number(typeCounts.class || 0)],
-            ["Companions", Number(typeCounts.form_binary || 0) + Number(typeCounts.usercontrol_binary || 0) + Number(typeCounts.database || 0)],
-          ].map((row) => `<div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>${escapeHtml(String(row[0]))}</strong><br/>${escapeHtml(String(row[1]))}</div>`).join("")}
+          ${(isPhpLandscape
+            ? [
+                ["Applications", 1],
+                ["PHP files", Number(phpFrameworkProfile.app_php_file_count || phpFrameworkProfile.php_file_count || 0)],
+                ["Controllers", Number(phpControllerInventory.controller_count || phpFrameworkProfile.controller_count || 0)],
+                ["Routes", Number(phpRouteInventory.route_count || phpRouteHints.estimated_route_files || 0)],
+                ["Templates", Number(phpTemplateInventory.template_count || phpFrameworkProfile.template_count || 0)],
+                ["Jobs", Number(phpJobsInventory.job_count || 0)],
+                ["SQL touchpoints", Number(phpSqlInventory.statement_count || 0)],
+                ["Dependencies", Number(dependencyFootprint.composer_package_count || phpFrameworkProfile.composer_package_count || 0)],
+              ]
+            : [
+                ["Projects", Number(typeCounts.project || 0) + Number(typeCounts.project_group || 0)],
+                ["Forms", Number(typeCounts.form || 0)],
+                ["UserControls", Number(typeCounts.usercontrol || 0)],
+                ["Modules", Number(typeCounts.module || 0)],
+                ["Classes", Number(typeCounts.class || 0)],
+                ["Companions", Number(typeCounts.form_binary || 0) + Number(typeCounts.usercontrol_binary || 0) + Number(typeCounts.database || 0)],
+              ]
+          ).map((row) => `<div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900"><strong>${escapeHtml(String(row[0]))}</strong><br/>${escapeHtml(String(row[1]))}</div>`).join("")}
         </div>
       </div>
     `
@@ -4846,7 +4869,7 @@ function renderDiscoverLandscape() {
         </div>
         <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2">
           <p class="font-semibold text-slate-900">${dependencyHeading}</p>
-          <p class="mt-1 text-[11px] text-slate-700">OCX=${escapeHtml(String(dependencyFootprint.ocx_count || 0))} · COM/DLL=${escapeHtml(String(dependencyFootprint.com_dll_count || 0))} · Top=${escapeHtml(String((dependencyFootprint.top_dependencies || []).slice(0, 4).join(', ') || 'n/a'))}</p>
+          ${dependencyBodyHtml}
         </div>
         ${phpSignalsHtml}
         ${analysisPlanHtml}

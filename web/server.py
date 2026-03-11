@@ -9504,6 +9504,12 @@ def _refresh_php_discover_payload(response_payload: dict[str, Any]) -> dict[str,
             f"Discover cache indicates PHP legacy application with {controller_count} controllers, "
             f"{route_count} routes, {template_count} templates, and {dependency_count} composer dependencies."
         )
+        patched["applications"] = 1 if (controller_count or route_count or template_count or source_files_scanned) else 0
+        patched["php_controller_count"] = controller_count
+        patched["php_route_count"] = route_count
+        patched["php_template_count"] = template_count
+        patched["php_session_key_count"] = session_key_count
+        patched["php_auth_touchpoint_count"] = auth_touchpoints
         patched["source_loc_total"] = source_loc_total
         patched["source_files_scanned"] = source_files_scanned
         patched["php_dependency_count"] = dependency_count
