@@ -50,7 +50,7 @@ class EstimationApiTest(unittest.TestCase):
         created = json.loads(create_resp.body)
         self.assertTrue(created["ok"])
         self.assertEqual(created["estimate_id"], "estimate_api")
-        self.assertEqual(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 1379.2)
+        self.assertEqual(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 1423.2)
 
         get_resp = asyncio.run(server.api_get_estimate(_FakeRequest(path_params={"estimate_id": "estimate_api"})))
         self.assertEqual(get_resp.status_code, 200)

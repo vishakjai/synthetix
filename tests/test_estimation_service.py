@@ -40,7 +40,7 @@ class EstimationServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             result.estimate_summary["estimate"]["effort"]["total_hours"]["p50"],
-            1379.2,
+            1423.2,
         )
 
 

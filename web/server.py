@@ -8747,10 +8747,96 @@ def _synthesize_chunk_manifest_for_estimation(
     return None
 
 
-def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, str | None]:
+def _build_estimation_analysis_context(
+    *,
+    stage1: dict[str, Any],
+    raw_artifacts: dict[str, Any],
+    analyst_summary: dict[str, Any],
+    pipeline_analyst_output: dict[str, Any],
+    pipeline_agent_stage1: dict[str, Any],
+    risk_register: dict[str, Any] | None,
+) -> dict[str, Any]:
+    requirements_pack = stage1.get("requirements_pack", {}) if isinstance(stage1.get("requirements_pack", {}), dict) else {}
+    decision_brief = stage1.get("decision_brief", {}) if isinstance(stage1.get("decision_brief", {}), dict) else {}
+    decisions_required = decision_brief.get("decisions_required", {}) if isinstance(decision_brief.get("decisions_required", {}), dict) else {}
+    quality_gates = []
+    for candidate in (
+        stage1.get("quality_gates"),
+        requirements_pack.get("quality_gates") if isinstance(requirements_pack, dict) else None,
+        analyst_summary.get("quality_gates"),
+        pipeline_analyst_output.get("quality_gates"),
+        pipeline_agent_stage1.get("quality_gates"),
+    ):
+        if isinstance(candidate, list) and candidate:
+            quality_gates = candidate
+            break
+    modernization_readiness = {}
+    for candidate in (
+        stage1.get("modernization_readiness"),
+        stage1.get("legacy_code_inventory", {}).get("modernization_readiness") if isinstance(stage1.get("legacy_code_inventory", {}), dict) else None,
+        analyst_summary.get("modernization_readiness"),
+        pipeline_analyst_output.get("modernization_readiness"),
+        pipeline_agent_stage1.get("modernization_readiness"),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            modernization_readiness = candidate
+            break
+    functional_requirements = []
+    for candidate in (
+        stage1.get("functional_requirements"),
+        requirements_pack.get("functional_requirements") if isinstance(requirements_pack, dict) else None,
+        requirements_pack.get("requirements", {}).get("functional") if isinstance(requirements_pack.get("requirements", {}), dict) else None,
+    ):
+        if isinstance(candidate, list) and candidate:
+            functional_requirements = candidate
+            break
+    remediation_items = []
+    if isinstance(risk_register, dict):
+        for idx, risk in enumerate(list(risk_register.get("risks") or [])[:12], start=1):
+            if not isinstance(risk, dict):
+                continue
+            remediation_items.append(
+                {
+                    "id": str(risk.get("risk_id") or risk.get("id") or f"RM-{idx:03d}"),
+                    "title": str(risk.get("title") or risk.get("description") or "Risk remediation").strip(),
+                    "severity": str(risk.get("severity") or "medium").lower(),
+                }
+            )
+    golden_flow_count = 0
+    for candidate in (
+        raw_artifacts.get("golden_flows"),
+        stage1.get("golden_flows"),
+    ):
+        if isinstance(candidate, list):
+            golden_flow_count = len(candidate)
+            break
+    if not golden_flow_count:
+        event_map = raw_artifacts.get("event_map", {}) if isinstance(raw_artifacts.get("event_map", {}), dict) else {}
+        entries = event_map.get("entries", []) if isinstance(event_map.get("entries", []), list) else []
+        golden_flow_count = min(len(entries), 10)
+    sql_statement_count = 0
+    sql_catalog = raw_artifacts.get("sql_catalog", {}) if isinstance(raw_artifacts.get("sql_catalog", {}), dict) else {}
+    statements = sql_catalog.get("statements", []) if isinstance(sql_catalog.get("statements", []), list) else []
+    if statements:
+        sql_statement_count = len(statements)
+    return {
+        "functional_requirements": functional_requirements,
+        "remediation_items": remediation_items,
+        "decisions": {
+            "blocking": decisions_required.get("blocking", []) if isinstance(decisions_required.get("blocking", []), list) else [],
+            "non_blocking": decisions_required.get("non_blocking", []) if isinstance(decisions_required.get("non_blocking", []), list) else [],
+        },
+        "quality_gates": quality_gates,
+        "modernization_readiness": modernization_readiness,
+        "golden_flow_count": golden_flow_count,
+        "sql_statement_count": sql_statement_count,
+    }
+
+
+def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None, str | None]:
     run_state = MANAGER.get_run(run_id)
     if not isinstance(run_state, dict):
-        return None, None, None, "run not found"
+        return None, None, None, None, "run not found"
     stage1 = _stage_output_snapshot(run_state, 1)
     if not isinstance(stage1, dict) or not stage1:
         store = getattr(MANAGER, "store", None)
@@ -8929,10 +9015,18 @@ def _resolve_brownfield_estimation_inputs_from_run(run_id: str) -> tuple[dict[st
         }
 
     if not isinstance(chunk_manifest, dict) or not isinstance(traceability_scores, dict):
-        return None, None, None, "run is missing chunk manifest, risk register, or traceability coverage artifacts"
+        return None, None, None, None, "run is missing chunk manifest, risk register, or traceability coverage artifacts"
     if not isinstance(risk_register, dict):
         risk_register = {"risks": []}
-    return chunk_manifest, risk_register, traceability_scores, None
+    analysis_context = _build_estimation_analysis_context(
+        stage1=stage1,
+        raw_artifacts=raw_artifacts,
+        analyst_summary=analyst_summary,
+        pipeline_analyst_output=pipeline_analyst_output,
+        pipeline_agent_stage1=pipeline_agent_stage1,
+        risk_register=risk_register,
+    )
+    return chunk_manifest, risk_register, traceability_scores, analysis_context, None
 
 
 async def api_create_estimate(request):
@@ -8947,9 +9041,10 @@ async def api_create_estimate(request):
     chunk_manifest = payload.get("chunk_manifest")
     risk_register = payload.get("risk_register")
     traceability_scores = payload.get("traceability_scores")
+    analysis_context = None
     if not isinstance(chunk_manifest, dict) or not isinstance(risk_register, dict) or not isinstance(traceability_scores, dict):
         if run_id:
-            chunk_manifest, risk_register, traceability_scores, err = _resolve_brownfield_estimation_inputs_from_run(run_id)
+            chunk_manifest, risk_register, traceability_scores, analysis_context, err = _resolve_brownfield_estimation_inputs_from_run(run_id)
             if err:
                 return JSONResponse({"ok": False, "error": err}, status_code=400 if err != "run not found" else 404)
         else:
@@ -8975,6 +9070,7 @@ async def api_create_estimate(request):
             run_id=run_id,
             estimate_id=estimate_id,
             team_model_key=team_model_key,
+            analysis_context=analysis_context,
         )
     except KeyError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

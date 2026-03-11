@@ -6,25 +6,45 @@
     "DEV": 2.0,
     "QA": 1.0,
     "DEVOPS": 0.25,
-    "ARCH": 0.25
+    "ARCH": 0.5,
+    "DBA": 0.5
   },
   "architect_required": true,
+  "dba_required": true,
   "notes": [
-    "Architect role activated by chunk/risk/traceability thresholds."
+    "Architect role activated by chunk/risk/traceability thresholds.",
+    "Database specialist activated by data-model and SQL complexity signals."
   ],
   "weekly_capacity_hours": 30,
-  "total_hours_likely": 1379.2,
-  "total_hours_best": 1172.3,
-  "total_hours_worst": 1724.0,
-  "timeline_weeks_likely": 12.5,
-  "timeline_weeks_best": 10.6,
-  "timeline_weeks_worst": 15.6,
+  "total_hours_likely": 1423.2,
+  "total_hours_best": 1209.7,
+  "total_hours_worst": 1779.0,
+  "timeline_weeks_likely": 16.7,
+  "timeline_weeks_best": 14.1,
+  "timeline_weeks_worst": 20.9,
+  "phase_breakdown": [
+    {
+      "phase": "Build",
+      "hours_likely": 1379.2,
+      "weeks_best": 13.0,
+      "weeks_likely": 15.3,
+      "weeks_worst": 19.1
+    },
+    {
+      "phase": "Verify",
+      "hours_likely": 44.0,
+      "weeks_best": 0.3,
+      "weeks_likely": 0.4,
+      "weeks_worst": 0.5
+    }
+  ],
   "hours_by_role": {
-    "BA": 206.9,
-    "ARCH": 137.9,
-    "DEV": 620.6,
-    "QA": 344.8,
-    "DEVOPS": 69.0
+    "BA": 194.1,
+    "DEV": 582.2,
+    "QA": 323.5,
+    "DEVOPS": 64.7,
+    "ARCH": 129.4,
+    "DBA": 129.4
   },
   "items": [
     {
@@ -56,6 +76,11 @@
       "id": "WBS-CHUNK_005",
       "title": "Migrate Common subsystem",
       "hours_likely": 159.5
+    },
+    {
+      "id": "WBS-RISK-REMEDIATION",
+      "title": "Risk remediation and hardening from analyst register",
+      "hours_likely": 44.0
     },
     {
       "id": "WBS-SHARED-INFRA",

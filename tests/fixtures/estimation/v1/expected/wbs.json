@@ -267,6 +267,40 @@
       ]
     },
     {
+      "id": "WBS-RISK-REMEDIATION",
+      "kind": "RISK_REMEDIATION",
+      "title": "Risk remediation and hardening from analyst register",
+      "estimated_hours_likely": 44.0,
+      "risk_counts": {
+        "high": 2,
+        "medium": 0,
+        "low": 0
+      },
+      "traceability_score": 45,
+      "tasks": [
+        {
+          "kind": "DISCOVERY",
+          "pct": 0.1
+        },
+        {
+          "kind": "DESIGN",
+          "pct": 0.15
+        },
+        {
+          "kind": "IMPLEMENT",
+          "pct": 0.45
+        },
+        {
+          "kind": "TEST",
+          "pct": 0.2
+        },
+        {
+          "kind": "DEPLOY",
+          "pct": 0.1
+        }
+      ]
+    },
+    {
       "id": "WBS-SHARED-INFRA",
       "kind": "SHARED",
       "title": "Shared: CI/CD, environments, and baseline observability",
