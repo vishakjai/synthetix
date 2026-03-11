@@ -6,6 +6,7 @@ from .kernel import (
     build_brownfield_wbs,
     build_brownfield_wbs_from_files,
 )
+from .storage import EstimationArtifactPaths, EstimationStore
 from .types import (
     AssumptionLedgerArtifact,
     EstimateSummaryArtifact,
@@ -22,6 +23,8 @@ __all__ = [
     "BrownfieldIntake",
     "EstimateSummaryArtifact",
     "EstimationInputArtifact",
+    "EstimationArtifactPaths",
+    "EstimationStore",
     "GreenfieldIntake",
     "NaturalLanguageIntake",
     "TeamModelLibrary",
