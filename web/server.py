@@ -4376,8 +4376,8 @@ def _repo_snapshot_family_key(
 ) -> str:
     seed = "|".join(
         [
-            "bundle_v4",
-            "php_bundle_order_v2",
+            "bundle_v5",
+            "php_bundle_order_v3",
             owner.lower().strip(),
             repository.lower().strip(),
             branch.lower().strip(),
