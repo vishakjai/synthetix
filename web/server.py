@@ -2062,13 +2062,20 @@ class PipelineRunManager:
         model = str(credentials.get("model", "")).strip() or (
             "claude-sonnet-4-20250514" if provider == LLMProvider.ANTHROPIC else "gpt-4o"
         )
+        fallback_provider_raw = "openai" if provider_raw == "anthropic" else "anthropic"
+        try:
+            fallback_credentials = SETTINGS_STORE.resolve_llm_credentials(fallback_provider_raw, requested_model="")
+        except Exception:
+            fallback_credentials = {"api_key": "", "model": ""}
+        fallback_api_key = str(fallback_credentials.get("api_key", "")).strip()
+        fallback_model = str(fallback_credentials.get("model", "")).strip()
 
         return PipelineConfig(
             provider=provider,
-            anthropic_api_key=api_key if provider == LLMProvider.ANTHROPIC else "",
-            openai_api_key=api_key if provider == LLMProvider.OPENAI else "",
-            anthropic_model=model if provider == LLMProvider.ANTHROPIC else "claude-sonnet-4-20250514",
-            openai_model=model if provider == LLMProvider.OPENAI else "gpt-4o",
+            anthropic_api_key=api_key if provider == LLMProvider.ANTHROPIC else fallback_api_key,
+            openai_api_key=api_key if provider == LLMProvider.OPENAI else fallback_api_key,
+            anthropic_model=model if provider == LLMProvider.ANTHROPIC else (fallback_model or "claude-sonnet-4-20250514"),
+            openai_model=model if provider == LLMProvider.OPENAI else (fallback_model or "gpt-4o"),
             temperature=self._to_float(summary.get("temperature", 0.3), 0.3),
             developer_parallel_agents=max(1, self._to_int(summary.get("developer_parallel_agents", 5), 5)),
             max_retries=max(0, self._to_int(summary.get("max_retries", 2), 2)),
@@ -5273,6 +5280,13 @@ def _config_from_payload(payload: dict[str, Any]) -> PipelineConfig:
 
     if not model:
         model = "claude-sonnet-4-20250514" if provider == LLMProvider.ANTHROPIC else "gpt-4o"
+    fallback_provider_raw = "openai" if provider_raw == "anthropic" else "anthropic"
+    try:
+        fallback_cfg = SETTINGS_STORE.resolve_llm_credentials(fallback_provider_raw, requested_model="")
+    except Exception:
+        fallback_cfg = {"api_key": "", "model": ""}
+    fallback_api_key = str(fallback_cfg.get("api_key", "")).strip()
+    fallback_model = str(fallback_cfg.get("model", "")).strip()
 
     live_deploy = bool(payload.get("live_deploy", True))
     deployment_target = str(payload.get("deployment_target", "local")).strip().lower()
@@ -5281,10 +5295,10 @@ def _config_from_payload(payload: dict[str, Any]) -> PipelineConfig:
 
     return PipelineConfig(
         provider=provider,
-        anthropic_api_key=api_key if provider == LLMProvider.ANTHROPIC else "",
-        openai_api_key=api_key if provider == LLMProvider.OPENAI else "",
-        anthropic_model=model if provider == LLMProvider.ANTHROPIC else "claude-sonnet-4-20250514",
-        openai_model=model if provider == LLMProvider.OPENAI else "gpt-4o",
+        anthropic_api_key=api_key if provider == LLMProvider.ANTHROPIC else fallback_api_key,
+        openai_api_key=api_key if provider == LLMProvider.OPENAI else fallback_api_key,
+        anthropic_model=model if provider == LLMProvider.ANTHROPIC else (fallback_model or "claude-sonnet-4-20250514"),
+        openai_model=model if provider == LLMProvider.OPENAI else (fallback_model or "gpt-4o"),
         temperature=float(payload.get("temperature", 0.3)),
         developer_parallel_agents=int(payload.get("parallel_agents", 5)),
         max_retries=int(payload.get("max_retries", 2)),

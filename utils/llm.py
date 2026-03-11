@@ -73,36 +73,127 @@ class LLMClient:
             )
         return self._openai_client
 
-    def _openai_model_supports_max_completion_tokens(self) -> bool:
-        model = str(self.config.get_model() or "").strip().lower()
+    def _openai_model_supports_max_completion_tokens(self, model_override: str = "") -> bool:
+        model = str(model_override or self.config.get_model() or "").strip().lower()
         if not model:
             return False
         return model.startswith("gpt-5") or model.startswith("o1") or model.startswith("o3") or model.startswith("o4")
 
-    def _openai_token_limit_kwargs(self) -> dict[str, Any]:
+    def _openai_token_limit_kwargs(self, model_override: str = "") -> dict[str, Any]:
         token_limit = int(self.config.max_output_tokens or 0)
         if token_limit <= 0:
             return {}
-        if self._openai_model_supports_max_completion_tokens():
+        if self._openai_model_supports_max_completion_tokens(model_override):
             return {"max_completion_tokens": token_limit}
         return {"max_tokens": token_limit}
 
-    def _openai_sampling_kwargs(self) -> dict[str, Any]:
+    def _openai_sampling_kwargs(self, model_override: str = "") -> dict[str, Any]:
         temperature = float(self.config.temperature)
-        if self._openai_model_supports_max_completion_tokens():
+        if self._openai_model_supports_max_completion_tokens(model_override):
             if abs(temperature - 1.0) < 1e-9:
                 return {"temperature": 1.0}
             return {}
         return {"temperature": temperature}
 
+    @staticmethod
+    def _is_anthropic_billing_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return (
+            "credit balance is too low" in text
+            or "plans & billing" in text
+            or "purchase credits" in text
+            or "billing" in text and "anthropic" in text
+        )
+
+    def _can_fallback_to_openai(self) -> bool:
+        key = str(self.config.openai_api_key or os.getenv("OPENAI_API_KEY", "")).strip()
+        model = str(self.config.openai_model or "").strip()
+        return bool(key and model)
+
+    def _fallback_invoke_openai(self, system_prompt: str, user_message: str) -> LLMResponse:
+        client = self._get_openai_client()
+        model = self.config.openai_model
+        response = client.chat.completions.create(
+            model=model,
+            **self._openai_sampling_kwargs(model),
+            **self._openai_token_limit_kwargs(model),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        return LLMResponse(
+            content=response.choices[0].message.content,
+            model=model,
+            provider="openai",
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+            latency_ms=0,
+        )
+
+    def _fallback_invoke_openai_with_tools(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools: list[dict[str, Any]],
+        tool_choice: str,
+    ) -> LLMResponse:
+        client = self._get_openai_client()
+        model = self.config.openai_model
+        response = client.chat.completions.create(
+            model=model,
+            **self._openai_sampling_kwargs(model),
+            **self._openai_token_limit_kwargs(model),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        message = response.choices[0].message
+        tool_calls: list[dict[str, Any]] = []
+        for call in message.tool_calls or []:
+            arguments = call.function.arguments
+            parsed_arguments: Any
+            try:
+                parsed_arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+            except Exception:
+                parsed_arguments = arguments
+            tool_calls.append(
+                {
+                    "id": call.id,
+                    "name": call.function.name,
+                    "arguments": parsed_arguments or {},
+                }
+            )
+        return LLMResponse(
+            content=message.content or "",
+            model=model,
+            provider="openai",
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+            latency_ms=0,
+            tool_calls=tool_calls,
+        )
+
     def invoke(self, system_prompt: str, user_message: str) -> LLMResponse:
         """Send a message to the configured LLM and return structured response."""
         start_time = time.time()
-
-        if self.config.provider == LLMProvider.ANTHROPIC:
-            response = self._invoke_anthropic(system_prompt, user_message)
-        else:
-            response = self._invoke_openai(system_prompt, user_message)
+        try:
+            if self.config.provider == LLMProvider.ANTHROPIC:
+                response = self._invoke_anthropic(system_prompt, user_message)
+            else:
+                response = self._invoke_openai(system_prompt, user_message)
+        except Exception as exc:
+            if (
+                self.config.provider == LLMProvider.ANTHROPIC
+                and self._is_anthropic_billing_error(exc)
+                and self._can_fallback_to_openai()
+            ):
+                response = self._fallback_invoke_openai(system_prompt, user_message)
+            else:
+                raise
 
         response.latency_ms = (time.time() - start_time) * 1000
         return response
@@ -128,20 +219,35 @@ class LLMClient:
           [{"type": "function", "function": {...}}]
         """
         start_time = time.time()
-        if self.config.provider == LLMProvider.ANTHROPIC:
-            response = self._invoke_anthropic_with_tools(
-                system_prompt,
-                user_message,
-                tools,
-                tool_choice,
-            )
-        else:
-            response = self._invoke_openai_with_tools(
-                system_prompt,
-                user_message,
-                tools,
-                tool_choice,
-            )
+        try:
+            if self.config.provider == LLMProvider.ANTHROPIC:
+                response = self._invoke_anthropic_with_tools(
+                    system_prompt,
+                    user_message,
+                    tools,
+                    tool_choice,
+                )
+            else:
+                response = self._invoke_openai_with_tools(
+                    system_prompt,
+                    user_message,
+                    tools,
+                    tool_choice,
+                )
+        except Exception as exc:
+            if (
+                self.config.provider == LLMProvider.ANTHROPIC
+                and self._is_anthropic_billing_error(exc)
+                and self._can_fallback_to_openai()
+            ):
+                response = self._fallback_invoke_openai_with_tools(
+                    system_prompt,
+                    user_message,
+                    tools,
+                    tool_choice,
+                )
+            else:
+                raise
         response.latency_ms = (time.time() - start_time) * 1000
         return response
 

@@ -12120,7 +12120,13 @@ function renderProgress() {
     el.pipelineStatusText.textContent = `STARTING RUN... (${elapsed}s)`;
     return;
   }
-  el.pipelineStatusText.textContent = (state.currentRun?.status || "idle").toUpperCase();
+  const status = String(state.currentRun?.status || "idle").toUpperCase();
+  const error = String(state.currentRun?.error_message || "").trim();
+  if (status === "FAILED" && error) {
+    el.pipelineStatusText.textContent = `FAILED: ${error}`;
+    return;
+  }
+  el.pipelineStatusText.textContent = status;
 }
 
 function renderRetryPlan() {
