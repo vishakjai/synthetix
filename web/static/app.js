@@ -1376,6 +1376,7 @@ function buildAnalystReportV2(output) {
   const targetProfile = (sourceTargetProfile.target && typeof sourceTargetProfile.target === "object")
     ? sourceTargetProfile.target
     : {};
+  const skill = resolveLegacySkillProfile(safeOutput);
   const isPhpSummary = (
     String(sourceProfile.language || safeOutput.source_language || "").trim().toLowerCase() === "php"
     || (legacyInventory.php_analysis && typeof legacyInventory.php_analysis === "object" && Object.keys(legacyInventory.php_analysis).length > 0)
@@ -1399,7 +1400,6 @@ function buildAnalystReportV2(output) {
   const contextRef = (safeOutput.context_reference && typeof safeOutput.context_reference === "object")
     ? safeOutput.context_reference
     : ((reqPack.context_reference && typeof reqPack.context_reference === "object") ? reqPack.context_reference : {});
-  const skill = resolveLegacySkillProfile(safeOutput);
   const fr = Array.isArray(safeOutput.functional_requirements) ? safeOutput.functional_requirements : [];
   const nfr = Array.isArray(safeOutput.non_functional_requirements) ? safeOutput.non_functional_requirements : [];
   const openQuestionsRaw = Array.isArray(safeOutput.open_questions)
