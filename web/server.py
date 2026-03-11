@@ -9332,10 +9332,42 @@ def _build_analyst_markdown_for_docgen(
             discover_cache = integration_context.get("discover_cache", {}) if isinstance(integration_context.get("discover_cache", {}), dict) else {}
             landscape = discover_cache.get("landscape", {}) if isinstance(discover_cache.get("landscape", {}), dict) else {}
             raw = docgen_seed.get("raw_artifacts", {}) if isinstance(docgen_seed.get("raw_artifacts", {}), dict) else {}
-            for key in ("repo_landscape_v1", "php_framework_profile_v1", "php_route_hints_v1", "component_inventory_v1", "modernization_track_plan_v1"):
+            for key in (
+                "repo_landscape_v1",
+                "php_framework_profile_v1",
+                "php_route_hints_v1",
+                "php_route_inventory_v1",
+                "php_controller_inventory_v1",
+                "php_template_inventory_v1",
+                "php_sql_catalog_v1",
+                "php_session_state_inventory_v1",
+                "php_authz_authn_inventory_v1",
+                "php_include_graph_v1",
+                "php_background_job_inventory_v1",
+                "php_file_io_inventory_v1",
+                "php_validation_rules_v1",
+                "component_inventory_v1",
+                "modernization_track_plan_v1",
+            ):
                 value = landscape.get(key)
                 if isinstance(value, dict) and value:
                     raw[key] = copy.deepcopy(value)
+            php_alias_map = {
+                "php_route_inventory": "php_route_inventory_v1",
+                "php_controller_inventory": "php_controller_inventory_v1",
+                "php_template_inventory": "php_template_inventory_v1",
+                "php_sql_catalog": "php_sql_catalog_v1",
+                "php_session_state_inventory": "php_session_state_inventory_v1",
+                "php_authz_authn_inventory": "php_authz_authn_inventory_v1",
+                "php_include_graph": "php_include_graph_v1",
+                "php_background_job_inventory": "php_background_job_inventory_v1",
+                "php_file_io_inventory": "php_file_io_inventory_v1",
+                "php_validation_rules": "php_validation_rules_v1",
+            }
+            for alias, versioned in php_alias_map.items():
+                body = raw.get(versioned, {})
+                if isinstance(body, dict) and body:
+                    raw[alias] = copy.deepcopy(body)
             if raw:
                 docgen_seed["raw_artifacts"] = raw
 
@@ -9348,10 +9380,22 @@ def _build_analyst_markdown_for_docgen(
             def _patch_php_inventory(container: dict[str, Any]) -> None:
                 if not isinstance(container, dict):
                     return
-                controller_count = int(php_profile.get("controller_count", 0) or php_hints.get("estimated_controllers", 0) or 0)
-                route_count = int(php_hints.get("estimated_route_files", 0) or php_profile.get("route_file_count", 0) or 0)
-                template_count = int(php_profile.get("template_count", 0) or php_hints.get("estimated_templates", 0) or 0)
-                auth_touchpoints = int(php_profile.get("auth_touchpoint_estimate", 0) or 0)
+                route_artifact = raw.get("php_route_inventory_v1", {}) if isinstance(raw.get("php_route_inventory_v1", {}), dict) else {}
+                controller_artifact = raw.get("php_controller_inventory_v1", {}) if isinstance(raw.get("php_controller_inventory_v1", {}), dict) else {}
+                template_artifact = raw.get("php_template_inventory_v1", {}) if isinstance(raw.get("php_template_inventory_v1", {}), dict) else {}
+                session_artifact = raw.get("php_session_state_inventory_v1", {}) if isinstance(raw.get("php_session_state_inventory_v1", {}), dict) else {}
+                auth_artifact = raw.get("php_authz_authn_inventory_v1", {}) if isinstance(raw.get("php_authz_authn_inventory_v1", {}), dict) else {}
+                sql_artifact = raw.get("php_sql_catalog_v1", {}) if isinstance(raw.get("php_sql_catalog_v1", {}), dict) else {}
+                validation_artifact = raw.get("php_validation_rules_v1", {}) if isinstance(raw.get("php_validation_rules_v1", {}), dict) else {}
+                file_io_artifact = raw.get("php_file_io_inventory_v1", {}) if isinstance(raw.get("php_file_io_inventory_v1", {}), dict) else {}
+                jobs_artifact = raw.get("php_background_job_inventory_v1", {}) if isinstance(raw.get("php_background_job_inventory_v1", {}), dict) else {}
+                include_artifact = raw.get("php_include_graph_v1", {}) if isinstance(raw.get("php_include_graph_v1", {}), dict) else {}
+                controller_count = int(controller_artifact.get("controller_count", 0) or php_profile.get("controller_count", 0) or php_hints.get("estimated_controllers", 0) or 0)
+                route_count = int(route_artifact.get("route_count", 0) or php_hints.get("estimated_route_files", 0) or php_profile.get("route_file_count", 0) or 0)
+                template_count = int(template_artifact.get("template_count", 0) or php_profile.get("template_count", 0) or php_hints.get("estimated_templates", 0) or 0)
+                auth_touchpoints = int(auth_artifact.get("auth_touchpoint_count", 0) or php_profile.get("auth_touchpoint_estimate", 0) or 0)
+                session_key_count = int(session_artifact.get("session_key_count", 0) or 0)
+                sql_statement_count = int(sql_artifact.get("statement_count", 0) or 0)
                 source_loc_total = int(scan_summary.get("total_loc", 0) or scan_summary.get("loc_total", 0) or container.get("source_loc_total", 0) or 0)
                 source_files_scanned = int(scan_summary.get("total_files", 0) or container.get("source_files_scanned", 0) or 0)
                 dependency_count = int(
@@ -9362,7 +9406,7 @@ def _build_analyst_markdown_for_docgen(
                 )
                 container["summary"] = (
                     f"Discover cache indicates PHP legacy application with {controller_count} controllers, "
-                    f"{route_count} routes, {template_count} templates, 0 SQL statements, and 0 session keys."
+                    f"{route_count} routes, {template_count} templates, {sql_statement_count} SQL statements, and {session_key_count} session keys."
                 )
                 container["source_loc_total"] = source_loc_total
                 container["source_files_scanned"] = source_files_scanned
@@ -9371,16 +9415,40 @@ def _build_analyst_markdown_for_docgen(
                 route_inventory = php_analysis.get("route_inventory", {}) if isinstance(php_analysis.get("route_inventory", {}), dict) else {}
                 controller_inventory = php_analysis.get("controller_inventory", {}) if isinstance(php_analysis.get("controller_inventory", {}), dict) else {}
                 template_inventory = php_analysis.get("template_inventory", {}) if isinstance(php_analysis.get("template_inventory", {}), dict) else {}
+                session_inventory = php_analysis.get("session_state_inventory", {}) if isinstance(php_analysis.get("session_state_inventory", {}), dict) else {}
                 auth_inventory = php_analysis.get("authz_authn_inventory", {}) if isinstance(php_analysis.get("authz_authn_inventory", {}), dict) else {}
+                sql_inventory = php_analysis.get("sql_catalog", {}) if isinstance(php_analysis.get("sql_catalog", {}), dict) else {}
+                include_inventory = php_analysis.get("include_graph", {}) if isinstance(php_analysis.get("include_graph", {}), dict) else {}
+                job_inventory = php_analysis.get("background_job_inventory", {}) if isinstance(php_analysis.get("background_job_inventory", {}), dict) else {}
+                file_io_inventory = php_analysis.get("file_io_inventory", {}) if isinstance(php_analysis.get("file_io_inventory", {}), dict) else {}
+                validation_inventory = php_analysis.get("validation_rules", {}) if isinstance(php_analysis.get("validation_rules", {}), dict) else {}
                 php_analysis["framework"] = _clean_text(php_profile.get("framework") or php_analysis.get("framework"))
+                route_inventory = copy.deepcopy(route_artifact) if route_artifact else route_inventory
+                controller_inventory = copy.deepcopy(controller_artifact) if controller_artifact else controller_inventory
+                template_inventory = copy.deepcopy(template_artifact) if template_artifact else template_inventory
+                session_inventory = copy.deepcopy(session_artifact) if session_artifact else session_inventory
+                auth_inventory = copy.deepcopy(auth_artifact) if auth_artifact else auth_inventory
+                sql_inventory = copy.deepcopy(sql_artifact) if sql_artifact else sql_inventory
+                include_inventory = copy.deepcopy(include_artifact) if include_artifact else include_inventory
+                job_inventory = copy.deepcopy(jobs_artifact) if jobs_artifact else job_inventory
+                file_io_inventory = copy.deepcopy(file_io_artifact) if file_io_artifact else file_io_inventory
+                validation_inventory = copy.deepcopy(validation_artifact) if validation_artifact else validation_inventory
                 route_inventory["route_count"] = int(route_inventory.get("route_count", 0) or route_count)
                 controller_inventory["controller_count"] = int(controller_inventory.get("controller_count", 0) or controller_count)
                 template_inventory["template_count"] = int(template_inventory.get("template_count", 0) or template_count)
+                session_inventory["session_key_count"] = int(session_inventory.get("session_key_count", 0) or session_key_count)
                 auth_inventory["auth_touchpoint_count"] = int(auth_inventory.get("auth_touchpoint_count", 0) or auth_touchpoints)
+                sql_inventory["statement_count"] = int(sql_inventory.get("statement_count", 0) or sql_statement_count)
                 php_analysis["route_inventory"] = route_inventory
                 php_analysis["controller_inventory"] = controller_inventory
                 php_analysis["template_inventory"] = template_inventory
+                php_analysis["session_state_inventory"] = session_inventory
                 php_analysis["authz_authn_inventory"] = auth_inventory
+                php_analysis["sql_catalog"] = sql_inventory
+                php_analysis["include_graph"] = include_inventory
+                php_analysis["background_job_inventory"] = job_inventory
+                php_analysis["file_io_inventory"] = file_io_inventory
+                php_analysis["validation_rules"] = validation_inventory
                 container["php_analysis"] = php_analysis
 
             legacy_inventory = docgen_seed.get("legacy_code_inventory", {}) if isinstance(docgen_seed.get("legacy_code_inventory", {}), dict) else {}
@@ -9410,11 +9478,16 @@ def _refresh_php_discover_payload(response_payload: dict[str, Any]) -> dict[str,
 
     dep_footprint = repo_landscape.get("dependency_footprint", {}) if isinstance(repo_landscape.get("dependency_footprint", {}), dict) else {}
     scan_summary = repo_landscape.get("scan_summary", {}) if isinstance(repo_landscape.get("scan_summary", {}), dict) else {}
-    controller_count = int(php_profile.get("controller_count", 0) or php_hints.get("estimated_controllers", 0) or 0)
-    route_count = int(php_hints.get("estimated_route_files", 0) or php_profile.get("route_file_count", 0) or 0)
-    template_count = int(php_profile.get("template_count", 0) or php_hints.get("estimated_templates", 0) or 0)
-    session_key_count = int(php_profile.get("session_key_count", 0) or 0)
-    auth_touchpoints = int(php_profile.get("auth_touchpoint_estimate", 0) or 0)
+    route_artifact = raw.get("php_route_inventory_v1", {}) if isinstance(raw.get("php_route_inventory_v1", {}), dict) else {}
+    controller_artifact = raw.get("php_controller_inventory_v1", {}) if isinstance(raw.get("php_controller_inventory_v1", {}), dict) else {}
+    template_artifact = raw.get("php_template_inventory_v1", {}) if isinstance(raw.get("php_template_inventory_v1", {}), dict) else {}
+    session_artifact = raw.get("php_session_state_inventory_v1", {}) if isinstance(raw.get("php_session_state_inventory_v1", {}), dict) else {}
+    auth_artifact = raw.get("php_authz_authn_inventory_v1", {}) if isinstance(raw.get("php_authz_authn_inventory_v1", {}), dict) else {}
+    controller_count = int(controller_artifact.get("controller_count", 0) or php_profile.get("controller_count", 0) or php_hints.get("estimated_controllers", 0) or 0)
+    route_count = int(route_artifact.get("route_count", 0) or php_hints.get("estimated_route_files", 0) or php_profile.get("route_file_count", 0) or 0)
+    template_count = int(template_artifact.get("template_count", 0) or php_profile.get("template_count", 0) or php_hints.get("estimated_templates", 0) or 0)
+    session_key_count = int(session_artifact.get("session_key_count", 0) or php_profile.get("session_key_count", 0) or 0)
+    auth_touchpoints = int(auth_artifact.get("auth_touchpoint_count", 0) or php_profile.get("auth_touchpoint_estimate", 0) or 0)
     dependency_count = int(
         dep_footprint.get("composer_package_count", 0)
         or php_profile.get("composer_package_count", 0)
@@ -9435,11 +9508,11 @@ def _refresh_php_discover_payload(response_payload: dict[str, Any]) -> dict[str,
         patched["source_target_modernization_profile"] = patched.get("source_target_modernization_profile", {})
         php_analysis = patched.get("php_analysis", {}) if isinstance(patched.get("php_analysis", {}), dict) else {}
         framework = _clean_text(php_profile.get("framework") or php_analysis.get("framework")) or "custom_php"
-        route_inventory = php_analysis.get("route_inventory", {}) if isinstance(php_analysis.get("route_inventory", {}), dict) else {}
-        controller_inventory = php_analysis.get("controller_inventory", {}) if isinstance(php_analysis.get("controller_inventory", {}), dict) else {}
-        template_inventory = php_analysis.get("template_inventory", {}) if isinstance(php_analysis.get("template_inventory", {}), dict) else {}
-        session_inventory = php_analysis.get("session_state_inventory", {}) if isinstance(php_analysis.get("session_state_inventory", {}), dict) else {}
-        auth_inventory = php_analysis.get("authz_authn_inventory", {}) if isinstance(php_analysis.get("authz_authn_inventory", {}), dict) else {}
+        route_inventory = copy.deepcopy(route_artifact) if route_artifact else (php_analysis.get("route_inventory", {}) if isinstance(php_analysis.get("route_inventory", {}), dict) else {})
+        controller_inventory = copy.deepcopy(controller_artifact) if controller_artifact else (php_analysis.get("controller_inventory", {}) if isinstance(php_analysis.get("controller_inventory", {}), dict) else {})
+        template_inventory = copy.deepcopy(template_artifact) if template_artifact else (php_analysis.get("template_inventory", {}) if isinstance(php_analysis.get("template_inventory", {}), dict) else {})
+        session_inventory = copy.deepcopy(session_artifact) if session_artifact else (php_analysis.get("session_state_inventory", {}) if isinstance(php_analysis.get("session_state_inventory", {}), dict) else {})
+        auth_inventory = copy.deepcopy(auth_artifact) if auth_artifact else (php_analysis.get("authz_authn_inventory", {}) if isinstance(php_analysis.get("authz_authn_inventory", {}), dict) else {})
         route_inventory.setdefault("artifact_type", "php_route_inventory")
         route_inventory["route_count"] = int(route_inventory.get("route_count", 0) or route_count)
         controller_inventory.setdefault("artifact_type", "php_controller_inventory")
@@ -9474,6 +9547,22 @@ def _refresh_php_discover_payload(response_payload: dict[str, Any]) -> dict[str,
     if not isinstance(rebuilt_raw, dict):
         rebuilt_raw = {}
     rebuilt_raw.update(raw)
+    php_alias_map = {
+        "php_route_inventory": "php_route_inventory_v1",
+        "php_controller_inventory": "php_controller_inventory_v1",
+        "php_template_inventory": "php_template_inventory_v1",
+        "php_sql_catalog": "php_sql_catalog_v1",
+        "php_session_state_inventory": "php_session_state_inventory_v1",
+        "php_authz_authn_inventory": "php_authz_authn_inventory_v1",
+        "php_include_graph": "php_include_graph_v1",
+        "php_background_job_inventory": "php_background_job_inventory_v1",
+        "php_file_io_inventory": "php_file_io_inventory_v1",
+        "php_validation_rules": "php_validation_rules_v1",
+    }
+    for alias, versioned in php_alias_map.items():
+        body = rebuilt_raw.get(versioned, {})
+        if isinstance(body, dict) and body:
+            rebuilt_raw[alias] = copy.deepcopy(body)
     response_payload["raw_artifacts"] = rebuilt_raw
     response_payload["analyst_report_v2"] = build_analyst_report_v2({**report_seed, "raw_artifacts": rebuilt_raw})
     return response_payload

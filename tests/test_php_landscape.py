@@ -29,8 +29,14 @@ class PhpLandscapeTests(unittest.TestCase):
 
         self.assertIn("php_framework_profile_v1", artifacts)
         self.assertIn("php_route_hints_v1", artifacts)
+        self.assertIn("php_route_inventory_v1", artifacts)
+        self.assertIn("php_controller_inventory_v1", artifacts)
+        self.assertIn("php_template_inventory_v1", artifacts)
         profile = artifacts["php_framework_profile_v1"]
         self.assertEqual(profile["framework"], "custom_php")
+        self.assertGreaterEqual(artifacts["php_route_inventory_v1"].get("route_count", 0), 1)
+        self.assertGreaterEqual(artifacts["php_controller_inventory_v1"].get("controller_count", 0), 1)
+        self.assertGreaterEqual(artifacts["php_template_inventory_v1"].get("template_count", 0), 1)
 
         component_inventory = artifacts["component_inventory_v1"]
         components = component_inventory.get("components", [])
