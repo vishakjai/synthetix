@@ -1,5 +1,10 @@
 from .calibration import load_team_model_library
-from .kernel import build_brownfield_wbs, build_brownfield_wbs_from_files
+from .kernel import (
+    apply_team_model_to_wbs,
+    apply_team_model_to_wbs_from_files,
+    build_brownfield_wbs,
+    build_brownfield_wbs_from_files,
+)
 from .types import (
     AssumptionLedgerArtifact,
     EstimateSummaryArtifact,
@@ -18,6 +23,8 @@ __all__ = [
     "TeamModelLibrary",
     "TeamModelLibraryArtifact",
     "WBSArtifact",
+    "apply_team_model_to_wbs",
+    "apply_team_model_to_wbs_from_files",
     "build_brownfield_wbs",
     "build_brownfield_wbs_from_files",
     "load_artifact_json",

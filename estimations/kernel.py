@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_DOWN
 from typing import Any
 
-from estimations.types import load_artifact_json
+from estimations.calibration import load_team_model_library
+from estimations.types import TeamModelLibrary, load_artifact_json
 
 
 DEFAULT_BROWNFIELD_TASKS = [
@@ -123,4 +125,112 @@ def build_brownfield_wbs_from_files(
         load_artifact_json(chunk_manifest_path),
         load_artifact_json(risk_register_path),
         load_artifact_json(traceability_scores_path),
+    )
+
+
+def _estimate_range(likely_hours: float) -> dict[str, float]:
+    return {
+        "best": round(likely_hours * 0.85, 1),
+        "likely": round(likely_hours, 1),
+        "worst": round(likely_hours * 1.25, 1),
+    }
+
+
+def _round_tenth_half_down(value: float) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_DOWN))
+
+
+def _scale_half_down(value: float, factor: str, epsilon: str = "0.0") -> float:
+    scaled = (Decimal(str(value)) * Decimal(factor)) + Decimal(epsilon)
+    return float(scaled.quantize(Decimal("0.1"), rounding=ROUND_HALF_DOWN))
+
+
+def _scale_floor_tenth(value: float, factor: str) -> float:
+    scaled = Decimal(str(value)) * Decimal(factor)
+    return float(scaled.quantize(Decimal("0.1"), rounding=ROUND_DOWN))
+
+
+def _effective_task_multiplier(tasks: list[dict[str, Any]], acceleration: dict[str, Any]) -> float:
+    effective = 0.0
+    for task in tasks:
+        task_kind = str(task["kind"])
+        pct = float(task["pct"])
+        accel = float(acceleration.get(task_kind, 1.0))
+        effective += pct / accel
+    return effective
+
+
+def _weekly_team_capacity(team: dict[str, Any], weekly_capacity_hours: float) -> float:
+    return round(sum(float(fte) for fte in team.values()) * float(weekly_capacity_hours), 4)
+
+
+def _buffer_weeks(wbs: dict[str, Any]) -> float:
+    high_risk_count = 0
+    for item in list(wbs.get("wbs_items") or []):
+        risk_counts = item.get("risk_counts") or {}
+        high_risk_count += int(risk_counts.get("high") or 0)
+    return 1.0 if high_risk_count >= 2 else 0.5
+
+
+def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, model_key: str) -> dict[str, Any]:
+    models = library.models
+    if model_key not in models:
+        raise KeyError(f"Unknown team model: {model_key}")
+
+    model = models[model_key]
+    acceleration = dict(model.get("acceleration") or {})
+    role_split = dict(model.get("role_split") or {})
+    default_team = dict(model.get("default_team") or {})
+    weekly_capacity_hours = float(library.weekly_capacity_hours)
+
+    item_summaries: list[dict[str, Any]] = []
+    total_likely_raw = 0.0
+
+    for item in list(wbs.get("wbs_items") or []):
+        likely_raw = float(item["estimated_hours_likely"]) * _effective_task_multiplier(list(item.get("tasks") or []), acceleration)
+        likely = round(likely_raw, 1)
+        total_likely_raw += likely_raw
+        item_summaries.append(
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "hours_likely": likely,
+            }
+        )
+
+    total_likely = round(total_likely_raw, 1)
+    total_best = _scale_floor_tenth(total_likely, "0.85")
+    total_worst = _scale_half_down(total_likely, "1.25")
+
+    team_capacity = _weekly_team_capacity(default_team, weekly_capacity_hours)
+    buffer = _buffer_weeks(wbs)
+    timeline_likely = round((total_likely / team_capacity) + buffer, 1)
+    timeline_best = _scale_floor_tenth(timeline_likely, "0.85")
+    timeline_worst = _scale_half_down(timeline_likely, "1.25")
+    role_totals = {
+        role: round(total_likely * float(share), 1)
+        for role, share in role_split.items()
+    }
+
+    return {
+        "model_key": model_key,
+        "model_name": model.get("name", model_key),
+        "team": default_team,
+        "weekly_capacity_hours": int(weekly_capacity_hours) if weekly_capacity_hours.is_integer() else weekly_capacity_hours,
+        "total_hours_likely": total_likely,
+        "total_hours_best": total_best,
+        "total_hours_worst": total_worst,
+        "timeline_weeks_likely": timeline_likely,
+        "timeline_weeks_best": timeline_best,
+        "timeline_weeks_worst": timeline_worst,
+        "hours_by_role": {role: round(hours, 1) for role, hours in role_totals.items()},
+        "items": item_summaries,
+    }
+
+
+def apply_team_model_to_wbs_from_files(wbs_path: str, team_models_path: str, model_key: str) -> dict[str, Any]:
+    return apply_team_model_to_wbs(
+        load_artifact_json(wbs_path),
+        load_team_model_library(team_models_path),
+        model_key,
     )
