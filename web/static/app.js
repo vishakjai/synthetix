@@ -551,6 +551,11 @@ const el = {
   estimateSummary: document.getElementById("estimate-summary"),
   estimateAssumptions: document.getElementById("estimate-assumptions"),
   estimateWbs: document.getElementById("estimate-wbs"),
+  estimateAgentInput: document.getElementById("estimate-agent-input"),
+  estimateAgentWbsItem: document.getElementById("estimate-agent-wbs-item"),
+  estimateAgentIntakeBtn: document.getElementById("estimate-agent-intake-btn"),
+  estimateAgentExplainBtn: document.getElementById("estimate-agent-explain-btn"),
+  estimateAgentOutput: document.getElementById("estimate-agent-output"),
 };
 
 const state = {
@@ -9977,6 +9982,11 @@ function setEstimateStatus(message, isError = false) {
   el.estimateStatus.className = `mt-2 text-xs ${isError ? "text-rose-700" : "text-slate-700"}`;
 }
 
+function setEstimateAgentOutput(html) {
+  if (!el.estimateAgentOutput) return;
+  el.estimateAgentOutput.innerHTML = html || "No assistant output yet.";
+}
+
 function parseEstimateJson(raw, label) {
   const text = String(raw || "").trim();
   if (!text) {
@@ -10191,6 +10201,94 @@ async function createEstimateFromForm() {
     setEstimateStatus(`Created estimate ${data.estimate_id}.`);
   } catch (err) {
     setEstimateStatus(`Estimate create failed: ${err.message}`, true);
+  }
+}
+
+function renderEstimateAgentIntake(result) {
+  const draft = result?.draft || {};
+  const llm = result?.llm || {};
+  const missing = Array.isArray(draft?.missing_fields) ? draft.missing_fields : [];
+  const questions = Array.isArray(draft?.follow_up_questions) ? draft.follow_up_questions : [];
+  const assumptions = Array.isArray(draft?.assumptions) ? draft.assumptions : [];
+  if (el.estimateBusinessNeed && String(draft.business_need || "").trim() && !String(el.estimateBusinessNeed.value || "").trim()) {
+    el.estimateBusinessNeed.value = String(draft.business_need || "").trim();
+  }
+  if (el.estimateRunId && String(draft.run_id || "").trim() && !String(el.estimateRunId.value || "").trim()) {
+    el.estimateRunId.value = String(draft.run_id || "").trim();
+  }
+  if (el.estimateTeamModel && String(draft.team_model_key || "").trim()) {
+    el.estimateTeamModel.value = String(draft.team_model_key || el.estimateTeamModel.value || "").trim();
+  }
+  setEstimateAgentOutput(`
+    <div class="space-y-2">
+      <div class="text-[11px] text-slate-600">Mode: <strong>${escapeHtml(String(draft.mode || ""))}</strong> · Confidence: <strong>${escapeHtml(String(draft.confidence_tier || ""))}</strong> · LLM: <strong>${llm.used ? escapeHtml(String(llm.provider || "")) : "deterministic"}</strong></div>
+      <div><div class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Business need</div><div class="mt-1">${escapeHtml(String(draft.business_need || "")) || "n/a"}</div></div>
+      <div><div class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Missing fields</div><div class="mt-1">${missing.length ? escapeHtml(missing.join(", ")) : "none"}</div></div>
+      <div><div class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Follow-up questions</div><ul class="mt-1 list-disc pl-5">${questions.length ? questions.map((row) => `<li>${escapeHtml(String(row || ""))}</li>`).join("") : "<li>none</li>"}</ul></div>
+      <div><div class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Assumptions</div><ul class="mt-1 list-disc pl-5">${assumptions.length ? assumptions.map((row) => `<li>${escapeHtml(String(row || ""))}</li>`).join("") : "<li>none</li>"}</ul></div>
+    </div>
+  `);
+}
+
+function renderEstimateAgentExplanation(result) {
+  const response = result?.response || {};
+  const llm = result?.llm || {};
+  const refs = Array.isArray(response?.assumption_refs) ? response.assumption_refs : [];
+  setEstimateAgentOutput(`
+    <div class="space-y-2">
+      <div class="text-[11px] text-slate-600">Mode: <strong>${escapeHtml(String(response.mode || ""))}</strong> · LLM: <strong>${llm.used ? escapeHtml(String(llm.provider || "")) : "deterministic"}</strong></div>
+      <div>${escapeHtml(String(response.answer || "")) || "No explanation available."}</div>
+      <div class="text-[11px] text-slate-600">WBS item: <strong>${escapeHtml(String(response.wbs_item_id || "")) || "n/a"}</strong></div>
+      <div class="text-[11px] text-slate-600">Assumptions referenced: <strong>${refs.length ? escapeHtml(refs.join(", ")) : "none"}</strong></div>
+    </div>
+  `);
+}
+
+async function probeEstimateIntake() {
+  const message = String(el.estimateAgentInput?.value || "").trim();
+  if (!message) {
+    setEstimateStatus("Assistant prompt is required.", true);
+    return;
+  }
+  setEstimateStatus("Probing estimate intake...");
+  try {
+    const data = await api("/api/estimates/intake", {
+      mode: String(el.estimateMode?.value || "brownfield").trim(),
+      current: {
+        run_id: String(el.estimateRunId?.value || "").trim(),
+        business_need: String(el.estimateBusinessNeed?.value || "").trim(),
+        team_model_key: String(el.estimateTeamModel?.value || "").trim(),
+      },
+      message,
+    });
+    renderEstimateAgentIntake(data);
+    setEstimateStatus("Estimate intake draft updated.");
+  } catch (err) {
+    setEstimateStatus(`Estimate intake probe failed: ${err.message}`, true);
+  }
+}
+
+async function explainCurrentEstimate() {
+  const estimateId = String(state.estimation.currentEstimateId || el.estimateId?.value || "").trim();
+  if (!estimateId) {
+    setEstimateStatus("Load or create an estimate first.", true);
+    return;
+  }
+  const question = String(el.estimateAgentInput?.value || "").trim();
+  if (!question) {
+    setEstimateStatus("Assistant prompt is required.", true);
+    return;
+  }
+  setEstimateStatus(`Explaining estimate ${estimateId}...`);
+  try {
+    const data = await api(`/api/estimates/${encodeURIComponent(estimateId)}/explain`, {
+      question,
+      wbs_item_id: String(el.estimateAgentWbsItem?.value || "").trim(),
+    });
+    renderEstimateAgentExplanation(data);
+    setEstimateStatus(`Loaded estimate explanation for ${estimateId}.`);
+  } catch (err) {
+    setEstimateStatus(`Estimate explanation failed: ${err.message}`, true);
   }
 }
 
@@ -14415,6 +14513,12 @@ function bindEvents() {
   });
   el.estimateRefreshList?.addEventListener("click", () => {
     loadRunEstimates().catch((err) => setEstimateStatus(`Estimate list load failed: ${err.message}`, true));
+  });
+  el.estimateAgentIntakeBtn?.addEventListener("click", () => {
+    probeEstimateIntake().catch((err) => setEstimateStatus(`Estimate intake probe failed: ${err.message}`, true));
+  });
+  el.estimateAgentExplainBtn?.addEventListener("click", () => {
+    explainCurrentEstimate().catch((err) => setEstimateStatus(`Estimate explanation failed: ${err.message}`, true));
   });
   el.estimateList?.addEventListener("click", (evt) => {
     const target = evt.target;

@@ -109,6 +109,50 @@ class EstimationApiTest(unittest.TestCase):
         self.assertEqual(created["run_id"], "run_from_stage1")
         self.assertGreater(created["estimate_summary"]["estimate"]["effort"]["total_hours"]["p50"], 0)
 
+    def test_estimate_intake_endpoint(self):
+        resp = asyncio.run(
+            server.api_estimate_intake(
+                _FakeRequest(
+                    payload={
+                        "mode": "brownfield",
+                        "current": {},
+                        "message": "Estimate modernization of run 20260311_123456_abcd1234 with an agent-assisted team.",
+                    }
+                )
+            )
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = json.loads(resp.body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["draft"]["run_id"], "20260311_123456_abcd1234")
+        self.assertEqual(body["draft"]["team_model_key"], "HUMAN_LED_AGENT_ASSISTED")
+
+    def test_estimate_explain_endpoint(self):
+        payload = {
+            "mode": "brownfield",
+            "run_id": "run_123",
+            "estimate_id": "estimate_api",
+            "business_need": "Modernize the brownfield application while preserving required business capability.",
+            "team_model_key": "HUMAN_ONLY",
+            "chunk_manifest": load_artifact_json(FIXTURE_ROOT / "input" / "chunk_manifest.json"),
+            "risk_register": load_artifact_json(FIXTURE_ROOT / "input" / "risk_register.json"),
+            "traceability_scores": load_artifact_json(FIXTURE_ROOT / "input" / "traceability_scores.json"),
+        }
+        asyncio.run(server.api_create_estimate(_FakeRequest(payload=payload)))
+        resp = asyncio.run(
+            server.api_estimate_explain(
+                _FakeRequest(
+                    payload={"question": "Why is this estimate this large?", "wbs_item_id": "WBS-CHUNK_000"},
+                    path_params={"estimate_id": "estimate_api"},
+                )
+            )
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = json.loads(resp.body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["estimate_id"], "estimate_api")
+        self.assertIn("deterministic brownfield kernel", body["response"]["answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

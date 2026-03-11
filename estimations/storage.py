@@ -107,3 +107,19 @@ class EstimationStore:
             if candidate.exists():
                 return candidate
         return None
+
+    def load_estimate_bundle(self, estimate_id: str) -> dict[str, Any] | None:
+        estimate_root = self.find_estimate(estimate_id)
+        if not estimate_root:
+            return None
+        paths = EstimationArtifactPaths(estimate_root=estimate_root)
+        return {
+            "estimate_id": estimate_id,
+            "meta": self.load_meta(estimate_root) or {},
+            "artifacts": {
+                "estimation_input": self.load_artifact(paths.estimation_input_path) or {},
+                "wbs": self.load_artifact(paths.wbs_path) or {},
+                "estimate_summary": self.load_artifact(paths.estimate_summary_path) or {},
+                "assumption_ledger": self.load_artifact(paths.assumption_ledger_path) or {},
+            },
+        }

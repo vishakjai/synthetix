@@ -1,3 +1,4 @@
+from .agent import EstimationAgent
 from .calibration import load_team_model_library
 from .intake import BrownfieldIntake, GreenfieldIntake, NaturalLanguageIntake
 from .kernel import (
@@ -23,6 +24,7 @@ __all__ = [
     "AssumptionLedgerArtifact",
     "BrownfieldIntake",
     "EstimateSummaryArtifact",
+    "EstimationAgent",
     "EstimationInputArtifact",
     "EstimationArtifactPaths",
     "EstimationStore",

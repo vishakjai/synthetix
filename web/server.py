@@ -115,7 +115,7 @@ from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
 )
-from estimations import EstimationStore, build_brownfield_estimate  # noqa: E402
+from estimations import EstimationAgent, EstimationStore, build_brownfield_estimate  # noqa: E402
 from utils.legacy_skills import (  # noqa: E402
     extract_vb6_signals as legacy_extract_vb6_signals,
     build_vb6_readiness_assessment,
@@ -5282,6 +5282,28 @@ def _default_llm_estimate_target() -> tuple[str, str, int]:
     return "anthropic", "claude-sonnet-4-20250514", 6000
 
 
+def _build_estimation_llm_client(*, max_output_tokens: int = 1200, temperature: float = 0.2) -> tuple[LLMClient | None, dict[str, Any]]:
+    provider, model, _ = _default_llm_estimate_target()
+    try:
+        creds = SETTINGS_STORE.resolve_llm_credentials(provider, requested_model=model)
+    except Exception as exc:
+        return None, {"enabled": False, "reason": f"credential_resolution_failed:{exc}", "provider": provider, "model": model}
+    api_key = str(creds.get("api_key", "")).strip()
+    resolved_model = str(creds.get("model", "")).strip() or model
+    if not api_key:
+        return None, {"enabled": False, "reason": "no_api_key", "provider": provider, "model": resolved_model}
+    cfg = PipelineConfig(
+        provider=LLMProvider.OPENAI if provider == "openai" else LLMProvider.ANTHROPIC,
+        anthropic_api_key=api_key if provider == "anthropic" else "",
+        openai_api_key=api_key if provider == "openai" else "",
+        anthropic_model=resolved_model if provider == "anthropic" else "claude-sonnet-4-20250514",
+        openai_model=resolved_model if provider == "openai" else "gpt-4o",
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+    )
+    return LLMClient(cfg), {"enabled": True, "reason": "", "provider": provider, "model": resolved_model}
+
+
 def _llm_preflight_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     provider_raw = str(payload.get("provider", "anthropic")).strip().lower()
     if provider_raw not in {"anthropic", "openai"}:
@@ -8629,6 +8651,53 @@ async def api_list_run_estimates(request):
     if not run_id:
         return JSONResponse({"ok": False, "error": "run_id is required"}, status_code=400)
     return JSONResponse({"ok": True, "run_id": run_id, "estimates": ESTIMATION_STORE.list_estimates(run_id=run_id)})
+
+
+async def api_estimate_intake(request):
+    payload = _get_json(await request.body())
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        return JSONResponse({"ok": False, "error": "message is required"}, status_code=400)
+    mode = str(payload.get("mode", "brownfield")).strip().lower() or "brownfield"
+    current = payload.get("current")
+    if not isinstance(current, dict):
+        current = {
+            "run_id": str(payload.get("run_id", "")).strip(),
+            "business_need": str(payload.get("business_need", "")).strip(),
+            "team_model_key": str(payload.get("team_model_key", "")).strip(),
+        }
+    llm_client, llm_meta = _build_estimation_llm_client(max_output_tokens=900, temperature=0.1)
+    agent = EstimationAgent(llm=llm_client)
+    result = agent.intake(message=message, mode=mode, current=current)
+    result["llm"]["available"] = bool(llm_meta.get("enabled"))
+    if not llm_meta.get("enabled"):
+        result["llm"]["reason"] = llm_meta.get("reason", "no_llm")
+    return JSONResponse({"ok": True, **result})
+
+
+async def api_estimate_explain(request):
+    estimate_id = str(request.path_params.get("estimate_id", "")).strip()
+    if not estimate_id:
+        return JSONResponse({"ok": False, "error": "estimate_id is required"}, status_code=400)
+    bundle = ESTIMATION_STORE.load_estimate_bundle(estimate_id)
+    if not isinstance(bundle, dict):
+        return JSONResponse({"ok": False, "error": "estimate not found"}, status_code=404)
+    payload = _get_json(await request.body())
+    question = str(payload.get("question", "")).strip()
+    if not question:
+        return JSONResponse({"ok": False, "error": "question is required"}, status_code=400)
+    wbs_item_id = str(payload.get("wbs_item_id", "")).strip()
+    llm_client, llm_meta = _build_estimation_llm_client(max_output_tokens=900, temperature=0.1)
+    agent = EstimationAgent(llm=llm_client)
+    result = agent.explain(
+        estimate_bundle=bundle.get("artifacts", {}) if isinstance(bundle.get("artifacts", {}), dict) else {},
+        question=question,
+        wbs_item_id=wbs_item_id,
+    )
+    result["llm"]["available"] = bool(llm_meta.get("enabled"))
+    if not llm_meta.get("enabled"):
+        result["llm"]["reason"] = llm_meta.get("reason", "no_llm")
+    return JSONResponse({"ok": True, "estimate_id": estimate_id, **result})
 
 
 async def api_approve_run(request):
@@ -14611,7 +14680,9 @@ routes = [
     Route("/api/work-items", api_create_work_item, methods=["POST"]),
     Route("/api/work-items/{item_id:str}/status", api_set_work_item_status, methods=["POST"]),
     Route("/api/estimates", api_create_estimate, methods=["POST"]),
+    Route("/api/estimates/intake", api_estimate_intake, methods=["POST"]),
     Route("/api/estimates/{estimate_id:str}", api_get_estimate, methods=["GET"]),
+    Route("/api/estimates/{estimate_id:str}/explain", api_estimate_explain, methods=["POST"]),
     Route("/api/runs/preflight", api_run_preflight, methods=["POST"]),
     Route("/api/runs", api_list_runs, methods=["GET"]),
     Route("/api/runs", api_start_run, methods=["POST"]),
