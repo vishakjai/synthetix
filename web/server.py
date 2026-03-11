@@ -8057,12 +8057,13 @@ async def api_discover_access_inspect(request):
     )
 
 
-def _local_worker_fallback(run_id: str) -> None:
+def _local_worker_fallback(run_id: str) -> bool:
     # Local/dev fallback when Cloud Tasks isn't configured.
     try:
         MANAGER.launch_deferred_run(run_id)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _parse_iso_dt(value: Any) -> datetime | None:
@@ -8075,17 +8076,50 @@ def _parse_iso_dt(value: Any) -> datetime | None:
         return None
 
 
-def _dispatch_worker_direct(run_id: str) -> None:
+def _append_persisted_run_log(run_id: str, message: str, *, timestamped: bool = True) -> None:
     rid = str(run_id or "").strip()
-    if not rid or not RUN_WORKER_URL:
+    text = str(message or "").strip()
+    if not rid or not text:
         return
+    line = text
+    if timestamped:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{stamp}] {text}"
+    if hasattr(RUN_STORE, "append_log_event"):
+        try:
+            RUN_STORE.append_log_event(rid, line)
+        except Exception:
+            pass
+
+
+def _dispatch_worker_direct(run_id: str) -> bool:
+    rid = str(run_id or "").strip()
+    if not rid:
+        return False
+    if not RUN_WORKER_URL:
+        ok = _local_worker_fallback(rid)
+        if ok:
+            _append_persisted_run_log(rid, "🔁 Queue rescue dispatched run via local fallback")
+        return ok
     headers = {"Content-Type": "application/json"}
     if RUN_WORKER_TOKEN:
         headers["X-Run-Worker-Token"] = RUN_WORKER_TOKEN
     body = json.dumps({"run_id": rid}).encode("utf-8")
     request = Request(RUN_WORKER_URL, data=body, headers=headers, method="POST")
-    with urlopen(request, timeout=30):
-        return
+    try:
+        with urlopen(request, timeout=30) as response:
+            status_code = int(getattr(response, "status", 200) or 200)
+            if status_code >= 400:
+                raise RuntimeError(f"worker returned HTTP {status_code}")
+        _append_persisted_run_log(rid, "🔁 Queue rescue dispatched run to worker")
+        return True
+    except Exception as exc:
+        _append_persisted_run_log(rid, f"⚠️ Queue rescue direct dispatch failed: {exc}")
+        if _local_worker_fallback(rid):
+            _append_persisted_run_log(rid, "🔁 Queue rescue fell back to local worker launch")
+            return True
+        _append_persisted_run_log(rid, "❌ Queue rescue could not dispatch run to any worker")
+        return False
 
 
 def _maybe_rescue_queued_run(run_id: str, persisted: dict[str, Any]) -> None:
