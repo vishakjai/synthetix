@@ -88,5 +88,42 @@ class ChunkManifestVb6Test(unittest.TestCase):
         self.assertIn("text", context["chunk_inputs"][0])
 
 
+class ChunkManifestPhpTest(unittest.TestCase):
+    def test_component_inventory_and_chunk_manifest_capture_php_layers(self):
+        file_contents = {
+            "routes/web.php": "<?php Route::get('/customers', 'CustomerController@index');",
+            "src/controllers/CustomerController.php": "<?php class CustomerController { public function index(){} public function store(){} }",
+            "src/views/customer/view.php": "<?php echo 'customer';",
+            "src/utility/SessionHelper.php": "<?php function current_user() { return $_SESSION['user'] ?? null; }",
+            "bin/msgQueueListner.php": "<?php echo 'listen';",
+        }
+        selected_entries = [
+            {"path": path, "size": len(body), "sha": f"sha-{idx}", "ext": path[path.rfind('.'):], "depth": path.count('/')}
+            for idx, (path, body) in enumerate(file_contents.items(), start=1)
+        ]
+
+        components = build_component_inventory_v1(
+            snapshot_id="snap-php-1",
+            selected_entries=selected_entries,
+            file_contents=file_contents,
+        )
+        component_types = {row["component_type"] for row in components["components"]}
+        self.assertIn("php_routes", component_types)
+        self.assertIn("php_controllers", component_types)
+        self.assertIn("php_templates", component_types)
+        self.assertIn("php_jobs", component_types)
+
+        manifest = build_chunk_manifest_v1(
+            snapshot_id="snap-php-1",
+            component_inventory=components,
+            file_contents=file_contents,
+            max_chunk_files=2,
+            max_chunk_chars=5000,
+        )
+        self.assertTrue(any(row["component_type"] == "php_routes" for row in manifest["chunks"]))
+        self.assertTrue(any(row["coverage_expectations"].get("should_extract_php_controllers") for row in manifest["chunks"]))
+        self.assertTrue(any(row["coverage_expectations"].get("should_extract_php_templates") for row in manifest["chunks"]))
+
+
 if __name__ == "__main__":
     unittest.main()

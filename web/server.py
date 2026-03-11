@@ -4099,7 +4099,8 @@ def _select_source_entries_for_analysis(
         for row in priority_rank
         if str(row[1]).endswith(".php")
         and (
-            "/routes/" in str(row[1])
+            str(row[1]).startswith("routes/")
+            or "/routes/" in str(row[1])
             or str(row[1]).endswith(("/index.php", "/web.php", "/api.php"))
             or str(Path(str(row[1])).name).lower() in {"index.php", "web.php", "api.php"}
         )
@@ -4223,7 +4224,7 @@ def _legacy_bundle_bucket(path: str) -> str:
     if lower.endswith(".bas"):
         return "module"
     if lower.endswith(".php"):
-        if any(token in lower for token in ("/routes/", "/public/", "/admin/")) or lower.endswith(("/index.php", "/web.php", "/api.php")):
+        if any(token in lower for token in ("routes/", "/routes/", "/public/", "/admin/")) or lower.endswith(("/index.php", "/web.php", "/api.php")):
             return "php_route"
         if "/controller/" in lower or "/controllers/" in lower or Path(lower).name.endswith("controller.php"):
             return "php_controller"

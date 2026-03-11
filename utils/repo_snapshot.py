@@ -6,6 +6,31 @@ from typing import Any
 
 
 VB6_SOURCE_EXTENSIONS = {".frm", ".ctl", ".cls", ".bas", ".vbp", ".vbg", ".frx", ".ctx", ".res", ".ocx", ".dcx", ".dca", ".mdb", ".accdb"}
+PHP_TEMPLATE_HINTS = (
+    "/view",
+    "/views",
+    "/template",
+    "/templates",
+    "/resources/views",
+    "/dashboard/elements/",
+    "/dashboard/",
+    "/email_templates/",
+    "/mail_templates/",
+)
+
+
+def _php_kind_from_path(path: str) -> str:
+    normalized = str(path or "").replace("\\", "/").strip().lower()
+    if not normalized.endswith('.php'):
+        return ''
+    name = Path(normalized).name.lower()
+    if normalized.startswith('routes/') or '/routes/' in normalized or name in {'web.php', 'api.php', 'routes.php'} or normalized.endswith('/index.php'):
+        return 'php_route'
+    if '/controller/' in normalized or '/controllers/' in normalized or name.endswith('controller.php'):
+        return 'php_controller'
+    if any(token in normalized for token in PHP_TEMPLATE_HINTS):
+        return 'php_template'
+    return 'php_other'
 
 
 def classify_repo_scan_mode(
@@ -19,6 +44,10 @@ def classify_repo_scan_mode(
     vb6_projects = 0
     vb6_forms = 0
     vb6_modules = 0
+    php_files = 0
+    php_controllers = 0
+    php_routes = 0
+    php_templates = 0
     for row in entries:
         path = str(row.get("path", "")).strip().lower()
         ext = Path(path).suffix.lower()
@@ -31,6 +60,15 @@ def classify_repo_scan_mode(
             vb6_forms += 1
         elif ext in {".bas", ".cls"}:
             vb6_modules += 1
+        php_kind = _php_kind_from_path(path)
+        if php_kind:
+            php_files += 1
+            if php_kind == 'php_controller':
+                php_controllers += 1
+            elif php_kind == 'php_route':
+                php_routes += 1
+            elif php_kind == 'php_template':
+                php_templates += 1
 
     reasons: list[str] = []
     if len(entries) > 500:
@@ -45,6 +83,14 @@ def classify_repo_scan_mode(
         reasons.append(f"vb6 forms/usercontrols={vb6_forms}")
     if vb6_modules > 120:
         reasons.append(f"vb6 modules/classes={vb6_modules}")
+    if php_files > 120:
+        reasons.append(f"php files={php_files}")
+    if php_controllers > 60:
+        reasons.append(f"php controllers={php_controllers}")
+    if php_routes > 40:
+        reasons.append(f"php routes={php_routes}")
+    if php_templates > 40:
+        reasons.append(f"php templates={php_templates}")
 
     mode = "large_repo" if reasons else "standard"
     return {
@@ -57,6 +103,10 @@ def classify_repo_scan_mode(
         "vb6_projects": vb6_projects,
         "vb6_forms": vb6_forms,
         "vb6_modules": vb6_modules,
+        "php_files": php_files,
+        "php_controllers": php_controllers,
+        "php_routes": php_routes,
+        "php_templates": php_templates,
     }
 
 
@@ -186,6 +236,14 @@ def build_repo_snapshot_v1(
 
 def _kind_from_path(path: str) -> str:
     ext = Path(str(path or "")).suffix.lower()
+    php_kind = _php_kind_from_path(path)
+    if php_kind:
+        return {
+            'php_route': 'php_route',
+            'php_controller': 'php_controller',
+            'php_template': 'php_template',
+            'php_other': 'php_source',
+        }.get(php_kind, 'php_source')
     return {
         ".frm": "form",
         ".ctl": "usercontrol",

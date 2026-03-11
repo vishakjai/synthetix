@@ -23,9 +23,10 @@ def build_large_repo_context_v1(
     included_chunks: list[str] = []
     omitted_chunks: list[str] = []
     chunk_inputs: list[dict[str, Any]] = []
+    chunk_manifest_payload = file_chunk_manifest if isinstance(file_chunk_manifest, dict) else {}
     chunk_manifest_index = {
         str(row.get("path", "")).strip(): row
-        for row in (file_chunk_manifest.get("files", []) if isinstance((file_chunk_manifest or {}).get("files", []), list) else [])
+        for row in (chunk_manifest_payload.get("files", []) if isinstance(chunk_manifest_payload.get("files", []), list) else [])
         if isinstance(row, dict) and str(row.get("path", "")).strip()
     }
     chunked_file_count = 0
