@@ -21,6 +21,7 @@ const MODES = {
   SETTINGS: "settings",
 };
 const ACTIVE_USER_STORAGE_KEY = "synthetix.active_user_email";
+const ACTIVE_MODE_STORAGE_KEY = "synthetix.active_mode";
 
 const el = {
   navHome: document.getElementById("nav-home"),
@@ -10378,24 +10379,28 @@ async function explainCurrentEstimate() {
 }
 
 function setMode(mode) {
-  state.mode = mode;
-  el.homeScreen.classList.toggle("hidden", mode !== MODES.DASHBOARDS);
-  el.workScreen.classList.toggle("hidden", !(mode === MODES.DISCOVER || mode === MODES.BUILD));
-  el.teamScreen.classList.toggle("hidden", mode !== MODES.PLAN);
-  el.estimatesScreen.classList.toggle("hidden", mode !== MODES.ESTIMATES);
-  el.historyScreen.classList.toggle("hidden", mode !== MODES.VERIFY);
-  el.settingsScreen?.classList.toggle("hidden", mode !== MODES.SETTINGS);
-  toModeButtonState(mode);
-  if (mode === MODES.DISCOVER) setWizardStep(1);
-  if (mode === MODES.BUILD) setWizardStep(2);
-  if (mode === MODES.PLAN) setPlanTab(state.planTab || "team_creation");
-  if (mode === MODES.ESTIMATES) {
+  const safeMode = Object.values(MODES).includes(mode) ? mode : MODES.DASHBOARDS;
+  state.mode = safeMode;
+  try {
+    localStorage.setItem(ACTIVE_MODE_STORAGE_KEY, safeMode);
+  } catch (_) {}
+  el.homeScreen.classList.toggle("hidden", safeMode !== MODES.DASHBOARDS);
+  el.workScreen.classList.toggle("hidden", !(safeMode === MODES.DISCOVER || safeMode === MODES.BUILD));
+  el.teamScreen.classList.toggle("hidden", safeMode !== MODES.PLAN);
+  el.estimatesScreen.classList.toggle("hidden", safeMode !== MODES.ESTIMATES);
+  el.historyScreen.classList.toggle("hidden", safeMode !== MODES.VERIFY);
+  el.settingsScreen?.classList.toggle("hidden", safeMode !== MODES.SETTINGS);
+  toModeButtonState(safeMode);
+  if (safeMode === MODES.DISCOVER) setWizardStep(1);
+  if (safeMode === MODES.BUILD) setWizardStep(2);
+  if (safeMode === MODES.PLAN) setPlanTab(state.planTab || "team_creation");
+  if (safeMode === MODES.ESTIMATES) {
     syncEstimateDefaultsFromCurrentRun();
     renderEstimateList();
   }
-  if (mode === MODES.VERIFY || mode === MODES.PLAN) refreshTasks().catch(() => {});
-  if (mode === MODES.VERIFY) renderVerifyPanels();
-  if (mode === MODES.SETTINGS) loadSettings().catch((err) => setSettingsMessage(`Settings load failed: ${err.message}`, true));
+  if (safeMode === MODES.VERIFY || safeMode === MODES.PLAN) refreshTasks().catch(() => {});
+  if (safeMode === MODES.VERIFY) renderVerifyPanels();
+  if (safeMode === MODES.SETTINGS) loadSettings().catch((err) => setSettingsMessage(`Settings load failed: ${err.message}`, true));
 }
 
 async function loadAgentsAndTeams() {
@@ -15568,7 +15573,14 @@ async function init() {
 
   renderRun();
   renderVerifyPanels();
-  setMode(MODES.DASHBOARDS);
+  const savedMode = (() => {
+    try {
+      return String(localStorage.getItem(ACTIVE_MODE_STORAGE_KEY) || "").trim();
+    } catch (_) {
+      return "";
+    }
+  })();
+  setMode(Object.values(MODES).includes(savedMode) ? savedMode : MODES.DASHBOARDS);
 }
 
 if (typeof window !== "undefined") {
