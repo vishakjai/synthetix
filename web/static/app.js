@@ -496,6 +496,9 @@ const el = {
   approvalPanel: document.getElementById("approval-panel"),
   approvalTitle: document.getElementById("approval-title"),
   approvalMessage: document.getElementById("approval-message"),
+  approvalDeveloperDefaults: document.getElementById("approval-developer-defaults"),
+  approvalDeveloperDefaultsSummary: document.getElementById("approval-developer-defaults-summary"),
+  approvalDeveloperOverrideToggle: document.getElementById("approval-developer-override-toggle"),
   approvalDeveloperOptions: document.getElementById("approval-developer-options"),
   approvalCloudOptions: document.getElementById("approval-cloud-options"),
   approveMicroservicesCount: document.getElementById("approve-microservices-count"),
@@ -12839,7 +12842,7 @@ function renderArchitectReadable(output, useCase) {
   const panelHeader = (title, exportKind) => `
     <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
       <div class="text-xs font-semibold text-slate-900">${title}</div>
-      <button data-architect-export="${escapeHtml(exportKind)}" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
+      <button type="button" data-architect-export="${escapeHtml(exportKind)}" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
     </div>
   `;
   const overviewPanel = `
@@ -12972,13 +12975,13 @@ function renderArchitectReadable(output, useCase) {
   return `
     <div class="rounded-lg border border-slate-300 bg-white p-2">
       <div class="flex flex-wrap gap-2">
-        <button data-architect-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
-        <button data-architect-view-tab="diagrams" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Diagrams</button>
-        <button data-architect-view-tab="services" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Services & Ownership</button>
-        <button data-architect-view-tab="traceability" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">ADRs & Traceability</button>
-        <button data-architect-view-tab="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Architect Handoff</button>
-        <button data-architect-view-tab="migration" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Migration & API</button>
-        <button data-architect-view-tab="risk" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Risk & Review</button>
+        <button type="button" data-architect-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
+        <button type="button" data-architect-view-tab="diagrams" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Diagrams</button>
+        <button type="button" data-architect-view-tab="services" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Services & Ownership</button>
+        <button type="button" data-architect-view-tab="traceability" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">ADRs & Traceability</button>
+        <button type="button" data-architect-view-tab="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Architect Handoff</button>
+        <button type="button" data-architect-view-tab="migration" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Migration & API</button>
+        <button type="button" data-architect-view-tab="risk" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Risk & Review</button>
       </div>
       ${overviewPanel}
       ${diagramsPanel}
@@ -13087,17 +13090,20 @@ function renderDeveloperReadable(output) {
   const implementations = output.implementations || [];
   const artifactRoot = String(output.artifact_root || "").trim();
   const dispatches = Array.isArray(output?.execution?.component_dispatches) ? output.execution.component_dispatches : [];
+  const generatedManifest = _buildDeveloperGeneratedManifest(output);
   const componentOptions = implementations
     .map((impl) => String(impl.component_name || "").trim())
     .filter(Boolean);
+  const legacySummary = generatedManifest.legacy_summary;
+  const selectionSummary = generatedManifest.selection_summary;
   return `
     <div class="rounded-lg border border-slate-300 bg-white p-2">
       <div class="flex flex-wrap gap-2">
-        <button data-developer-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
-        <button data-developer-view-tab="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Architect Handoff</button>
-        <button data-developer-view-tab="dispatches" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Dispatches</button>
-        <button data-developer-view-tab="components" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Scoped Components</button>
-        <button data-developer-view-tab="generated" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Generated Output</button>
+        <button type="button" data-developer-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
+        <button type="button" data-developer-view-tab="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Architect Handoff</button>
+        <button type="button" data-developer-view-tab="dispatches" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Dispatches</button>
+        <button type="button" data-developer-view-tab="components" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Scoped Components</button>
+        <button type="button" data-developer-view-tab="generated" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Generated Output</button>
       </div>
       <section data-developer-view-panel="overview" class="mt-2">
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -13106,19 +13112,24 @@ function renderDeveloperReadable(output) {
         <div><strong>Total LOC:</strong> ${Number(output.total_loc || 0).toLocaleString()}</div>
         <div><strong>Components:</strong> ${Number(output.total_components || 0)}</div>
         <div><strong>Files:</strong> ${Number(output.total_files || 0)}</div>
+        ${selectionSummary ? `<div><strong>Generation scope:</strong> ${escapeHtml(selectionSummary)}</div>` : ""}
+        ${legacySummary ? `<div><strong>Legacy baseline:</strong> ${escapeHtml(legacySummary)}</div>` : ""}
         ${artifactRoot ? `<div><strong>Local Artifact Path:</strong> <span class="mono">${escapeHtml(artifactRoot)}</span></div>` : ""}
+        <div class="mt-2 rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">
+          Generated output is persisted in run artifacts even if GitHub export fails. GitHub export is optional.
+        </div>
       </section>
       <section data-developer-view-panel="handoff" class="mt-2 hidden">
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div class="text-xs font-semibold text-slate-900">Architect Handoff Package</div>
-          <button data-developer-export="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
+          <button type="button" data-developer-export="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
         </div>
         <div data-developer-handoff-content class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">Loading architect handoff…</div>
       </section>
       <section data-developer-view-panel="dispatches" class="mt-2 hidden">
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div class="text-xs font-semibold text-slate-900">Sub-agent Dispatches</div>
-          <button data-developer-export="dispatches" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
+          <button type="button" data-developer-export="dispatches" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
         </div>
         <div data-developer-dispatch-content class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">${dispatches.length ? "Loading dispatch details..." : "No dispatch manifest available for this run."}</div>
       </section>
@@ -13130,22 +13141,122 @@ function renderDeveloperReadable(output) {
               <option value="">Select component</option>
               ${componentOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}
             </select>
-            <button data-developer-export="component" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Component JSON</button>
+            <button type="button" data-developer-export="component" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Component JSON</button>
           </div>
         </div>
         <div data-developer-component-content class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">Select a component to load its scoped handoff.</div>
       </section>
       <section data-developer-view-panel="generated" class="mt-2 hidden">
-        <div class="mb-2 text-xs font-semibold text-slate-900">Generated Output</div>
-        <ul class="list-disc pl-5">${implementations.map((impl) => `
-          <li>
-            <strong>${escapeHtml(impl.component_name || "component")}</strong>
-            (${escapeHtml(impl.language || "unknown")} / ${escapeHtml(impl.framework || "unknown")})
-            <div>Files: ${Number((impl.files || []).length)} | LOC: ${Number(impl.total_loc || 0).toLocaleString()}</div>
-          </li>
-        `).join("") || "<li>No implementations generated</li>"}</ul>
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-900">Generated Output</div>
+          <button type="button" data-developer-export="generated" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Manifest</button>
+        </div>
+        ${artifactRoot ? `<div class="mb-2 text-[11px] text-slate-700"><strong>Artifact root:</strong> <span class="mono">${escapeHtml(artifactRoot)}</span></div>` : ""}
+        <div data-developer-generated-content>${_renderDeveloperGeneratedManifest(generatedManifest)}</div>
       </section>
     </div>
+  `;
+}
+
+function _buildDeveloperGeneratedManifest(output) {
+  const implementations = Array.isArray(output?.implementations) ? output.implementations : [];
+  const execution = (output?.execution && typeof output.execution === "object") ? output.execution : {};
+  const selected = Array.isArray(execution.planner_selected_components) ? execution.planner_selected_components.filter(Boolean) : [];
+  const decomposition = (output?.decomposition && typeof output.decomposition === "object") ? output.decomposition : {};
+  const proposedComponents = Array.isArray(decomposition.components) ? decomposition.components : [];
+  const legacy = (output?.legacy_baseline && typeof output.legacy_baseline === "object") ? output.legacy_baseline : {};
+  const files = [];
+  for (const impl of implementations) {
+    if (!impl || typeof impl !== "object") continue;
+    const componentName = String(impl.component_name || "component").trim() || "component";
+    const language = String(impl.language || "").trim();
+    const framework = String(impl.framework || "").trim();
+    const implFiles = Array.isArray(impl.files) ? impl.files : [];
+    for (const spec of implFiles) {
+      if (!spec || typeof spec !== "object") continue;
+      files.push({
+        component_name: componentName,
+        language,
+        framework,
+        path: String(spec.path || "").trim(),
+        description: String(spec.description || "").trim(),
+        lines_of_code: Number(spec.lines_of_code || 0),
+      });
+    }
+  }
+  const selectionSummary = proposedComponents.length
+    ? `${selected.length || implementations.length} of ${proposedComponents.length} planned components generated in this run`
+    : "";
+  const legacySummary = legacy.total_loc
+    ? `${Number(legacy.total_loc || 0).toLocaleString()} legacy LOC across ${Number(legacy.total_files || 0).toLocaleString()} files`
+    : "";
+  return {
+    artifact_type: "developer_generated_manifest_v1",
+    generated_at: String(execution.generated_at || "").trim(),
+    artifact_root: String(output?.artifact_root || "").trim(),
+    total_generated_loc: Number(output?.total_loc || 0),
+    total_generated_files: Number(output?.total_files || 0),
+    total_generated_components: Number(output?.total_components || 0),
+    selected_components: selected,
+    planned_component_count: proposedComponents.length,
+    legacy_baseline: legacy,
+    legacy_summary: legacySummary,
+    selection_summary: selectionSummary,
+    files,
+  };
+}
+
+function _renderDeveloperGeneratedManifest(manifest) {
+  const rows = Array.isArray(manifest?.files) ? manifest.files : [];
+  const byComponent = new Map();
+  for (const row of rows) {
+    const key = String(row.component_name || "component");
+    if (!byComponent.has(key)) {
+      byComponent.set(key, {
+        component_name: key,
+        language: String(row.language || "").trim(),
+        framework: String(row.framework || "").trim(),
+        files: 0,
+        loc: 0,
+      });
+    }
+    const entry = byComponent.get(key);
+    entry.files += 1;
+    entry.loc += Number(row.lines_of_code || 0);
+  }
+  const components = Array.from(byComponent.values());
+  return `
+    <div class="grid gap-2 sm:grid-cols-4">
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Generated components</strong><br/>${Number(manifest?.total_generated_components || 0)}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Generated files</strong><br/>${Number(manifest?.total_generated_files || 0).toLocaleString()}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Generated LOC</strong><br/>${Number(manifest?.total_generated_loc || 0).toLocaleString()}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Planned components</strong><br/>${Number(manifest?.planned_component_count || 0)}</div>
+    </div>
+    ${manifest?.selection_summary ? `<div class="mt-2 text-[11px] text-slate-700"><strong>Scope:</strong> ${escapeHtml(manifest.selection_summary)}</div>` : ""}
+    ${manifest?.legacy_summary ? `<div class="text-[11px] text-slate-700"><strong>Legacy baseline:</strong> ${escapeHtml(manifest.legacy_summary)}</div>` : ""}
+    <div class="mt-2 text-xs font-semibold text-slate-900">Component Output</div>
+    <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+      <thead>
+        <tr>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Component</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Language</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Framework</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Files</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">LOC</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${components.map((row) => `
+          <tr>
+            <td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(row.component_name)}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml(row.language || "-")}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml(row.framework || "-")}</td>
+            <td class="border border-slate-300 px-2 py-1">${Number(row.files || 0)}</td>
+            <td class="border border-slate-300 px-2 py-1">${Number(row.loc || 0).toLocaleString()}</td>
+          </tr>
+        `).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='5'>No generated files materialized for this run.</td></tr>"}
+      </tbody>
+    </table>
   `;
 }
 
