@@ -10219,13 +10219,6 @@ async function createEstimateFromForm() {
   setEstimateStatus("Creating estimate...");
   try {
     const data = await api("/api/estimates", payload);
-    renderEstimateDetails({
-      estimate_id: data.estimate_id,
-      meta: data.meta || {},
-      artifacts: {
-        estimate_summary: data.estimate_summary,
-      },
-    });
     if (payload.run_id) {
       await loadRunEstimates();
     }
