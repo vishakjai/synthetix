@@ -4511,10 +4511,10 @@ function _formatUsd(value) {
 
 function renderDiscoverScopeGuidance() {
   if (!el.discoverScopeGuidance) return;
+  const raw = _discoverRawArtifacts();
   const landscape = (raw.repo_landscape_v1 && typeof raw.repo_landscape_v1 === "object") ? raw.repo_landscape_v1 : {};
   const components = (raw.component_inventory_v1 && typeof raw.component_inventory_v1 === "object") ? raw.component_inventory_v1 : {};
   const tracks = (raw.modernization_track_plan_v1 && typeof raw.modernization_track_plan_v1 === "object") ? raw.modernization_track_plan_v1 : {};
-  const raw = _discoverRawArtifacts();
   const evidenceCoverage = (raw.evidence_coverage_report_v1 && typeof raw.evidence_coverage_report_v1 === "object") ? raw.evidence_coverage_report_v1 : {};
   const landscapeMode = String(landscape?.landscape_mode || "").trim().toLowerCase();
   const solutionSummary = (landscape.solution_summary && typeof landscape.solution_summary === "object") ? landscape.solution_summary : {};
