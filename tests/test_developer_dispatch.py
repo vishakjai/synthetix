@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock
 
 from agents.architect import ArchitectAgent
-from agents.developer import _handoff_dispatch_record
+from agents.developer import _dispatch_phase_number, _handoff_dispatch_record
 from utils.developer_dispatch import build_component_scoped_handoff
 
 
@@ -138,3 +138,23 @@ class DeveloperDispatchTest(unittest.TestCase):
         self.assertTrue(dispatch.get("adr_ids"))
         self.assertGreaterEqual(dispatch.get("business_rule_count", 0), 1)
         self.assertGreaterEqual(dispatch.get("regression_anchor_count", 0), 1)
+        self.assertGreaterEqual(dispatch.get("phase_number", 0), 1)
+
+    def test_dispatch_phase_number_reads_component_phase(self):
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output(
+            {
+                "architecture_name": "",
+                "pattern": "",
+                "overview": "",
+                "services": [],
+                "legacy_system": {
+                    "current_logic_summary": "Legacy VB6 workflow.",
+                    "key_logic_steps": ["Login", "Customer menu", "Transaction processing"],
+                },
+            },
+            self._state(),
+        )
+        handoff = normalized.get("architect_handoff_package", {})
+        scoped = build_component_scoped_handoff(handoff, "TransactionService")
+        self.assertEqual(_dispatch_phase_number(scoped), 3)

@@ -139,6 +139,28 @@ class DeveloperPrereqsTest(unittest.TestCase):
         report = evaluate_component_prerequisites(scoped)
         self.assertTrue(any("interface_contracts" == row.get("category") for row in report.get("hard_blockers", [])))
 
+    def test_prereqs_block_on_semantically_incomplete_contract(self):
+        scoped = self._scoped()
+        scoped["interface_contracts"][0]["operation"] = "CloseAccount"
+        scoped["interface_contracts"][0]["path"] = "/accounts/{id}/close"
+        scoped["interface_contracts"][0]["spec_content"]["method"] = "POST"
+        scoped["interface_contracts"][0]["spec_content"]["request_body"]["shape"] = ""
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("category") == "interface_contracts" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_on_residual_legacy_core_component(self):
+        scoped = self._scoped()
+        scoped["component_name"] = "LegacyCoreService"
+        scoped["component_spec"]["component_name"] = "LegacyCoreService"
+        scoped["component_spec"]["module_structure"] = [
+            {"source_module": f"mod{i}", "suggested_component": f"Comp{i}", "migration_strategy": "Wrap"}
+            for i in range(6)
+        ]
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("category") == "component_spec" for row in report.get("hard_blockers", [])))
+
     def test_developer_agent_refuses_when_component_prereqs_fail(self):
         state = self._state()
         agent = ArchitectAgent(self._llm())

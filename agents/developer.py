@@ -203,6 +203,7 @@ def _handoff_dispatch_record(component_handoff: dict[str, Any]) -> dict[str, Any
         "component_name": str(component_spec.get("component_name") or handoff.get("component_name") or "").strip(),
         "artifact_type": str(handoff.get("artifact_type") or "").strip(),
         "responsibility": str(component_spec.get("responsibility") or "").strip(),
+        "phase_number": _dispatch_phase_number(handoff),
         "interface_contract_ids": [
             str(contract.get("contract_id", "")).strip()
             for contract in interface_contracts
@@ -230,6 +231,29 @@ def _handoff_dispatch_record(component_handoff: dict[str, Any]) -> dict[str, Any
         "business_rule_count": len(business_rules),
         "regression_anchor_count": len(anchors),
     }
+
+
+def _dispatch_phase_number(component_handoff: dict[str, Any]) -> int:
+    handoff = component_handoff if isinstance(component_handoff, dict) else {}
+    component_spec = handoff.get("component_spec", {}) if isinstance(handoff.get("component_spec", {}), dict) else {}
+    dependency_graph = component_spec.get("dependency_graph", {}) if isinstance(component_spec.get("dependency_graph", {}), dict) else {}
+    try:
+        phase_number = int(dependency_graph.get("phase", 0) or 0)
+    except (TypeError, ValueError):
+        phase_number = 0
+    if phase_number > 0:
+        return phase_number
+    wbs_items = handoff.get("wbs_items", []) if isinstance(handoff.get("wbs_items", []), list) else []
+    for item in wbs_items:
+        if not isinstance(item, dict):
+            continue
+        phase_id = str(item.get("phase_id", "") or item.get("wbs_id", "")).strip()
+        if phase_id.startswith("WBS-PHASE-"):
+            try:
+                return int(phase_id.rsplit("-", 1)[-1])
+            except (TypeError, ValueError):
+                continue
+    return 99
 
 
 class DeveloperAgent(BaseAgent):
@@ -1023,22 +1047,63 @@ Requirements context:
                     )
                 previous_files_by_component[comp] = file_snips
 
+        component_dispatch_inputs: list[dict[str, Any]] = []
+        for comp in components:
+            component_handoff = build_component_scoped_handoff(
+                architect_handoff_package,
+                str(comp.get("name", "")),
+            )
+            component_phase = _dispatch_phase_number(component_handoff)
+            component_dispatch_inputs.append(
+                {
+                    "component": comp,
+                    "handoff": component_handoff,
+                    "phase_number": component_phase,
+                }
+            )
+
+        dispatch_phase = min(
+            (row["phase_number"] for row in component_dispatch_inputs if int(row.get("phase_number", 99)) > 0),
+            default=min((row["phase_number"] for row in component_dispatch_inputs), default=99),
+        )
+        deferred_components: list[dict[str, Any]] = []
+
         # Use ThreadPoolExecutor for parallel LLM calls
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(components))) as executor:
             futures = {}
-            for comp in components:
+            for dispatch_input in component_dispatch_inputs:
+                comp = dispatch_input["component"]
+                component_handoff = dispatch_input["handoff"]
+                component_phase = int(dispatch_input.get("phase_number", 99) or 99)
                 comp_name_norm = str(comp.get("name", "")).strip().lower()
-                component_handoff = build_component_scoped_handoff(
-                    architect_handoff_package,
-                    str(comp.get("name", "")),
-                )
-                gap_report = evaluate_component_prerequisites(component_handoff)
                 dispatch_record = _handoff_dispatch_record(component_handoff)
+                if component_phase != dispatch_phase:
+                    dispatch_record["dispatch_decision"] = "DEFERRED"
+                    dispatch_record["dispatch_reason"] = (
+                        f"Deferred until phase {component_phase}; current developer dispatch phase is {dispatch_phase}."
+                    )
+                    component_dispatches.append(dispatch_record)
+                    deferred_components.append(
+                        {
+                            "component_name": comp.get("name", ""),
+                            "phase_number": component_phase,
+                            "reason": dispatch_record["dispatch_reason"],
+                        }
+                    )
+                    self.log(
+                        f"[{self.name}]   ⏸ {comp.get('name', '')} deferred to phase {component_phase} "
+                        f"(current dispatch phase: {dispatch_phase})"
+                    )
+                    continue
+                gap_report = evaluate_component_prerequisites(component_handoff)
                 if gap_report.get("status") == "BLOCKED":
                     dispatch_record["prerequisite_status"] = "BLOCKED"
                     dispatch_record["hard_blocker_count"] = len(gap_report.get("hard_blockers", []))
                     dispatch_record["soft_blocker_count"] = len(gap_report.get("soft_blockers", []))
                     dispatch_record["completeness_score"] = gap_report.get("completeness_score")
+                    dispatch_record["minimum_dispatch_score"] = gap_report.get("minimum_dispatch_score")
+                    dispatch_record["dispatch_decision"] = "BLOCKED"
+                    dispatch_record["dispatch_reason"] = "Prerequisite gap report contains blockers."
                     prerequisite_gap_reports.append(gap_report)
                     self.log(
                         f"[{self.name}]   ⛔ {comp.get('name', '')} blocked by prerequisites "
@@ -1050,6 +1115,9 @@ Requirements context:
                     dispatch_record["hard_blocker_count"] = 0
                     dispatch_record["soft_blocker_count"] = 0
                     dispatch_record["completeness_score"] = gap_report.get("completeness_score")
+                    dispatch_record["minimum_dispatch_score"] = gap_report.get("minimum_dispatch_score")
+                    dispatch_record["dispatch_decision"] = "DISPATCHED"
+                    dispatch_record["dispatch_reason"] = f"Eligible for current phase {dispatch_phase} dispatch."
                 component_dispatches.append(dispatch_record)
                 if is_component_blocked(gap_report):
                     continue
@@ -1084,6 +1152,8 @@ Requirements context:
                         "planner_selected_components": [c.get("name", "unknown") for c in components],
                         "developer_choices": choices,
                         "component_dispatches": component_dispatches,
+                        "current_dispatch_phase": dispatch_phase,
+                        "deferred_components": deferred_components,
                         "self_heal_applied": self_heal_applied,
                         "retry_target_components": sorted(retry_targets),
                         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -1147,6 +1217,8 @@ Requirements context:
                 "planner_selected_components": [c.get("name", "unknown") for c in components],
                 "developer_choices": choices,
                 "component_dispatches": component_dispatches,
+                "current_dispatch_phase": dispatch_phase,
+                "deferred_components": deferred_components,
                 "self_heal_applied": self_heal_applied,
                 "retry_target_components": sorted(retry_targets),
                 "generated_at": datetime.utcnow().isoformat() + "Z",

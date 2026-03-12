@@ -20,6 +20,13 @@ def _normalize_name(value: Any) -> str:
     return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _looks_mutating(contract: dict[str, Any]) -> bool:
     if not isinstance(contract, dict):
         return False
@@ -58,6 +65,49 @@ def _blocking_review_items(review_queue: list[Any]) -> list[dict[str, Any]]:
     return items
 
 
+def _has_meaningful_shape(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_normalize_text(value))
+    if isinstance(value, dict):
+        return any(_normalize_text(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_normalize_text(v) if not isinstance(v, (dict, list)) else _has_meaningful_shape(v) for v in value)
+    return False
+
+
+def _contract_semantic_gaps(contract: dict[str, Any]) -> list[str]:
+    spec_content = _as_dict(contract.get("spec_content"))
+    gaps: list[str] = []
+    method = _normalize_text(spec_content.get("method")).upper()
+    path = _normalize_text(spec_content.get("path"))
+    request_body = _as_dict(spec_content.get("request_body"))
+    response_body = _as_dict(spec_content.get("response_body"))
+    error_contract = _as_dict(spec_content.get("error_contract"))
+    auth = _as_dict(spec_content.get("auth"))
+    if not method:
+        gaps.append("missing HTTP method")
+    if not path:
+        gaps.append("missing path")
+    if not _has_meaningful_shape(response_body.get("shape")):
+        gaps.append("missing response shape")
+    if not _has_meaningful_shape(error_contract):
+        gaps.append("missing error contract")
+    if not auth or "required" not in auth:
+        gaps.append("missing auth requirement")
+    if _looks_mutating(contract):
+        if method == "GET":
+            gaps.append("uses GET for a mutating operation")
+        if not _has_meaningful_shape(request_body.get("shape")):
+            gaps.append("missing request body shape for mutating operation")
+    return gaps
+
+
+def _component_is_residual_dumping_ground(component_name: str, component_spec: dict[str, Any]) -> bool:
+    name = _normalize_name(component_name or component_spec.get("component_name"))
+    module_structure = [row for row in _as_list(component_spec.get("module_structure")) if isinstance(row, dict)]
+    return name == "legacycoreservice" and len(module_structure) >= 5
+
+
 def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[str, Any]:
     handoff = _as_dict(component_handoff)
     component_name = _normalize_text(handoff.get("component_name"))
@@ -75,6 +125,10 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
     sql_rows = [row for row in _as_list(analyst_evidence.get("sql_reference_rows")) if isinstance(row, dict)]
     review_queue = [row for row in _as_list(handoff.get("human_review_queue")) if isinstance(row, dict)]
     nfr_constraints = _as_dict(handoff.get("nfr_constraints"))
+    golden_flow_like_count = max(
+        len(anchors),
+        len([row for row in _as_list(analyst_evidence.get("regression_test_anchors")) if isinstance(row, dict)]),
+    )
 
     hard_blockers: list[dict[str, Any]] = []
     soft_blockers: list[dict[str, Any]] = []
@@ -138,14 +192,17 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 }
             )
             continue
-        method = _normalize_text(spec_content.get("method")).upper()
-        if method == "GET" and _looks_mutating(contract):
+        semantic_gaps = _contract_semantic_gaps(contract)
+        if semantic_gaps:
             hard_blockers.append(
                 {
-                    "gap_id": f"GAP-CONTRACT-METHOD-{contract_id or 'MISSING'}",
+                    "gap_id": f"GAP-CONTRACT-SEM-{contract_id or 'MISSING'}",
                     "category": "interface_contracts",
-                    "description": f"Contract {contract_id or '(unnamed)'} uses GET for a mutating operation.",
-                    "resolution": "Architect stage must correct HTTP semantics and regenerate the contract.",
+                    "description": (
+                        f"Contract {contract_id or '(unnamed)'} is semantically incomplete: "
+                        f"{'; '.join(semantic_gaps)}."
+                    ),
+                    "resolution": "Architect stage must emit a complete contract with correct HTTP semantics, auth, payload, and error models.",
                     "blocks": ["controller generation", "API parity", "contract tests"],
                 }
             )
@@ -169,6 +226,26 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "description": "regression_test_anchors is empty for a brownfield component. There is no parity target for generated behavior.",
                 "resolution": "Architect stage must map golden flows or regression anchors into the component handoff.",
                 "blocks": ["parity testing", "behavior validation", "developer acceptance"],
+            }
+        )
+    if is_brownfield and business_rules and golden_flow_like_count and len(anchors) < max(1, min(2, golden_flow_like_count)):
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-003",
+                "category": "brownfield_context",
+                "description": "Regression anchors are materially below the available brownfield flow evidence for this component.",
+                "resolution": "Architect stage must carry forward golden flows or equivalent regression anchors before Developer dispatch.",
+                "blocks": ["parity testing", "behavior validation", "developer acceptance"],
+            }
+        )
+    if _component_is_residual_dumping_ground(component_name, component_spec):
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-COMPONENT-LEGACYCORE-001",
+                "category": "component_spec",
+                "description": "LegacyCoreService remains an unresolved residual dumping ground with too many mixed responsibilities.",
+                "resolution": "Architect stage must decompose the residual service into smaller bounded components before Developer dispatch.",
+                "blocks": ["service generation", "repository design", "regression planning"],
             }
         )
 
@@ -219,7 +296,7 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
             }
         )
 
-    checks = 7
+    checks = 10
     passed = 0
     if coding_policy:
         passed += 1
@@ -233,9 +310,30 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
         passed += 1
     if not is_brownfield or anchors:
         passed += 1
+    if not _component_is_residual_dumping_ground(component_name, component_spec):
+        passed += 1
+    if not sql_rows or len(data_ownership) >= 1:
+        passed += 1
+    if not is_brownfield or len(anchors) >= 1:
+        passed += 1
     if not soft_blockers:
         passed += 1
     completeness_score = round(passed / checks, 2)
+    minimum_dispatch_score = 0.75 if is_brownfield else 0.65
+
+    if completeness_score < minimum_dispatch_score:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-COMPLETENESS-001",
+                "category": "completeness",
+                "description": (
+                    f"Component handoff completeness score {completeness_score:.2f} is below the minimum "
+                    f"dispatch threshold of {minimum_dispatch_score:.2f}."
+                ),
+                "resolution": "Architect stage must enrich the handoff package before Developer dispatch.",
+                "blocks": ["all downstream implementation work"],
+            }
+        )
 
     estimated_rework_risk = "LOW"
     if hard_blockers:
@@ -256,6 +354,7 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
         "soft_blockers": soft_blockers,
         "warnings": warnings,
         "completeness_score": completeness_score,
+        "minimum_dispatch_score": minimum_dispatch_score,
         "estimated_rework_risk": estimated_rework_risk,
     }
 
