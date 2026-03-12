@@ -4511,7 +4511,9 @@ function _formatUsd(value) {
 
 function renderDiscoverScopeGuidance() {
   if (!el.discoverScopeGuidance) return;
-  const { landscape, components, tracks } = _discoverLandscapeArtifacts();
+  const landscape = (raw.repo_landscape_v1 && typeof raw.repo_landscape_v1 === "object") ? raw.repo_landscape_v1 : {};
+  const components = (raw.component_inventory_v1 && typeof raw.component_inventory_v1 === "object") ? raw.component_inventory_v1 : {};
+  const tracks = (raw.modernization_track_plan_v1 && typeof raw.modernization_track_plan_v1 === "object") ? raw.modernization_track_plan_v1 : {};
   const raw = _discoverRawArtifacts();
   const evidenceCoverage = (raw.evidence_coverage_report_v1 && typeof raw.evidence_coverage_report_v1 === "object") ? raw.evidence_coverage_report_v1 : {};
   const landscapeMode = String(landscape?.landscape_mode || "").trim().toLowerCase();
@@ -12822,6 +12824,10 @@ function renderArchitectReadable(output, useCase) {
         <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Traceability Coverage</strong><br/>${escapeHtml(String(coverage.total_source_modules || 0))} source modules</div>
         <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Human Review Items</strong><br/>${reviewQueue.length}</div>
       </div>
+    </section>
+  `;
+  const diagramsPanel = `
+    <section data-architect-view-panel="diagrams" class="mt-2 hidden">
       ${showLegacyDiagram ? mermaidBlock("Current System Diagram", currentDiagram) : ""}
       ${mermaidBlock(targetTitle, targetDiagram)}
     </section>
@@ -12902,12 +12908,14 @@ function renderArchitectReadable(output, useCase) {
     <div class="rounded-lg border border-slate-300 bg-white p-2">
       <div class="flex flex-wrap gap-2">
         <button data-architect-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
+        <button data-architect-view-tab="diagrams" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Diagrams</button>
         <button data-architect-view-tab="services" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Services & Ownership</button>
         <button data-architect-view-tab="traceability" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">ADRs & Traceability</button>
         <button data-architect-view-tab="migration" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Migration & API</button>
         <button data-architect-view-tab="risk" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Risk & Review</button>
       </div>
       ${overviewPanel}
+      ${diagramsPanel}
       ${teamPanel}
       ${traceabilityPanel}
       ${migrationPanel}
@@ -13179,6 +13187,9 @@ function renderAgentTabPanel() {
   if (stage === 1 && run?.run_id) {
     wireAnalystDocActions(el.agentTabPanel, run);
     wireAnalystViewTabs(el.agentTabPanel, run);
+  }
+  if (stage === 2) {
+    wireArchitectViewTabs(el.agentTabPanel);
   }
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
 }
@@ -13983,6 +13994,7 @@ async function runControl(action, payload = {}) {
     await fetchRunSnapshot(runId);
     if (action === "rerun" || action === "resume") {
       startStreaming(runId);
+      scheduleRunBootstrapRefresh(runId);
     }
     await refreshRunHistory();
     if (action === "rerun") {
