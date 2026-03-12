@@ -14836,6 +14836,7 @@ async function startRun() {
 }
 
 async function refreshArtifactsList() {
+  if (!el.artifactSelect || !el.artifactPreview) return;
   if (!state.currentRunId) {
     el.artifactSelect.innerHTML = `<option value="">No run selected</option>`;
     el.artifactPreview.textContent = "";
@@ -14858,6 +14859,7 @@ async function refreshArtifactsList() {
 }
 
 async function openSelectedArtifact() {
+  if (!el.artifactSelect || !el.artifactPreview) return;
   const artifactId = el.artifactSelect.value;
   if (!state.currentRunId || !artifactId) {
     el.artifactPreview.textContent = "Select an artifact first.";
@@ -15717,8 +15719,8 @@ function bindEvents() {
   el.rejectStage.addEventListener("click", () => submitApproval("reject"));
   el.loadRun.addEventListener("click", () => loadRunFromHistory().catch((err) => alert(err.message)));
   el.refreshRunHistory.addEventListener("click", () => refreshRunHistory().catch((err) => alert(err.message)));
-  el.refreshArtifacts.addEventListener("click", () => refreshArtifactsList().catch((err) => alert(err.message)));
-  el.viewArtifact.addEventListener("click", () => openSelectedArtifact().catch((err) => alert(err.message)));
+  el.refreshArtifacts?.addEventListener("click", () => refreshArtifactsList().catch((err) => alert(err.message)));
+  el.viewArtifact?.addEventListener("click", () => openSelectedArtifact().catch((err) => alert(err.message)));
   el.runImpactForecast?.addEventListener("click", () => runImpactForecastNow().catch((err) => alert(err.message)));
   el.runDriftScan?.addEventListener("click", () => runDriftScanNow().catch((err) => alert(err.message)));
   document.querySelectorAll("[data-impact-tab]").forEach((btn) => {
