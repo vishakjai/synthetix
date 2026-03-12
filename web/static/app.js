@@ -12792,15 +12792,149 @@ function renderArchitectReadable(output, useCase) {
     || output.target_diagram_mermaid
     || output.architecture_diagram_mermaid
     || "";
+  const architectPackage = (output.architect_package && typeof output.architect_package === "object") ? output.architect_package : {};
+  const artifacts = (architectPackage.artifacts && typeof architectPackage.artifacts === "object") ? architectPackage.artifacts : {};
+  const adrs = Array.isArray(artifacts.architecture_decision_records) ? artifacts.architecture_decision_records : [];
+  const traceability = (artifacts.traceability_matrix && typeof artifacts.traceability_matrix === "object") ? artifacts.traceability_matrix : {};
+  const traceRows = Array.isArray(traceability.mappings) ? traceability.mappings : [];
+  const ownership = (artifacts.data_ownership_matrix && typeof artifacts.data_ownership_matrix === "object") ? artifacts.data_ownership_matrix : {};
+  const ownershipRows = Array.isArray(ownership.entities) ? ownership.entities : [];
+  const migrationPlan = (artifacts.strangler_migration_plan && typeof artifacts.strangler_migration_plan === "object") ? artifacts.strangler_migration_plan : {};
+  const migrationPhases = Array.isArray(migrationPlan.phases) ? migrationPlan.phases : [];
+  const riskRegister = (artifacts.component_risk_register && typeof artifacts.component_risk_register === "object") ? artifacts.component_risk_register : {};
+  const riskRows = Array.isArray(riskRegister.services) ? riskRegister.services : [];
+  const apiContracts = (artifacts.api_contract_sketches && typeof artifacts.api_contract_sketches === "object") ? artifacts.api_contract_sketches : {};
+  const apiServices = Array.isArray(apiContracts.services) ? apiContracts.services : [];
+  const reviewQueue = Array.isArray(architectPackage.human_review_queue) ? architectPackage.human_review_queue : [];
+  const services = Array.isArray(output.services) ? output.services : [];
+  const coverage = (traceability.coverage && typeof traceability.coverage === "object") ? traceability.coverage : {};
+  const estimationHandoff = (architectPackage.estimation_handoff && typeof architectPackage.estimation_handoff === "object") ? architectPackage.estimation_handoff : {};
   const uc = String(useCase || "").toLowerCase();
   const showLegacyDiagram = uc === "code_modernization";
   const targetTitle = showLegacyDiagram ? "Target Architecture Diagram" : "System Architecture Diagram";
-  return `
-    <div><strong>Pattern:</strong> ${escapeHtml(output.pattern || "")}</div>
-    <div><strong>Overview:</strong> ${escapeHtml(output.overview || "")}</div>
-    ${showLegacyDiagram ? mermaidBlock("Current System Diagram", currentDiagram) : ""}
-    ${mermaidBlock(targetTitle, targetDiagram)}
+  const overviewPanel = `
+    <section data-architect-view-panel="overview" class="mt-2">
+      <div><strong>Pattern:</strong> ${escapeHtml(output.pattern || "")}</div>
+      <div><strong>Overview:</strong> ${escapeHtml(output.overview || "")}</div>
+      <div class="mt-2 grid gap-2 sm:grid-cols-4">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Services</strong><br/>${services.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>ADRs</strong><br/>${adrs.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Traceability Coverage</strong><br/>${escapeHtml(String(coverage.total_source_modules || 0))} source modules</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Human Review Items</strong><br/>${reviewQueue.length}</div>
+      </div>
+      ${showLegacyDiagram ? mermaidBlock("Current System Diagram", currentDiagram) : ""}
+      ${mermaidBlock(targetTitle, targetDiagram)}
+    </section>
   `;
+  const teamPanel = `
+    <section data-architect-view-panel="services" class="mt-2 hidden">
+      <div class="text-xs font-semibold text-slate-900">Proposed Services</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Responsibility</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Database</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Cache</th></tr></thead>
+        <tbody>
+          ${services.map((svc) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(svc.name || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(svc.responsibility || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(svc.database || "-"))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(svc.cache || "-"))}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='4'>No services generated.</td></tr>"}
+        </tbody>
+      </table>
+      <div class="mt-3 text-xs font-semibold text-slate-900">Data Ownership Matrix</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Entity</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Owner</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Read Services</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Migration Notes</th></tr></thead>
+        <tbody>
+          ${ownershipRows.slice(0, 80).map((row) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(row.name || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.owning_service || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.read_services) ? row.read_services : []).join(", ") || "-")}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.migration_notes || ""))}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='4'>No ownership data emitted.</td></tr>"}
+        </tbody>
+      </table>
+    </section>
+  `;
+  const traceabilityPanel = `
+    <section data-architect-view-panel="traceability" class="mt-2 hidden">
+      <div class="text-xs font-semibold text-slate-900">Architecture Decision Records</div>
+      <div class="mt-1 space-y-2">
+        ${adrs.slice(0, 20).map((adr) => `<div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px]"><div class="font-semibold text-slate-900">${escapeHtml(String(adr.id || ""))}: ${escapeHtml(String(adr.title || ""))}</div><div class="mt-1 text-slate-700">${escapeHtml(String((adr.context && adr.context.narrative) || ""))}</div><div class="mt-1 text-slate-700"><strong>Decision:</strong> ${escapeHtml(String(adr.decision || ""))}</div><div class="mt-1 text-slate-700"><strong>Alternatives:</strong> ${escapeHtml((Array.isArray(adr.alternatives_considered) ? adr.alternatives_considered.map((x) => x.option || "").filter(Boolean) : []).join(", ") || "-")}</div></div>`).join("") || "<p class='text-[11px] text-slate-700'>No ADRs emitted.</p>"}
+      </div>
+      <div class="mt-3 text-xs font-semibold text-slate-900">Traceability Matrix</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Source</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Target Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Strategy</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Confidence</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Flags</th></tr></thead>
+        <tbody>
+          ${traceRows.slice(0, 120).map((row) => `<tr><td class="border border-slate-300 px-2 py-1">${escapeHtml(String((row.source && row.source.module) || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String((row.target && row.target.service) || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String((row.target && row.target.migration_strategy) || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.confidence ?? ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.flags) ? row.flags : []).join(", ") || "-")}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='5'>No traceability mappings emitted.</td></tr>"}
+        </tbody>
+      </table>
+    </section>
+  `;
+  const migrationPanel = `
+    <section data-architect-view-panel="migration" class="mt-2 hidden">
+      <div class="text-xs font-semibold text-slate-900">Strangler Fig Migration Plan</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Phase</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Description</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Target Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Modules</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Exit Criteria</th></tr></thead>
+        <tbody>
+          ${migrationPhases.map((phase) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(phase.phase || ""))} - ${escapeHtml(String(phase.name || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(phase.description || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(phase.target_service || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(phase.modules) ? phase.modules : []).join(", ") || "-")}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(phase.exit_criteria || ""))}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='5'>No migration phases emitted.</td></tr>"}
+        </tbody>
+      </table>
+      <div class="mt-3 text-xs font-semibold text-slate-900">API Contract Sketches</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Operations</th></tr></thead>
+        <tbody>
+          ${apiServices.slice(0, 40).map((svc) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(svc.service || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(svc.operations) ? svc.operations.map((op) => `${op.method || "GET"} ${op.path || ""}`).join("; ") : "") || "-")}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='2'>No API contract sketches emitted.</td></tr>"}
+        </tbody>
+      </table>
+    </section>
+  `;
+  const riskPanel = `
+    <section data-architect-view-panel="risk" class="mt-2 hidden">
+      <div class="text-xs font-semibold text-slate-900">Component Risk Register</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Tier</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Score</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Estimation Modifier</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Mitigations</th></tr></thead>
+        <tbody>
+          ${riskRows.map((row) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(row.service || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.risk_tier || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.composite_risk_score ?? ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.estimation_modifier ?? ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.mitigation_recommendations) ? row.mitigation_recommendations : []).join("; ") || "-")}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='5'>No component risk data emitted.</td></tr>"}
+        </tbody>
+      </table>
+      <div class="mt-3 grid gap-2 sm:grid-cols-2">
+        <div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px]">
+          <div class="font-semibold text-slate-900">Estimation Handoff</div>
+          <div class="mt-1 text-slate-700">${escapeHtml(String(estimationHandoff.global_modifier_note || "No estimation handoff note emitted."))}</div>
+        </div>
+        <div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px]">
+          <div class="font-semibold text-slate-900">Human Review Queue</div>
+          <ul class="mt-1 list-disc pl-4 text-slate-700">${reviewQueue.slice(0, 20).map((row) => `<li>${escapeHtml(String(row.priority || ""))}: ${escapeHtml(String(row.item || ""))} — ${escapeHtml(String(row.reason || ""))}</li>`).join("") || "<li>No human review items emitted.</li>"}</ul>
+        </div>
+      </div>
+    </section>
+  `;
+  return `
+    <div class="rounded-lg border border-slate-300 bg-white p-2">
+      <div class="flex flex-wrap gap-2">
+        <button data-architect-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
+        <button data-architect-view-tab="services" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Services & Ownership</button>
+        <button data-architect-view-tab="traceability" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">ADRs & Traceability</button>
+        <button data-architect-view-tab="migration" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Migration & API</button>
+        <button data-architect-view-tab="risk" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Risk & Review</button>
+      </div>
+      ${overviewPanel}
+      ${teamPanel}
+      ${traceabilityPanel}
+      ${migrationPanel}
+      ${riskPanel}
+    </div>
+  `;
+}
+
+function wireArchitectViewTabs(container) {
+  if (!container) return;
+  const tabs = Array.from(container.querySelectorAll("[data-architect-view-tab]"));
+  const panels = Array.from(container.querySelectorAll("[data-architect-view-panel]"));
+  if (!tabs.length || !panels.length) return;
+  const activate = (name) => {
+    tabs.forEach((tab) => {
+      const selected = tab.getAttribute("data-architect-view-tab") === name;
+      tab.classList.toggle("btn-dark", selected);
+      tab.classList.toggle("btn-light", !selected);
+    });
+    panels.forEach((panel) => {
+      panel.classList.toggle("hidden", panel.getAttribute("data-architect-view-panel") !== name);
+    });
+  };
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => activate(tab.getAttribute("data-architect-view-tab")));
+  });
+  activate("overview");
 }
 
 function renderDeveloperReadable(output) {
@@ -13796,6 +13930,9 @@ function openStageModal(stage) {
   if (stage === 1 && state.currentRun?.run_id) {
     wireAnalystDocActions(el.modalReadable, state.currentRun);
     wireAnalystViewTabs(el.modalReadable, state.currentRun);
+  }
+  if (stage === 2) {
+    wireArchitectViewTabs(el.modalReadable);
   }
   el.outputModal.showModal();
   setTimeout(() => renderMermaidBlocks(el.outputModal), 0);
