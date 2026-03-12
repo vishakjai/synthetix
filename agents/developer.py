@@ -13,6 +13,7 @@ from typing import Any
 
 from .base import BaseAgent
 from utils.developer_dispatch import build_component_scoped_handoff
+from utils.developer_prereqs import evaluate_component_prerequisites, is_component_blocked
 from utils.llm import LLMClient
 
 # Re-use the robust JSON extractor from BaseAgent
@@ -973,6 +974,7 @@ Requirements context:
         failures_by_component: dict[str, list[dict[str, Any]]] = {}
         previous_files_by_component: dict[str, list[dict[str, str]]] = {}
         component_dispatches: list[dict[str, Any]] = []
+        prerequisite_gap_reports: list[dict[str, Any]] = []
 
         if isinstance(failed_checks, list):
             for failure in failed_checks:
@@ -1030,7 +1032,27 @@ Requirements context:
                     architect_handoff_package,
                     str(comp.get("name", "")),
                 )
-                component_dispatches.append(_handoff_dispatch_record(component_handoff))
+                gap_report = evaluate_component_prerequisites(component_handoff)
+                dispatch_record = _handoff_dispatch_record(component_handoff)
+                if gap_report.get("status") == "BLOCKED":
+                    dispatch_record["prerequisite_status"] = "BLOCKED"
+                    dispatch_record["hard_blocker_count"] = len(gap_report.get("hard_blockers", []))
+                    dispatch_record["soft_blocker_count"] = len(gap_report.get("soft_blockers", []))
+                    dispatch_record["completeness_score"] = gap_report.get("completeness_score")
+                    prerequisite_gap_reports.append(gap_report)
+                    self.log(
+                        f"[{self.name}]   ⛔ {comp.get('name', '')} blocked by prerequisites "
+                        f"(hard={len(gap_report.get('hard_blockers', []))}, "
+                        f"soft={len(gap_report.get('soft_blockers', []))})"
+                    )
+                else:
+                    dispatch_record["prerequisite_status"] = "READY"
+                    dispatch_record["hard_blocker_count"] = 0
+                    dispatch_record["soft_blocker_count"] = 0
+                    dispatch_record["completeness_score"] = gap_report.get("completeness_score")
+                component_dispatches.append(dispatch_record)
+                if is_component_blocked(gap_report):
+                    continue
                 sub = DeveloperSubAgent(
                     self.llm,
                     comp,
@@ -1044,6 +1066,47 @@ Requirements context:
                 future = executor.submit(sub.run)
                 futures[future] = comp["name"]
                 self.log(f"[{self.name}]   ↳ Spawned sub-agent: {comp['name']}")
+
+            if prerequisite_gap_reports:
+                self.log(
+                    f"[{self.name}] Developer dispatch blocked: "
+                    f"{len(prerequisite_gap_reports)} component(s) missing required handoff inputs"
+                )
+                output = {
+                    "error": "Developer prerequisites not satisfied",
+                    "prerequisite_gap_report": {
+                        "status": "BLOCKED",
+                        "generated_at": datetime.utcnow().isoformat() + "Z",
+                        "component_reports": prerequisite_gap_reports,
+                    },
+                    "execution": {
+                        "planner_used_tool_calling": planner_used_tooling,
+                        "planner_selected_components": [c.get("name", "unknown") for c in components],
+                        "developer_choices": choices,
+                        "component_dispatches": component_dispatches,
+                        "self_heal_applied": self_heal_applied,
+                        "retry_target_components": sorted(retry_targets),
+                        "generated_at": datetime.utcnow().isoformat() + "Z",
+                    },
+                    "implementations": [],
+                    "total_loc": 0,
+                    "total_files": 0,
+                    "total_components": 0,
+                }
+                return AgentResult(
+                    agent_name=self.name,
+                    stage=self.stage,
+                    status="error",
+                    summary=(
+                        f"Developer blocked by prerequisite gaps in "
+                        f"{len(prerequisite_gap_reports)} component(s)"
+                    ),
+                    output=output,
+                    raw_response=response_content,
+                    tokens_used=tokens_used + planner_tokens,
+                    latency_ms=latency_ms + planner_latency_ms,
+                    logs=self._logs.copy(),
+                )
 
             for future in concurrent.futures.as_completed(futures):
                 comp_name = futures[future]

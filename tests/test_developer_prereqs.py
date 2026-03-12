@@ -1,0 +1,176 @@
+import unittest
+from unittest.mock import Mock
+
+from agents.architect import ArchitectAgent
+from agents.developer import DeveloperAgent
+from utils.developer_dispatch import build_component_scoped_handoff
+from utils.developer_prereqs import evaluate_component_prerequisites
+
+
+class DeveloperPrereqsTest(unittest.TestCase):
+    def _llm(self):
+        llm = Mock()
+        llm.config = Mock()
+        llm.config.developer_parallel_agents = 3
+        return llm
+
+    def _state(self):
+        return {
+            "run_id": "run_developer_prereqs",
+            "use_case": "code_modernization",
+            "modernization_language": "C#",
+            "database_target": "PostgreSQL",
+            "repo_url": "https://github.com/example/bank-vb6",
+            "developer_plan_approved": True,
+            "developer_plan": {
+                "plan_summary": "Approved developer plan",
+                "proposed_components": [
+                    {
+                        "name": "TransactionService",
+                        "service": "TransactionService",
+                        "type": "api",
+                        "language": "C#",
+                        "framework": "ASP.NET Core",
+                        "description": "Handles deposits and withdrawals.",
+                        "estimated_loc": 1200,
+                        "dependencies": [],
+                        "priority": "critical",
+                    }
+                ],
+            },
+            "analyst_output": {
+                "project_name": "BANK_SYSTEM_Modernization",
+                "legacy_code_inventory": {
+                    "chunk_manifest_v1": {
+                        "chunks": [
+                            {"chunk_id": "chunk-auth", "files": ["frmLogin.frm"], "depends_on_chunks": []},
+                            {"chunk_id": "chunk-customer", "files": ["frmcustomer.frm"], "depends_on_chunks": ["chunk-auth"]},
+                            {"chunk_id": "chunk-txn", "files": ["frmdeposit.frm", "frmwithdraw.frm"], "depends_on_chunks": ["chunk-customer"]},
+                        ]
+                    }
+                },
+                "raw_artifacts": {
+                    "form_dossier": {
+                        "dossiers": [
+                            {"form_name": "frmLogin", "purpose": "Authenticate users into the application.", "source_loc": 300, "db_tables": ["users"]},
+                            {"form_name": "frmcustomer", "purpose": "Customer profile onboarding and maintenance workflow.", "source_loc": 1400, "db_tables": ["customers", "accounts"]},
+                            {"form_name": "frmdeposit", "purpose": "Deposit capture and account balance update workflow.", "source_loc": 900, "db_tables": ["transactions", "accounts"]},
+                            {"form_name": "frmwithdraw", "purpose": "Withdrawal processing and balance validation workflow.", "source_loc": 850, "db_tables": ["transactions", "accounts"]},
+                        ]
+                    },
+                    "risk_register": {"risks": [{"risk_id": "RISK-001", "form": "frmdeposit"}]},
+                    "business_rule_catalog": {
+                        "rules": [
+                            {"rule_id": "BR-001", "form": "frmcustomer", "statement": "Customer records require a unique account number."},
+                            {"rule_id": "BR-002", "form": "frmdeposit", "statement": "Deposits must update balance and ledger atomically."},
+                        ]
+                    },
+                    "sql_catalog": {
+                        "statements": [
+                            {"form": "frmdeposit", "tables": ["tbltransaction", "tblaccount"], "sql_id": "sql:01"},
+                            {"form": "frmwithdraw", "tables": ["tbltransaction", "tblaccount"], "sql_id": "sql:02"},
+                            {"form": "frmcustomer", "tables": ["tblcustomers", "tblaccount"], "sql_id": "sql:03"},
+                        ]
+                    },
+                    "dependency_inventory": {"dependencies": [{"name": "MSCOMCT2.OCX"}]},
+                    "golden_flows": {
+                        "flows": [
+                            {"description": "frmdeposit::cmdSave_Click records deposit and updates account balance."},
+                        ]
+                    },
+                    "global_module_inventory": {
+                        "variables": [
+                            {"name": "gCurrentBalance", "used_in_modules": ["frmdeposit", "frmwithdraw"], "owning_service": "TransactionService"},
+                        ]
+                    },
+                    "static_risk_detectors": {
+                        "findings": [
+                            {"signal": "missing_rollback_guard", "severity": "high", "message": "Deposit and withdrawal writes have no rollback guards."},
+                        ]
+                    },
+                    "connection_string_variants": {
+                        "variants": [
+                            {"name": "bank-mdb", "provider": "OLEDB", "connection_string": "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=bank.mdb;"},
+                        ]
+                    },
+                },
+            },
+        }
+
+    def _scoped(self):
+        agent = ArchitectAgent(self._llm())
+        normalized = agent._normalize_output(
+            {
+                "architecture_name": "",
+                "pattern": "",
+                "overview": "",
+                "services": [],
+                "legacy_system": {
+                    "current_logic_summary": "Legacy VB6 workflow.",
+                    "key_logic_steps": ["Login", "Customer menu", "Transaction processing"],
+                },
+            },
+            self._state(),
+        )
+        handoff = normalized.get("architect_handoff_package", {})
+        self._state()["architect_handoff_package"] = handoff
+        return build_component_scoped_handoff(handoff, "TransactionService")
+
+    def test_prereqs_ready_for_valid_scoped_handoff(self):
+        scoped = self._scoped()
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "READY")
+        self.assertFalse(report.get("hard_blockers"))
+        self.assertFalse(report.get("soft_blockers"))
+
+    def test_prereqs_block_when_domain_evidence_missing(self):
+        scoped = self._scoped()
+        scoped["data_ownership"] = []
+        scoped["analyst_evidence"]["data_entities"] = []
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("category") == "domain_model" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_on_mutating_get_contract(self):
+        scoped = self._scoped()
+        scoped["interface_contracts"][0]["operation"] = "CloseAccount"
+        scoped["interface_contracts"][0]["path"] = "/accounts/{id}/close"
+        scoped["interface_contracts"][0]["spec_content"]["method"] = "GET"
+        report = evaluate_component_prerequisites(scoped)
+        self.assertTrue(any("interface_contracts" == row.get("category") for row in report.get("hard_blockers", [])))
+
+    def test_developer_agent_refuses_when_component_prereqs_fail(self):
+        state = self._state()
+        agent = ArchitectAgent(self._llm())
+        normalized = agent._normalize_output(
+            {
+                "architecture_name": "",
+                "pattern": "",
+                "overview": "",
+                "services": [],
+                "legacy_system": {
+                    "current_logic_summary": "Legacy VB6 workflow.",
+                    "key_logic_steps": ["Login", "Customer menu", "Transaction processing"],
+                },
+            },
+            state,
+        )
+        handoff = normalized.get("architect_handoff_package", {})
+        transaction_spec = next(
+            spec for spec in handoff.get("component_specs", [])
+            if spec.get("component_name") == "TransactionService"
+        )
+        transaction_spec["interface_refs"] = []
+        state["architect_output"] = {"architect_handoff_package": handoff}
+
+        developer = DeveloperAgent(self._llm())
+        result = developer.run(state)
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("prerequisite_gap_report", result.output)
+        self.assertEqual(result.output.get("implementations"), [])
+        self.assertIn("blocked", result.summary.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()
