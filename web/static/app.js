@@ -990,6 +990,10 @@ function downloadText(filename, content, mimeType = "text/plain;charset=utf-8") 
   URL.revokeObjectURL(url);
 }
 
+function downloadJson(filename, value) {
+  downloadText(filename, JSON.stringify(value || {}, null, 2), "application/json;charset=utf-8");
+}
+
 function getAnalystOutput(run) {
   const result = latestResultByStage(run, 1);
   if (result?.output && typeof result.output === "object") return result.output;
@@ -12814,8 +12818,15 @@ function renderArchitectReadable(output, useCase) {
   const uc = String(useCase || "").toLowerCase();
   const showLegacyDiagram = uc === "code_modernization";
   const targetTitle = showLegacyDiagram ? "Target Architecture Diagram" : "System Architecture Diagram";
+  const panelHeader = (title, exportKind) => `
+    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+      <div class="text-xs font-semibold text-slate-900">${title}</div>
+      <button data-architect-export="${escapeHtml(exportKind)}" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
+    </div>
+  `;
   const overviewPanel = `
     <section data-architect-view-panel="overview" class="mt-2">
+      ${panelHeader("Architecture Summary", "overview")}
       <div><strong>Pattern:</strong> ${escapeHtml(output.pattern || "")}</div>
       <div><strong>Overview:</strong> ${escapeHtml(output.overview || "")}</div>
       <div class="mt-2 grid gap-2 sm:grid-cols-4">
@@ -12828,12 +12839,14 @@ function renderArchitectReadable(output, useCase) {
   `;
   const diagramsPanel = `
     <section data-architect-view-panel="diagrams" class="mt-2 hidden">
+      ${panelHeader("Architecture Diagrams", "diagrams")}
       ${showLegacyDiagram ? mermaidBlock("Current System Diagram", currentDiagram) : ""}
       ${mermaidBlock(targetTitle, targetDiagram)}
     </section>
   `;
   const teamPanel = `
     <section data-architect-view-panel="services" class="mt-2 hidden">
+      ${panelHeader("Services & Ownership", "services")}
       <div class="text-xs font-semibold text-slate-900">Proposed Services</div>
       <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
         <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Responsibility</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Database</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Cache</th></tr></thead>
@@ -12852,6 +12865,7 @@ function renderArchitectReadable(output, useCase) {
   `;
   const traceabilityPanel = `
     <section data-architect-view-panel="traceability" class="mt-2 hidden">
+      ${panelHeader("ADRs & Traceability", "traceability")}
       <div class="text-xs font-semibold text-slate-900">Architecture Decision Records</div>
       <div class="mt-1 space-y-2">
         ${adrs.slice(0, 20).map((adr) => `<div class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px]"><div class="font-semibold text-slate-900">${escapeHtml(String(adr.id || ""))}: ${escapeHtml(String(adr.title || ""))}</div><div class="mt-1 text-slate-700">${escapeHtml(String((adr.context && adr.context.narrative) || ""))}</div><div class="mt-1 text-slate-700"><strong>Decision:</strong> ${escapeHtml(String(adr.decision || ""))}</div><div class="mt-1 text-slate-700"><strong>Alternatives:</strong> ${escapeHtml((Array.isArray(adr.alternatives_considered) ? adr.alternatives_considered.map((x) => x.option || "").filter(Boolean) : []).join(", ") || "-")}</div></div>`).join("") || "<p class='text-[11px] text-slate-700'>No ADRs emitted.</p>"}
@@ -12867,6 +12881,7 @@ function renderArchitectReadable(output, useCase) {
   `;
   const migrationPanel = `
     <section data-architect-view-panel="migration" class="mt-2 hidden">
+      ${panelHeader("Migration & API", "migration")}
       <div class="text-xs font-semibold text-slate-900">Strangler Fig Migration Plan</div>
       <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
         <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Phase</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Description</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Target Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Modules</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Exit Criteria</th></tr></thead>
@@ -12885,6 +12900,7 @@ function renderArchitectReadable(output, useCase) {
   `;
   const riskPanel = `
     <section data-architect-view-panel="risk" class="mt-2 hidden">
+      ${panelHeader("Risk & Review", "risk")}
       <div class="text-xs font-semibold text-slate-900">Component Risk Register</div>
       <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
         <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Service</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Tier</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Score</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Estimation Modifier</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Mitigations</th></tr></thead>
@@ -12924,7 +12940,65 @@ function renderArchitectReadable(output, useCase) {
   `;
 }
 
-function wireArchitectViewTabs(container) {
+function buildArchitectExportPayload(output, useCase, kind) {
+  const architectPackage = (output?.architect_package && typeof output.architect_package === "object") ? output.architect_package : {};
+  const artifacts = (architectPackage.artifacts && typeof architectPackage.artifacts === "object") ? architectPackage.artifacts : {};
+  const legacy = (output?.legacy_system && typeof output.legacy_system === "object") ? output.legacy_system : {};
+  const uc = String(useCase || "").toLowerCase();
+  const showLegacyDiagram = uc === "code_modernization";
+  const currentDiagram = legacy.current_system_diagram_mermaid
+    || legacy.legacy_diagram_mermaid
+    || output?.current_system_diagram_mermaid
+    || output?.legacy_system_diagram_mermaid
+    || "";
+  const targetDiagram = output?.target_system_diagram_mermaid
+    || output?.target_architecture_diagram_mermaid
+    || output?.target_diagram_mermaid
+    || output?.architecture_diagram_mermaid
+    || "";
+  if (kind === "overview") {
+    return {
+      pattern: output?.pattern || "",
+      overview: output?.overview || "",
+      architect_package: architectPackage,
+    };
+  }
+  if (kind === "diagrams") {
+    return {
+      current_system_diagram_mermaid: showLegacyDiagram ? currentDiagram : "",
+      target_architecture_diagram_mermaid: targetDiagram,
+      use_case: useCase || "",
+    };
+  }
+  if (kind === "services") {
+    return {
+      services: Array.isArray(output?.services) ? output.services : [],
+      data_ownership_matrix: artifacts.data_ownership_matrix || {},
+    };
+  }
+  if (kind === "traceability") {
+    return {
+      architecture_decision_records: Array.isArray(artifacts.architecture_decision_records) ? artifacts.architecture_decision_records : [],
+      traceability_matrix: artifacts.traceability_matrix || {},
+    };
+  }
+  if (kind === "migration") {
+    return {
+      strangler_migration_plan: artifacts.strangler_migration_plan || {},
+      api_contract_sketches: artifacts.api_contract_sketches || {},
+    };
+  }
+  if (kind === "risk") {
+    return {
+      component_risk_register: artifacts.component_risk_register || {},
+      estimation_handoff: architectPackage.estimation_handoff || {},
+      human_review_queue: Array.isArray(architectPackage.human_review_queue) ? architectPackage.human_review_queue : [],
+    };
+  }
+  return architectPackage;
+}
+
+function wireArchitectViewTabs(container, output, useCase) {
   if (!container) return;
   const tabs = Array.from(container.querySelectorAll("[data-architect-view-tab]"));
   const panels = Array.from(container.querySelectorAll("[data-architect-view-panel]"));
@@ -12941,6 +13015,14 @@ function wireArchitectViewTabs(container) {
   };
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => activate(tab.getAttribute("data-architect-view-tab")));
+  });
+  const exportButtons = Array.from(container.querySelectorAll("[data-architect-export]"));
+  exportButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const kind = String(button.getAttribute("data-architect-export") || "").trim() || "overview";
+      const payload = buildArchitectExportPayload(output || {}, useCase, kind);
+      downloadJson(`architect-${kind}.json`, payload);
+    });
   });
   activate("overview");
 }
@@ -13189,7 +13271,7 @@ function renderAgentTabPanel() {
     wireAnalystViewTabs(el.agentTabPanel, run);
   }
   if (stage === 2) {
-    wireArchitectViewTabs(el.agentTabPanel);
+    wireArchitectViewTabs(el.agentTabPanel, result?.output || {}, runUseCase);
   }
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
 }
@@ -13943,7 +14025,7 @@ function openStageModal(stage) {
     wireAnalystViewTabs(el.modalReadable, state.currentRun);
   }
   if (stage === 2) {
-    wireArchitectViewTabs(el.modalReadable);
+    wireArchitectViewTabs(el.modalReadable, result?.output || {}, runUseCase);
   }
   el.outputModal.showModal();
   setTimeout(() => renderMermaidBlocks(el.outputModal), 0);
