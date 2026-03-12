@@ -11,6 +11,7 @@ import json
 import re
 
 from .base import AgentResult, BaseAgent
+from utils.architect_handoff import build_architect_handoff_package
 
 
 class ArchitectAgent(BaseAgent):
@@ -559,6 +560,7 @@ Include:
     def _normalize_output(self, parsed: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         package = self._build_architect_package(state, parsed)
         parsed["architect_package"] = package
+        parsed["architect_handoff_package"] = build_architect_handoff_package(state, parsed, package)
 
         services = self._build_top_level_services(package, state)
         if services:

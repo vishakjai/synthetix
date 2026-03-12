@@ -669,6 +669,10 @@ const state = {
     loadedRunId: "",
     activeTab: "overview",
   },
+  developerView: {
+    handoffByRun: {},
+    scopedByRunAndComponent: {},
+  },
   teamBuilder: {
     stageAgentIds: {},
     enabledStages: {},
@@ -12799,6 +12803,7 @@ function renderArchitectReadable(output, useCase) {
     || output.architecture_diagram_mermaid
     || "";
   const architectPackage = (output.architect_package && typeof output.architect_package === "object") ? output.architect_package : {};
+  const architectHandoff = (output.architect_handoff_package && typeof output.architect_handoff_package === "object") ? output.architect_handoff_package : {};
   const artifacts = (architectPackage.artifacts && typeof architectPackage.artifacts === "object") ? architectPackage.artifacts : {};
   const adrs = Array.isArray(artifacts.architecture_decision_records) ? artifacts.architecture_decision_records : [];
   const traceability = (artifacts.traceability_matrix && typeof artifacts.traceability_matrix === "object") ? artifacts.traceability_matrix : {};
@@ -12812,6 +12817,11 @@ function renderArchitectReadable(output, useCase) {
   const apiContracts = (artifacts.api_contract_sketches && typeof artifacts.api_contract_sketches === "object") ? artifacts.api_contract_sketches : {};
   const apiServices = Array.isArray(apiContracts.services) ? apiContracts.services : [];
   const reviewQueue = Array.isArray(architectPackage.human_review_queue) ? architectPackage.human_review_queue : [];
+  const handoffComponents = Array.isArray(architectHandoff.component_specs) ? architectHandoff.component_specs : [];
+  const handoffContracts = Array.isArray(architectHandoff.interface_contracts) ? architectHandoff.interface_contracts : [];
+  const handoffWbs = Array.isArray(((architectHandoff.wbs && architectHandoff.wbs.items) || [])) ? architectHandoff.wbs.items : [];
+  const handoffValidation = (architectHandoff.validation_status && typeof architectHandoff.validation_status === "object") ? architectHandoff.validation_status : {};
+  const handoffReview = Array.isArray(architectHandoff.human_review_queue) ? architectHandoff.human_review_queue : [];
   const services = Array.isArray(output.services) ? output.services : [];
   const coverage = (traceability.coverage && typeof traceability.coverage === "object") ? traceability.coverage : {};
   const estimationHandoff = (architectPackage.estimation_handoff && typeof architectPackage.estimation_handoff === "object") ? architectPackage.estimation_handoff : {};
@@ -12879,6 +12889,37 @@ function renderArchitectReadable(output, useCase) {
       </table>
     </section>
   `;
+  const handoffPanel = `
+    <section data-architect-view-panel="handoff" class="mt-2 hidden">
+      ${panelHeader("Architect Handoff", "handoff")}
+      <div class="grid gap-2 sm:grid-cols-4">
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Components</strong><br/>${handoffComponents.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Contracts</strong><br/>${handoffContracts.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>WBS Items</strong><br/>${handoffWbs.length}</div>
+        <div class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[11px]"><strong>Review Items</strong><br/>${handoffReview.length}</div>
+      </div>
+      <div class="mt-3 text-xs font-semibold text-slate-900">Validation Status</div>
+      <div class="mt-1 rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-900">
+        <div><strong>Status:</strong> ${escapeHtml(String(handoffValidation.status || "unknown").toUpperCase())}</div>
+        <div><strong>Warnings:</strong> ${escapeHtml((Array.isArray(handoffValidation.warnings) ? handoffValidation.warnings : []).join("; ") || "-")}</div>
+        <div><strong>Blocking review items:</strong> ${escapeHtml(String(handoffValidation.blocking_review_item_count || 0))}</div>
+      </div>
+      <div class="mt-3 text-xs font-semibold text-slate-900">Component Specs</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Component</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Responsibility</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Interface Refs</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">WBS Refs</th></tr></thead>
+        <tbody>
+          ${handoffComponents.slice(0, 80).map((row) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(row.component_name || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.responsibility || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.interface_refs) ? row.interface_refs : []).join(", ") || "-")}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.wbs_refs) ? row.wbs_refs : []).join(", ") || "-")}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='4'>No handoff component specs emitted.</td></tr>"}
+        </tbody>
+      </table>
+      <div class="mt-3 text-xs font-semibold text-slate-900">Interface Contracts</div>
+      <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+        <thead><tr><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Contract</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Owner</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Type</th><th class="border border-slate-300 bg-slate-50 px-2 py-1 text-left">Spec</th></tr></thead>
+        <tbody>
+          ${handoffContracts.slice(0, 120).map((row) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(row.contract_id || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.owner_component || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.contract_type || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(((row.spec_content || {}).path) || ((row.spec_content || {}).name) || ""))}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='4'>No handoff contracts emitted.</td></tr>"}
+        </tbody>
+      </table>
+    </section>
+  `;
   const migrationPanel = `
     <section data-architect-view-panel="migration" class="mt-2 hidden">
       ${panelHeader("Migration & API", "migration")}
@@ -12927,6 +12968,7 @@ function renderArchitectReadable(output, useCase) {
         <button data-architect-view-tab="diagrams" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Diagrams</button>
         <button data-architect-view-tab="services" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Services & Ownership</button>
         <button data-architect-view-tab="traceability" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">ADRs & Traceability</button>
+        <button data-architect-view-tab="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Architect Handoff</button>
         <button data-architect-view-tab="migration" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Migration & API</button>
         <button data-architect-view-tab="risk" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Risk & Review</button>
       </div>
@@ -12934,6 +12976,7 @@ function renderArchitectReadable(output, useCase) {
       ${diagramsPanel}
       ${teamPanel}
       ${traceabilityPanel}
+      ${handoffPanel}
       ${migrationPanel}
       ${riskPanel}
     </div>
@@ -12988,6 +13031,11 @@ function buildArchitectExportPayload(output, useCase, kind) {
       api_contract_sketches: artifacts.api_contract_sketches || {},
     };
   }
+  if (kind === "handoff") {
+    return {
+      architect_handoff_package: (output?.architect_handoff_package && typeof output.architect_handoff_package === "object") ? output.architect_handoff_package : {},
+    };
+  }
   if (kind === "risk") {
     return {
       component_risk_register: artifacts.component_risk_register || {},
@@ -13030,20 +13078,277 @@ function wireArchitectViewTabs(container, output, useCase) {
 function renderDeveloperReadable(output) {
   const implementations = output.implementations || [];
   const artifactRoot = String(output.artifact_root || "").trim();
+  const dispatches = Array.isArray(output?.execution?.component_dispatches) ? output.execution.component_dispatches : [];
+  const componentOptions = implementations
+    .map((impl) => String(impl.component_name || "").trim())
+    .filter(Boolean);
   return `
-    <div><strong>Total LOC:</strong> ${Number(output.total_loc || 0).toLocaleString()}</div>
-    <div><strong>Components:</strong> ${Number(output.total_components || 0)}</div>
-    <div><strong>Files:</strong> ${Number(output.total_files || 0)}</div>
-    ${artifactRoot ? `<div><strong>Local Artifact Path:</strong> <span class="mono">${escapeHtml(artifactRoot)}</span></div>` : ""}
-    <div class="mt-2"><strong>Component Breakdown</strong></div>
-    <ul class="list-disc pl-5">${implementations.map((impl) => `
-      <li>
-        <strong>${escapeHtml(impl.component_name || "component")}</strong>
-        (${escapeHtml(impl.language || "unknown")} / ${escapeHtml(impl.framework || "unknown")})
-        <div>Files: ${Number((impl.files || []).length)} | LOC: ${Number(impl.total_loc || 0).toLocaleString()}</div>
-      </li>
-    `).join("") || "<li>No implementations generated</li>"}</ul>
+    <div class="rounded-lg border border-slate-300 bg-white p-2">
+      <div class="flex flex-wrap gap-2">
+        <button data-developer-view-tab="overview" class="btn-dark rounded-md px-2 py-1 text-[11px] font-semibold">Overview</button>
+        <button data-developer-view-tab="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Architect Handoff</button>
+        <button data-developer-view-tab="dispatches" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Dispatches</button>
+        <button data-developer-view-tab="components" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Scoped Components</button>
+        <button data-developer-view-tab="generated" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Generated Output</button>
+      </div>
+      <section data-developer-view-panel="overview" class="mt-2">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-900">Developer Summary</div>
+        </div>
+        <div><strong>Total LOC:</strong> ${Number(output.total_loc || 0).toLocaleString()}</div>
+        <div><strong>Components:</strong> ${Number(output.total_components || 0)}</div>
+        <div><strong>Files:</strong> ${Number(output.total_files || 0)}</div>
+        ${artifactRoot ? `<div><strong>Local Artifact Path:</strong> <span class="mono">${escapeHtml(artifactRoot)}</span></div>` : ""}
+      </section>
+      <section data-developer-view-panel="handoff" class="mt-2 hidden">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-900">Architect Handoff Package</div>
+          <button data-developer-export="handoff" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
+        </div>
+        <div data-developer-handoff-content class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">Loading architect handoff…</div>
+      </section>
+      <section data-developer-view-panel="dispatches" class="mt-2 hidden">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-900">Sub-agent Dispatches</div>
+          <button data-developer-export="dispatches" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export JSON</button>
+        </div>
+        <div data-developer-dispatch-content class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">${dispatches.length ? "Loading dispatch details..." : "No dispatch manifest available for this run."}</div>
+      </section>
+      <section data-developer-view-panel="components" class="mt-2 hidden">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div class="text-xs font-semibold text-slate-900">Component-Scoped Handoff</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <select data-developer-component-select class="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900">
+              <option value="">Select component</option>
+              ${componentOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}
+            </select>
+            <button data-developer-export="component" class="btn-light rounded-md px-2 py-1 text-[11px] font-semibold">Export Component JSON</button>
+          </div>
+        </div>
+        <div data-developer-component-content class="rounded border border-slate-300 bg-slate-50 p-2 text-[11px] text-slate-700">Select a component to load its scoped handoff.</div>
+      </section>
+      <section data-developer-view-panel="generated" class="mt-2 hidden">
+        <div class="mb-2 text-xs font-semibold text-slate-900">Generated Output</div>
+        <ul class="list-disc pl-5">${implementations.map((impl) => `
+          <li>
+            <strong>${escapeHtml(impl.component_name || "component")}</strong>
+            (${escapeHtml(impl.language || "unknown")} / ${escapeHtml(impl.framework || "unknown")})
+            <div>Files: ${Number((impl.files || []).length)} | LOC: ${Number(impl.total_loc || 0).toLocaleString()}</div>
+          </li>
+        `).join("") || "<li>No implementations generated</li>"}</ul>
+      </section>
+    </div>
   `;
+}
+
+function _renderDeveloperDispatches(dispatches) {
+  const rows = Array.isArray(dispatches) ? dispatches : [];
+  return `
+    <table class="w-full border-collapse text-[11px] text-slate-900">
+      <thead>
+        <tr>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Component</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Responsibility</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Contracts</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">WBS</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">ADRs</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Review Items</th>
+          <th class="border border-slate-300 bg-white px-2 py-1 text-left">Anchors</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>
+            <td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(row.component_name || ""))}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.responsibility || ""))}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.interface_contract_ids) ? row.interface_contract_ids : []).join(", ") || "-")}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.wbs_ids) ? row.wbs_ids : []).join(", ") || "-")}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.adr_ids) ? row.adr_ids : []).join(", ") || "-")}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(Array.isArray(row.review_items) ? row.review_items.length : 0))}</td>
+            <td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.regression_anchor_count || 0))}</td>
+          </tr>
+        `).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='7'>No dispatch manifest emitted.</td></tr>"}
+      </tbody>
+    </table>
+  `;
+}
+
+async function _loadArchitectHandoffForRun(runId) {
+  const key = String(runId || "").trim();
+  if (!key) return null;
+  if (state.developerView.handoffByRun[key]) return state.developerView.handoffByRun[key];
+  const data = await api(`/api/runs/${encodeURIComponent(key)}/architect-handoff`, null);
+  const payload = (data && typeof data === "object") ? data : {};
+  state.developerView.handoffByRun[key] = payload;
+  return payload;
+}
+
+async function _loadScopedDeveloperComponent(runId, componentName) {
+  const runKey = String(runId || "").trim();
+  const componentKey = String(componentName || "").trim();
+  if (!runKey || !componentKey) return null;
+  const cacheKey = `${runKey}::${componentKey}`;
+  if (state.developerView.scopedByRunAndComponent[cacheKey]) return state.developerView.scopedByRunAndComponent[cacheKey];
+  const data = await api(`/api/runs/${encodeURIComponent(runKey)}/architect-handoff/component?component=${encodeURIComponent(componentKey)}`, null);
+  const payload = (data && typeof data === "object") ? data : {};
+  state.developerView.scopedByRunAndComponent[cacheKey] = payload;
+  return payload;
+}
+
+function _renderDeveloperHandoffSummary(handoff) {
+  const pkg = (handoff && typeof handoff === "object") ? handoff : {};
+  const validation = (pkg.validation_status && typeof pkg.validation_status === "object") ? pkg.validation_status : {};
+  const components = Array.isArray(pkg.component_specs) ? pkg.component_specs : [];
+  const contracts = Array.isArray(pkg.interface_contracts) ? pkg.interface_contracts : [];
+  const review = Array.isArray(pkg.human_review_queue) ? pkg.human_review_queue : [];
+  const decisions = Array.isArray((pkg.system_context || {}).architectural_decisions) ? pkg.system_context.architectural_decisions : [];
+  return `
+    <div class="grid gap-2 sm:grid-cols-4">
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Components</strong><br/>${components.length}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Contracts</strong><br/>${contracts.length}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>ADRs</strong><br/>${decisions.length}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Review Items</strong><br/>${review.length}</div>
+    </div>
+    <div class="mt-2 rounded border border-slate-300 bg-white p-2 text-[11px] text-slate-900">
+      <div><strong>Status:</strong> ${escapeHtml(String(validation.status || "unknown").toUpperCase())}</div>
+      <div><strong>Warnings:</strong> ${escapeHtml((Array.isArray(validation.warnings) ? validation.warnings : []).join("; ") || "-")}</div>
+      <div><strong>Blocking review items:</strong> ${escapeHtml(String(validation.blocking_review_item_count || 0))}</div>
+    </div>
+    <div class="mt-2 text-xs font-semibold text-slate-900">Component Specs</div>
+    <table class="mt-1 w-full border-collapse text-[11px] text-slate-900">
+      <thead><tr><th class="border border-slate-300 bg-white px-2 py-1 text-left">Component</th><th class="border border-slate-300 bg-white px-2 py-1 text-left">Responsibility</th><th class="border border-slate-300 bg-white px-2 py-1 text-left">Contracts</th><th class="border border-slate-300 bg-white px-2 py-1 text-left">WBS</th></tr></thead>
+      <tbody>
+        ${components.slice(0, 80).map((row) => `<tr><td class="border border-slate-300 px-2 py-1 font-semibold">${escapeHtml(String(row.component_name || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml(String(row.responsibility || ""))}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.interface_refs) ? row.interface_refs : []).join(", ") || "-")}</td><td class="border border-slate-300 px-2 py-1">${escapeHtml((Array.isArray(row.wbs_refs) ? row.wbs_refs : []).join(", ") || "-")}</td></tr>`).join("") || "<tr><td class='border border-slate-300 px-2 py-1' colspan='4'>No component specs emitted.</td></tr>"}
+      </tbody>
+    </table>
+  `;
+}
+
+function _renderScopedDeveloperComponent(scoped) {
+  const pkg = (scoped && typeof scoped === "object") ? scoped : {};
+  const component = (pkg.component_spec && typeof pkg.component_spec === "object") ? pkg.component_spec : {};
+  const contracts = Array.isArray(pkg.interface_contracts) ? pkg.interface_contracts : [];
+  const wbs = Array.isArray(pkg.wbs_items) ? pkg.wbs_items : [];
+  const adrs = Array.isArray(((pkg.system_context || {}).architectural_decisions)) ? pkg.system_context.architectural_decisions : [];
+  const rules = Array.isArray(((pkg.brownfield_context || {}).business_rules)) ? pkg.brownfield_context.business_rules : [];
+  const anchors = Array.isArray(((pkg.brownfield_context || {}).regression_test_anchors)) ? pkg.brownfield_context.regression_test_anchors : [];
+  return `
+    <div class="rounded border border-slate-300 bg-white p-2 text-[11px] text-slate-900">
+      <div><strong>Component:</strong> ${escapeHtml(String(component.component_name || pkg.component_name || ""))}</div>
+      <div><strong>Responsibility:</strong> ${escapeHtml(String(component.responsibility || ""))}</div>
+      <div><strong>Patterns:</strong> ${escapeHtml((Array.isArray(component.design_patterns) ? component.design_patterns : []).join(", ") || "-")}</div>
+    </div>
+    <div class="mt-2 grid gap-2 sm:grid-cols-4">
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Contracts</strong><br/>${contracts.length}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>WBS Items</strong><br/>${wbs.length}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>ADRs</strong><br/>${adrs.length}</div>
+      <div class="rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"><strong>Regression Anchors</strong><br/>${anchors.length}</div>
+    </div>
+    <div class="mt-2 text-xs font-semibold text-slate-900">Interface Contracts</div>
+    <ul class="mt-1 list-disc pl-5 text-[11px] text-slate-900">${contracts.map((c) => `<li><strong>${escapeHtml(String(c.contract_id || ""))}</strong> — ${escapeHtml(String(c.contract_type || ""))} (${escapeHtml(String(c.owner_component || ""))})</li>`).join("") || "<li>No contracts in scoped handoff.</li>"}</ul>
+    <div class="mt-2 text-xs font-semibold text-slate-900">WBS Items</div>
+    <ul class="mt-1 list-disc pl-5 text-[11px] text-slate-900">${wbs.map((item) => `<li><strong>${escapeHtml(String(item.wbs_id || ""))}</strong> — ${escapeHtml(String(item.name || item.title || ""))}</li>`).join("") || "<li>No WBS items in scoped handoff.</li>"}</ul>
+    <div class="mt-2 text-xs font-semibold text-slate-900">Relevant Business Rules</div>
+    <ul class="mt-1 list-disc pl-5 text-[11px] text-slate-900">${rules.slice(0, 20).map((rule) => `<li>${escapeHtml(String(rule.rule || rule.description || rule.name || ""))}</li>`).join("") || "<li>No filtered business rules in scoped handoff.</li>"}</ul>
+  `;
+}
+
+function wireDeveloperViewTabs(container, output) {
+  if (!container) return;
+  const tabs = Array.from(container.querySelectorAll("[data-developer-view-tab]"));
+  const panels = Array.from(container.querySelectorAll("[data-developer-view-panel]"));
+  if (!tabs.length || !panels.length) return;
+  const runId = String(state.currentRun?.run_id || state.currentRunId || "").trim();
+  const dispatches = Array.isArray(output?.execution?.component_dispatches) ? output.execution.component_dispatches : [];
+  const handoffContent = container.querySelector("[data-developer-handoff-content]");
+  const dispatchContent = container.querySelector("[data-developer-dispatch-content]");
+  const componentContent = container.querySelector("[data-developer-component-content]");
+  const componentSelect = container.querySelector("[data-developer-component-select]");
+  let fullHandoff = null;
+  let selectedScoped = null;
+  const activate = (name) => {
+    tabs.forEach((tab) => {
+      const selected = tab.getAttribute("data-developer-view-tab") === name;
+      tab.classList.toggle("btn-dark", selected);
+      tab.classList.toggle("btn-light", !selected);
+    });
+    panels.forEach((panel) => {
+      panel.classList.toggle("hidden", panel.getAttribute("data-developer-view-panel") !== name);
+    });
+    if (name === "handoff" && runId && handoffContent && !fullHandoff) {
+      handoffContent.textContent = "Loading architect handoff...";
+      _loadArchitectHandoffForRun(runId)
+        .then((payload) => {
+          fullHandoff = payload;
+          handoffContent.innerHTML = _renderDeveloperHandoffSummary(payload);
+        })
+        .catch((err) => {
+          handoffContent.textContent = `Failed to load architect handoff: ${err?.message || err}`;
+        });
+    }
+    if (name === "dispatches" && dispatchContent) {
+      dispatchContent.innerHTML = _renderDeveloperDispatches(dispatches);
+    }
+    if (name === "components" && componentSelect && componentSelect.value && runId && componentContent && !selectedScoped) {
+      componentContent.textContent = "Loading scoped handoff...";
+      _loadScopedDeveloperComponent(runId, componentSelect.value)
+        .then((payload) => {
+          selectedScoped = payload;
+          componentContent.innerHTML = _renderScopedDeveloperComponent(payload);
+        })
+        .catch((err) => {
+          componentContent.textContent = `Failed to load scoped handoff: ${err?.message || err}`;
+        });
+    }
+  };
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => activate(tab.getAttribute("data-developer-view-tab")));
+  });
+  if (componentSelect && componentContent && runId) {
+    componentSelect.addEventListener("change", () => {
+      const componentName = String(componentSelect.value || "").trim();
+      selectedScoped = null;
+      if (!componentName) {
+        componentContent.textContent = "Select a component to load its scoped handoff.";
+        return;
+      }
+      componentContent.textContent = "Loading scoped handoff...";
+      _loadScopedDeveloperComponent(runId, componentName)
+        .then((payload) => {
+          selectedScoped = payload;
+          componentContent.innerHTML = _renderScopedDeveloperComponent(payload);
+        })
+        .catch((err) => {
+          componentContent.textContent = `Failed to load scoped handoff: ${err?.message || err}`;
+        });
+    });
+  }
+  const exportButtons = Array.from(container.querySelectorAll("[data-developer-export]"));
+  exportButtons.forEach((button) => {
+    button.addEventListener("click", async () => {
+      const kind = String(button.getAttribute("data-developer-export") || "").trim();
+      if (kind === "handoff") {
+        if (!runId) return;
+        const payload = fullHandoff || await _loadArchitectHandoffForRun(runId);
+        fullHandoff = payload;
+        downloadJson("architect-handoff.json", payload);
+        return;
+      }
+      if (kind === "dispatches") {
+        downloadJson("developer-dispatches.json", { component_dispatches: dispatches });
+        return;
+      }
+      if (kind === "component") {
+        if (!runId || !componentSelect) return;
+        const componentName = String(componentSelect.value || "").trim();
+        if (!componentName) return;
+        const payload = selectedScoped || await _loadScopedDeveloperComponent(runId, componentName);
+        selectedScoped = payload;
+        downloadJson(`component-handoff-${componentName.replace(/[^A-Za-z0-9._-]+/g, "_")}.json`, payload);
+      }
+    });
+  });
+  activate("overview");
 }
 
 function renderDatabaseReadable(output) {
@@ -13272,6 +13577,7 @@ function renderAgentTabPanel() {
   }
   if (stage === 2) {
     wireArchitectViewTabs(el.agentTabPanel, result?.output || {}, runUseCase);
+    wireDeveloperViewTabs(el.agentTabPanel, result?.output || {});
   }
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
 }
@@ -14026,6 +14332,7 @@ function openStageModal(stage) {
   }
   if (stage === 2) {
     wireArchitectViewTabs(el.modalReadable, result?.output || {}, runUseCase);
+    wireDeveloperViewTabs(el.modalReadable, result?.output || {});
   }
   el.outputModal.showModal();
   setTimeout(() => renderMermaidBlocks(el.outputModal), 0);

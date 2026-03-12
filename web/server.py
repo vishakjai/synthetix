@@ -111,6 +111,7 @@ from utils.repo_componentizer import build_component_inventory_v1, build_chunk_m
 from utils.large_repo_context import build_large_repo_context_v1  # noqa: E402
 from utils.file_chunk_manifest import build_file_chunk_manifest_v1  # noqa: E402
 from utils.analysis_estimator import build_analysis_plan_v1  # noqa: E402
+from utils.developer_dispatch import build_component_scoped_handoff  # noqa: E402
 from utils.delivery_constitution import (  # noqa: E402
     build_delivery_constitution_v1,
     delivery_constitution_to_markdown,
@@ -11147,6 +11148,70 @@ async def api_download_analyst_markdown(request):
     )
 
 
+def _resolve_stage_output_for_api(run_id: str, stage: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    record = None
+    hydrate = getattr(MANAGER, "_hydrate_record", None)
+    if callable(hydrate):
+        try:
+            record = hydrate(run_id)
+        except Exception:
+            record = None
+    if record is None:
+        try:
+            record = MANAGER.get_run(run_id)
+        except Exception:
+            record = None
+    if not isinstance(record, dict):
+        return None, {}
+
+    pipeline_state = record.get("pipeline_state", {}) if isinstance(record.get("pipeline_state", {}), dict) else {}
+    output = _stage_output_snapshot(pipeline_state, stage)
+    if isinstance(output, dict) and output:
+        return record, output
+
+    load_stage_snapshot = getattr(getattr(MANAGER, "store", None), "load_stage_snapshot", None)
+    if callable(load_stage_snapshot):
+        try:
+            persisted = load_stage_snapshot(run_id, stage)
+        except Exception:
+            persisted = None
+        if isinstance(persisted, dict):
+            snapshot_output = persisted.get("output", {}) if isinstance(persisted.get("output", {}), dict) else {}
+            if snapshot_output:
+                return record, copy.deepcopy(snapshot_output)
+            return record, copy.deepcopy(persisted)
+    return record, {}
+
+
+async def api_get_run_architect_handoff(request):
+    run_id = request.path_params.get("run_id", "")
+    run, stage_output = _resolve_stage_output_for_api(run_id, 2)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    handoff = stage_output.get("architect_handoff_package", {}) if isinstance(stage_output.get("architect_handoff_package", {}), dict) else {}
+    if not handoff:
+        return JSONResponse({"ok": False, "error": "architect handoff package unavailable for this run"}, status_code=404)
+    return JSONResponse({"ok": True, "run_id": run_id, "architect_handoff_package": handoff})
+
+
+async def api_get_run_architect_handoff_component(request):
+    run_id = request.path_params.get("run_id", "")
+    component = _clean_text(request.query_params.get("component"))
+    if not component:
+        return JSONResponse({"ok": False, "error": "component is required"}, status_code=400)
+    run, stage_output = _resolve_stage_output_for_api(run_id, 2)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    handoff = stage_output.get("architect_handoff_package", {}) if isinstance(stage_output.get("architect_handoff_package", {}), dict) else {}
+    if not handoff:
+        return JSONResponse({"ok": False, "error": "architect handoff package unavailable for this run"}, status_code=404)
+    scoped = build_component_scoped_handoff(handoff, component)
+    component_spec = scoped.get("component_spec", {}) if isinstance(scoped.get("component_spec", {}), dict) else {}
+    if not component_spec:
+        return JSONResponse({"ok": False, "error": f"component `{component}` not found in architect handoff package"}, status_code=404)
+    return JSONResponse({"ok": True, "run_id": run_id, "component": component, "component_handoff": scoped})
+
+
 async def api_download_db_artifact(request):
     run_id = request.path_params.get("run_id", "")
     run = MANAGER.get_run(run_id)
@@ -15265,6 +15330,8 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/estimates", api_list_run_estimates, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/architect-handoff", api_get_run_architect_handoff, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/architect-handoff/component", api_get_run_architect_handoff_component, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/module", api_get_run_knowledge_module, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/rule", api_get_run_knowledge_rule, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/blast-radius", api_get_run_knowledge_blast_radius, methods=["GET"]),

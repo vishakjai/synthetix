@@ -386,6 +386,14 @@ def run_single_stage(
         output_payload = dict(output_payload)
         output_payload["context_reference"] = _context_reference_from_state(state)
     state[output_key] = output_payload
+    if stage_num == 2 and isinstance(output_payload, dict):
+        handoff = (
+            output_payload.get("architect_handoff_package", {})
+            if isinstance(output_payload.get("architect_handoff_package", {}), dict)
+            else {}
+        )
+        if handoff:
+            state["architect_handoff_package"] = handoff
 
     existing_results = list(state.get("agent_results", []))
     existing_results.append({

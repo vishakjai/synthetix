@@ -1,0 +1,638 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetix.local/schemas/architect_handoff_package_v1.schema.json",
+  "title": "architect_handoff_package_v1",
+  "type": "object",
+  "required": [
+    "artifact_type",
+    "artifact_version",
+    "artifact_id",
+    "generated_at",
+    "context",
+    "ahp_id",
+    "schema_version",
+    "engagement_id",
+    "created_at",
+    "architect_agent_id",
+    "system_context",
+    "domain_model",
+    "interface_contracts",
+    "component_specs",
+    "nfr_constraints",
+    "coding_policy",
+    "wbs",
+    "validation_status"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "architect_handoff_package_v1"
+    },
+    "artifact_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$"
+    },
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^ahp_[A-Za-z0-9_-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "context": {
+      "type": "object",
+      "required": [
+        "stage",
+        "source_mode"
+      ],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": [
+            "Discover",
+            "Estimate",
+            "Plan",
+            "Build",
+            "Verify"
+          ]
+        },
+        "source_mode": {
+          "type": "string",
+          "enum": [
+            "repo",
+            "imported_analysis",
+            "hybrid",
+            "greenfield"
+          ]
+        },
+        "source_ref": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "engagement_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ahp_id": {
+      "type": "string",
+      "pattern": "^ahp_[A-Za-z0-9_-]+$"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$"
+    },
+    "engagement_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "architect_agent_id": {
+      "type": "string"
+    },
+    "system_context": {
+      "$ref": "#/$defs/system_context"
+    },
+    "domain_model": {
+      "$ref": "#/$defs/domain_model"
+    },
+    "interface_contracts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/interface_contract"
+      }
+    },
+    "component_specs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component_spec"
+      }
+    },
+    "nfr_constraints": {
+      "$ref": "#/$defs/nfr_constraints"
+    },
+    "brownfield_context": {
+      "$ref": "#/$defs/brownfield_context"
+    },
+    "coding_policy": {
+      "$ref": "#/$defs/coding_policy"
+    },
+    "wbs": {
+      "$ref": "#/$defs/wbs"
+    },
+    "scaffolding": {
+      "$ref": "#/$defs/scaffolding"
+    },
+    "validation_status": {
+      "$ref": "#/$defs/validation_status"
+    },
+    "estimation_handoff": {
+      "type": "object"
+    },
+    "human_review_queue": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/review_item"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "architectural_decision": {
+      "type": "object",
+      "required": [
+        "decision_id",
+        "title",
+        "rationale",
+        "status"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "source_modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "target_services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "system_context": {
+      "type": "object",
+      "required": [
+        "target_system_name",
+        "source_type",
+        "architecture_pattern",
+        "technology_stack",
+        "infrastructure",
+        "delivery_goals",
+        "out_of_scope",
+        "architectural_decisions"
+      ],
+      "properties": {
+        "target_system_name": {
+          "type": "string"
+        },
+        "source_type": {
+          "type": "string"
+        },
+        "architecture_pattern": {
+          "type": "string"
+        },
+        "technology_stack": {
+          "type": "object"
+        },
+        "infrastructure": {
+          "type": "object"
+        },
+        "delivery_goals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "out_of_scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "architectural_decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/architectural_decision"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "domain_model": {
+      "type": "object",
+      "required": [
+        "entities",
+        "relationships",
+        "bounded_contexts",
+        "data_ownership",
+        "schema_artifacts",
+        "migration_delta"
+      ],
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "bounded_contexts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "data_ownership": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "schema_artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "migration_delta": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "interface_contract": {
+      "type": "object",
+      "required": [
+        "contract_id",
+        "contract_type",
+        "owner_component",
+        "consumers",
+        "spec_format",
+        "spec_content",
+        "auth_model",
+        "error_contract",
+        "versioning_strategy"
+      ],
+      "properties": {
+        "contract_id": {
+          "type": "string"
+        },
+        "contract_type": {
+          "type": "string"
+        },
+        "owner_component": {
+          "type": "string"
+        },
+        "consumers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "spec_format": {
+          "type": "string"
+        },
+        "spec_content": {},
+        "auth_model": {
+          "type": "string"
+        },
+        "error_contract": {
+          "type": "object"
+        },
+        "versioning_strategy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "component_spec": {
+      "type": "object",
+      "required": [
+        "component_id",
+        "component_name",
+        "responsibility",
+        "module_structure",
+        "dependency_graph",
+        "design_patterns",
+        "state_management",
+        "test_strategy",
+        "interface_refs",
+        "wbs_refs"
+      ],
+      "properties": {
+        "component_id": {
+          "type": "string"
+        },
+        "component_name": {
+          "type": "string"
+        },
+        "responsibility": {
+          "type": "string"
+        },
+        "module_structure": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "dependency_graph": {
+          "type": "object"
+        },
+        "design_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "state_management": {
+          "type": "string"
+        },
+        "test_strategy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "interface_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "wbs_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "adr_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "traceability_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "nfr_constraints": {
+      "type": "object",
+      "required": [
+        "performance",
+        "security",
+        "resilience",
+        "observability"
+      ],
+      "properties": {
+        "performance": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "security": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resilience": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observability": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "brownfield_context": {
+      "type": "object",
+      "required": [
+        "legacy_behavior_map",
+        "business_rules",
+        "technical_debt_policy",
+        "data_migration_strategy",
+        "regression_test_anchors"
+      ],
+      "properties": {
+        "legacy_behavior_map": {
+          "type": "object"
+        },
+        "business_rules": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "technical_debt_policy": {
+          "type": "object"
+        },
+        "data_migration_strategy": {
+          "type": "object"
+        },
+        "regression_test_anchors": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "coding_policy": {
+      "type": "object",
+      "required": [
+        "language",
+        "style_conventions",
+        "approved_libraries",
+        "banned_dependencies",
+        "security_rules",
+        "coverage_requirements"
+      ],
+      "properties": {
+        "language": {
+          "type": "string"
+        },
+        "style_conventions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approved_libraries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "banned_dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "security_rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "coverage_requirements": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "wbs": {
+      "type": "object",
+      "required": [
+        "phases",
+        "items"
+      ],
+      "properties": {
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scaffolding": {
+      "type": "object",
+      "properties": {
+        "project_structure": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ci_cd": {
+          "type": "string"
+        },
+        "environment_templates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reference_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "review_item": {
+      "type": "object",
+      "required": [
+        "priority",
+        "artifact",
+        "item",
+        "reason",
+        "blocking"
+      ],
+      "properties": {
+        "priority": {
+          "type": "string"
+        },
+        "artifact": {
+          "type": "string"
+        },
+        "item": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "blocking": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "validation_status": {
+      "type": "object",
+      "required": [
+        "status",
+        "warnings",
+        "human_review_queue_count",
+        "blocking_review_item_count",
+        "component_coverage",
+        "contract_coverage"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "COMPLETE",
+            "WARN",
+            "HALTED"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "human_review_queue_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocking_review_item_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "component_coverage": {
+          "type": "object"
+        },
+        "contract_coverage": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from .base import BaseAgent
+from utils.developer_dispatch import build_component_scoped_handoff
 from utils.llm import LLMClient
 
 # Re-use the robust JSON extractor from BaseAgent
@@ -74,6 +75,7 @@ Respond ONLY with the JSON, no other text."""
         llm: LLMClient,
         component: dict[str, Any],
         requirements: dict[str, Any],
+        component_handoff: dict[str, Any] | None = None,
         modernization_language: str = "",
         legacy_code_excerpt: str = "",
         remediation_notes: list[dict[str, Any]] | None = None,
@@ -82,6 +84,7 @@ Respond ONLY with the JSON, no other text."""
         self.llm = llm
         self.component = component
         self.requirements = requirements
+        self.component_handoff = component_handoff or {}
         self.modernization_language = modernization_language
         self.legacy_code_excerpt = legacy_code_excerpt
         self.remediation_notes = remediation_notes or []
@@ -94,6 +97,13 @@ Respond ONLY with the JSON, no other text."""
             max_depth=4,
             max_items=12,
             max_str=420,
+        )
+        handoff_compact = BaseAgent._json_for_prompt(
+            self.component_handoff,
+            max_chars=3800,
+            max_depth=5,
+            max_items=16,
+            max_str=360,
         )
         requirements_summary = BaseAgent._truncate_text(
             self.requirements.get("executive_summary", ""),
@@ -129,6 +139,9 @@ The code will be built into a Docker image and deployed to Kubernetes.
 
 COMPONENT SPECIFICATION:
 {component_spec}
+
+COMPONENT HANDOFF PACKAGE:
+{handoff_compact}
 
 CONTEXT (requirements summary):
 {requirements_summary}
@@ -172,6 +185,50 @@ REMEMBER:
                     "latency_ms": response.latency_ms,
                 },
             }
+
+
+def _handoff_dispatch_record(component_handoff: dict[str, Any]) -> dict[str, Any]:
+    handoff = component_handoff if isinstance(component_handoff, dict) else {}
+    component_spec = handoff.get("component_spec", {}) if isinstance(handoff.get("component_spec", {}), dict) else {}
+    system_context = handoff.get("system_context", {}) if isinstance(handoff.get("system_context", {}), dict) else {}
+    brownfield_context = handoff.get("brownfield_context", {}) if isinstance(handoff.get("brownfield_context", {}), dict) else {}
+    interface_contracts = handoff.get("interface_contracts", []) if isinstance(handoff.get("interface_contracts", []), list) else []
+    wbs_items = handoff.get("wbs_items", []) if isinstance(handoff.get("wbs_items", []), list) else []
+    review_queue = handoff.get("human_review_queue", []) if isinstance(handoff.get("human_review_queue", []), list) else []
+    adrs = system_context.get("architectural_decisions", []) if isinstance(system_context.get("architectural_decisions", []), list) else []
+    business_rules = brownfield_context.get("business_rules", []) if isinstance(brownfield_context.get("business_rules", []), list) else []
+    anchors = brownfield_context.get("regression_test_anchors", []) if isinstance(brownfield_context.get("regression_test_anchors", []), list) else []
+    return {
+        "component_name": str(component_spec.get("component_name") or handoff.get("component_name") or "").strip(),
+        "artifact_type": str(handoff.get("artifact_type") or "").strip(),
+        "responsibility": str(component_spec.get("responsibility") or "").strip(),
+        "interface_contract_ids": [
+            str(contract.get("contract_id", "")).strip()
+            for contract in interface_contracts
+            if isinstance(contract, dict) and str(contract.get("contract_id", "")).strip()
+        ],
+        "wbs_ids": [
+            str(item.get("wbs_id", "")).strip()
+            for item in wbs_items
+            if isinstance(item, dict) and str(item.get("wbs_id", "")).strip()
+        ],
+        "adr_ids": [
+            str(adr.get("decision_id") or adr.get("id") or "").strip()
+            for adr in adrs
+            if isinstance(adr, dict) and str(adr.get("decision_id") or adr.get("id") or "").strip()
+        ],
+        "review_items": [
+            {
+                "priority": str(item.get("priority", "")).strip(),
+                "item": str(item.get("item", "")).strip(),
+                "blocking": bool(item.get("blocking")),
+            }
+            for item in review_queue
+            if isinstance(item, dict)
+        ],
+        "business_rule_count": len(business_rules),
+        "regression_anchor_count": len(anchors),
+    }
 
 
 class DeveloperAgent(BaseAgent):
@@ -915,6 +972,7 @@ Requirements context:
         subagent_latency_ms = 0.0
         failures_by_component: dict[str, list[dict[str, Any]]] = {}
         previous_files_by_component: dict[str, list[dict[str, str]]] = {}
+        component_dispatches: list[dict[str, Any]] = []
 
         if isinstance(failed_checks, list):
             for failure in failed_checks:
@@ -934,6 +992,14 @@ Requirements context:
             state.get("developer_output", {}).get("implementations", [])
             if isinstance(state.get("developer_output", {}), dict)
             else []
+        )
+        architect_output = state.get("architect_output", {}) if isinstance(state.get("architect_output", {}), dict) else {}
+        architect_handoff_package = (
+            architect_output.get("architect_handoff_package", {})
+            if isinstance(architect_output.get("architect_handoff_package", {}), dict)
+            else state.get("architect_handoff_package", {})
+            if isinstance(state.get("architect_handoff_package", {}), dict)
+            else {}
         )
         if isinstance(previous_impl, list):
             for impl in previous_impl:
@@ -960,10 +1026,16 @@ Requirements context:
             futures = {}
             for comp in components:
                 comp_name_norm = str(comp.get("name", "")).strip().lower()
+                component_handoff = build_component_scoped_handoff(
+                    architect_handoff_package,
+                    str(comp.get("name", "")),
+                )
+                component_dispatches.append(_handoff_dispatch_record(component_handoff))
                 sub = DeveloperSubAgent(
                     self.llm,
                     comp,
                     state.get("analyst_output", {}),
+                    component_handoff=component_handoff,
                     modernization_language=state.get("modernization_language", ""),
                     legacy_code_excerpt=str(state.get("legacy_code", ""))[:8000],
                     remediation_notes=failures_by_component.get(comp_name_norm, []),
@@ -1011,6 +1083,7 @@ Requirements context:
                 "planner_used_tool_calling": planner_used_tooling,
                 "planner_selected_components": [c.get("name", "unknown") for c in components],
                 "developer_choices": choices,
+                "component_dispatches": component_dispatches,
                 "self_heal_applied": self_heal_applied,
                 "retry_target_components": sorted(retry_targets),
                 "generated_at": datetime.utcnow().isoformat() + "Z",
