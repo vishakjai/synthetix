@@ -392,6 +392,18 @@
             "type": "string"
           }
         },
+        "business_rule_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "regression_anchor_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "traceability_refs": {
           "type": "array",
           "items": {

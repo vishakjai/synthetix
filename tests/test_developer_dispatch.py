@@ -102,9 +102,24 @@ class DeveloperDispatchTest(unittest.TestCase):
         self.assertTrue(scoped.get("analyst_evidence", {}).get("connection_patterns"))
         self.assertTrue(scoped.get("analyst_evidence", {}).get("risk_detector_findings"))
         self.assertTrue(scoped.get("analyst_evidence", {}).get("data_entities"))
+        self.assertTrue(scoped.get("component_spec", {}).get("business_rule_refs"))
+        self.assertTrue(scoped.get("component_spec", {}).get("regression_anchor_refs"))
 
         contract_owners = {row.get("owner_component") for row in scoped.get("interface_contracts", [])}
         self.assertEqual(contract_owners, {"TransactionService"})
+        scoped_rule_ids = {row.get("rule_id") for row in scoped.get("brownfield_context", {}).get("business_rules", [])}
+        self.assertEqual(
+            scoped_rule_ids,
+            set(scoped.get("component_spec", {}).get("business_rule_refs", [])),
+        )
+        scoped_anchor_ids = {
+            row.get("anchor_id") or row.get("id")
+            for row in scoped.get("brownfield_context", {}).get("regression_test_anchors", [])
+        }
+        self.assertEqual(
+            scoped_anchor_ids,
+            set(scoped.get("component_spec", {}).get("regression_anchor_refs", [])),
+        )
 
         trace_refs = set(scoped.get("component_spec", {}).get("traceability_refs", []))
         for row in scoped.get("wbs_items", []):

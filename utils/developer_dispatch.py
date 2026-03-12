@@ -73,6 +73,18 @@ def build_component_scoped_handoff(
         for ref in _as_list(spec.get("adr_refs"))
         if str(ref).strip()
     }
+    business_rule_refs = {
+        str(ref).strip()
+        for spec in selected_specs
+        for ref in _as_list(spec.get("business_rule_refs"))
+        if str(ref).strip()
+    }
+    regression_anchor_refs = {
+        str(ref).strip()
+        for spec in selected_specs
+        for ref in _as_list(spec.get("regression_anchor_refs"))
+        if str(ref).strip()
+    }
 
     selected_contracts = [
         contract for contract in interface_contracts
@@ -94,27 +106,46 @@ def build_component_scoped_handoff(
         )
     ]
 
-    regression_anchors = [
+    all_regression_anchors = [
         anchor for anchor in _as_list(brownfield.get("regression_test_anchors"))
-        if isinstance(anchor, dict) and (
-            _normalize_name(anchor.get("component")) in names
-            or _normalize_name(anchor.get("module")) in names
-            or _normalize_name(anchor.get("service")) in names
-        )
+        if isinstance(anchor, dict)
+    ]
+    regression_anchors = [
+        anchor for anchor in all_regression_anchors
+        if str(anchor.get("anchor_id", "")).strip() in regression_anchor_refs
+        or str(anchor.get("id", "")).strip() in regression_anchor_refs
     ]
     if not regression_anchors:
         regression_anchors = [
-            anchor for anchor in _as_list(brownfield.get("regression_test_anchors"))
-            if isinstance(anchor, dict) and str(anchor.get("type", "")).strip() in {"legacy_flow", "module_parity"}
+            anchor for anchor in all_regression_anchors
+            if (
+                _normalize_name(anchor.get("component")) in names
+                or _normalize_name(anchor.get("module")) in names
+                or _normalize_name(anchor.get("service")) in names
+            )
         ]
-    business_rules = [
+    if not regression_anchors:
+        regression_anchors = [
+            anchor for anchor in all_regression_anchors
+            if str(anchor.get("type", "")).strip() in {"legacy_flow", "module_parity"}
+        ]
+    all_business_rules = [
         rule for rule in _as_list(brownfield.get("business_rules"))
-        if isinstance(rule, dict) and (
-            _normalize_name(rule.get("component")) in names
-            or _normalize_name(rule.get("service")) in names
-            or not str(rule.get("component", "")).strip()
-        )
+        if isinstance(rule, dict)
     ]
+    business_rules = [
+        rule for rule in all_business_rules
+        if str(rule.get("rule_id", "")).strip() in business_rule_refs
+    ]
+    if not business_rules:
+        business_rules = [
+            rule for rule in all_business_rules
+            if (
+                _normalize_name(rule.get("component")) in names
+                or _normalize_name(rule.get("service")) in names
+                or not str(rule.get("component", "")).strip()
+            )
+        ]
     technical_debt_policy = _as_dict(brownfield.get("technical_debt_policy"))
     connection_patterns = [
         row for row in _as_list(technical_debt_policy.get("connection_patterns"))

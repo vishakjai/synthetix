@@ -108,6 +108,35 @@ def _component_is_residual_dumping_ground(component_name: str, component_spec: d
     return name == "legacycoreservice" and len(module_structure) >= 5
 
 
+def _approved_architectural_decisions(handoff: dict[str, Any], component_spec: dict[str, Any]) -> list[dict[str, Any]]:
+    decisions = [
+        row for row in _as_list(_as_dict(handoff.get("system_context")).get("architectural_decisions"))
+        if isinstance(row, dict) and str(row.get("status", "")).strip().lower() in {"accepted", "approved"}
+    ]
+    adr_refs = {
+        str(ref).strip()
+        for ref in _as_list(component_spec.get("adr_refs"))
+        if str(ref).strip()
+    }
+    if adr_refs:
+        decisions = [row for row in decisions if str(row.get("decision_id", "")).strip() in adr_refs]
+    return decisions
+
+
+def _has_rule_semantics(rule: dict[str, Any]) -> bool:
+    return all(
+        _normalize_text(rule.get(key))
+        for key in ("target_service", "category", "source_module", "acceptance_criteria")
+    )
+
+
+def _has_anchor_semantics(anchor: dict[str, Any]) -> bool:
+    return all(
+        _normalize_text(anchor.get(key))
+        for key in ("golden_flow_ref", "entry_point", "expected_output", "target_endpoint")
+    )
+
+
 def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[str, Any]:
     handoff = _as_dict(component_handoff)
     component_name = _normalize_text(handoff.get("component_name"))
@@ -129,6 +158,9 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
         len(anchors),
         len([row for row in _as_list(analyst_evidence.get("regression_test_anchors")) if isinstance(row, dict)]),
     )
+    approved_decisions = _approved_architectural_decisions(handoff, component_spec)
+    business_rule_refs = [str(ref).strip() for ref in _as_list(component_spec.get("business_rule_refs")) if str(ref).strip()]
+    regression_anchor_refs = [str(ref).strip() for ref in _as_list(component_spec.get("regression_anchor_refs")) if str(ref).strip()]
 
     hard_blockers: list[dict[str, Any]] = []
     soft_blockers: list[dict[str, Any]] = []
@@ -218,6 +250,26 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "blocks": ["service logic", "validation rules", "acceptance parity"],
             }
         )
+    if is_brownfield and not business_rule_refs:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-004",
+                "category": "brownfield_context",
+                "description": "component_spec.business_rule_refs is empty. Business rules are not explicitly routed into this component.",
+                "resolution": "Architect stage must assign business_rule_refs for the component before Developer dispatch.",
+                "blocks": ["service logic", "validation rules", "acceptance parity"],
+            }
+        )
+    if is_brownfield and business_rules and not any(_has_rule_semantics(rule) for rule in business_rules):
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-005",
+                "category": "brownfield_context",
+                "description": "Scoped business rules lack semantic fields such as target_service, category, source_module, and acceptance_criteria.",
+                "resolution": "Architect stage must interpret and route business rules per component before Developer dispatch.",
+                "blocks": ["service logic", "acceptance tests", "behavioral parity"],
+            }
+        )
     if is_brownfield and not anchors:
         hard_blockers.append(
             {
@@ -228,6 +280,26 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "blocks": ["parity testing", "behavior validation", "developer acceptance"],
             }
         )
+    if is_brownfield and not regression_anchor_refs:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-006",
+                "category": "brownfield_context",
+                "description": "component_spec.regression_anchor_refs is empty. Brownfield parity anchors are not explicitly routed into this component.",
+                "resolution": "Architect stage must assign regression_anchor_refs for the component before Developer dispatch.",
+                "blocks": ["parity testing", "behavior validation", "developer acceptance"],
+            }
+        )
+    if is_brownfield and anchors and not any(_has_anchor_semantics(anchor) for anchor in anchors):
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-007",
+                "category": "brownfield_context",
+                "description": "Scoped regression anchors lack semantic fields such as golden_flow_ref, entry_point, expected_output, and target_endpoint.",
+                "resolution": "Architect stage must enrich regression anchors from golden flows before Developer dispatch.",
+                "blocks": ["parity testing", "integration tests", "developer acceptance"],
+            }
+        )
     if is_brownfield and business_rules and golden_flow_like_count and len(anchors) < max(1, min(2, golden_flow_like_count)):
         hard_blockers.append(
             {
@@ -236,6 +308,16 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "description": "Regression anchors are materially below the available brownfield flow evidence for this component.",
                 "resolution": "Architect stage must carry forward golden flows or equivalent regression anchors before Developer dispatch.",
                 "blocks": ["parity testing", "behavior validation", "developer acceptance"],
+            }
+        )
+    if is_brownfield and not approved_decisions:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-ARCH-APPROVAL-001",
+                "category": "architectural_decisions",
+                "description": "No approved architectural decisions exist for this component. Developer dispatch would proceed without approved architecture.",
+                "resolution": "Architect stage must approve at least one ADR covering this component before Developer dispatch.",
+                "blocks": ["component generation", "API implementation", "repository design"],
             }
         )
     if _component_is_residual_dumping_ground(component_name, component_spec):
@@ -296,7 +378,7 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
             }
         )
 
-    checks = 10
+    checks = 15
     passed = 0
     if coding_policy:
         passed += 1
@@ -309,6 +391,16 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
     if not is_brownfield or business_rules:
         passed += 1
     if not is_brownfield or anchors:
+        passed += 1
+    if not is_brownfield or business_rule_refs:
+        passed += 1
+    if not is_brownfield or regression_anchor_refs:
+        passed += 1
+    if not is_brownfield or any(_has_rule_semantics(rule) for rule in business_rules):
+        passed += 1
+    if not is_brownfield or any(_has_anchor_semantics(anchor) for anchor in anchors):
+        passed += 1
+    if not is_brownfield or approved_decisions:
         passed += 1
     if not _component_is_residual_dumping_ground(component_name, component_spec):
         passed += 1

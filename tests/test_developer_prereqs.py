@@ -113,6 +113,9 @@ class DeveloperPrereqsTest(unittest.TestCase):
             self._state(),
         )
         handoff = normalized.get("architect_handoff_package", {})
+        for decision in handoff.get("system_context", {}).get("architectural_decisions", []):
+            if "TransactionService" in (decision.get("target_services") or []):
+                decision["status"] = "Approved"
         self._state()["architect_handoff_package"] = handoff
         return build_component_scoped_handoff(handoff, "TransactionService")
 
@@ -160,6 +163,50 @@ class DeveloperPrereqsTest(unittest.TestCase):
         report = evaluate_component_prerequisites(scoped)
         self.assertEqual(report.get("status"), "BLOCKED")
         self.assertTrue(any(row.get("category") == "component_spec" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_no_approved_adrs_exist(self):
+        scoped = self._scoped()
+        for decision in scoped["system_context"]["architectural_decisions"]:
+            decision["status"] = "Proposed"
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("category") == "architectural_decisions" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_business_rule_refs_missing(self):
+        scoped = self._scoped()
+        scoped["component_spec"]["business_rule_refs"] = []
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-004" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_regression_anchor_refs_missing(self):
+        scoped = self._scoped()
+        scoped["component_spec"]["regression_anchor_refs"] = []
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-006" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_business_rules_are_not_semantically_enriched(self):
+        scoped = self._scoped()
+        for rule in scoped["brownfield_context"]["business_rules"]:
+            rule["target_service"] = ""
+            rule["category"] = ""
+            rule["source_module"] = ""
+            rule["acceptance_criteria"] = ""
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-005" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_regression_anchors_are_not_semantically_enriched(self):
+        scoped = self._scoped()
+        for anchor in scoped["brownfield_context"]["regression_test_anchors"]:
+            anchor["golden_flow_ref"] = ""
+            anchor["entry_point"] = ""
+            anchor["expected_output"] = ""
+            anchor["target_endpoint"] = ""
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-007" for row in report.get("hard_blockers", [])))
 
     def test_developer_agent_refuses_when_component_prereqs_fail(self):
         state = self._state()

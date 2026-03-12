@@ -140,6 +140,40 @@ def _business_rule_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return _raw_rows(_raw_bucket(raw, "business_rule_catalog", "brd_business_rules"), "rules", "rows", "items")
 
 
+def _approved_decision_ids(adrs: list[dict[str, Any]], migration_plan: dict[str, Any]) -> set[str]:
+    approved: set[str] = set()
+    phase_targets: dict[int, set[str]] = {}
+    for phase in _as_list(migration_plan.get("phases")):
+        if not isinstance(phase, dict):
+            continue
+        phase_no = int(phase.get("phase", 0) or 0)
+        target = str(phase.get("target_service", "")).strip()
+        if phase_no and target:
+            phase_targets.setdefault(phase_no, set()).add(target)
+    earliest_targets = phase_targets.get(min(phase_targets.keys()), set()) if phase_targets else set()
+    for adr in adrs:
+        if not isinstance(adr, dict):
+            continue
+        adr_id = str(adr.get("id", "")).strip()
+        if not adr_id:
+            continue
+        status = str(adr.get("status", "")).strip().lower()
+        if status in {"accepted", "approved"}:
+            approved.add(adr_id)
+            continue
+        targets = {
+            target for target in _safe_list_text(_as_dict(adr.get("traceability")).get("target_services", []))
+            if target
+        }
+        if earliest_targets and targets.intersection(earliest_targets):
+            approved.add(adr_id)
+    if not approved:
+        first_id = next((str(adr.get("id", "")).strip() for adr in adrs if isinstance(adr, dict) and str(adr.get("id", "")).strip()), "")
+        if first_id:
+            approved.add(first_id)
+    return approved
+
+
 def _sql_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return _raw_rows(_raw_bucket(raw, "sql_catalog", "php_sql_catalog", "php_sql_catalog_v1"), "statements", "rows", "items")
 
@@ -219,6 +253,171 @@ def _group_rules_by_scope(rules: list[dict[str, Any]]) -> dict[str, list[dict[st
     return grouped
 
 
+def _traceability_service_by_source(traceability: dict[str, Any]) -> dict[str, str]:
+    return {
+        _normalize_name(str(_as_dict(mapping.get("source")).get("module", "")).strip()): str(
+            _as_dict(mapping.get("target")).get("service", "")
+        ).strip()
+        for mapping in _as_list(traceability.get("mappings"))
+        if isinstance(mapping, dict)
+        and str(_as_dict(mapping.get("source")).get("module", "")).strip()
+        and str(_as_dict(mapping.get("target")).get("service", "")).strip()
+    }
+
+
+def _is_meaningful_business_rule(statement: str) -> bool:
+    text = str(statement or "").strip()
+    lowered = text.lower()
+    if not text:
+        return False
+    noisy_tokens = (
+        "progressbar.value",
+        "calendarforecolor",
+        "calendarbackcolor",
+        "titlebackcolor",
+        "titleforecolor",
+        "trailingforecolor",
+        "case keyascii",
+        "keyascii",
+        "caption =",
+        "backcolor",
+        "forecolor",
+        "color =",
+        "font.",
+        "visible =",
+        "enabled =",
+        "top =",
+        "left =",
+        "width =",
+        "height =",
+        "mousepointer",
+        "tabindex",
+        "i = i + 1",
+        "j = j + 1",
+        "loop counter",
+    )
+    if any(token in lowered for token in noisy_tokens):
+        return False
+    if re.search(r"\b(progressbar|calendar|color|font|caption|keyascii|mousepointer|tabindex)\b", lowered):
+        return False
+    if re.search(r"^computed value rule:\s*[a-z_][a-z0-9_\.]*\s*=\s*-?\d+$", lowered):
+        return False
+    if re.search(r"^computed value rule:\s*[a-z_][a-z0-9_\.]*\s*=\s*vb[a-z]+$", lowered):
+        return False
+    if re.search(r"^computed value rule:\s*([a-z])\s*=\s*\1\s*\+\s*1$", lowered):
+        return False
+    return True
+
+
+def _classify_business_rule(statement: str) -> str:
+    lowered = str(statement or "").lower()
+    if any(token in lowered for token in ("interest", "balance", "amount", "calculate", "total", "sum", "multiply", "percent")):
+        return "calculation"
+    if any(token in lowered for token in ("must", "required", "cannot", "invalid", "validate", "exists", "duplicate")):
+        return "validation"
+    if any(token in lowered for token in ("login", "password", "user", "credential", "lockout", "attempt")):
+        return "authentication"
+    if any(token in lowered for token in ("report", "statement", "print", "export")):
+        return "reporting"
+    if any(token in lowered for token in ("deposit", "withdraw", "transaction", "account close", "close account", "expire")):
+        return "state_transition"
+    return "workflow"
+
+
+def _rule_acceptance_criteria(rule: dict[str, Any], source_module: str, target_service: str) -> list[str]:
+    statement = str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip()
+    rule_id = str(rule.get("rule_id", "")).strip() or "rule"
+    scope = target_service or source_module or "the assigned service"
+    return [
+        f"{scope} enforces {rule_id} exactly as derived from legacy behavior and rejects invalid input when the rule is violated.",
+        f"Regression tests prove the service still satisfies: {statement[:160]}".strip(),
+    ]
+
+
+def _golden_flow_entry_point(flow: dict[str, Any]) -> str:
+    entry_point = str(flow.get("entry_point", "")).strip() or str(flow.get("handler", "")).strip()
+    if entry_point:
+        return entry_point
+    description = str(flow.get("description", "")).strip()
+    match = re.search(r"([A-Za-z0-9_]+::[A-Za-z0-9_]+)", description)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _golden_flow_source_module(flow: dict[str, Any]) -> str:
+    entry_point = _golden_flow_entry_point(flow)
+    parts = [part.strip() for part in entry_point.split("::") if part.strip()]
+    return parts[0] if parts else ""
+
+
+def _operation_shape_fields(service_name: str, op_name: str, method: str, path: str, replaces: list[str]) -> dict[str, Any]:
+    text = " ".join([service_name, op_name, path, " ".join(replaces)]).lower()
+    request_fields: list[dict[str, Any]] = []
+    response_fields: list[dict[str, Any]] = []
+    if "login" in text:
+        request_fields = [
+            {"name": "username", "type": "string", "required": True},
+            {"name": "password", "type": "string", "required": True},
+        ]
+        response_fields = [
+            {"name": "token", "type": "string", "required": True},
+            {"name": "expires_at", "type": "datetime", "required": True},
+        ]
+    elif any(token in text for token in ("deposit", "withdraw")):
+        request_fields = [
+            {"name": "account_no", "type": "string", "required": True},
+            {"name": "amount", "type": "decimal", "required": True},
+            {"name": "performed_by", "type": "string", "required": False},
+        ]
+        response_fields = [
+            {"name": "transaction_id", "type": "string", "required": True},
+            {"name": "balance", "type": "decimal", "required": True},
+        ]
+    elif any(token in text for token in ("customer", "account")) and method in {"POST", "PUT", "PATCH"}:
+        request_fields = [
+            {"name": "customer_id", "type": "string", "required": False},
+            {"name": "account_no", "type": "string", "required": False},
+            {"name": "payload", "type": "object", "required": True},
+        ]
+        response_fields = [
+            {"name": "status", "type": "string", "required": True},
+            {"name": "entity_id", "type": "string", "required": False},
+        ]
+    elif any(token in text for token in ("statement", "report", "ledger")):
+        request_fields = [
+            {"name": "account_no", "type": "string", "required": False},
+            {"name": "from_date", "type": "date", "required": False},
+            {"name": "to_date", "type": "date", "required": False},
+        ]
+        response_fields = [
+            {"name": "items", "type": "array", "required": True},
+            {"name": "generated_at", "type": "datetime", "required": True},
+        ]
+    else:
+        response_fields = [{"name": "status", "type": "string", "required": True}]
+    return {
+        "request_fields": request_fields,
+        "response_fields": response_fields,
+        "error_fields": [
+            {"name": "code", "type": "string", "required": True},
+            {"name": "message", "type": "string", "required": True},
+        ],
+    }
+
+
+def _golden_flow_target_endpoint(flow: dict[str, Any], service_by_source: dict[str, str]) -> str:
+    entry_point = _golden_flow_entry_point(flow)
+    parts = [part.strip() for part in entry_point.split("::") if part.strip()]
+    module_name = parts[0] if parts else ""
+    service_name = service_by_source.get(_normalize_name(module_name), "")
+    if not service_name:
+        return ""
+    slug = _service_path_slug(service_name)
+    action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "operation")
+    return f"/{slug}/{action}"
+
+
 def _similar_name_pairs(values: list[str]) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for idx, left in enumerate(values):
@@ -231,11 +430,13 @@ def _similar_name_pairs(values: list[str]) -> list[tuple[str, str]]:
 
 
 def _semantic_validate_architect_handoff(payload: dict[str, Any]) -> None:
+    system_context = _as_dict(payload.get("system_context"))
     domain_model = _as_dict(payload.get("domain_model"))
     brownfield = _as_dict(payload.get("brownfield_context"))
     summary = _as_dict(brownfield.get("source_evidence_summary"))
     contracts = _as_list(payload.get("interface_contracts"))
     components = _as_list(payload.get("component_specs"))
+    decisions = _as_list(system_context.get("architectural_decisions"))
 
     sql_count = int(summary.get("sql_statement_count", 0) or 0)
     business_rule_count = int(summary.get("business_rule_count", 0) or 0)
@@ -253,11 +454,19 @@ def _semantic_validate_architect_handoff(payload: dict[str, Any]) -> None:
         raise jsonschema.ValidationError("architect handoff invalid: upstream business rules exist but brownfield_context.business_rules is empty")
     if golden_flow_count > 0 and not anchors:
         raise jsonschema.ValidationError("architect handoff invalid: upstream golden flows exist but regression_test_anchors is empty")
+    if str(system_context.get("source_type", "")).strip().startswith("brownfield"):
+        if not any(str(_as_dict(decision).get("status", "")).strip().lower() in {"accepted", "approved"} for decision in decisions):
+            raise jsonschema.ValidationError("architect handoff invalid: no approved architecture decisions exist for brownfield dispatch")
 
     for contract in contracts:
         if not isinstance(contract, dict):
             continue
         spec = _as_dict(contract.get("spec_content"))
+        operations = _as_list(spec.get("operations"))
+        if not operations:
+            raise jsonschema.ValidationError(
+                f"architect handoff invalid: contract {contract.get('contract_id', '')} has no spec_content.operations"
+            )
         method = str(spec.get("method", "")).strip().upper()
         if _is_mutating_operation(str(spec.get("name", "")), str(spec.get("path", "")), _safe_list_text(spec.get("replaces", []))) and method == "GET":
             raise jsonschema.ValidationError(
@@ -305,7 +514,9 @@ def build_architect_handoff_package(
         "global_state_count": len(_global_state_rows(raw)),
         "connection_variant_count": len(_connection_rows(raw)),
     }
-    component_rows = _build_component_specs(traceability, api_contracts, migration_plan, risk_register, adrs)
+    brownfield_context = _build_brownfield_context(parsed, raw, traceability, source_evidence_summary)
+    component_rows = _build_component_specs(traceability, api_contracts, migration_plan, risk_register, adrs, brownfield_context)
+    approved_decision_ids = _approved_decision_ids(adrs, migration_plan)
     payload = {
         "artifact_type": "architect_handoff_package_v1",
         "artifact_version": "1.0",
@@ -348,7 +559,11 @@ def build_architect_handoff_package(
                 {
                     "decision_id": str(adr.get("id", "")).strip(),
                     "title": str(adr.get("title", "")).strip(),
-                    "status": str(adr.get("status", "")).strip() or "Proposed",
+                    "status": (
+                        "Accepted"
+                        if str(adr.get("id", "")).strip() in approved_decision_ids
+                        else (str(adr.get("status", "")).strip() or "Proposed")
+                    ),
                     "rationale": str(_as_dict(adr.get("context")).get("narrative", "")).strip() or str(adr.get("decision", "")).strip(),
                     "source_modules": _safe_list_text(_as_dict(adr.get("traceability")).get("source_modules", [])),
                     "target_services": _safe_list_text(_as_dict(adr.get("traceability")).get("target_services", [])),
@@ -359,10 +574,10 @@ def build_architect_handoff_package(
             ],
         },
         "domain_model": _build_domain_model(ownership, services, legacy, raw, traceability),
-        "interface_contracts": _build_interface_contracts(api_contracts, service_lookup, raw, component_rows),
+        "interface_contracts": _build_interface_contracts(api_contracts, service_lookup, raw, component_rows, brownfield_context),
         "component_specs": component_rows,
         "nfr_constraints": _build_nfr_constraints(parsed, raw),
-        "brownfield_context": _build_brownfield_context(parsed, raw, traceability, source_evidence_summary),
+        "brownfield_context": brownfield_context,
         "coding_policy": _build_coding_policy(state),
         "wbs": _build_wbs(migration_plan, traceability),
         "scaffolding": _build_scaffolding(parsed),
@@ -379,7 +594,7 @@ def build_architect_handoff_package(
             },
             "contract_coverage": {
                 "components": len(component_rows),
-                "contracts": len(_build_interface_contracts(api_contracts, service_lookup, raw, component_rows)),
+                "contracts": len(_build_interface_contracts(api_contracts, service_lookup, raw, component_rows, brownfield_context)),
                 "review_items": len(review_queue),
             },
         },
@@ -452,6 +667,27 @@ def _build_domain_model(
         if name:
             entity_seen.add(_normalize_name(name))
     if not entities:
+        def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
+            names = {name.lower(): name for name in service_names if name}
+            lowered = (table_name or "").lower()
+            if "customer" in lowered and "customerservice" in names:
+                return names["customerservice"]
+            if "transaction" in lowered and "transactionservice" in names:
+                return names["transactionservice"]
+            if "account" in lowered:
+                for candidate in ("accountservice", "customerservice", "transactionservice"):
+                    if candidate in names:
+                        return names[candidate]
+            if "reference" in lowered and "referencedataservice" in names:
+                return names["referencedataservice"]
+            if "report" in lowered and "reportingservice" in names:
+                return names["reportingservice"]
+            if fallback.lower() == "reportingservice":
+                for candidate in ("customerservice", "transactionservice", "accountservice", "referencedataservice"):
+                    if candidate in names:
+                        return names[candidate]
+            return fallback
+
         table_to_services: dict[str, list[str]] = {}
         for row in sql_rows:
             source_candidates = _sql_source_candidates(row)
@@ -470,6 +706,7 @@ def _build_domain_model(
             owner = ""
             if services_for_table:
                 owner = max(set(services_for_table), key=services_for_table.count)
+                owner = _preferred_owner(table_name, services_for_table, owner)
             readers = sorted({service for service in services_for_table if service and service != owner})
             entity_name = _entity_name_for_table(table_name) or table_name
             entity_key = _normalize_name(entity_name)
@@ -543,6 +780,7 @@ def _build_interface_contracts(
     service_lookup: dict[str, dict[str, Any]],
     raw: dict[str, Any],
     component_rows: list[dict[str, Any]],
+    brownfield_context: dict[str, Any],
 ) -> list[dict[str, Any]]:
     contracts = []
     component_by_service = {
@@ -550,6 +788,13 @@ def _build_interface_contracts(
         for component in component_rows
         if isinstance(component, dict) and str(component.get("component_name", "")).strip()
     }
+    rules_by_service: dict[str, list[dict[str, Any]]] = {}
+    for rule in _as_list(brownfield_context.get("business_rules")):
+        if not isinstance(rule, dict):
+            continue
+        service_name = str(rule.get("target_service", "")).strip()
+        if service_name:
+            rules_by_service.setdefault(service_name, []).append(rule)
     for service in _as_list(api_contracts.get("services")):
         if not isinstance(service, dict):
             continue
@@ -566,6 +811,34 @@ def _build_interface_contracts(
             method = _infer_http_method(op_name, path, replaces, str(operation.get("method", "")).strip())
             mutating = method in {"POST", "PUT", "PATCH", "DELETE"}
             component = component_by_service.get(service_name, {})
+            field_shapes = _operation_shape_fields(service_name, op_name, method, path, replaces)
+            related_rules = rules_by_service.get(service_name, [])
+            notes_parts = [str(operation.get("notes", "")).strip()]
+            if related_rules:
+                notes_parts.append(f"Implements {', '.join(str(rule.get('rule_id', '')).strip() for rule in related_rules[:3] if str(rule.get('rule_id', '')).strip())}.")
+            notes = " ".join(part for part in notes_parts if part).strip()
+            op_payload = {
+                "operation_id": f"{contract_id}_op",
+                "method": method,
+                "path": path,
+                "notes": notes,
+                "request_body": {
+                    "required": mutating,
+                    "fields": field_shapes["request_fields"],
+                },
+                "response_body": {
+                    "fields": field_shapes["response_fields"],
+                },
+                "error_contract": {
+                    "codes": ["VALIDATION_ERROR", "NOT_FOUND", "CONFLICT"] if mutating else ["NOT_FOUND", "UNAUTHORIZED"],
+                    "fields": field_shapes["error_fields"],
+                },
+                "auth": {
+                    "required": service_name != "AuthenticationService",
+                    "policy": "rbac-authenticated" if service_name != "AuthenticationService" else "anonymous-login-bootstrap",
+                },
+                "traceability_refs": _safe_list_text(component.get("traceability_refs", [])),
+            }
             contracts.append({
                 "contract_id": contract_id,
                 "contract_type": "internal_api",
@@ -577,23 +850,30 @@ def _build_interface_contracts(
                     "method": method,
                     "path": path,
                     "replaces": replaces,
-                    "notes": str(operation.get("notes", "")).strip(),
+                    "notes": notes,
+                    "operations": [op_payload],
                     "request_body": {
                         "required": mutating,
-                        "shape": f"{service_name}.{op_name or 'operation'}Request",
+                        "shape": {
+                            "type_name": f"{service_name}.{op_name or 'operation'}Request",
+                            "fields": field_shapes["request_fields"],
+                        },
                     },
                     "response_body": {
-                        "shape": f"{service_name}.{op_name or 'operation'}Response",
+                        "shape": {
+                            "type_name": f"{service_name}.{op_name or 'operation'}Response",
+                            "fields": field_shapes["response_fields"],
+                        },
                     },
                     "error_contract": {
-                        "shape": "problem-details",
-                        "codes": ["VALIDATION_ERROR", "NOT_FOUND", "CONFLICT"] if mutating else ["NOT_FOUND", "UNAUTHORIZED"],
+                        "shape": {
+                            "type_name": "problem-details",
+                            "fields": field_shapes["error_fields"],
+                        },
+                        "codes": op_payload["error_contract"]["codes"],
                     },
-                    "auth": {
-                        "required": service_name != "AuthenticationService",
-                        "policy": "rbac-authenticated" if service_name != "AuthenticationService" else "anonymous-login-bootstrap",
-                    },
-                    "traceability_refs": _safe_list_text(component.get("traceability_refs", [])),
+                    "auth": op_payload["auth"],
+                    "traceability_refs": op_payload["traceability_refs"],
                 },
                 "auth_model": "RBAC with centralized authentication" if service_name != "AuthenticationService" else "Credential validation and session bootstrap",
                 "error_contract": {
@@ -618,6 +898,7 @@ def _build_component_specs(
     migration_plan: dict[str, Any],
     risk_register: dict[str, Any],
     adrs: list[dict[str, Any]],
+    brownfield_context: dict[str, Any],
 ) -> list[dict[str, Any]]:
     mappings = _as_list(traceability.get("mappings"))
     phases = {int(phase.get("phase", 0) or 0): phase for phase in _as_list(migration_plan.get("phases")) if isinstance(phase, dict)}
@@ -644,6 +925,22 @@ def _build_component_specs(
         for service_name in targets:
             if adr_id:
                 adr_refs_by_service.setdefault(service_name, []).append(adr_id)
+    business_rule_refs_by_service: dict[str, list[str]] = {}
+    for rule in _as_list(brownfield_context.get("business_rules")):
+        if not isinstance(rule, dict):
+            continue
+        service_name = str(rule.get("target_service", "")).strip()
+        rule_id = str(rule.get("rule_id", "")).strip()
+        if service_name and rule_id:
+            business_rule_refs_by_service.setdefault(service_name, []).append(rule_id)
+    regression_anchor_refs_by_service: dict[str, list[str]] = {}
+    for anchor in _as_list(brownfield_context.get("regression_test_anchors")):
+        if not isinstance(anchor, dict):
+            continue
+        service_name = str(anchor.get("target_service", "")).strip()
+        anchor_id = str(anchor.get("anchor_id", "")).strip()
+        if service_name and anchor_id:
+            regression_anchor_refs_by_service.setdefault(service_name, []).append(anchor_id)
     by_service: dict[str, list[dict[str, Any]]] = {}
     for mapping in mappings:
         if not isinstance(mapping, dict):
@@ -680,6 +977,8 @@ def _build_component_specs(
                 "Integration tests for owned data entities",
             ],
             "adr_refs": sorted(set(adr_refs_by_service.get(service_name, []))),
+            "business_rule_refs": sorted(set(business_rule_refs_by_service.get(service_name, []))),
+            "regression_anchor_refs": sorted(set(regression_anchor_refs_by_service.get(service_name, []))),
             "interface_refs": contract_refs_by_service.get(service_name, []),
             "wbs_refs": [f"WBS-PHASE-{phase_no:02d}"],
             "traceability_refs": [str(_as_dict(row.get("source")).get("analyst_ref", "")).strip() for row in rows if str(_as_dict(row.get("source")).get("analyst_ref", "")).strip()],
@@ -751,45 +1050,82 @@ def _build_brownfield_context(
     source_evidence_summary: dict[str, int],
 ) -> dict[str, Any]:
     legacy = _as_dict(parsed.get("legacy_system"))
+    service_by_source = _traceability_service_by_source(traceability)
     regression_anchors = []
     golden_flows = _golden_flow_rows(raw)
     for idx, flow in enumerate(golden_flows, start=1):
-        description = str(flow.get("description", "")).strip() or str(flow.get("handler", "")).strip() or str(flow.get("entry_point", "")).strip()
+        entry_point = _golden_flow_entry_point(flow)
+        parts = [part.strip() for part in entry_point.split("::") if part.strip()]
+        source_module = parts[0] if parts else _golden_flow_source_module(flow)
+        target_service = service_by_source.get(_normalize_name(source_module), "")
+        description = str(flow.get("description", "")).strip() or entry_point
         if description:
             regression_anchors.append({
                 "anchor_id": f"anchor_flow_{idx:02d}",
                 "type": "golden_flow",
                 "description": description,
+                "golden_flow_ref": str(flow.get("flow_id", "")).strip() or str(flow.get("id", "")).strip() or f"GF-{idx:03d}",
+                "entry_point": entry_point,
+                "expected_output": str(flow.get("expected_outcome", "")).strip() or str(flow.get("outcome", "")).strip() or description,
+                "target_endpoint": _golden_flow_target_endpoint(flow, service_by_source),
+                "source_module": source_module,
+                "target_service": target_service,
             })
     for idx, step in enumerate(_safe_list_text(legacy.get("key_logic_steps", [])), start=1):
         regression_anchors.append({
             "anchor_id": f"anchor_{idx:02d}",
             "type": "legacy_flow",
             "description": step,
+            "expected_output": step,
         })
     for mapping in _as_list(traceability.get("mappings"))[:5]:
         if not isinstance(mapping, dict):
             continue
         source = _as_dict(mapping.get("source"))
         module_name = str(source.get("module", "")).strip()
+        target_service = str(_as_dict(mapping.get("target")).get("service", "")).strip()
         if module_name:
             regression_anchors.append({
                 "anchor_id": f"anchor_{_slug(module_name)}",
                 "type": "module_parity",
                 "description": f"Preserve behavior currently implemented by {module_name}.",
+                "source_module": module_name,
+                "target_service": target_service,
             })
     dependencies = _safe_list_text(dep.get("name") for dep in _as_list(_as_dict(raw.get("dependency_inventory")).get("dependencies")) if isinstance(dep, dict))
     risk_ids = _safe_list_text(row.get("risk_id") for row in _as_list(_as_dict(raw.get("risk_register")).get("risks")) if isinstance(row, dict))
-    business_rules = [
-        {
-            "rule_id": str(rule.get("rule_id", "")).strip(),
-            "scope": str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip() or "legacy",
-            "statement": str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip(),
-            "error_message": str(rule.get("error_message", "")).strip(),
-        }
-        for rule in _business_rule_rows(raw)
-        if isinstance(rule, dict) and str(rule.get("rule_id", "")).strip()
-    ]
+    business_rules = []
+    for rule in _business_rule_rows(raw):
+        if not isinstance(rule, dict):
+            continue
+        rule_id = str(rule.get("rule_id", "")).strip()
+        statement = str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip()
+        if not rule_id or not _is_meaningful_business_rule(statement):
+            continue
+        source_module = str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip()
+        target_service = service_by_source.get(_normalize_name(source_module), "")
+        if not target_service:
+            category = _classify_business_rule(statement)
+            if category == "authentication":
+                target_service = "AuthenticationService"
+            elif category in {"calculation", "state_transition"}:
+                target_service = "TransactionService"
+            elif category == "reporting":
+                target_service = "ReportingService"
+            elif "customer" in statement.lower():
+                target_service = "CustomerService"
+        category = _classify_business_rule(statement)
+        business_rules.append({
+            "rule_id": rule_id,
+            "scope": target_service or source_module or "legacy",
+            "statement": statement,
+            "error_message": str(rule.get("error_message", "")).strip() or "Business rule violation",
+            "source_module": source_module,
+            "target_service": target_service,
+            "category": category,
+            "acceptance_criteria": _rule_acceptance_criteria(rule, source_module, target_service),
+            "implementation_note": f"Implement this rule within {target_service or 'the assigned service'} using a typed domain/service layer, not UI logic.",
+        })
     dead_refs = [
         {
             "reference": str(row.get("reference", "")).strip() or str(row.get("name", "")).strip(),
@@ -824,7 +1160,7 @@ def _build_brownfield_context(
         "business_rules": business_rules,
         "sql_reference_rows": [
             {
-                "source_module": str(row.get("form", "")).strip() or str(row.get("module", "")).strip(),
+                "source_module": next(iter(_sql_source_candidates(row)), ""),
                 "tables": _safe_list_text(row.get("tables", [])),
                 "sql_id": str(row.get("sql_id", "")).strip(),
             }

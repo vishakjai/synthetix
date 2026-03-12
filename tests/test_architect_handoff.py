@@ -198,9 +198,21 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertTrue(handoff.get("domain_model", {}).get("data_ownership"))
         self.assertTrue(handoff.get("brownfield_context", {}).get("business_rules"))
         self.assertGreaterEqual(handoff.get("brownfield_context", {}).get("source_evidence_summary", {}).get("golden_flow_count", 0), 2)
+        self.assertTrue(any(str(row.get("status", "")).strip().lower() in {"accepted", "approved"} for row in handoff.get("system_context", {}).get("architectural_decisions", [])))
         first_contract = handoff.get("interface_contracts", [])[0]
         self.assertIn("request_body", first_contract.get("spec_content", {}))
         self.assertIn("auth", first_contract.get("spec_content", {}))
+        self.assertTrue(first_contract.get("spec_content", {}).get("operations"))
+        first_business_rule = handoff.get("brownfield_context", {}).get("business_rules", [])[0]
+        self.assertTrue(first_business_rule.get("target_service"))
+        self.assertTrue(first_business_rule.get("category"))
+        self.assertTrue(first_business_rule.get("source_module"))
+        self.assertTrue(first_business_rule.get("acceptance_criteria"))
+        first_anchor = handoff.get("brownfield_context", {}).get("regression_test_anchors", [])[0]
+        self.assertTrue(first_anchor.get("golden_flow_ref"))
+        self.assertTrue(first_anchor.get("entry_point"))
+        self.assertTrue(first_anchor.get("expected_output"))
+        self.assertTrue(first_anchor.get("target_endpoint"))
 
     def test_component_specs_are_traced_to_contracts_and_wbs(self):
         agent = ArchitectAgent(Mock())
@@ -210,6 +222,13 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertTrue(component_specs)
         self.assertTrue(all(spec.get("interface_refs") for spec in component_specs))
         self.assertTrue(all(spec.get("wbs_refs") for spec in component_specs))
+        self.assertTrue(any(spec.get("business_rule_refs") for spec in component_specs))
+        self.assertTrue(any(spec.get("regression_anchor_refs") for spec in component_specs))
+        customer_spec = next(spec for spec in component_specs if spec.get("component_name") == "CustomerService")
+        transaction_spec = next(spec for spec in component_specs if spec.get("component_name") == "TransactionService")
+        self.assertTrue(customer_spec.get("business_rule_refs"))
+        self.assertTrue(transaction_spec.get("business_rule_refs"))
+        self.assertTrue(transaction_spec.get("regression_anchor_refs"))
 
     def test_handoff_derives_entities_from_sql_usage_site_refs(self):
         state = self._state()
@@ -241,6 +260,17 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         owners = {row.get("owning_service") for row in ownership}
         self.assertIn("TransactionService", owners)
         self.assertIn("CustomerService", owners)
+
+    def test_description_only_golden_flows_produce_actionable_anchors(self):
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, self._state())
+        anchors = normalized.get("architect_handoff_package", {}).get("brownfield_context", {}).get("regression_test_anchors", [])
+        login_anchor = next(anchor for anchor in anchors if anchor.get("golden_flow_ref") == "GF-001")
+        deposit_anchor = next(anchor for anchor in anchors if anchor.get("golden_flow_ref") == "GF-002")
+        self.assertEqual(login_anchor.get("entry_point"), "frmLogin::cmdOK_Click")
+        self.assertTrue(login_anchor.get("target_endpoint"))
+        self.assertEqual(deposit_anchor.get("entry_point"), "frmdeposit::cmdSave_Click")
+        self.assertTrue(deposit_anchor.get("target_endpoint"))
 
 
 class ArchitectHandoffApiTest(unittest.TestCase):
