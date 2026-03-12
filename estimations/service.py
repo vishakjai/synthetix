@@ -7,7 +7,7 @@ from typing import Any
 import uuid
 
 from estimations.calibration import load_team_model_library
-from estimations.kernel import apply_team_model_to_wbs, build_brownfield_wbs
+from estimations.kernel import ROLE_LABELS, apply_team_model_to_wbs, build_brownfield_wbs
 from estimations.storage import EstimationArtifactPaths, EstimationStore
 from estimations.types import (
     AssumptionLedgerArtifact,
@@ -68,6 +68,101 @@ def _size_tier(likely: float) -> str:
     if likely < 320:
         return "L"
     return "XL"
+
+
+def _canonical_phase_for_kind(kind: str) -> str:
+    kind_upper = str(kind or "").upper()
+    if kind_upper in {"DISCOVERY_CLOSURE", "PROJECT_MANAGEMENT"}:
+        return "Discovery"
+    if kind_upper in {"FOUNDATION", "DATA_MODEL", "QA_AUTOMATION"}:
+        return "Design"
+    if kind_upper == "MODULE_MIGRATION":
+        return "Build"
+    if kind_upper in {"RISK_REMEDIATION", "SECURITY_HARDENING"}:
+        return "Build"
+    if kind_upper in {"PARITY_VALIDATION", "EVIDENCE_PACK"}:
+        return "Verify"
+    if kind_upper == "CUTOVER":
+        return "Cutover"
+    return "Build"
+
+def _wbs_kind_for_item(kind: str) -> str:
+    kind_upper = str(kind or "").upper()
+    if kind_upper == "BROWNFIELD_CHUNK":
+        return "MODULE_MIGRATION"
+    if kind_upper == "SHARED":
+        return "FOUNDATION"
+    if kind_upper in {"PARITY_VALIDATION", "EVIDENCE_PACK"}:
+        return "QA_AUTOMATION"
+    return kind_upper if kind_upper else "MODULE_MIGRATION"
+
+def _phase_label_for_kind(kind: str) -> str:
+    kind_upper = str(kind or "").upper()
+    if kind_upper in {"DISCOVERY_CLOSURE", "PROJECT_MANAGEMENT"}:
+        return "Phase 0 - Decision Resolution"
+    if kind_upper in {"FOUNDATION", "DATA_MODEL", "QA_AUTOMATION"}:
+        return "Phase 1 - Environment, Harness & Baseline"
+    if kind_upper == "MODULE_MIGRATION":
+        return "Phase 2 - Core Migration"
+    if kind_upper in {"RISK_REMEDIATION", "SECURITY_HARDENING"}:
+        return "Phase 3 - Risk Remediations"
+    if kind_upper in {"PARITY_VALIDATION", "EVIDENCE_PACK"}:
+        return "Phase 4 - QA & Evidence"
+    if kind_upper == "CUTOVER":
+        return "Phase 5 - Cutover"
+    return "Phase 2 - Core Migration"
+
+
+def _role_rationale(role: str, context: dict[str, Any], model_summary: dict[str, Any]) -> str:
+    role_key = str(role or "").upper()
+    decisions = dict(context.get("decisions") or {})
+    blocking = list(decisions.get("blocking") or [])
+    requirements = list(context.get("functional_requirements") or [])
+    remediation = list(context.get("remediation_items") or [])
+    golden_flow_count = int(context.get("golden_flow_count") or 0)
+    sql_count = int(context.get("sql_statement_count") or 0)
+    fail_gates = [
+        row for row in list(context.get("quality_gates") or [])
+        if str((row or {}).get("result") or (row or {}).get("status") or "").upper() == "FAIL"
+    ]
+    if role_key == "LSA":
+        return f"Owns variant resolution, schema conflict analysis, interprets {len(requirements)} functional requirements, and drives blocker closure with the client."
+    if role_key == "ARCH":
+        return f"Leads target architecture and blocker decisions across {len(blocking)} open decisions, dependency replacement, and compatibility-layer strategy."
+    if role_key == "DEV":
+        return f"Executes the core migration backlog across {len(requirements)} prioritized items plus remaining legacy modules."
+    if role_key == "DBA":
+        return f"Owns schema migration, data-model alignment, and query hardening across {sql_count} SQL touchpoints."
+    if role_key == "QA":
+        return f"Builds parity harnesses for {golden_flow_count} golden flows, runs regression/UAT, and closes {len(fail_gates)} failing quality gates."
+    if role_key == "BA":
+        return f"Supports requirement clarification, client-facing decision closure, and acceptance criteria alignment for {len(blocking)} blockers."
+    if role_key == "DEVOPS":
+        return "Owns environment setup, CI/CD, deployment coordination, and cutover readiness."
+    return "Delivery role activated by the selected team model and workload mix."
+
+
+def _phase_risk_label(phase: str, context: dict[str, Any]) -> str:
+    decisions = dict(context.get("decisions") or {})
+    blocking = list(decisions.get("blocking") or [])
+    fail_gates = [
+        row for row in list(context.get("quality_gates") or [])
+        if str((row or {}).get("result") or (row or {}).get("status") or "").upper() == "FAIL"
+    ]
+    sql_count = int(context.get("sql_statement_count") or 0)
+    if phase == "Phase 0 - Decision Resolution":
+        return "Client availability and unresolved modernization decisions."
+    if phase == "Phase 1 - Environment, Harness & Baseline":
+        return "Schema reconciliation and baseline harness complexity."
+    if phase == "Phase 2 - Core Migration":
+        return "Legacy form/module complexity distribution and hidden dependency coupling."
+    if phase == "Phase 3 - Risk Remediations":
+        return "Remediation overlap and security/data hardening scope."
+    if phase == "Phase 4 - QA & Evidence":
+        return "Parity evidence completion and remaining quality gate failures."
+    if phase == "Phase 5 - Cutover":
+        return "Deployment coordination and stabilization risk."
+    return f"{len(blocking)} blockers, {len(fail_gates)} failing gates, {sql_count} SQL touchpoints."
 
 
 def _role_hours_range(total_likely: float, share: float) -> dict[str, float]:
@@ -145,20 +240,13 @@ def _build_wbs_artifact_payload(
         risk_counts = item.get("risk_counts") or {}
         high_risk = int(risk_counts.get("high") or 0)
         traceability_score = int(item.get("traceability_score") or 0)
-        if item_id == "WBS-SHARED-INFRA":
-            kind = "FOUNDATION"
-            phase = "Build"
-        elif item_id == "WBS-SHARED-GOV":
-            kind = "PROJECT_MANAGEMENT"
-            phase = "Design"
-        else:
-            kind = "MODULE_MIGRATION"
-            phase = "Build"
+        kind = str(item.get("kind") or "MODULE_MIGRATION")
+        phase = _canonical_phase_for_kind(kind)
         items.append(
             {
                 "wbs_item_id": item_id,
                 "title": title,
-                "kind": kind,
+                "kind": _wbs_kind_for_item(kind),
                 "phase": phase,
                 "scope_ref": {
                     "chunk_id": str(item.get("chunk_ref") or ""),
@@ -306,17 +394,74 @@ def _build_estimate_summary_payload(
         for row in list(assumption_ledger.get("assumptions") or [])
         if row.get("category") == "BLOCKER"
     ]
-    phase_rows = []
-    for row in list(model_summary.get("phase_breakdown") or []):
-        phase_rows.append(
+    role_rows = []
+    role_team = dict(model_summary.get("team") or {})
+    for role, hours in role_totals.items():
+        display_name = ROLE_LABELS.get(role, role)
+        role_rows.append(
             {
-                "phase": str(row.get("phase") or "Phase"),
-                "p10_weeks": float(row.get("weeks_best") or 0.0),
-                "p50_weeks": float(row.get("weeks_likely") or 0.0),
-                "p90_weeks": float(row.get("weeks_worst") or 0.0),
-                "notes": [f"{float(row.get('hours_likely') or 0.0):.1f}h p50"],
+                "role": role,
+                "display_name": display_name,
+                "fte": round(float(role_team.get(role) or 0.0), 2),
+                "hours_p50": round(float(hours), 1),
+                "rationale": _role_rationale(role, context, model_summary),
             }
         )
+    workstreams: list[dict[str, Any]] = []
+    grouped_hours: dict[str, float] = {}
+    grouped_items: dict[str, list[dict[str, Any]]] = {}
+    for item in list(model_summary.get("items") or []):
+        raw = dict(item or {})
+        phase = _phase_label_for_kind(raw.get("kind"))
+        grouped_hours[phase] = grouped_hours.get(phase, 0.0) + float(raw.get("hours_likely") or 0.0)
+        grouped_items.setdefault(phase, []).append(
+            {
+                "wbs_item_id": str(raw.get("id") or ""),
+                "title": str(raw.get("title") or ""),
+                "kind": str(raw.get("kind") or ""),
+                "hours_p50": round(float(raw.get("hours_likely") or 0.0), 1),
+                "days_range": {
+                    "p10": round((float(raw.get("hours_likely") or 0.0) * 0.85) / 8.0, 1),
+                    "p50": round((float(raw.get("hours_likely") or 0.0)) / 8.0, 1),
+                    "p90": round((float(raw.get("hours_likely") or 0.0) * 1.25) / 8.0, 1),
+                },
+            }
+        )
+    for phase in ["Phase 0 - Decision Resolution", "Phase 1 - Environment, Harness & Baseline", "Phase 2 - Core Migration", "Phase 3 - Risk Remediations", "Phase 4 - QA & Evidence", "Phase 5 - Cutover"]:
+        items_in_phase = grouped_items.get(phase) or []
+        if not items_in_phase:
+            continue
+        workstreams.append(
+            {
+                "phase": phase,
+                "subtotal_hours_p50": round(grouped_hours.get(phase, 0.0), 1),
+                "subtotal_weeks_p50": round(grouped_hours.get(phase, 0.0) / 40.0, 1),
+                "key_risk": _phase_risk_label(phase, context),
+                "items": items_in_phase,
+            }
+        )
+    phase_rows = [
+        {
+            "phase": row["phase"],
+            "p10_weeks": round(row["subtotal_weeks_p50"] * 0.85, 1),
+            "p50_weeks": row["subtotal_weeks_p50"],
+            "p90_weeks": round(row["subtotal_weeks_p50"] * 1.25, 1),
+            "notes": [f'{row["subtotal_hours_p50"]:.1f}h p50'],
+            "key_risk": row["key_risk"],
+        }
+        for row in workstreams
+    ]
+    readiness = dict(context.get("modernization_readiness") or {})
+    readiness_score = int(readiness.get("score") or readiness.get("readiness_score") or 0)
+    fail_gate_count = len([
+        row for row in list(context.get("quality_gates") or [])
+        if str((row or {}).get("result") or (row or {}).get("status") or "").upper() == "FAIL"
+    ])
+    contingency_low = 0.1
+    contingency_high = 0.15
+    if blockers or fail_gate_count or (readiness_score and readiness_score < 65):
+        contingency_low = 0.2
+        contingency_high = 0.25
     return {
         "meta": _artifact_meta("estimate_summary_v1", artifact_id, source_mode="repo"),
         "estimate": {
@@ -366,6 +511,19 @@ def _build_estimate_summary_payload(
                     }
                     for role, hours in role_totals.items()
                 }
+            },
+            "team_size_fte": round(sum(float(v) for v in role_team.values()), 2),
+            "proposed_team": role_rows,
+            "workstreams": workstreams,
+            "summary_table": phase_rows,
+            "contingency": {
+                "low_pct": contingency_low,
+                "high_pct": contingency_high,
+                "rationale": (
+                    "Recommend carrying 20-25% contingency due to unresolved blockers, failing quality gates, and modernization readiness friction."
+                    if contingency_low >= 0.2
+                    else "Base contingency assumes modest delivery friction."
+                ),
             },
             "cost": {"currency": "USD"},
             "key_assumptions": [str(row.get("statement") or "") for row in list(assumption_ledger.get("assumptions") or [])[:8]],

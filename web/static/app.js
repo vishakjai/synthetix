@@ -548,7 +548,9 @@ const el = {
   estimateLoadRunBtn: document.getElementById("estimate-load-run-btn"),
   estimateRefreshList: document.getElementById("estimate-refresh-list"),
   estimateList: document.getElementById("estimate-list"),
-  estimateSummary: document.getElementById("estimate-summary"),
+  estimateOverview: document.getElementById("estimate-overview"),
+  estimateTeam: document.getElementById("estimate-team"),
+  estimateWorkstreams: document.getElementById("estimate-workstreams"),
   estimateAssumptions: document.getElementById("estimate-assumptions"),
   estimateWbs: document.getElementById("estimate-wbs"),
   estimateAgentInput: document.getElementById("estimate-agent-input"),
@@ -664,6 +666,7 @@ const state = {
     currentEstimate: null,
     listByRun: {},
     loadedRunId: "",
+    activeTab: "overview",
   },
   teamBuilder: {
     stageAgentIds: {},
@@ -9993,6 +9996,28 @@ function setEstimateStatus(message, isError = false) {
   el.estimateStatus.className = `mt-2 text-xs ${isError ? "text-rose-700" : "text-slate-700"}`;
 }
 
+function setEstimateTab(tabName) {
+  const safe = ["overview", "team", "workstreams", "assumptions", "wbs"].includes(String(tabName || "")) ? String(tabName) : "overview";
+  state.estimation.activeTab = safe;
+  const panes = {
+    overview: el.estimateOverview,
+    team: el.estimateTeam,
+    workstreams: el.estimateWorkstreams,
+    assumptions: el.estimateAssumptions,
+    wbs: el.estimateWbs,
+  };
+  Object.entries(panes).forEach(([key, node]) => {
+    if (!node) return;
+    node.classList.toggle("hidden", key !== safe);
+  });
+  document.querySelectorAll("[data-estimate-tab]").forEach((btn) => {
+    if (!(btn instanceof HTMLElement)) return;
+    const active = String(btn.getAttribute("data-estimate-tab") || "") === safe;
+    btn.classList.toggle("btn-dark", active);
+    btn.classList.toggle("btn-light", !active);
+  });
+}
+
 function setEstimateAgentOutput(html) {
   if (!el.estimateAgentOutput) return;
   el.estimateAgentOutput.innerHTML = html || "No assistant output yet.";
@@ -10010,37 +10035,22 @@ function parseEstimateJson(raw, label) {
   }
 }
 
-function estimateSummaryHtml(summary) {
+function estimateOverviewHtml(summary) {
   const estimate = summary?.estimate || {};
   const effort = estimate?.effort || {};
   const timeline = estimate?.timeline || {};
-  const roles = estimate?.staffing?.roles || {};
-  const roleList = Array.isArray(effort?.by_role) ? effort.by_role : [];
-  const phaseRows = Array.isArray(timeline?.phase_breakdown) ? timeline.phase_breakdown : [];
   const topRisks = Array.isArray(estimate?.risks) ? estimate.risks : [];
-  const roleRows = roleList.length
-    ? roleList.map((entry) => {
-      const role = String(entry?.role || "");
-      const staffing = roles?.[role] || {};
-      return `<tr class="border-b border-slate-200">
-        <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(role)}</td>
-        <td class="py-2 pr-3">${escapeHtml(String(entry?.hours?.p50 ?? "0"))}</td>
-        <td class="py-2 pr-3">${escapeHtml(String(staffing?.fte ?? "0"))}</td>
-        <td class="py-2 pr-3">${escapeHtml(String(staffing?.allocation_pct ?? "0"))}%</td>
-      </tr>`;
-    }).join("")
-    : "";
-  const phaseTableRows = phaseRows.length
-    ? phaseRows.map((phase) => `<tr class="border-b border-slate-200">
-        <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(phase.phase || "")}</td>
-        <td class="py-2 pr-3">${escapeHtml(String(phase.p50_weeks ?? "0"))}</td>
-        <td class="py-2 pr-3">${escapeHtml(String(phase.p90_weeks ?? "0"))}</td>
-        <td class="py-2 pr-3">${escapeHtml((phase.notes || []).join(" | "))}</td>
-      </tr>`).join("")
-    : "";
+  const summaryRows = Array.isArray(estimate?.summary_table) ? estimate.summary_table : [];
   const riskRows = topRisks.length
     ? topRisks.slice(0, 5).map((risk) => `<li><span class="font-semibold">${escapeHtml(String(risk.severity || "medium").toUpperCase())}</span> ${escapeHtml(risk.title || risk.risk_id || "Risk")}</li>`).join("")
     : `<li>No top risks recorded.</li>`;
+  const summaryTableRows = summaryRows.length
+    ? summaryRows.map((row) => `<tr class="border-b border-slate-200">
+        <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(row.phase || "")}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(row.p50_weeks ?? "0"))}</td>
+        <td class="py-2 pr-3">${escapeHtml(row.key_risk || "")}</td>
+      </tr>`).join("")
+    : "";
   return `
     <div class="grid gap-2 sm:grid-cols-4">
       <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Confidence</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(estimate.confidence_tier || "n/a")}</p></div>
@@ -10049,22 +10059,66 @@ function estimateSummaryHtml(summary) {
       <div class="rounded-lg border border-slate-300 bg-white p-2"><p class="text-[11px] uppercase tracking-[0.12em] text-slate-600">Timeline (p50)</p><p class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(String(timeline.total_weeks?.p50 ?? "n/a"))} wks</p></div>
     </div>
     <div class="mt-3">
-      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Role plan</p>
-      ${roleRows ? `<div class="mt-2 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
-        <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Role</th><th class="py-2 pr-3">Hours (p50)</th><th class="py-2 pr-3">FTE</th><th class="py-2 pr-3">Allocation</th></tr></thead>
-        <tbody>${roleRows}</tbody></table></div>` : `<div class="mt-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No staffing profile recorded.</div>`}
-    </div>
-    <div class="mt-3">
-      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Timeline view</p>
-      ${phaseTableRows ? `<div class="mt-2 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
-        <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Phase</th><th class="py-2 pr-3">Weeks (p50)</th><th class="py-2 pr-3">Weeks (p90)</th><th class="py-2 pr-3">Notes</th></tr></thead>
-        <tbody>${phaseTableRows}</tbody></table></div>` : `<div class="mt-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No phase timeline recorded.</div>`}
+      <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Summary</p>
+      ${summaryTableRows ? `<div class="mt-2 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
+        <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Phase</th><th class="py-2 pr-3">Duration (p50)</th><th class="py-2 pr-3">Key risk</th></tr></thead>
+        <tbody>${summaryTableRows}</tbody></table></div>` : `<div class="mt-2 rounded-lg border border-slate-300 bg-white p-2 text-slate-700">No summary rows recorded.</div>`}
     </div>
     <div class="mt-3">
       <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-600">Top risks</p>
       <ul class="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-800">${riskRows}</ul>
     </div>
+    <div class="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+      <span class="font-semibold">Contingency:</span>
+      ${escapeHtml(String(Math.round((Number(estimate?.contingency?.low_pct || 0) * 100)) || 0))}–${escapeHtml(String(Math.round((Number(estimate?.contingency?.high_pct || 0) * 100)) || 0))}% ·
+      ${escapeHtml(estimate?.contingency?.rationale || "No contingency narrative recorded.")}
+    </div>
   `;
+}
+
+function estimateTeamHtml(summary) {
+  const rows = Array.isArray(summary?.estimate?.proposed_team) ? summary.estimate.proposed_team : [];
+  const teamSize = summary?.estimate?.team_size_fte;
+  if (!rows.length) return "No team profile loaded.";
+  const body = rows.map((row) => `<tr class="border-b border-slate-200 align-top">
+      <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(row.display_name || row.role || "")}${row.fte ? ` (${escapeHtml(String(row.fte))})` : ""}</td>
+      <td class="py-2 pr-3">${escapeHtml(String(row.hours_p50 ?? "0"))}h</td>
+      <td class="py-2 pr-3">${escapeHtml(row.rationale || "")}</td>
+    </tr>`).join("");
+  return `
+    <div class="rounded-lg border border-slate-300 bg-white p-2 text-xs text-slate-700">Team size: <span class="font-semibold text-slate-900">${escapeHtml(String(teamSize ?? "n/a"))} FTE</span></div>
+    <div class="mt-2 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
+      <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Role</th><th class="py-2 pr-3">Hours (p50)</th><th class="py-2 pr-3">Rationale</th></tr></thead>
+      <tbody>${body}</tbody></table></div>
+  `;
+}
+
+function estimateWorkstreamsHtml(summary) {
+  const rows = Array.isArray(summary?.estimate?.workstreams) ? summary.estimate.workstreams : [];
+  if (!rows.length) return "No workstreams loaded.";
+  return rows.map((stream) => {
+    const items = Array.isArray(stream.items) ? stream.items : [];
+    const itemRows = items.map((item) => `<tr class="border-b border-slate-200">
+        <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(item.title || item.wbs_item_id || "")}</td>
+        <td class="py-2 pr-3">${escapeHtml(String(item.hours_p50 ?? "0"))}h</td>
+        <td class="py-2 pr-3">${escapeHtml(String(item.days_range?.p10 ?? "0"))}-${escapeHtml(String(item.days_range?.p90 ?? "0"))} days</td>
+      </tr>`).join("");
+    return `<div class="rounded-lg border border-slate-300 bg-white p-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p class="text-sm font-semibold text-slate-900">${escapeHtml(stream.phase || "")}</p>
+          <p class="mt-1 text-xs text-slate-700">${escapeHtml(stream.key_risk || "")}</p>
+        </div>
+        <div class="text-right text-xs text-slate-700">
+          <div><span class="font-semibold text-slate-900">${escapeHtml(String(stream.subtotal_hours_p50 ?? "0"))}h</span> p50</div>
+          <div>${escapeHtml(String(stream.subtotal_weeks_p50 ?? "0"))} weeks p50</div>
+        </div>
+      </div>
+      <div class="mt-3 overflow-auto"><table class="min-w-full border-collapse text-left text-xs">
+        <thead><tr class="border-b border-slate-300 text-slate-600"><th class="py-2 pr-3">Task</th><th class="py-2 pr-3">Effort</th><th class="py-2 pr-3">Range</th></tr></thead>
+        <tbody>${itemRows}</tbody></table></div>
+    </div>`;
+  }).join("");
 }
 
 function estimateAssumptionsHtml(ledger) {
@@ -10119,9 +10173,12 @@ function estimateWbsHtml(wbs) {
 function renderEstimateDetails(payload) {
   state.estimation.currentEstimate = payload || null;
   state.estimation.currentEstimateId = String(payload?.estimate_id || payload?.meta?.estimate_id || payload?.meta?.estimate?.estimate_id || "").trim();
-  if (el.estimateSummary) el.estimateSummary.innerHTML = payload?.artifacts?.estimate_summary ? estimateSummaryHtml(payload.artifacts.estimate_summary) : "No estimate loaded.";
+  if (el.estimateOverview) el.estimateOverview.innerHTML = payload?.artifacts?.estimate_summary ? estimateOverviewHtml(payload.artifacts.estimate_summary) : "No estimate loaded.";
+  if (el.estimateTeam) el.estimateTeam.innerHTML = payload?.artifacts?.estimate_summary ? estimateTeamHtml(payload.artifacts.estimate_summary) : "No estimate loaded.";
+  if (el.estimateWorkstreams) el.estimateWorkstreams.innerHTML = payload?.artifacts?.estimate_summary ? estimateWorkstreamsHtml(payload.artifacts.estimate_summary) : "No estimate loaded.";
   if (el.estimateAssumptions) el.estimateAssumptions.innerHTML = payload?.artifacts?.assumption_ledger ? estimateAssumptionsHtml(payload.artifacts.assumption_ledger) : "No assumptions loaded.";
   if (el.estimateWbs) el.estimateWbs.innerHTML = payload?.artifacts?.wbs ? estimateWbsHtml(payload.artifacts.wbs) : "No WBS loaded.";
+  setEstimateTab(state.estimation.activeTab || "overview");
 }
 
 function renderEstimateList() {
@@ -14604,6 +14661,12 @@ function bindEvents() {
   });
   el.estimateAgentExplainBtn?.addEventListener("click", () => {
     explainCurrentEstimate().catch((err) => setEstimateStatus(`Estimate explanation failed: ${err.message}`, true));
+  });
+  document.querySelectorAll("[data-estimate-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!(btn instanceof HTMLElement)) return;
+      setEstimateTab(btn.getAttribute("data-estimate-tab") || "overview");
+    });
   });
   el.estimateList?.addEventListener("click", (evt) => {
     const target = evt.target;

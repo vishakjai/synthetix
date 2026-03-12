@@ -65,6 +65,16 @@ SHARED_WBS_ITEMS = [
     },
 ]
 
+ROLE_LABELS = {
+    "BA": "Business Analyst",
+    "LSA": "Legacy Systems Analyst",
+    "ARCH": "Solution Architect",
+    "DEV": "Senior Developer",
+    "QA": "QA Engineer",
+    "DEVOPS": "DevOps Engineer",
+    "DBA": "Database Developer",
+}
+
 
 def _traceability_multiplier(score: int) -> float:
     if score >= 80:
@@ -115,18 +125,18 @@ def _fr_complexity_hours(item: dict[str, Any]) -> float:
     priority = str(item.get("priority") or item.get("business_priority") or "").upper()
     acceptance = _as_list(item.get("acceptance_criteria"))
     lower = title.lower()
-    base = 36.0
+    base = 44.0
     if priority in {"P0", "HIGH", "CRITICAL"}:
         base += 12.0
     elif priority in {"P1", "MEDIUM"}:
         base += 6.0
-    base += min(len(acceptance), 8) * 3.0
+    base += min(len(acceptance), 8) * 4.0
     if any(token in lower for token in ("transaction", "deposit", "withdraw", "ledger", "statement")):
-        base += 16.0
+        base += 18.0
     if any(token in lower for token in ("report", "export", "pdf", "excel")):
-        base += 12.0
+        base += 14.0
     if any(token in lower for token in ("customer", "account", "management", "maintenance")):
-        base += 8.0
+        base += 10.0
     return round(base, 1)
 
 
@@ -147,6 +157,53 @@ def _gate_hours(item: dict[str, Any]) -> float:
     if "compliance" in title.lower() or "identity" in title.lower():
         hours += 8.0
     return round(hours, 1)
+
+
+def _legacy_form_count(context: dict[str, Any]) -> int:
+    inventory = _as_dict(context.get("legacy_inventory"))
+    candidates = [
+        inventory.get("form_count_referenced"),
+        inventory.get("active_form_count"),
+        inventory.get("form_count"),
+        inventory.get("forms"),
+    ]
+    for value in candidates:
+        try:
+            count = int(value or 0)
+        except Exception:
+            count = 0
+        if count > 0:
+            return count
+    return 0
+
+
+def _dependency_count(context: dict[str, Any]) -> int:
+    inventory = _as_dict(context.get("legacy_inventory"))
+    for key in ("dependency_count", "dependencies", "dependency_total"):
+        try:
+            count = int(inventory.get(key) or 0)
+        except Exception:
+            count = 0
+        if count > 0:
+            return count
+    return 0
+
+
+def _phase_for_kind(kind: str) -> str:
+    kind_upper = str(kind or "").upper()
+    if kind_upper in {"DISCOVERY_CLOSURE", "PROJECT_MANAGEMENT"}:
+        return "Phase 0 - Decision Resolution"
+    if kind_upper in {"FOUNDATION", "DATA_MODEL", "QA_AUTOMATION"}:
+        return "Phase 1 - Environment, Harness & Baseline"
+    if kind_upper == "MODULE_MIGRATION":
+        return "Phase 2 - Core Migration"
+    if kind_upper in {"RISK_REMEDIATION", "SECURITY_HARDENING"}:
+        return "Phase 3 - Risk Remediations"
+    if kind_upper in {"PARITY_VALIDATION", "EVIDENCE_PACK"}:
+        return "Phase 4 - QA & Evidence"
+    if kind_upper == "CUTOVER":
+        return "Phase 5 - Cutover"
+    return "Phase 2 - Core Migration"
 
 
 def _brownfield_phase_capacity(role_hours: dict[str, float], phase: str) -> float:
@@ -209,6 +266,9 @@ def build_brownfield_wbs(
     sql_statement_count = int(context.get("sql_statement_count") or 0)
     golden_flow_count = int(context.get("golden_flow_count") or 0)
     high_risk_count = len([row for row in risks if str(_as_dict(row).get("severity", "")).lower() == "high"])
+    legacy_form_count = _legacy_form_count(context)
+    dependency_count = _dependency_count(context)
+    failing_gates = [row for row in quality_gates if str(_as_dict(row).get("result") or _as_dict(row).get("status") or "").upper() == "FAIL"]
 
     for idx, row in enumerate(blocking_decisions, start=1):
         item = _as_dict(row)
@@ -243,8 +303,22 @@ def build_brownfield_wbs(
             }
         )
 
+    if blocking_decisions:
+        decision_coordination_hours = 20.0 + len(blocking_decisions) * 6.0
+        items.append(
+            {
+                "id": "WBS-DECISION-COORDINATION",
+                "kind": "PROJECT_MANAGEMENT",
+                "title": "Coordinate client workshops and decision closure for unresolved modernization blockers",
+                "estimated_hours_likely": round(decision_coordination_hours, 1),
+                "risk_counts": {"high": 1, "medium": max(len(blocking_decisions) - 1, 0), "low": 0},
+                "traceability_score": 35,
+                "tasks": [dict(task) for task in DECISION_TASKS],
+            }
+        )
+
     if sql_statement_count > 0:
-        db_hours = 40.0 + min(sql_statement_count, 200) * 0.3
+        db_hours = 56.0 + min(sql_statement_count, 250) * 0.35
         if any("db" in str(_as_dict(row).get("id") or "").lower() or "schema" in str(_as_dict(row).get("question") or "").lower() for row in blocking_decisions):
             db_hours += 20.0
         items.append(
@@ -259,8 +333,25 @@ def build_brownfield_wbs(
             }
         )
 
+    baseline_hours = 24.0 + min(max(golden_flow_count, 1), 12) * 3.5 + min(sql_statement_count, 120) * 0.12
+    if legacy_form_count > 20:
+        baseline_hours += 24.0
+    if dependency_count > 0:
+        baseline_hours += min(dependency_count, 15) * 4.0
+    items.append(
+        {
+            "id": "WBS-FOUNDATION-BASELINE",
+            "kind": "FOUNDATION",
+            "title": "Environment setup, migration harness, and baseline engineering controls",
+            "estimated_hours_likely": round(baseline_hours, 1),
+            "risk_counts": {"high": 1 if dependency_count else 0, "medium": 1, "low": 0},
+            "traceability_score": 55,
+            "tasks": [dict(task) for task in BACKLOG_TASKS],
+        }
+    )
+
     if golden_flow_count > 0 or any("bdd" in str(_as_dict(row).get("id") or "").lower() for row in quality_gates):
-        qa_hours = 24.0 + min(max(golden_flow_count, 1), 12) * 4.0
+        qa_hours = 28.0 + min(max(golden_flow_count, 1), 12) * 5.0
         items.append(
             {
                 "id": "WBS-QA-AUTOMATION",
@@ -270,6 +361,20 @@ def build_brownfield_wbs(
                 "risk_counts": {"high": 0, "medium": 1, "low": 0},
                 "traceability_score": 55,
                 "tasks": [dict(task) for task in BACKLOG_TASKS],
+            }
+        )
+
+    if golden_flow_count > 0 or failing_gates:
+        evidence_hours = 30.0 + min(max(golden_flow_count, 1), 12) * 4.0 + len(failing_gates) * 8.0
+        items.append(
+            {
+                "id": "WBS-EVIDENCE-PACK",
+                "kind": "EVIDENCE_PACK",
+                "title": "Functional parity validation, evidence pack assembly, and UAT support",
+                "estimated_hours_likely": round(evidence_hours, 1),
+                "risk_counts": {"high": 1 if failing_gates else 0, "medium": 1, "low": 0},
+                "traceability_score": 45,
+                "tasks": [dict(task) for task in REMEDIATION_TASKS],
             }
         )
 
@@ -286,6 +391,21 @@ def build_brownfield_wbs(
                 "estimated_hours_likely": _fr_complexity_hours(item),
                 "risk_counts": {"high": 0, "medium": 1 if str(item.get("priority") or "").upper() in {"P0", "P1"} else 0, "low": 0},
                 "traceability_score": 60,
+                "tasks": [dict(task) for task in BACKLOG_TASKS],
+            }
+        )
+
+    if legacy_form_count > len(functional_requirements):
+        tail_count = legacy_form_count - len(functional_requirements)
+        tail_hours = max(60.0, tail_count * 12.0)
+        items.append(
+            {
+                "id": "WBS-BACKLOG-LEGACY-TAIL",
+                "kind": "MODULE_MIGRATION",
+                "title": f"Remaining {tail_count} legacy forms and supporting modules",
+                "estimated_hours_likely": round(tail_hours, 1),
+                "risk_counts": {"high": 0, "medium": 1 if tail_count > 5 else 0, "low": 1},
+                "traceability_score": 50,
                 "tasks": [dict(task) for task in BACKLOG_TASKS],
             }
         )
@@ -322,7 +442,6 @@ def build_brownfield_wbs(
             }
         )
 
-    failing_gates = [row for row in quality_gates if str(_as_dict(row).get("result") or _as_dict(row).get("status") or "").upper() == "FAIL"]
     for row in failing_gates:
         item = _as_dict(row)
         gid = str(item.get("id") or "gate").strip()
@@ -343,8 +462,9 @@ def build_brownfield_wbs(
 
     readiness_score = int(modernization_readiness.get("score") or modernization_readiness.get("readiness_score") or 0)
     if readiness_score and readiness_score < 65:
-        contingency_hours = 24.0 if readiness_score >= 50 else 48.0
+        contingency_hours = 40.0 if readiness_score >= 50 else 72.0
         contingency_hours += len(blocking_decisions) * 6.0 + len(failing_gates) * 8.0
+        contingency_hours += max(0, legacy_form_count - len(functional_requirements)) * 2.5
         items.append(
             {
                 "id": "WBS-DISCOVERY-CONTINGENCY",
@@ -358,6 +478,7 @@ def build_brownfield_wbs(
         )
 
     items.extend(SHARED_WBS_ITEMS)
+    items = [item for item in items if float(item.get("estimated_hours_likely") or 0.0) > 0.0]
     return {
         "generated_at": (chunk_manifest or {}).get("generated_at") or (risk_register or {}).get("generated_at"),
         "source": "chunk_manifest + risk_register + traceability_scores",
@@ -436,6 +557,18 @@ def _architect_required(wbs: dict[str, Any]) -> bool:
     return chunk_count >= 3 or high_risk_count >= 2 or low_traceability_count >= 2
 
 
+def _lsa_required(wbs: dict[str, Any]) -> bool:
+    decision_items = 0
+    low_traceability_count = 0
+    for item in list(wbs.get("wbs_items") or []):
+        kind = str(item.get("kind", "")).upper()
+        if kind in {"DISCOVERY_CLOSURE", "PROJECT_MANAGEMENT"}:
+            decision_items += 1
+        if int(item.get("traceability_score") or 100) < 45:
+            low_traceability_count += 1
+    return decision_items >= 2 or low_traceability_count >= 3
+
+
 def _dba_required(wbs: dict[str, Any]) -> bool:
     for item in list(wbs.get("wbs_items") or []):
         if str(item.get("kind", "")).upper() in {"DATA_MODEL", "DATA_MIGRATION"}:
@@ -449,12 +582,19 @@ def _normalized_team_profile(
     default_team: dict[str, Any],
     role_split: dict[str, Any],
     *,
+    lsa_required: bool,
     architect_required: bool,
     dba_required: bool,
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     team = {str(role): float(fte) for role, fte in default_team.items()}
     split = {str(role): float(share) for role, share in role_split.items()}
     notes: list[str] = []
+    if lsa_required:
+        notes.append("Legacy systems analyst activated by unresolved decisions and low-traceability work.")
+        team["LSA"] = max(float(team.get("LSA", 0.0) or 0.0), 1.0)
+        split["LSA"] = max(float(split.get("LSA", 0.0) or 0.0), 0.12)
+        split["DEV"] = max(float(split.get("DEV", 0.0) or 0.0) - 0.06, 0.28)
+        split["BA"] = max(float(split.get("BA", 0.0) or 0.0), 0.12)
     if architect_required:
         notes.append("Architect role activated by chunk/risk/traceability thresholds.")
         team["ARCH"] = max(float(team.get("ARCH", 0.0) or 0.0), 0.5)
@@ -480,11 +620,13 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
     acceleration = dict(model.get("acceleration") or {})
     role_split = dict(model.get("role_split") or {})
     default_team = dict(model.get("default_team") or {})
+    lsa_required = _lsa_required(wbs)
     architect_required = _architect_required(wbs)
     dba_required = _dba_required(wbs)
     default_team, role_split, model_notes = _normalized_team_profile(
         default_team,
         role_split,
+        lsa_required=lsa_required,
         architect_required=architect_required,
         dba_required=dba_required,
     )
@@ -501,6 +643,7 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
             {
                 "id": item["id"],
                 "title": item["title"],
+                "kind": item.get("kind"),
                 "hours_likely": likely,
             }
         )
@@ -516,9 +659,9 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
         kind = str(item.get("kind", "")).upper()
         if kind in {"DISCOVERY_CLOSURE", "PROJECT_MANAGEMENT"}:
             phase = "Discovery"
-        elif kind in {"DATA_MODEL", "FOUNDATION"}:
+        elif kind in {"DATA_MODEL", "FOUNDATION", "QA_AUTOMATION"}:
             phase = "Design"
-        elif kind in {"SECURITY_HARDENING", "QA_AUTOMATION", "RISK_REMEDIATION"}:
+        elif kind in {"SECURITY_HARDENING", "RISK_REMEDIATION", "PARITY_VALIDATION", "EVIDENCE_PACK"}:
             phase = "Verify"
         elif kind == "CUTOVER":
             phase = "Cutover"
@@ -548,7 +691,7 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
         timeline_likely += likely_weeks
         timeline_best += best_weeks
         timeline_worst += worst_weeks
-    buffer = _buffer_weeks(wbs)
+    buffer = _buffer_weeks(wbs) + (1.0 if lsa_required else 0.0)
     timeline_likely = round(timeline_likely + buffer, 1)
     timeline_best = _scale_floor_tenth(timeline_likely, "0.85")
     timeline_worst = _scale_half_down(timeline_likely, "1.25")
@@ -561,6 +704,7 @@ def apply_team_model_to_wbs(wbs: dict[str, Any], library: TeamModelLibrary, mode
         "model_key": model_key,
         "model_name": model.get("name", model_key),
         "team": default_team,
+        "lsa_required": lsa_required,
         "architect_required": architect_required,
         "dba_required": dba_required,
         "notes": model_notes,

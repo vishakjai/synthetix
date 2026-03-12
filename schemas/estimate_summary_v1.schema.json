@@ -147,6 +147,9 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "key_risk": {
+                    "type": "string"
                   }
                 },
                 "additionalProperties": false
@@ -289,6 +292,185 @@
             },
             "team_models": {
               "$ref": "./common_artifact_defs_v1.schema.json#/$defs/artifact_ref"
+            }
+          },
+          "additionalProperties": false
+        },
+        "team_size_fte": {
+          "type": "number",
+          "minimum": 0
+        },
+        "proposed_team": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "role",
+              "display_name",
+              "fte",
+              "hours_p50",
+              "rationale"
+            ],
+            "properties": {
+              "role": {
+                "type": "string"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "fte": {
+                "type": "number",
+                "minimum": 0
+              },
+              "hours_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "rationale": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "workstreams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "phase",
+              "subtotal_hours_p50",
+              "subtotal_weeks_p50",
+              "key_risk",
+              "items"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string"
+              },
+              "subtotal_hours_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "subtotal_weeks_p50": {
+                "type": "number",
+                "minimum": 0
+              },
+              "key_risk": {
+                "type": "string"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "wbs_item_id",
+                    "title",
+                    "kind",
+                    "hours_p50",
+                    "days_range"
+                  ],
+                  "properties": {
+                    "wbs_item_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "hours_p50": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days_range": {
+                      "type": "object",
+                      "required": [
+                        "p10",
+                        "p50",
+                        "p90"
+                      ],
+                      "properties": {
+                        "p10": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "p50": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "p90": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "summary_table": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "phase",
+              "p50_weeks",
+              "key_risk"
+            ],
+            "properties": {
+              "phase": {
+                "type": "string"
+              },
+              "p10_weeks": {
+                "type": "number",
+                "minimum": 0
+              },
+              "p50_weeks": {
+                "type": "number",
+                "minimum": 0
+              },
+              "p90_weeks": {
+                "type": "number",
+                "minimum": 0
+              },
+              "notes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "key_risk": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "contingency": {
+          "type": "object",
+          "required": [
+            "low_pct",
+            "high_pct",
+            "rationale"
+          ],
+          "properties": {
+            "low_pct": {
+              "type": "number",
+              "minimum": 0
+            },
+            "high_pct": {
+              "type": "number",
+              "minimum": 0
+            },
+            "rationale": {
+              "type": "string"
             }
           },
           "additionalProperties": false

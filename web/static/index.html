@@ -1328,16 +1328,18 @@
 
           <section class="space-y-4">
             <section class="rounded-xl border border-slate-300 bg-slate-50 p-3">
-              <h3 class="text-sm font-semibold text-ink-950">Estimate summary</h3>
-              <div id="estimate-summary" class="mt-2 text-xs text-slate-800">No estimate loaded.</div>
-            </section>
-            <section class="rounded-xl border border-slate-300 bg-slate-50 p-3">
-              <h3 class="text-sm font-semibold text-ink-950">Assumptions</h3>
-              <div id="estimate-assumptions" class="mt-2 text-xs text-slate-800">No assumptions loaded.</div>
-            </section>
-            <section class="rounded-xl border border-slate-300 bg-slate-50 p-3">
-              <h3 class="text-sm font-semibold text-ink-950">Work breakdown</h3>
-              <div id="estimate-wbs" class="mt-2 text-xs text-slate-800">No WBS loaded.</div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button data-estimate-tab="overview" class="btn-dark rounded-md px-2.5 py-1 text-[11px] font-semibold">Overview</button>
+                <button data-estimate-tab="team" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Team</button>
+                <button data-estimate-tab="workstreams" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Workstreams</button>
+                <button data-estimate-tab="assumptions" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">Assumptions</button>
+                <button data-estimate-tab="wbs" class="btn-light rounded-md px-2.5 py-1 text-[11px] font-semibold">WBS</button>
+              </div>
+              <div id="estimate-overview" class="mt-3 text-xs text-slate-800">No estimate loaded.</div>
+              <div id="estimate-team" class="mt-3 hidden text-xs text-slate-800">No estimate loaded.</div>
+              <div id="estimate-workstreams" class="mt-3 hidden text-xs text-slate-800">No estimate loaded.</div>
+              <div id="estimate-assumptions" class="mt-3 hidden text-xs text-slate-800">No assumptions loaded.</div>
+              <div id="estimate-wbs" class="mt-3 hidden text-xs text-slate-800">No WBS loaded.</div>
             </section>
           </section>
         </div>

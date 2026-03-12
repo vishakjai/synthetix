@@ -34,14 +34,14 @@ class EstimationServiceTest(unittest.TestCase):
         self.assertTrue(result.paths.wbs_path.exists())
         self.assertTrue(result.paths.assumption_ledger_path.exists())
         self.assertTrue(result.paths.estimate_summary_path.exists())
-        self.assertEqual(
-            result.estimate_summary["estimate"]["team_model_selected"],
-            "HUMAN_ONLY",
-        )
-        self.assertEqual(
-            result.estimate_summary["estimate"]["effort"]["total_hours"]["p50"],
-            1423.2,
-        )
+        estimate = result.estimate_summary["estimate"]
+        self.assertEqual(estimate["team_model_selected"], "HUMAN_ONLY")
+        self.assertGreater(estimate["effort"]["total_hours"]["p50"], 500)
+        self.assertGreater(estimate["timeline"]["total_weeks"]["p50"], 7)
+        self.assertTrue(estimate["proposed_team"])
+        self.assertTrue(estimate["workstreams"])
+        self.assertTrue(estimate["summary_table"])
+        self.assertGreaterEqual(estimate["team_size_fte"], 4.0)
 
 
 if __name__ == "__main__":

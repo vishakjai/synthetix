@@ -8757,8 +8757,59 @@ def _build_estimation_analysis_context(
     risk_register: dict[str, Any] | None,
 ) -> dict[str, Any]:
     requirements_pack = stage1.get("requirements_pack", {}) if isinstance(stage1.get("requirements_pack", {}), dict) else {}
+    pipeline_requirements_pack = (
+        pipeline_analyst_output.get("requirements_pack", {})
+        if isinstance(pipeline_analyst_output.get("requirements_pack", {}), dict)
+        else {}
+    )
+    pipeline_agent_requirements_pack = (
+        pipeline_agent_stage1.get("requirements_pack", {})
+        if isinstance(pipeline_agent_stage1.get("requirements_pack", {}), dict)
+        else {}
+    )
+    if not requirements_pack:
+        for candidate in (pipeline_requirements_pack, pipeline_agent_requirements_pack):
+            if isinstance(candidate, dict) and candidate:
+                requirements_pack = candidate
+                break
     decision_brief = stage1.get("decision_brief", {}) if isinstance(stage1.get("decision_brief", {}), dict) else {}
+    pipeline_decision_brief = (
+        pipeline_analyst_output.get("decision_brief", {})
+        if isinstance(pipeline_analyst_output.get("decision_brief", {}), dict)
+        else {}
+    )
+    pipeline_agent_decision_brief = (
+        pipeline_agent_stage1.get("decision_brief", {})
+        if isinstance(pipeline_agent_stage1.get("decision_brief", {}), dict)
+        else {}
+    )
+    if not decision_brief:
+        for candidate in (pipeline_decision_brief, pipeline_agent_decision_brief):
+            if isinstance(candidate, dict) and candidate:
+                decision_brief = candidate
+                break
     decisions_required = decision_brief.get("decisions_required", {}) if isinstance(decision_brief.get("decisions_required", {}), dict) else {}
+    open_questions = requirements_pack.get("open_questions", []) if isinstance(requirements_pack.get("open_questions", []), list) else []
+    if not decisions_required:
+        blocking_from_questions = []
+        non_blocking_from_questions = []
+        for row in open_questions:
+            if not isinstance(row, dict):
+                continue
+            normalized = {
+                "id": str(row.get("id") or "").strip() or f"Q-{len(blocking_from_questions) + len(non_blocking_from_questions) + 1:03d}",
+                "question": str(row.get("question") or row.get("title") or "Open question").strip(),
+                "owner": str(row.get("owner") or "Client").strip() or "Client",
+                "severity": str(row.get("severity") or "medium").lower(),
+            }
+            if normalized["severity"] == "high":
+                blocking_from_questions.append(normalized)
+            else:
+                non_blocking_from_questions.append(normalized)
+        decisions_required = {
+            "blocking": blocking_from_questions,
+            "non_blocking": non_blocking_from_questions,
+        }
     quality_gates = []
     for candidate in (
         stage1.get("quality_gates"),
@@ -8784,24 +8835,64 @@ def _build_estimation_analysis_context(
     functional_requirements = []
     for candidate in (
         stage1.get("functional_requirements"),
+        pipeline_analyst_output.get("functional_requirements"),
+        pipeline_agent_stage1.get("functional_requirements"),
         requirements_pack.get("functional_requirements") if isinstance(requirements_pack, dict) else None,
         requirements_pack.get("requirements", {}).get("functional") if isinstance(requirements_pack.get("requirements", {}), dict) else None,
+        pipeline_requirements_pack.get("functional_requirements") if isinstance(pipeline_requirements_pack, dict) else None,
+        pipeline_requirements_pack.get("requirements", {}).get("functional") if isinstance(pipeline_requirements_pack.get("requirements", {}), dict) else None,
+        pipeline_agent_requirements_pack.get("functional_requirements") if isinstance(pipeline_agent_requirements_pack, dict) else None,
+        pipeline_agent_requirements_pack.get("requirements", {}).get("functional") if isinstance(pipeline_agent_requirements_pack.get("requirements", {}), dict) else None,
     ):
         if isinstance(candidate, list) and candidate:
             functional_requirements = candidate
             break
+    legacy_inventory = {}
+    for candidate in (
+        stage1.get("legacy_code_inventory"),
+        requirements_pack.get("legacy_code_inventory") if isinstance(requirements_pack, dict) else None,
+        analyst_summary.get("legacy_code_inventory"),
+        pipeline_analyst_output.get("legacy_code_inventory"),
+        pipeline_requirements_pack.get("legacy_code_inventory") if isinstance(pipeline_requirements_pack, dict) else None,
+        pipeline_agent_stage1.get("legacy_code_inventory"),
+        pipeline_agent_requirements_pack.get("legacy_code_inventory") if isinstance(pipeline_agent_requirements_pack, dict) else None,
+    ):
+        if isinstance(candidate, dict) and candidate:
+            legacy_inventory = candidate
+            break
     remediation_items = []
     if isinstance(risk_register, dict):
-        for idx, risk in enumerate(list(risk_register.get("risks") or [])[:12], start=1):
+        grouped: dict[str, dict[str, Any]] = {}
+        for idx, risk in enumerate(list(risk_register.get("risks") or []), start=1):
             if not isinstance(risk, dict):
                 continue
-            remediation_items.append(
-                {
-                    "id": str(risk.get("risk_id") or risk.get("id") or f"RM-{idx:03d}"),
-                    "title": str(risk.get("title") or risk.get("description") or "Risk remediation").strip(),
-                    "severity": str(risk.get("severity") or "medium").lower(),
-                }
+            title = str(risk.get("title") or risk.get("description") or "Risk remediation").strip()
+            lower = title.lower()
+            bucket_id = str(risk.get("risk_id") or risk.get("id") or f"RM-{idx:03d}")
+            bucket_title = title
+            severity = str(risk.get("severity") or "medium").lower()
+            if any(token in lower for token in ("sql risk flags", "possible_injection", "sensitive_credential_query", "string_concatenation", "select_star")):
+                bucket_id = "RM-SQL"
+                bucket_title = "SQL parameterization and query hardening"
+                severity = "high"
+            elif any(token in lower for token in ("control array", "default instance", "caption")):
+                bucket_id = "RM-UI"
+                bucket_title = "Legacy UI state and control remediation"
+            elif any(token in lower for token in ("identity", "credential", "login", "auth")):
+                bucket_id = "RM-IAM"
+                bucket_title = "Identity and access model implementation"
+                severity = "high" if severity == "medium" else severity
+            elif any(token in lower for token in ("schema", "variant", "transaction", "db", "database")):
+                bucket_id = "RM-DATA"
+                bucket_title = "Schema reconciliation and transaction-model remediation"
+            bucket = grouped.setdefault(
+                bucket_id,
+                {"id": bucket_id, "title": bucket_title, "severity": severity, "count": 0},
             )
+            bucket["count"] += 1
+            if severity == "high" or (severity == "medium" and bucket["severity"] == "low"):
+                bucket["severity"] = severity
+        remediation_items = list(grouped.values())[:12]
     golden_flow_count = 0
     for candidate in (
         raw_artifacts.get("golden_flows"),
@@ -8810,6 +8901,11 @@ def _build_estimation_analysis_context(
         if isinstance(candidate, list):
             golden_flow_count = len(candidate)
             break
+    if not golden_flow_count:
+        bdd = requirements_pack.get("bdd", {}) if isinstance(requirements_pack.get("bdd", {}), dict) else {}
+        features = bdd.get("features", []) if isinstance(bdd.get("features", []), list) else []
+        if features:
+            golden_flow_count = len(features)
     if not golden_flow_count:
         event_map = raw_artifacts.get("event_map", {}) if isinstance(raw_artifacts.get("event_map", {}), dict) else {}
         entries = event_map.get("entries", []) if isinstance(event_map.get("entries", []), list) else []
@@ -8822,6 +8918,7 @@ def _build_estimation_analysis_context(
     return {
         "functional_requirements": functional_requirements,
         "remediation_items": remediation_items,
+        "legacy_inventory": legacy_inventory,
         "decisions": {
             "blocking": decisions_required.get("blocking", []) if isinstance(decisions_required.get("blocking", []), list) else [],
             "non_blocking": decisions_required.get("non_blocking", []) if isinstance(decisions_required.get("non_blocking", []), list) else [],
