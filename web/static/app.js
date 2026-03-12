@@ -678,6 +678,7 @@ const state = {
     enabledStages: {},
     editingTeamId: "",
     editingIsCustom: false,
+    dirty: false,
   },
   collaboration: {
     selectedTab: "chat",
@@ -9059,6 +9060,7 @@ function resetBuilderForNewTeam() {
   state.teamBuilder.stageAgentIds = {};
   state.teamBuilder.editingTeamId = "";
   state.teamBuilder.editingIsCustom = false;
+  state.teamBuilder.dirty = false;
   if (el.teamName) el.teamName.value = "";
   if (el.teamDescription) el.teamDescription.value = "";
   const firstStage = teamBuilderUnusedStages()[0];
@@ -9176,6 +9178,7 @@ function renderTeamBuilderSelectors() {
       } else {
         state.teamBuilder.stageAgentIds[newStage] = nextAgentId;
       }
+      state.teamBuilder.dirty = true;
       renderTeamBuilderSelectors();
     });
   });
@@ -9187,6 +9190,7 @@ function renderTeamBuilderSelectors() {
       const resolved = stageAgentLookup(stage, value);
       if (!resolved?.id) return;
       state.teamBuilder.stageAgentIds[stage] = String(resolved.id);
+      state.teamBuilder.dirty = true;
       renderTeamBuilderSelectors();
     });
   });
@@ -9195,6 +9199,7 @@ function renderTeamBuilderSelectors() {
       const stage = String(node.getAttribute("data-team-row-remove") || "").trim();
       if (!stage) return;
       delete state.teamBuilder.stageAgentIds[stage];
+      state.teamBuilder.dirty = true;
       renderTeamBuilderSelectors();
     });
   });
@@ -10432,7 +10437,7 @@ async function loadAgentsAndTeams() {
     renderWorkTeamSelection();
   }
 
-  if (!state.teamBuilder.stageAgentIds || !Object.keys(state.teamBuilder.stageAgentIds).length) {
+  if (!state.teamBuilder.dirty && (!state.teamBuilder.stageAgentIds || !Object.keys(state.teamBuilder.stageAgentIds).length)) {
     if (state.teamSelection.stageAgentIds && Object.keys(state.teamSelection.stageAgentIds).length) {
       state.teamBuilder.stageAgentIds = { ...state.teamSelection.stageAgentIds };
     } else {
@@ -10483,6 +10488,7 @@ async function saveTeamFromBuilder() {
   });
   const verb = editingTeamId ? "Updated" : "Saved";
   el.teamSaveMessage.textContent = `${verb} team: ${data.team?.name || "(unnamed)"}`;
+  state.teamBuilder.dirty = false;
   applyTeamSelection(data.team || {}, data.agent_personas || {}, `${verb} from Team Builder`);
   await loadAgentsAndTeams();
 }
@@ -10500,6 +10506,7 @@ async function loadSelectedTeamIntoBuilder() {
   state.teamBuilder.stageAgentIds = normalizeStageAgentIds(state.teamSelection.stageAgentIds || {});
   state.teamBuilder.editingTeamId = state.teamSelection.isCustom ? teamId : "";
   state.teamBuilder.editingIsCustom = !!state.teamSelection.isCustom;
+  state.teamBuilder.dirty = false;
   if (el.teamName) el.teamName.value = String(state.teamSelection.teamName || "").trim();
   if (el.teamDescription) el.teamDescription.value = String(state.teamSelection.description || "").trim();
   renderTeamBuilderSelectors();
@@ -10574,6 +10581,7 @@ function addAgentRowToBuilder() {
     return;
   }
   state.teamBuilder.stageAgentIds[nextStage] = agentId;
+  state.teamBuilder.dirty = true;
   renderTeamBuilderSelectors();
 }
 
