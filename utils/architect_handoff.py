@@ -144,6 +144,31 @@ def _sql_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return _raw_rows(_raw_bucket(raw, "sql_catalog", "php_sql_catalog", "php_sql_catalog_v1"), "statements", "rows", "items")
 
 
+def _sql_source_candidates(row: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    direct = str(row.get("form", "")).strip() or str(row.get("module", "")).strip()
+    if direct:
+        candidates.append(direct)
+    for usage in _as_list(row.get("usage_sites")):
+        if not isinstance(usage, dict):
+            continue
+        external_ref = _as_dict(usage.get("external_ref"))
+        ref = str(external_ref.get("ref", "")).strip()
+        if not ref:
+            continue
+        parts = [part.strip() for part in ref.split("::") if part.strip()]
+        if len(parts) >= 2:
+            candidates.append(parts[-2])
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for candidate in candidates:
+        key = _normalize_name(candidate)
+        if key and key not in seen:
+            seen.add(key)
+            resolved.append(candidate)
+    return resolved
+
+
 def _entity_name_for_table(table_name: str) -> str:
     name = str(table_name or "").strip()
     if not name:
@@ -429,11 +454,17 @@ def _build_domain_model(
     if not entities:
         table_to_services: dict[str, list[str]] = {}
         for row in sql_rows:
-            source_name = _normalize_name(str(row.get("form", "")).strip() or str(row.get("module", "")).strip())
-            service_name = service_by_source.get(source_name)
-            tables = _safe_list_text(row.get("tables", [])) or dossier_tables.get(source_name, [])
+            source_candidates = _sql_source_candidates(row)
+            source_keys = [_normalize_name(candidate) for candidate in source_candidates if _normalize_name(candidate)]
+            service_names = [service_by_source.get(source_key) for source_key in source_keys if service_by_source.get(source_key)]
+            tables = _safe_list_text(row.get("tables", []))
+            if not tables:
+                for source_key in source_keys:
+                    tables.extend(dossier_tables.get(source_key, []))
             for table in tables:
-                if service_name:
+                if not table:
+                    continue
+                for service_name in service_names:
                     table_to_services.setdefault(table, []).append(service_name)
         for table_name, services_for_table in sorted(table_to_services.items()):
             owner = ""

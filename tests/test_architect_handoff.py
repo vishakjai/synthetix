@@ -211,6 +211,37 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertTrue(all(spec.get("interface_refs") for spec in component_specs))
         self.assertTrue(all(spec.get("wbs_refs") for spec in component_specs))
 
+    def test_handoff_derives_entities_from_sql_usage_site_refs(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"]["sql_catalog"] = {
+            "statements": [
+                {
+                    "sql_id": "sql:3",
+                    "tables": ["tbltransaction"],
+                    "usage_sites": [
+                        {"external_ref": {"ref": "(unmapped)::frmdeposit::cmdSave_Click"}},
+                    ],
+                },
+                {
+                    "sql_id": "sql:4",
+                    "tables": ["tblcustomers"],
+                    "usage_sites": [
+                        {"external_ref": {"ref": "BANK::frmcustomer::cmdSave_Click"}},
+                    ],
+                },
+            ]
+        }
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, state)
+        handoff = normalized.get("architect_handoff_package", {})
+        entities = handoff.get("domain_model", {}).get("entities", [])
+        ownership = handoff.get("domain_model", {}).get("data_ownership", [])
+        self.assertTrue(entities)
+        self.assertTrue(ownership)
+        owners = {row.get("owning_service") for row in ownership}
+        self.assertIn("TransactionService", owners)
+        self.assertIn("CustomerService", owners)
+
 
 class ArchitectHandoffApiTest(unittest.TestCase):
     def setUp(self) -> None:
