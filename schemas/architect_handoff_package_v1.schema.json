@@ -467,6 +467,15 @@
           "items": {
             "type": "object"
           }
+        },
+        "sql_reference_rows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "source_evidence_summary": {
+          "type": "object"
         }
       },
       "additionalProperties": false

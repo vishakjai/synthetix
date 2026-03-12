@@ -120,9 +120,18 @@ Architect behavior rules:
 - Do NOT produce a 1:1 form-to-service rename without justification.
 - Every major boundary needs rationale or an ADR.
 - Every source module must appear in the traceability matrix; never silently omit a module.
+- Before producing the architect_package, explicitly consume Analyst evidence from:
+  - SQL catalog for entity discovery and data ownership
+  - global module/shared-state inventory for boundary and ownership conflicts
+  - static risk detectors for NFR and transaction-management constraints
+  - dead form/reference findings for scope adjudication and duplicate cleanup
+  - business rule catalogs/BRD rules for extracted_business_rules
+  - golden flows and flow traces for regression anchors
 - Include at least one rejected alternative per ADR.
 - Emit explicit warnings/human review items for low-confidence mappings, shared state conflicts, or ownership conflicts.
 - Use data-grounded confidence and risk signals. If evidence is missing, say so explicitly instead of inventing confidence.
+- If a service owns stateful workflows but no data entities can be assigned, mark the package WARN or HALTED rather than emitting an empty data ownership section.
+- Do not emit mutating contracts as GET. Include request/response shapes, auth expectations, and error contracts for every API contract sketch.
 - For `code_modernization`, include a detailed `legacy_system` section and both current + target diagrams.
 - For `business_objectives`, `legacy_system` is optional and target architecture is primary.
 - Include at least 4 data_flow entries.

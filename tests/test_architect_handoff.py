@@ -122,21 +122,49 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
                     },
                     "business_rule_catalog": {
                         "rules": [
-                            {"rule_id": "BR-001", "form": "frmcustomer"},
-                            {"rule_id": "BR-002", "form": "frmdeposit"},
+                            {"rule_id": "BR-001", "form": "frmcustomer", "statement": "Customer records require a unique account number."},
+                            {"rule_id": "BR-002", "form": "frmdeposit", "statement": "Deposits must update balance and ledger atomically."},
                         ]
                     },
                     "sql_catalog": {
                         "statements": [
-                            {"form": "frmdeposit", "tables": ["transactions", "accounts"]},
-                            {"form": "frmwithdraw", "tables": ["transactions", "accounts"]},
-                            {"form": "frmcustomer", "tables": ["customers", "accounts"]},
+                            {"form": "frmdeposit", "tables": ["tbltransaction", "tblaccount"], "sql_id": "sql:01"},
+                            {"form": "frmwithdraw", "tables": ["tbltransaction", "tblaccount"], "sql_id": "sql:02"},
+                            {"form": "frmcustomer", "tables": ["tblcustomers", "tblaccount"], "sql_id": "sql:03"},
                         ]
                     },
                     "dependency_inventory": {
                         "dependencies": [
                             {"name": "MSCOMCT2.OCX"},
                             {"name": "DBGRID32.OCX"},
+                        ]
+                    },
+                    "golden_flows": {
+                        "flows": [
+                            {"description": "frmLogin::cmdOK_Click authenticates user and opens customer menu."},
+                            {"description": "frmdeposit::cmdSave_Click records deposit and updates account balance."},
+                        ]
+                    },
+                    "global_module_inventory": {
+                        "variables": [
+                            {"name": "gCustomerID", "used_in_modules": ["frmcustomer", "frmdeposit"], "owning_service": "CustomerService"},
+                            {"name": "gCurrentBalance", "used_in_modules": ["frmdeposit", "frmwithdraw"], "owning_service": "TransactionService"},
+                        ]
+                    },
+                    "static_risk_detectors": {
+                        "findings": [
+                            {"signal": "missing_rollback_guard", "severity": "high", "message": "Deposit and withdrawal writes have no rollback guards."},
+                            {"signal": "select_max_transactionid", "severity": "high", "message": "SELECT MAX(transactionid) used for id generation."},
+                        ]
+                    },
+                    "dead_form_references": {
+                        "references": [
+                            {"reference": "frmcloseacount", "reason": "Potential duplicate/typo of frmcloseaccount."},
+                        ]
+                    },
+                    "connection_string_variants": {
+                        "variants": [
+                            {"name": "bank-mdb", "provider": "OLEDB", "connection_string": "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=bank.mdb;"},
                         ]
                     },
                 },
@@ -166,6 +194,13 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertTrue(handoff.get("interface_contracts"))
         self.assertTrue(handoff.get("brownfield_context", {}).get("regression_test_anchors"))
         self.assertTrue(handoff.get("human_review_queue"))
+        self.assertTrue(handoff.get("domain_model", {}).get("entities"))
+        self.assertTrue(handoff.get("domain_model", {}).get("data_ownership"))
+        self.assertTrue(handoff.get("brownfield_context", {}).get("business_rules"))
+        self.assertGreaterEqual(handoff.get("brownfield_context", {}).get("source_evidence_summary", {}).get("golden_flow_count", 0), 2)
+        first_contract = handoff.get("interface_contracts", [])[0]
+        self.assertIn("request_body", first_contract.get("spec_content", {}))
+        self.assertIn("auth", first_contract.get("spec_content", {}))
 
     def test_component_specs_are_traced_to_contracts_and_wbs(self):
         agent = ArchitectAgent(Mock())

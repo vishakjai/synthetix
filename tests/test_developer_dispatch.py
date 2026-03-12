@@ -37,18 +37,38 @@ class DeveloperDispatchTest(unittest.TestCase):
                     "risk_register": {"risks": [{"risk_id": "RISK-001", "form": "frmdeposit"}]},
                     "business_rule_catalog": {
                         "rules": [
-                            {"rule_id": "BR-001", "form": "frmcustomer"},
-                            {"rule_id": "BR-002", "form": "frmdeposit"},
+                            {"rule_id": "BR-001", "form": "frmcustomer", "statement": "Customer records require a unique account number."},
+                            {"rule_id": "BR-002", "form": "frmdeposit", "statement": "Deposits must update balance and ledger atomically."},
                         ]
                     },
                     "sql_catalog": {
                         "statements": [
-                            {"form": "frmdeposit", "tables": ["transactions", "accounts"]},
-                            {"form": "frmwithdraw", "tables": ["transactions", "accounts"]},
-                            {"form": "frmcustomer", "tables": ["customers", "accounts"]},
+                            {"form": "frmdeposit", "tables": ["tbltransaction", "tblaccount"], "sql_id": "sql:01"},
+                            {"form": "frmwithdraw", "tables": ["tbltransaction", "tblaccount"], "sql_id": "sql:02"},
+                            {"form": "frmcustomer", "tables": ["tblcustomers", "tblaccount"], "sql_id": "sql:03"},
                         ]
                     },
                     "dependency_inventory": {"dependencies": [{"name": "MSCOMCT2.OCX"}]},
+                    "golden_flows": {
+                        "flows": [
+                            {"description": "frmdeposit::cmdSave_Click records deposit and updates account balance."},
+                        ]
+                    },
+                    "global_module_inventory": {
+                        "variables": [
+                            {"name": "gCurrentBalance", "used_in_modules": ["frmdeposit", "frmwithdraw"], "owning_service": "TransactionService"},
+                        ]
+                    },
+                    "static_risk_detectors": {
+                        "findings": [
+                            {"signal": "missing_rollback_guard", "severity": "high", "message": "Deposit and withdrawal writes have no rollback guards."},
+                        ]
+                    },
+                    "connection_string_variants": {
+                        "variants": [
+                            {"name": "bank-mdb", "provider": "OLEDB", "connection_string": "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=bank.mdb;"},
+                        ]
+                    },
                 },
             },
         }
@@ -78,6 +98,10 @@ class DeveloperDispatchTest(unittest.TestCase):
         self.assertTrue(scoped.get("wbs_items"))
         self.assertTrue(scoped.get("brownfield_context", {}).get("regression_test_anchors"))
         self.assertTrue(scoped.get("system_context", {}).get("architectural_decisions"))
+        self.assertTrue(scoped.get("analyst_evidence", {}).get("business_rules"))
+        self.assertTrue(scoped.get("analyst_evidence", {}).get("connection_patterns"))
+        self.assertTrue(scoped.get("analyst_evidence", {}).get("risk_detector_findings"))
+        self.assertTrue(scoped.get("analyst_evidence", {}).get("data_entities"))
 
         contract_owners = {row.get("owner_component") for row in scoped.get("interface_contracts", [])}
         self.assertEqual(contract_owners, {"TransactionService"})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 import json
 from pathlib import Path
 import re
@@ -37,6 +38,7 @@ def validate_architect_handoff_json(payload: dict[str, Any]) -> None:
         store=_schema_store(),
     )
     jsonschema.validate(instance=payload, schema=schema, resolver=resolver)
+    _semantic_validate_architect_handoff(payload)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -60,12 +62,190 @@ def _normalize_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
 
+def _camel_split(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", " ", str(value or "")).strip()
+
+
 def _service_path_slug(service_name: str) -> str:
     return re.sub(r"service$", "", str(service_name or ""), flags=re.IGNORECASE).strip() or "service"
 
 
 def _safe_list_text(values: list[Any]) -> list[str]:
     return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _raw_bucket(raw: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        value = raw.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _raw_rows(bucket: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
+    for key in keys:
+        rows = bucket.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _risk_detector_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(
+        _raw_bucket(raw, "static_risk_detectors", "static_risk_detector_findings", "risk_detector_findings"),
+        "findings",
+        "rows",
+        "detectors",
+    )
+
+
+def _golden_flow_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(
+        _raw_bucket(raw, "golden_flows", "golden_flow_inventory", "golden_flow_catalog"),
+        "flows",
+        "rows",
+        "anchors",
+    )
+
+
+def _dead_ref_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(
+        _raw_bucket(raw, "dead_form_references", "dead_references", "orphaned_references"),
+        "references",
+        "rows",
+        "items",
+    )
+
+
+def _connection_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(
+        _raw_bucket(raw, "connection_string_variants", "connection_variants"),
+        "variants",
+        "rows",
+        "items",
+    )
+
+
+def _global_state_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(
+        _raw_bucket(raw, "global_module_inventory", "module_global_inventory", "global_state_inventory"),
+        "variables",
+        "rows",
+        "globals",
+        "items",
+    )
+
+
+def _business_rule_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(_raw_bucket(raw, "business_rule_catalog", "brd_business_rules"), "rules", "rows", "items")
+
+
+def _sql_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    return _raw_rows(_raw_bucket(raw, "sql_catalog", "php_sql_catalog", "php_sql_catalog_v1"), "statements", "rows", "items")
+
+
+def _entity_name_for_table(table_name: str) -> str:
+    name = str(table_name or "").strip()
+    if not name:
+        return ""
+    name = re.sub(r"^tbl", "", name, flags=re.IGNORECASE)
+    return _camel_split("".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", name) if part))
+
+
+def _is_mutating_operation(operation_name: str, path: str, replaces: list[str]) -> bool:
+    text = " ".join([operation_name or "", path or "", " ".join(replaces)]).lower()
+    return any(
+        token in text
+        for token in (
+            "create",
+            "add",
+            "save",
+            "update",
+            "close",
+            "delete",
+            "remove",
+            "deposit",
+            "withdraw",
+            "expire",
+            "post",
+        )
+    )
+
+
+def _infer_http_method(operation_name: str, path: str, replaces: list[str], existing: str) -> str:
+    current = str(existing or "").strip().upper()
+    if current and current != "GET":
+        return current
+    if not _is_mutating_operation(operation_name, path, replaces):
+        return current or "GET"
+    lowered = " ".join([operation_name or "", path or "", " ".join(replaces)]).lower()
+    if any(token in lowered for token in ("delete", "remove")):
+        return "DELETE"
+    if any(token in lowered for token in ("update", "close")):
+        return "PUT"
+    return "POST"
+
+
+def _group_rules_by_scope(rules: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for rule in rules:
+        scope = str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip() or str(rule.get("service", "")).strip()
+        grouped.setdefault(_normalize_name(scope), []).append(rule)
+    return grouped
+
+
+def _similar_name_pairs(values: list[str]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for idx, left in enumerate(values):
+        for right in values[idx + 1 :]:
+            if left == right:
+                continue
+            if SequenceMatcher(None, _normalize_name(left), _normalize_name(right)).ratio() >= 0.92:
+                pairs.append((left, right))
+    return pairs
+
+
+def _semantic_validate_architect_handoff(payload: dict[str, Any]) -> None:
+    domain_model = _as_dict(payload.get("domain_model"))
+    brownfield = _as_dict(payload.get("brownfield_context"))
+    summary = _as_dict(brownfield.get("source_evidence_summary"))
+    contracts = _as_list(payload.get("interface_contracts"))
+    components = _as_list(payload.get("component_specs"))
+
+    sql_count = int(summary.get("sql_statement_count", 0) or 0)
+    business_rule_count = int(summary.get("business_rule_count", 0) or 0)
+    golden_flow_count = int(summary.get("golden_flow_count", 0) or 0)
+    entities = _as_list(domain_model.get("entities"))
+    ownership = _as_list(domain_model.get("data_ownership"))
+    rules = _as_list(brownfield.get("business_rules"))
+    anchors = _as_list(brownfield.get("regression_test_anchors"))
+
+    if sql_count > 0 and not entities:
+        raise jsonschema.ValidationError("architect handoff invalid: SQL evidence exists but domain_model.entities is empty")
+    if sql_count > 0 and not ownership:
+        raise jsonschema.ValidationError("architect handoff invalid: SQL evidence exists but data ownership is empty")
+    if business_rule_count > 0 and not rules:
+        raise jsonschema.ValidationError("architect handoff invalid: upstream business rules exist but brownfield_context.business_rules is empty")
+    if golden_flow_count > 0 and not anchors:
+        raise jsonschema.ValidationError("architect handoff invalid: upstream golden flows exist but regression_test_anchors is empty")
+
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        spec = _as_dict(contract.get("spec_content"))
+        method = str(spec.get("method", "")).strip().upper()
+        if _is_mutating_operation(str(spec.get("name", "")), str(spec.get("path", "")), _safe_list_text(spec.get("replaces", []))) and method == "GET":
+            raise jsonschema.ValidationError(
+                f"architect handoff invalid: mutating operation emitted as GET for contract {contract.get('contract_id', '')}"
+            )
+
+    if any(
+        _normalize_name(str(component.get("component_name", "")).strip()) == "legacycoreservice"
+        and len(_as_list(component.get("module_structure"))) >= 10
+        for component in components
+        if isinstance(component, dict)
+    ):
+        raise jsonschema.ValidationError("architect handoff invalid: LegacyCoreService remains an unresolved dumping ground")
 
 
 def build_architect_handoff_package(
@@ -91,6 +271,15 @@ def build_architect_handoff_package(
     artifact_id = f"ahp_{_slug(engagement_id)}"
     services = parsed.get("services", []) if isinstance(parsed.get("services"), list) else []
     service_lookup = {str(svc.get("name", "")).strip(): svc for svc in services if isinstance(svc, dict) and str(svc.get("name", "")).strip()}
+    source_evidence_summary = {
+        "business_rule_count": len(_business_rule_rows(raw)),
+        "sql_statement_count": len(_sql_rows(raw)),
+        "golden_flow_count": len(_golden_flow_rows(raw)),
+        "risk_detector_count": len(_risk_detector_rows(raw)),
+        "dead_reference_count": len(_dead_ref_rows(raw)),
+        "global_state_count": len(_global_state_rows(raw)),
+        "connection_variant_count": len(_connection_rows(raw)),
+    }
     component_rows = _build_component_specs(traceability, api_contracts, migration_plan, risk_register, adrs)
     payload = {
         "artifact_type": "architect_handoff_package_v1",
@@ -144,11 +333,11 @@ def build_architect_handoff_package(
                 if isinstance(adr, dict)
             ],
         },
-        "domain_model": _build_domain_model(ownership, services, legacy),
-        "interface_contracts": _build_interface_contracts(api_contracts, service_lookup),
+        "domain_model": _build_domain_model(ownership, services, legacy, raw, traceability),
+        "interface_contracts": _build_interface_contracts(api_contracts, service_lookup, raw, component_rows),
         "component_specs": component_rows,
-        "nfr_constraints": _build_nfr_constraints(parsed),
-        "brownfield_context": _build_brownfield_context(parsed, raw, traceability),
+        "nfr_constraints": _build_nfr_constraints(parsed, raw),
+        "brownfield_context": _build_brownfield_context(parsed, raw, traceability, source_evidence_summary),
         "coding_policy": _build_coding_policy(state),
         "wbs": _build_wbs(migration_plan, traceability),
         "scaffolding": _build_scaffolding(parsed),
@@ -165,7 +354,7 @@ def build_architect_handoff_package(
             },
             "contract_coverage": {
                 "components": len(component_rows),
-                "contracts": len(_build_interface_contracts(api_contracts, service_lookup)),
+                "contracts": len(_build_interface_contracts(api_contracts, service_lookup, raw, component_rows)),
                 "review_items": len(review_queue),
             },
         },
@@ -186,11 +375,30 @@ def build_architect_handoff_package(
     return payload
 
 
-def _build_domain_model(ownership: dict[str, Any], services: list[dict[str, Any]], legacy: dict[str, Any]) -> dict[str, Any]:
+def _build_domain_model(
+    ownership: dict[str, Any],
+    services: list[dict[str, Any]],
+    legacy: dict[str, Any],
+    raw: dict[str, Any],
+    traceability: dict[str, Any],
+) -> dict[str, Any]:
     entities = []
     data_ownership = []
     relationships = []
     bounded_contexts = []
+    sql_rows = _sql_rows(raw)
+    form_dossiers = _raw_rows(_raw_bucket(raw, "form_dossier"), "dossiers", "forms", "rows")
+    dossier_tables = {
+        _normalize_name(str(row.get("form_name", "")).strip() or str(row.get("base_form_name", "")).strip()): _safe_list_text(row.get("db_tables", []))
+        for row in form_dossiers
+        if isinstance(row, dict)
+    }
+    service_by_source = {
+        _normalize_name(str(_as_dict(mapping.get("source")).get("module", "")).strip()): str(_as_dict(mapping.get("target")).get("service", "")).strip()
+        for mapping in _as_list(traceability.get("mappings"))
+        if isinstance(mapping, dict) and str(_as_dict(mapping.get("target")).get("service", "")).strip()
+    }
+    entity_seen: set[str] = set()
     for entity in _as_list(ownership.get("entities")):
         if not isinstance(entity, dict):
             continue
@@ -216,6 +424,59 @@ def _build_domain_model(ownership: dict[str, Any], services: list[dict[str, Any]
                 "from": owner,
                 "to": reader,
             })
+        if name:
+            entity_seen.add(_normalize_name(name))
+    if not entities:
+        table_to_services: dict[str, list[str]] = {}
+        for row in sql_rows:
+            source_name = _normalize_name(str(row.get("form", "")).strip() or str(row.get("module", "")).strip())
+            service_name = service_by_source.get(source_name)
+            tables = _safe_list_text(row.get("tables", [])) or dossier_tables.get(source_name, [])
+            for table in tables:
+                if service_name:
+                    table_to_services.setdefault(table, []).append(service_name)
+        for table_name, services_for_table in sorted(table_to_services.items()):
+            owner = ""
+            if services_for_table:
+                owner = max(set(services_for_table), key=services_for_table.count)
+            readers = sorted({service for service in services_for_table if service and service != owner})
+            entity_name = _entity_name_for_table(table_name) or table_name
+            entity_key = _normalize_name(entity_name)
+            if entity_key in entity_seen:
+                continue
+            entity_seen.add(entity_key)
+            entities.append({
+                "entity_name": entity_name,
+                "legacy_tables": [table_name],
+                "owner": owner,
+                "readers": readers,
+                "migration_notes": f"Derived from SQL catalog references to {table_name}.",
+            })
+            if owner:
+                data_ownership.append({
+                    "entity_name": entity_name,
+                    "owning_service": owner,
+                    "read_services": readers,
+                })
+            for reader in readers:
+                relationships.append({
+                    "type": "shared-read",
+                    "entity": entity_name,
+                    "from": owner,
+                    "to": reader,
+                })
+    for variable in _global_state_rows(raw):
+        name = str(variable.get("name", "")).strip() or str(variable.get("variable", "")).strip()
+        owning_service = str(variable.get("owning_service", "")).strip()
+        used_in = _safe_list_text(variable.get("used_in_modules", []))
+        if not name:
+            continue
+        relationships.append({
+            "type": "shared-state",
+            "entity": name,
+            "from": owning_service or "legacy-global-state",
+            "to": ", ".join(used_in) if used_in else "multiple-modules",
+        })
     for service in services:
         if not isinstance(service, dict):
             continue
@@ -246,8 +507,18 @@ def _build_domain_model(ownership: dict[str, Any], services: list[dict[str, Any]
     }
 
 
-def _build_interface_contracts(api_contracts: dict[str, Any], service_lookup: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_interface_contracts(
+    api_contracts: dict[str, Any],
+    service_lookup: dict[str, dict[str, Any]],
+    raw: dict[str, Any],
+    component_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     contracts = []
+    component_by_service = {
+        str(component.get("component_name", "")).strip(): component
+        for component in component_rows
+        if isinstance(component, dict) and str(component.get("component_name", "")).strip()
+    }
     for service in _as_list(api_contracts.get("services")):
         if not isinstance(service, dict):
             continue
@@ -258,6 +529,12 @@ def _build_interface_contracts(api_contracts: dict[str, Any], service_lookup: di
             if not isinstance(operation, dict):
                 continue
             contract_id = f"contract_{_slug(service_name)}_{idx:02d}"
+            replaces = _safe_list_text(operation.get("replaces", []))
+            op_name = str(operation.get("name", "")).strip()
+            path = str(operation.get("path", "")).strip() or f"/{_service_path_slug(service_name)}"
+            method = _infer_http_method(op_name, path, replaces, str(operation.get("method", "")).strip())
+            mutating = method in {"POST", "PUT", "PATCH", "DELETE"}
+            component = component_by_service.get(service_name, {})
             contracts.append({
                 "contract_id": contract_id,
                 "contract_type": "internal_api",
@@ -265,16 +542,32 @@ def _build_interface_contracts(api_contracts: dict[str, Any], service_lookup: di
                 "consumers": _infer_consumers(service_name, service_lookup),
                 "spec_format": "draft-json",
                 "spec_content": {
-                    "name": str(operation.get("name", "")).strip(),
-                    "method": str(operation.get("method", "")).strip() or "GET",
-                    "path": str(operation.get("path", "")).strip() or f"/{_service_path_slug(service_name)}",
-                    "replaces": _safe_list_text(operation.get("replaces", [])),
+                    "name": op_name,
+                    "method": method,
+                    "path": path,
+                    "replaces": replaces,
                     "notes": str(operation.get("notes", "")).strip(),
+                    "request_body": {
+                        "required": mutating,
+                        "shape": f"{service_name}.{op_name or 'operation'}Request",
+                    },
+                    "response_body": {
+                        "shape": f"{service_name}.{op_name or 'operation'}Response",
+                    },
+                    "error_contract": {
+                        "shape": "problem-details",
+                        "codes": ["VALIDATION_ERROR", "NOT_FOUND", "CONFLICT"] if mutating else ["NOT_FOUND", "UNAUTHORIZED"],
+                    },
+                    "auth": {
+                        "required": service_name != "AuthenticationService",
+                        "policy": "rbac-authenticated" if service_name != "AuthenticationService" else "anonymous-login-bootstrap",
+                    },
+                    "traceability_refs": _safe_list_text(component.get("traceability_refs", [])),
                 },
                 "auth_model": "RBAC with centralized authentication" if service_name != "AuthenticationService" else "Credential validation and session bootstrap",
                 "error_contract": {
                     "shape": "problem-details",
-                    "retriable": False,
+                    "retriable": False if mutating else True,
                 },
                 "versioning_strategy": "path-versioned-draft",
             })
@@ -303,8 +596,14 @@ def _build_component_specs(
         if isinstance(row, dict) and str(row.get("service", "")).strip()
     }
     contract_refs_by_service: dict[str, list[str]] = {}
-    for contract in _build_interface_contracts(api_contracts, {}):
-        contract_refs_by_service.setdefault(str(contract.get("owner_component", "")), []).append(str(contract.get("contract_id", "")))
+    for service in _as_list(api_contracts.get("services")):
+        if not isinstance(service, dict):
+            continue
+        service_name = str(service.get("service", "")).strip()
+        if not service_name:
+            continue
+        for idx, _operation in enumerate(_as_list(service.get("operations")), start=1):
+            contract_refs_by_service.setdefault(service_name, []).append(f"contract_{_slug(service_name)}_{idx:02d}")
     adr_refs_by_service: dict[str, list[str]] = {}
     for adr in adrs:
         if not isinstance(adr, dict):
@@ -374,10 +673,15 @@ def _component_patterns(service_name: str) -> list[str]:
     return patterns
 
 
-def _build_nfr_constraints(parsed: dict[str, Any]) -> dict[str, Any]:
+def _build_nfr_constraints(parsed: dict[str, Any], raw: dict[str, Any]) -> dict[str, Any]:
     security = _as_dict(parsed.get("security"))
     scalability = _as_dict(parsed.get("scalability"))
     infrastructure = _as_dict(parsed.get("infrastructure"))
+    risk_rows = _risk_detector_rows(raw)
+    transaction_risks = [
+        row for row in risk_rows
+        if any(token in str(row).lower() for token in ("rollback", "transaction", "select max", "concurrency", "sql injection"))
+    ]
     return {
         "performance": [
             "Preserve acceptable interactive latency for modernized user workflows.",
@@ -389,11 +693,17 @@ def _build_nfr_constraints(parsed: dict[str, Any]) -> dict[str, Any]:
             str(security.get("authorization", "")).strip(),
             str(security.get("api_security", "")).strip(),
             str(security.get("secrets_management", "")).strip(),
+            *[
+                f"Mitigate legacy detector finding: {str(row.get('title', '')).strip() or str(row.get('signal', '')).strip() or str(row.get('message', '')).strip()}"
+                for row in transaction_risks[:3]
+                if isinstance(row, dict)
+            ],
         ],
         "resilience": [
             "Support staged strangler delivery with rollback-aware phase exits.",
             str(scalability.get("strategy", "")).strip(),
             "Protect user-facing traffic from background migration workloads.",
+            "Explicit transaction boundaries and retry-safe ID generation are required for transactional services." if transaction_risks else "",
         ],
         "observability": [
             str(infrastructure.get("monitoring", "")).strip(),
@@ -403,9 +713,23 @@ def _build_nfr_constraints(parsed: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_brownfield_context(parsed: dict[str, Any], raw: dict[str, Any], traceability: dict[str, Any]) -> dict[str, Any]:
+def _build_brownfield_context(
+    parsed: dict[str, Any],
+    raw: dict[str, Any],
+    traceability: dict[str, Any],
+    source_evidence_summary: dict[str, int],
+) -> dict[str, Any]:
     legacy = _as_dict(parsed.get("legacy_system"))
     regression_anchors = []
+    golden_flows = _golden_flow_rows(raw)
+    for idx, flow in enumerate(golden_flows, start=1):
+        description = str(flow.get("description", "")).strip() or str(flow.get("handler", "")).strip() or str(flow.get("entry_point", "")).strip()
+        if description:
+            regression_anchors.append({
+                "anchor_id": f"anchor_flow_{idx:02d}",
+                "type": "golden_flow",
+                "description": description,
+            })
     for idx, step in enumerate(_safe_list_text(legacy.get("key_logic_steps", [])), start=1):
         regression_anchors.append({
             "anchor_id": f"anchor_{idx:02d}",
@@ -425,29 +749,71 @@ def _build_brownfield_context(parsed: dict[str, Any], raw: dict[str, Any], trace
             })
     dependencies = _safe_list_text(dep.get("name") for dep in _as_list(_as_dict(raw.get("dependency_inventory")).get("dependencies")) if isinstance(dep, dict))
     risk_ids = _safe_list_text(row.get("risk_id") for row in _as_list(_as_dict(raw.get("risk_register")).get("risks")) if isinstance(row, dict))
+    business_rules = [
+        {
+            "rule_id": str(rule.get("rule_id", "")).strip(),
+            "scope": str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip() or "legacy",
+            "statement": str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip(),
+            "error_message": str(rule.get("error_message", "")).strip(),
+        }
+        for rule in _business_rule_rows(raw)
+        if isinstance(rule, dict) and str(rule.get("rule_id", "")).strip()
+    ]
+    dead_refs = [
+        {
+            "reference": str(row.get("reference", "")).strip() or str(row.get("name", "")).strip(),
+            "reason": str(row.get("reason", "")).strip() or "Legacy reference unresolved.",
+        }
+        for row in _dead_ref_rows(raw)
+        if isinstance(row, dict)
+    ]
+    connection_patterns = [
+        {
+            "variant": str(row.get("name", "")).strip() or str(row.get("connection_name", "")).strip() or f"variant_{idx+1}",
+            "provider": str(row.get("provider", "")).strip(),
+            "notes": str(row.get("notes", "")).strip() or str(row.get("connection_string", "")).strip(),
+        }
+        for idx, row in enumerate(_connection_rows(raw))
+        if isinstance(row, dict)
+    ]
+    risk_detector_findings = [
+        {
+            "signal": str(row.get("signal", "")).strip() or str(row.get("title", "")).strip(),
+            "severity": str(row.get("severity", "")).strip() or "medium",
+            "detail": str(row.get("message", "")).strip() or str(row.get("detail", "")).strip(),
+        }
+        for row in _risk_detector_rows(raw)
+        if isinstance(row, dict)
+    ]
     return {
         "legacy_behavior_map": {
             "summary": str(legacy.get("current_logic_summary", "")).strip(),
             "key_logic_steps": _safe_list_text(legacy.get("key_logic_steps", [])),
         },
-        "business_rules": [
+        "business_rules": business_rules,
+        "sql_reference_rows": [
             {
-                "rule_id": str(rule.get("rule_id", "")).strip(),
-                "scope": str(rule.get("form", "")).strip() or "legacy",
+                "source_module": str(row.get("form", "")).strip() or str(row.get("module", "")).strip(),
+                "tables": _safe_list_text(row.get("tables", [])),
+                "sql_id": str(row.get("sql_id", "")).strip(),
             }
-            for rule in _as_list(_as_dict(raw.get("business_rule_catalog")).get("rules"))
-            if isinstance(rule, dict) and str(rule.get("rule_id", "")).strip()
+            for row in _sql_rows(raw)
+            if isinstance(row, dict)
         ],
         "technical_debt_policy": {
-            "preserve": [],
+            "preserve": [row["reference"] for row in dead_refs[:3]],
             "eliminate": dependencies,
-            "notes": f"Analyst surfaced {len(risk_ids)} explicit risk signal(s) to address during migration.",
+            "notes": f"Analyst surfaced {len(risk_ids)} explicit risk signal(s), {len(risk_detector_findings)} static detector finding(s), and {len(dead_refs)} unresolved legacy reference(s).",
+            "dead_references": dead_refs,
+            "connection_patterns": connection_patterns,
+            "risk_detector_findings": risk_detector_findings,
         },
         "data_migration_strategy": {
             "approach": "Strangler-compatible database transition with explicit ownership and parity checkpoints.",
             "target": "Operational database owned by target services.",
         },
         "regression_test_anchors": regression_anchors,
+        "source_evidence_summary": source_evidence_summary,
     }
 
 

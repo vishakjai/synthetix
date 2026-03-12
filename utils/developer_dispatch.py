@@ -49,6 +49,12 @@ def build_component_scoped_handoff(
         spec for spec in component_specs
         if isinstance(spec, dict) and _normalize_name(spec.get("component_name")) in names
     ]
+    source_module_names = {
+        _normalize_name(row.get("source_module"))
+        for spec in selected_specs
+        for row in _as_list(spec.get("module_structure"))
+        if isinstance(row, dict)
+    }
     interface_refs = {
         str(ref).strip()
         for spec in selected_specs
@@ -109,6 +115,34 @@ def build_component_scoped_handoff(
             or not str(rule.get("component", "")).strip()
         )
     ]
+    technical_debt_policy = _as_dict(brownfield.get("technical_debt_policy"))
+    connection_patterns = [
+        row for row in _as_list(technical_debt_policy.get("connection_patterns"))
+        if isinstance(row, dict)
+    ]
+    risk_detector_findings = [
+        row for row in _as_list(technical_debt_policy.get("risk_detector_findings"))
+        if isinstance(row, dict)
+    ]
+    domain_model = _as_dict(package.get("domain_model"))
+    data_entities = [
+        row for row in _as_list(domain_model.get("entities"))
+        if isinstance(row, dict) and (
+            _normalize_name(row.get("owner")) in names
+            or any(_normalize_name(reader) in names for reader in _as_list(row.get("readers")))
+        )
+    ]
+    scoped_data_ownership = [
+        row for row in _as_list(domain_model.get("data_ownership"))
+        if isinstance(row, dict) and (
+            _normalize_name(row.get("owning_service")) in names
+            or any(_normalize_name(reader) in names for reader in _as_list(row.get("read_services")))
+        )
+    ]
+    scoped_sql_rows = [
+        row for row in _as_list(brownfield.get("sql_reference_rows"))
+        if isinstance(row, dict) and _normalize_name(row.get("source_module")) in source_module_names
+    ]
 
     return {
         "artifact_type": "component_scoped_handoff_v1",
@@ -136,5 +170,23 @@ def build_component_scoped_handoff(
         "validation_status": validation_status,
         "estimation_handoff": estimation_handoff,
         "human_review_queue": selected_review,
-        "data_ownership": _as_list(domain_model.get("data_ownership")),
+        "data_ownership": scoped_data_ownership,
+        "analyst_evidence": {
+            "business_rules": business_rules,
+            "regression_test_anchors": regression_anchors,
+            "connection_patterns": connection_patterns,
+            "risk_detector_findings": risk_detector_findings,
+            "data_entities": data_entities,
+            "sql_reference_rows": scoped_sql_rows,
+            "dependency_replacements": _safe_dependency_replacements(technical_debt_policy),
+        },
     }
+
+
+def _safe_dependency_replacements(technical_debt_policy: dict[str, Any]) -> list[dict[str, Any]]:
+    replacements = []
+    for value in _as_list(technical_debt_policy.get("eliminate")):
+        name = str(value).strip()
+        if name:
+            replacements.append({"legacy_dependency": name, "replacement_strategy": "Eliminate or replace during modernization."})
+    return replacements
