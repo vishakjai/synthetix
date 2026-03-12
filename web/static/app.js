@@ -13979,9 +13979,24 @@ async function runControl(action, payload = {}) {
     return;
   }
   try {
-    await api(`/api/runs/${encodeURIComponent(runId)}/${action}`, payload);
-    await syncRun(runId);
+    const result = await api(`/api/runs/${encodeURIComponent(runId)}/${action}`, payload);
+    await fetchRunSnapshot(runId);
+    if (action === "rerun" || action === "resume") {
+      startStreaming(runId);
+    }
     await refreshRunHistory();
+    if (action === "rerun") {
+      const stageNumber = Number(payload?.stage || 0);
+      const label = stageNumber ? stageDisplayLabel(state.currentRun, stageNumber) : "selected stage";
+      setGlobalSearchStatus(`Rerun accepted for ${label}.`);
+    } else if (action === "pause") {
+      setGlobalSearchStatus("Run paused.");
+    } else if (action === "resume") {
+      setGlobalSearchStatus("Run resumed.");
+    } else if (action === "abort") {
+      setGlobalSearchStatus("Run aborted.");
+    }
+    return result;
   } catch (err) {
     alert(`${action} failed: ${err.message}`);
   }
@@ -14002,16 +14017,18 @@ async function rerunSelectedStage() {
     alert("No active team steps are available for rerun.");
     return;
   }
-  const suggestedStep = Math.max(1, stageDisplayIndex(run, Number(state.selectedStage || run.current_stage || activeAgents[0]?.stage || 1)));
-  const input = window.prompt(`Rerun from step number (1-${activeAgents.length}):`, String(Math.min(activeAgents.length, suggestedStep)));
-  const step = Number(input || "");
-  if (!Number.isFinite(step) || step < 1 || step > activeAgents.length) {
-    alert(`Step must be between 1 and ${activeAgents.length}.`);
-    return;
-  }
-  const stage = stageForDisplayStep(run, step);
+  const selectedStage = Number(state.selectedStage || 0);
+  const fallbackStage = Number(run.current_stage || activeAgents[0]?.stage || 0);
+  const stage = activeAgents.some((agent) => Number(agent.stage) === selectedStage)
+    ? selectedStage
+    : fallbackStage;
   if (!stage) {
     alert("Unable to resolve selected step to an active stage.");
+    return;
+  }
+  const label = stageDisplayLabel(run, stage);
+  const confirmed = window.confirm(`Rerun ${label} (${activeAgents.find((agent) => Number(agent.stage) === stage)?.name || `Stage ${stage}`}) from its previous checkpoint?`);
+  if (!confirmed) {
     return;
   }
   await runControl("rerun", { stage });
