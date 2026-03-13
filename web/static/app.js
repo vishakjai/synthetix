@@ -496,6 +496,8 @@ const el = {
   approvalPanel: document.getElementById("approval-panel"),
   approvalTitle: document.getElementById("approval-title"),
   approvalMessage: document.getElementById("approval-message"),
+  approvalDiscoverReview: document.getElementById("approval-discover-review"),
+  approvalDiscoverReviewItems: document.getElementById("approval-discover-review-items"),
   approvalDeveloperDefaults: document.getElementById("approval-developer-defaults"),
   approvalDeveloperDefaultsSummary: document.getElementById("approval-developer-defaults-summary"),
   approvalDeveloperOverrideToggle: document.getElementById("approval-developer-override-toggle"),
@@ -676,6 +678,10 @@ const state = {
     handoffByRun: {},
     scopedByRunAndComponent: {},
   },
+  discoverReviewDraft: {
+    byRun: {},
+    savingRunId: "",
+  },
   teamBuilder: {
     stageAgentIds: {},
     enabledStages: {},
@@ -748,6 +754,115 @@ async function apiMultipart(path, formData, method = "POST") {
     throw new Error(data.error || `HTTP ${res.status}`);
   }
   return data;
+}
+
+function discoverReviewStateForRun(runId) {
+  if (!runId) return {};
+  if (!state.discoverReviewDraft.byRun[runId]) {
+    state.discoverReviewDraft.byRun[runId] = {};
+  }
+  return state.discoverReviewDraft.byRun[runId];
+}
+
+function seedDiscoverReviewDraft(runId, pending) {
+  if (!runId || !pending || pending.type !== "discover_review") return;
+  const draft = discoverReviewStateForRun(runId);
+  const persisted = (state.currentRun?.pipeline_state?.discover_review && typeof state.currentRun.pipeline_state.discover_review === "object")
+    ? state.currentRun.pipeline_state.discover_review
+    : {};
+  const resolved = new Set(
+    Array.isArray(persisted.resolved_ids)
+      ? persisted.resolved_ids.map((v) => String(v || "").trim()).filter(Boolean)
+      : []
+  );
+  const waived = new Set(
+    Array.isArray(persisted.waived_ids)
+      ? persisted.waived_ids.map((v) => String(v || "").trim()).filter(Boolean)
+      : []
+  );
+  const notesById = (persisted.notes_by_id && typeof persisted.notes_by_id === "object")
+    ? persisted.notes_by_id
+    : {};
+  const blockers = Array.isArray(pending.unresolved_blocking) ? pending.unresolved_blocking : [];
+  blockers.forEach((row) => {
+    const id = String(row?.id || "").trim();
+    if (!id || draft[id]) return;
+    let action = "open";
+    if (resolved.has(id)) action = "resolved";
+    else if (waived.has(id)) action = "waived";
+    draft[id] = {
+      action,
+      note: String(notesById[id] || "").trim(),
+    };
+  });
+}
+
+function renderDiscoverReviewPanel(pending) {
+  if (!el.approvalDiscoverReview || !el.approvalDiscoverReviewItems) return;
+  const isDiscover = pending?.type === "discover_review";
+  el.approvalDiscoverReview.classList.toggle("hidden", !isDiscover);
+  if (!isDiscover) {
+    el.approvalDiscoverReviewItems.innerHTML = "";
+    return;
+  }
+  const runId = state.currentRunId || state.currentRun?.run_id || "";
+  seedDiscoverReviewDraft(runId, pending);
+  const draft = discoverReviewStateForRun(runId);
+  const blockers = Array.isArray(pending.unresolved_blocking) ? pending.unresolved_blocking : [];
+  if (!blockers.length) {
+    el.approvalDiscoverReviewItems.innerHTML = `<div class="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">No unresolved blocking items.</div>`;
+    return;
+  }
+  el.approvalDiscoverReviewItems.innerHTML = blockers.map((row) => {
+    const id = String(row?.id || "").trim();
+    const title = String(row?.title || row?.detail || id || "Blocker").trim();
+    const detail = String(row?.detail || "").trim();
+    const current = draft[id] || { action: "open", note: "" };
+    const action = current.action || "open";
+    const note = escapeHtml(current.note || "");
+    return `
+      <div class="rounded-md border border-amber-200 bg-amber-50/40 p-3" data-review-id="${escapeHtml(id)}">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">${escapeHtml(id || "BLOCKER")}</div>
+            <div class="mt-1 text-sm font-semibold text-slate-900">${escapeHtml(title)}</div>
+            ${detail ? `<div class="mt-1 text-xs text-slate-700">${escapeHtml(detail)}</div>` : ""}
+          </div>
+          <div class="min-w-[160px]">
+            <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">Action</label>
+            <select class="discover-review-action w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" data-review-action="${escapeHtml(id)}">
+              <option value="open"${action === "open" ? " selected" : ""}>Leave open</option>
+              <option value="resolved"${action === "resolved" ? " selected" : ""}>Resolve</option>
+              <option value="waived"${action === "waived" ? " selected" : ""}>Waive</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-amber-900">Notes</label>
+          <textarea class="discover-review-note w-full rounded-md border border-amber-300 bg-white px-2 py-1.5 text-xs text-slate-900" rows="2" data-review-note="${escapeHtml(id)}" placeholder="Optional rationale or resolution note">${note}</textarea>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  el.approvalDiscoverReviewItems.querySelectorAll("[data-review-action]").forEach((node) => {
+    node.addEventListener("change", (evt) => {
+      const id = String(evt.target?.getAttribute("data-review-action") || "").trim();
+      if (!id) return;
+      const bucket = discoverReviewStateForRun(runId);
+      const current = bucket[id] || { action: "open", note: "" };
+      bucket[id] = { ...current, action: String(evt.target.value || "open") };
+    });
+  });
+  el.approvalDiscoverReviewItems.querySelectorAll("[data-review-note]").forEach((node) => {
+    node.addEventListener("input", (evt) => {
+      const id = String(evt.target?.getAttribute("data-review-note") || "").trim();
+      if (!id) return;
+      const bucket = discoverReviewStateForRun(runId);
+      const current = bucket[id] || { action: "open", note: "" };
+      bucket[id] = { ...current, note: String(evt.target.value || "") };
+    });
+  });
 }
 
 async function apiWithNetworkRetry(path, payload, method = "POST", options = {}) {
@@ -2023,7 +2138,9 @@ function buildAnalystTechReqMarkdown(output, options = {}) {
   const sourceFilesScanned = Number(inventory.source_files_scanned || 0);
   const strategy = brief.recommended_strategy || {};
   const decisions = brief.decisions_required || {};
-  const backlog = report.delivery_spec?.backlog?.items || [];
+  const backlog = Array.isArray(report?.delivery_spec?.backlog?.items)
+    ? report.delivery_spec.backlog.items
+    : [];
   const testing = report.delivery_spec?.testing_and_evidence || {};
   const qaReport = (report.qa_report_v1 && typeof report.qa_report_v1 === "object")
     ? report.qa_report_v1
@@ -10116,7 +10233,7 @@ function estimateWorkstreamsHtml(summary) {
   const rows = Array.isArray(summary?.estimate?.workstreams) ? summary.estimate.workstreams : [];
   if (!rows.length) return "No workstreams loaded.";
   return rows.map((stream) => {
-    const items = Array.isArray(stream.items) ? stream.items : [];
+    const items = Array.isArray(stream?.items) ? stream.items : [];
     const itemRows = items.map((item) => `<tr class="border-b border-slate-200">
         <td class="py-2 pr-3 font-semibold text-slate-900">${escapeHtml(item.title || item.wbs_item_id || "")}</td>
         <td class="py-2 pr-3">${escapeHtml(String(item.hours_p50 ?? "0"))}h</td>
@@ -12278,7 +12395,7 @@ function renderAnalystReadable(output) {
   const inventory = glance.inventory_summary || {};
   const strategy = brief.recommended_strategy || {};
   const delivery = report.delivery_spec || {};
-  const backlog = Array.isArray(delivery.backlog?.items) ? delivery.backlog.items : [];
+  const backlog = Array.isArray(delivery?.backlog?.items) ? delivery.backlog.items : [];
   const testing = delivery.testing_and_evidence || {};
   const openQuestions = Array.isArray(delivery.open_questions) ? delivery.open_questions : [];
   const appendix = report.appendix || {};
@@ -14500,7 +14617,7 @@ async function runControl(action, payload = {}) {
   try {
     const result = await api(`/api/runs/${encodeURIComponent(runId)}/${action}`, payload);
     await fetchRunSnapshot(runId);
-    if (action === "rerun" || action === "resume") {
+    if (action === "rerun" || action === "resume" || action === "approve" || action === "abort") {
       startStreaming(runId);
       scheduleRunBootstrapRefresh(runId);
     }
@@ -14576,6 +14693,7 @@ function renderApprovalPanel() {
   const pending = state.currentRun?.pending_approval;
   if (!pending) {
     el.approvalPanel.classList.add("hidden");
+    if (el.approvalDiscoverReview) el.approvalDiscoverReview.classList.add("hidden");
     return;
   }
   el.approvalPanel.classList.remove("hidden");
@@ -14628,6 +14746,7 @@ function renderApprovalPanel() {
       blockerSummary,
     ].filter(Boolean).join(" | ");
   }
+  renderDiscoverReviewPanel(pending);
 }
 
 function renderRun() {
@@ -14849,34 +14968,42 @@ function scheduleRunBootstrapRefresh(runId) {
   }
   let attempts = 0;
   const maxAttempts = 45;
-  state.runBootstrapPollTimer = setInterval(async () => {
+  const tick = async () => {
     attempts += 1;
     try {
       if (!state.currentRunId || state.currentRunId !== runId) {
-        clearInterval(state.runBootstrapPollTimer);
+        if (state.runBootstrapPollTimer) clearInterval(state.runBootstrapPollTimer);
         state.runBootstrapPollTimer = null;
         return;
       }
-      const status = await fetchRunStatus(runId);
-      applyRunStatus(status);
+      let status = null;
+      const hydrateEveryTick = attempts <= 12 || attempts % 2 === 0;
+      if (hydrateEveryTick) {
+        await fetchRunSnapshot(runId);
+      } else {
+        status = await fetchRunStatus(runId);
+        applyRunStatus(status);
+      }
       await fetchRunLogs(runId);
       const latestStatus = String(state.currentRun?.status || status?.status || "").toLowerCase();
-      const shouldHydrateSnapshot = !latestStatus || latestStatus === "queued" || attempts <= 5 || attempts % 3 === 0;
+      const shouldHydrateSnapshot = !latestStatus || latestStatus === "queued" || attempts <= 10 || attempts % 3 === 0;
       if (shouldHydrateSnapshot) {
         await fetchRunSnapshot(runId);
       }
       renderRun();
       if (!isActiveRunStatus(String(state.currentRun?.status || latestStatus || "").toLowerCase()) || attempts >= maxAttempts) {
-        clearInterval(state.runBootstrapPollTimer);
+        if (state.runBootstrapPollTimer) clearInterval(state.runBootstrapPollTimer);
         state.runBootstrapPollTimer = null;
       }
     } catch (_err) {
       if (attempts >= maxAttempts) {
-        clearInterval(state.runBootstrapPollTimer);
+        if (state.runBootstrapPollTimer) clearInterval(state.runBootstrapPollTimer);
         state.runBootstrapPollTimer = null;
       }
     }
-  }, 2000);
+  };
+  void tick();
+  state.runBootstrapPollTimer = setInterval(() => { void tick(); }, 1500);
 }
 
 async function refreshRunHistory() {
@@ -14973,16 +15100,28 @@ async function submitApproval(decision) {
     };
   }
   if (pending.type === "discover_review" && decision === "approve") {
+    seedDiscoverReviewDraft(runId, pending);
+    const draft = discoverReviewStateForRun(runId);
     const blockers = Array.isArray(pending.unresolved_blocking) ? pending.unresolved_blocking : [];
-    payload.waived_ids = blockers
-      .map((row) => String(row?.id || "").trim())
-      .filter(Boolean);
+    const resolvedIds = [];
+    const waivedIds = [];
+    const notesById = {};
+    blockers.forEach((row) => {
+      const id = String(row?.id || "").trim();
+      if (!id) return;
+      const current = draft[id] || { action: "open", note: "" };
+      if (current.action === "resolved") resolvedIds.push(id);
+      if (current.action === "waived") waivedIds.push(id);
+      if (String(current.note || "").trim()) notesById[id] = String(current.note || "").trim();
+    });
+    payload.resolved_ids = resolvedIds;
+    payload.waived_ids = waivedIds;
+    payload.notes_by_id = notesById;
     payload.note = "Approved from run approval panel";
   }
 
   try {
-    await api(`/api/runs/${runId}/approve`, payload);
-    await syncRun(runId);
+    await runControl("approve", payload);
   } catch (err) {
     alert(`Approval action failed: ${err.message}`);
   }

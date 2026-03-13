@@ -478,6 +478,11 @@ def _discover_review_state(state: dict[str, Any]) -> dict[str, Any]:
         for x in prior_review.get("waived_ids", [])
         if str(x).strip()
     } if isinstance(prior_review.get("waived_ids", []), list) else set()
+    notes_by_id = {
+        str(k).strip(): str(v).strip()
+        for k, v in prior_review.get("notes_by_id", {}).items()
+        if str(k).strip() and str(v).strip()
+    } if isinstance(prior_review.get("notes_by_id", {}), dict) else {}
 
     rows_by_id: dict[str, dict[str, Any]] = {}
 
@@ -636,6 +641,7 @@ def _discover_review_state(state: dict[str, Any]) -> dict[str, Any]:
         "unresolved_blocking": unresolved_blocking,
         "resolved_ids": sorted(resolved_ids),
         "waived_ids": sorted(waived_ids),
+        "notes_by_id": notes_by_id,
         "updated_at": _utc_now(),
     }
 
@@ -1338,11 +1344,14 @@ class PipelineRunManager:
                 )
                 return
 
-            # Discover review gate: Stage 2+ cannot proceed with unresolved blocking checks.
+            # Discover review gate:
+            # - Architect (Stage 2) may proceed with blocker context carried forward.
+            # - Stage 3+ remain gated until blockers are resolved or waived.
             if stage_idx >= 1 and isinstance(record.pipeline_state, dict):
                 discover_review = _discover_review_state(record.pipeline_state)
                 record.pipeline_state["discover_review"] = discover_review
-                if discover_review.get("unresolved_blocking"):
+                unresolved_blocking = discover_review.get("unresolved_blocking") or []
+                if unresolved_blocking and stage_idx >= 2:
                     record.pending_approval = {
                         "type": "discover_review",
                         "stage": 1,
@@ -1352,7 +1361,7 @@ class PipelineRunManager:
                             "Resolve or waive blockers before moving beyond Discover."
                         ),
                         "overall_status": discover_review.get("overall_status", "FAIL"),
-                        "unresolved_blocking": discover_review.get("unresolved_blocking", [])[:20],
+                        "unresolved_blocking": unresolved_blocking[:20],
                         "checklist": discover_review.get("checks", [])[:60],
                     }
                     record.status = "waiting_approval"
@@ -1360,11 +1369,25 @@ class PipelineRunManager:
                     self._append_log(
                         record,
                         "🧭 Discover review blocked progression: "
-                        f"{len(discover_review.get('unresolved_blocking', []))} unresolved blocking item(s).",
+                        f"{len(unresolved_blocking)} unresolved blocking item(s).",
+                        force_persist=True,
                     )
                     self._persist(record)
                     return
-                if record.pipeline_state.get("workflow_state") in {"DISCOVERED", "IN_REVIEW", "DISCOVERING"}:
+                if unresolved_blocking and stage_idx == 1:
+                    unresolved_ids = [
+                        str(row.get("id", "")).strip()
+                        for row in unresolved_blocking
+                        if isinstance(row, dict) and str(row.get("id", "")).strip()
+                    ]
+                    record.pipeline_state["workflow_state"] = "IN_REVIEW"
+                    self._append_log(
+                        record,
+                        "🧭 Architect proceeding with unresolved Discover blockers: "
+                        + ", ".join(unresolved_ids),
+                        force_persist=True,
+                    )
+                elif record.pipeline_state.get("workflow_state") in {"DISCOVERED", "IN_REVIEW", "DISCOVERING"}:
                     record.pipeline_state["workflow_state"] = "VERIFIED"
 
             # Developer planning checkpoint (always before code generation)
@@ -1738,7 +1761,7 @@ class PipelineRunManager:
     def _mark_stage_running(self, record: RunRecord, stage_num: int, name: str) -> None:
         record.stage_status[stage_num] = "running"
         record.updated_at = _utc_now()
-        self._append_log(record, f"⏳ Stage {stage_num} started: {name}")
+        self._append_log(record, f"⏳ Stage {stage_num} started: {name}", force_persist=True)
         self._persist(record)
 
     def _fail(self, record: RunRecord, error_message: str) -> None:
@@ -1823,7 +1846,13 @@ class PipelineRunManager:
         if record.status != "running":
             self._emit_event(record.run_id, "done", {"status": record.status, "run_id": record.run_id})
 
-    def _append_log(self, record: RunRecord, message: str, timestamped: bool = False) -> None:
+    def _append_log(
+        self,
+        record: RunRecord,
+        message: str,
+        timestamped: bool = False,
+        force_persist: bool = False,
+    ) -> None:
         line = message if timestamped else f"[{_ts()}] {message}"
         record.progress_logs.append(line)
         record.progress_log_count = max(int(record.progress_log_count or 0) + 1, len(record.progress_logs))
@@ -1844,7 +1873,7 @@ class PipelineRunManager:
                 or len(record.progress_logs) % 20 == 0
             )
         )
-        if should_persist:
+        if should_persist or force_persist:
             if record.pipeline_state is not None:
                 record.pipeline_state["pending_approval"] = copy.deepcopy(record.pending_approval)
                 record.pipeline_state["next_stage_idx"] = int(record.next_stage_idx)
@@ -1975,14 +2004,22 @@ class PipelineRunManager:
                 for x in payload.get("waived_ids", [])
                 if str(x).strip()
             } if isinstance(payload.get("waived_ids", []), list) else set()
-            # Backward-compatible behavior for existing approve UI:
-            # approving discover_review with no explicit ids waives current blockers.
-            if not resolved_ids and not waived_ids:
-                waived_ids = {
-                    str(row.get("id", "")).strip()
-                    for row in review.get("unresolved_blocking", [])
-                    if isinstance(row, dict) and str(row.get("id", "")).strip()
-                }
+            notes_by_id = {
+                str(k).strip(): str(v).strip()
+                for k, v in review.get("notes_by_id", {}).items()
+                if str(k).strip() and str(v).strip()
+            }
+            incoming_notes = payload.get("notes_by_id", {})
+            if isinstance(incoming_notes, dict):
+                for key, value in incoming_notes.items():
+                    note_key = str(key).strip()
+                    if not note_key:
+                        continue
+                    note_value = str(value or "").strip()
+                    if note_value:
+                        notes_by_id[note_key] = note_value
+                    else:
+                        notes_by_id.pop(note_key, None)
             prior_resolved = {
                 str(x).strip()
                 for x in review.get("resolved_ids", [])
@@ -2000,38 +2037,112 @@ class PipelineRunManager:
                     **review,
                     "resolved_ids": merged_resolved,
                     "waived_ids": merged_waived,
+                    "notes_by_id": notes_by_id,
                     "approved_at": _utc_now(),
                     "approval_note": str(payload.get("note", "")).strip(),
                 }
                 review = _discover_review_state(record.pipeline_state)
                 record.pipeline_state["discover_review"] = review
-                if review.get("unresolved_blocking"):
-                    unresolved = ", ".join(
-                        [str(row.get("id", "")).strip() for row in review.get("unresolved_blocking", [])][:6]
-                    )
-                    return {
-                        "ok": False,
-                        "error": (
-                            "Discover review still has unresolved blockers: "
-                            + (unresolved or "see checklist")
-                        ),
-                    }
-                record.pipeline_state["workflow_state"] = "VERIFIED"
+                unresolved_blocking = review.get("unresolved_blocking") or []
+                if unresolved_blocking:
+                    record.pipeline_state["workflow_state"] = "IN_REVIEW"
+                else:
+                    record.pipeline_state["workflow_state"] = "VERIFIED"
             record.next_stage_idx = max(int(record.next_stage_idx or 0), 1)
-            self._append_log(
-                record,
-                "✅ Discover review approved. "
-                f"resolved={len(merged_resolved)}, waived={len(merged_waived)}.",
-            )
+            unresolved_blocking = review.get("unresolved_blocking") or []
+            if unresolved_blocking:
+                unresolved = ", ".join(
+                    [
+                        str(row.get("id", "")).strip()
+                        for row in unresolved_blocking
+                        if isinstance(row, dict) and str(row.get("id", "")).strip()
+                    ][:6]
+                )
+                self._append_log(
+                    record,
+                    "✅ Discover review approved for Architect progression. "
+                    f"resolved={len(merged_resolved)}, waived={len(merged_waived)}, remaining={unresolved or 'see checklist'}.",
+                    force_persist=True,
+                )
+            else:
+                self._append_log(
+                    record,
+                    "✅ Discover review approved. "
+                    f"resolved={len(merged_resolved)}, waived={len(merged_waived)}.",
+                    force_persist=True,
+                )
         else:
             return {"ok": False, "error": f"unsupported approval type: {pending_type}"}
 
         record.pending_approval = None
         record.status = "running"
         record.updated_at = _utc_now()
+        self._append_log(
+            record,
+            "▶️ Resuming pipeline after approval",
+            force_persist=True,
+        )
         self._persist(record)
         self._resume_thread(record)
         return {"ok": True, "status": "running", "run_id": run_id}
+
+    def update_discover_review(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        record = self._hydrate_record(run_id)
+        if not record:
+            with self._lock:
+                record = self._records.get(run_id)
+        if not record:
+            return {"ok": False, "error": "run not found or no longer active"}
+        if not isinstance(record.pipeline_state, dict):
+            record.pipeline_state = {}
+        review = _discover_review_state(record.pipeline_state)
+        resolved_ids = {
+            str(x).strip()
+            for x in review.get("resolved_ids", [])
+            if str(x).strip()
+        }
+        waived_ids = {
+            str(x).strip()
+            for x in review.get("waived_ids", [])
+            if str(x).strip()
+        }
+        if isinstance(payload.get("resolved_ids", []), list):
+            resolved_ids.update(str(x).strip() for x in payload.get("resolved_ids", []) if str(x).strip())
+        if isinstance(payload.get("waived_ids", []), list):
+            waived_ids.update(str(x).strip() for x in payload.get("waived_ids", []) if str(x).strip())
+        notes_by_id = {
+            str(k).strip(): str(v).strip()
+            for k, v in review.get("notes_by_id", {}).items()
+            if str(k).strip() and str(v).strip()
+        }
+        incoming_notes = payload.get("notes_by_id", {})
+        if isinstance(incoming_notes, dict):
+            for key, value in incoming_notes.items():
+                note_key = str(key).strip()
+                if not note_key:
+                    continue
+                note_text = str(value or "").strip()
+                if note_text:
+                    notes_by_id[note_key] = note_text
+                else:
+                    notes_by_id.pop(note_key, None)
+        record.pipeline_state["discover_review"] = {
+            **review,
+            "resolved_ids": sorted(resolved_ids),
+            "waived_ids": sorted(waived_ids),
+            "notes_by_id": notes_by_id,
+            "updated_at": _utc_now(),
+        }
+        refreshed = _discover_review_state(record.pipeline_state)
+        record.pipeline_state["discover_review"] = refreshed
+        self._append_log(
+            record,
+            "🧭 Discover review updated. "
+            f"resolved={len(refreshed.get('resolved_ids', []))}, waived={len(refreshed.get('waived_ids', []))}.",
+            force_persist=True,
+        )
+        self._persist(record)
+        return {"ok": True, "review": refreshed, "run": _compact_run_status(record)}
 
     @staticmethod
     def _to_int(value: Any, default: int) -> int:
@@ -2302,7 +2413,7 @@ class PipelineRunManager:
         if isinstance(record.pipeline_state, dict):
             record.pipeline_state["pipeline_status"] = "aborted"
             record.pipeline_state["abort_reason"] = reason_text
-        self._append_log(record, f"🛑 Run aborted by user: {reason_text}")
+        self._append_log(record, f"🛑 Run aborted by user: {reason_text}", force_persist=True)
         self._attempt_github_export(record, final=True)
         self._persist(record)
         return {"ok": True, "status": "aborted", "run_id": run_id}
@@ -9275,6 +9386,14 @@ async def api_approve_run(request):
     return JSONResponse(result, status_code=status_code)
 
 
+async def api_update_discover_review(request):
+    run_id = request.path_params.get("run_id", "")
+    payload = _get_json(await request.body())
+    result = MANAGER.update_discover_review(run_id, payload)
+    status_code = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status_code)
+
+
 async def api_pause_run(request):
     run_id = request.path_params.get("run_id", "")
     result = MANAGER.pause(run_id)
@@ -15321,6 +15440,7 @@ routes = [
     Route("/api/runs/{run_id:str}/status", api_get_run_status, methods=["GET"]),
     Route("/api/runs/{run_id:str}/logs", api_get_run_logs, methods=["GET"]),
     Route("/api/runs/{run_id:str}/approve", api_approve_run, methods=["POST"]),
+    Route("/api/runs/{run_id:str}/discover-review", api_update_discover_review, methods=["POST"]),
     Route("/api/runs/{run_id:str}/pause", api_pause_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/resume", api_resume_run, methods=["POST"]),
     Route("/api/runs/{run_id:str}/abort", api_abort_run, methods=["POST"]),
