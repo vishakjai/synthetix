@@ -124,6 +124,10 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
                         "rules": [
                             {"rule_id": "BR-001", "form": "frmcustomer", "statement": "Customer records require a unique account number."},
                             {"rule_id": "BR-002", "form": "frmdeposit", "statement": "Deposits must update balance and ledger atomically."},
+                            {"rule_id": "BR-003", "form": "frmLogin", "statement": "RecordCount < 1 prevents login and increments failed attempts."},
+                            {"rule_id": "BR-004", "form": "frmdeposit", "statement": "Interest = Balance * 1 / 100 before balance update."},
+                            {"rule_id": "BR-005", "form": "frmcustomer", "statement": "CalendarForeColor = -2147483635"},
+                            {"rule_id": "BR-006", "form": "frmcustomer", "statement": "i = i + 1"},
                         ]
                     },
                     "sql_catalog": {
@@ -208,11 +212,13 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertTrue(first_business_rule.get("category"))
         self.assertTrue(first_business_rule.get("source_module"))
         self.assertTrue(first_business_rule.get("acceptance_criteria"))
+        self.assertTrue(all(rule.get("target_service") for rule in handoff.get("brownfield_context", {}).get("business_rules", [])))
         first_anchor = handoff.get("brownfield_context", {}).get("regression_test_anchors", [])[0]
         self.assertTrue(first_anchor.get("golden_flow_ref"))
         self.assertTrue(first_anchor.get("entry_point"))
         self.assertTrue(first_anchor.get("expected_output"))
         self.assertTrue(first_anchor.get("target_endpoint"))
+        self.assertTrue(first_anchor.get("data_fixture"))
 
     def test_component_specs_are_traced_to_contracts_and_wbs(self):
         agent = ArchitectAgent(Mock())
@@ -229,6 +235,33 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertTrue(customer_spec.get("business_rule_refs"))
         self.assertTrue(transaction_spec.get("business_rule_refs"))
         self.assertTrue(transaction_spec.get("regression_anchor_refs"))
+
+    def test_business_rules_filter_noise_and_route_meaningful_rules(self):
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, self._state())
+        handoff = normalized.get("architect_handoff_package", {})
+        business_rules = handoff.get("brownfield_context", {}).get("business_rules", [])
+        statements = [str(rule.get("statement", "")) for rule in business_rules]
+        self.assertFalse(any("CalendarForeColor" in statement for statement in statements))
+        self.assertFalse(any(statement.strip().lower() == "i = i + 1" for statement in statements))
+        auth_rule = next(rule for rule in business_rules if rule.get("rule_id") == "BR-003")
+        txn_rule = next(rule for rule in business_rules if rule.get("rule_id") == "BR-004")
+        self.assertEqual(auth_rule.get("target_service"), "AuthenticationService")
+        self.assertEqual(txn_rule.get("target_service"), "TransactionService")
+
+    def test_public_architect_package_ownership_and_contract_semantics_are_not_hollow(self):
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, self._state())
+        architect_package = normalized.get("architect_package", {})
+        ownership = architect_package.get("artifacts", {}).get("data_ownership_matrix", {}).get("entities", [])
+        ownership_by_name = {str(row.get("name", "")).lower(): row for row in ownership}
+        customer_row = ownership_by_name.get("tblcustomers") or ownership_by_name.get("customers")
+        transaction_row = ownership_by_name.get("tbltransaction") or ownership_by_name.get("transactions")
+        self.assertEqual((customer_row or {}).get("owning_service"), "CustomerService")
+        self.assertEqual((transaction_row or {}).get("owning_service"), "TransactionService")
+        api_services = architect_package.get("artifacts", {}).get("api_contract_sketches", {}).get("services", [])
+        auth_ops = next(service for service in api_services if service.get("service") == "AuthenticationService").get("operations", [])
+        self.assertTrue(any(op.get("method") == "POST" and op.get("path") == "/auth/login" for op in auth_ops))
 
     def test_handoff_derives_entities_from_sql_usage_site_refs(self):
         state = self._state()
@@ -260,6 +293,54 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         owners = {row.get("owning_service") for row in ownership}
         self.assertIn("TransactionService", owners)
         self.assertIn("CustomerService", owners)
+
+    def test_login_contract_uses_post_and_request_fields(self):
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, self._state())
+        handoff = normalized["architect_handoff_package"]
+        login_contract = next(
+            contract
+            for contract in handoff.get("interface_contracts", [])
+            if "login" in str(contract.get("spec_content", {}).get("name", "")).lower()
+        )
+        operations = login_contract.get("spec_content", {}).get("operations", [])
+        self.assertTrue(operations)
+        op = operations[0]
+        self.assertEqual(op.get("method"), "POST")
+        request_fields = {field.get("name") for field in op.get("request_body", {}).get("fields", [])}
+        self.assertIn("username", request_fields)
+        self.assertIn("password", request_fields)
+
+    def test_upstream_ownership_is_reconciled_to_customer_and_transaction_services(self):
+        agent = ArchitectAgent(Mock())
+        architect = {
+            "legacy_system": {},
+            "data_ownership_matrix": {
+                "entities": [
+                    {
+                        "name": "Customers",
+                        "legacy_tables": ["tblcustomers"],
+                        "owning_service": "ReportingService",
+                        "read_services": ["TransactionService"],
+                    },
+                    {
+                        "name": "Transaction",
+                        "legacy_tables": ["tbltransaction"],
+                        "owning_service": "ReportingService",
+                        "read_services": ["ReportingService"],
+                    },
+                ],
+                "relationships": [],
+            },
+        }
+        normalized = agent._normalize_output(architect, self._state())
+        handoff = normalized["architect_handoff_package"]
+        ownership = {
+            row.get("entity_name"): row.get("owning_service")
+            for row in handoff.get("domain_model", {}).get("data_ownership", [])
+        }
+        self.assertEqual(ownership.get("Customers"), "CustomerService")
+        self.assertEqual(ownership.get("Transaction"), "TransactionService")
 
     def test_description_only_golden_flows_produce_actionable_anchors(self):
         agent = ArchitectAgent(Mock())

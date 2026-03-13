@@ -569,11 +569,12 @@ Include:
     def _normalize_output(self, parsed: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         package = self._build_architect_package(state, parsed)
         parsed["architect_package"] = package
-        parsed["architect_handoff_package"] = build_architect_handoff_package(state, parsed, package)
 
         services = self._build_top_level_services(package, state)
         if services:
             parsed["services"] = services
+
+        parsed["architect_handoff_package"] = build_architect_handoff_package(state, parsed, package)
 
         if not str(parsed.get("pattern", "")).strip():
             parsed["pattern"] = "modular-monolith"
@@ -812,6 +813,28 @@ Include:
         }
 
     def _build_data_ownership_matrix(self, modules: list[dict[str, Any]], legacy: dict[str, Any]) -> dict[str, Any]:
+        def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
+            lowered = table_name.lower()
+            preferences: list[str] = []
+            if "customer" in lowered:
+                preferences = ["CustomerService"]
+            elif "transaction" in lowered or "deposit" in lowered or "withdraw" in lowered:
+                preferences = ["TransactionService"]
+            elif "account" in lowered:
+                preferences = ["AccountService", "CustomerService", "TransactionService"]
+            elif any(token in lowered for token in ("type", "reference", "setting")):
+                preferences = ["ReferenceDataService"]
+            elif any(token in lowered for token in ("report", "statement")):
+                preferences = ["ReportingService"]
+            for candidate in preferences:
+                if candidate in service_names:
+                    return candidate
+            if fallback == "ReportingService":
+                for candidate in ("CustomerService", "TransactionService", "AccountService", "ReferenceDataService"):
+                    if candidate in service_names:
+                        return candidate
+            return fallback
+
         entities: list[dict[str, Any]] = []
         table_to_services: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         table_to_modules: dict[str, set[str]] = defaultdict(set)
@@ -820,7 +843,8 @@ Include:
                 table_to_services[str(table)][str(module.get("service_name"))] += 1
                 table_to_modules[str(table)].add(str(module.get("source_module")))
         for table, service_counts in sorted(table_to_services.items()):
-            owner = max(service_counts.items(), key=lambda item: item[1])[0] if service_counts else "LegacyCoreService"
+            fallback_owner = max(service_counts.items(), key=lambda item: item[1])[0] if service_counts else "LegacyCoreService"
+            owner = _preferred_owner(table, list(service_counts.keys()), fallback_owner)
             readers = sorted([svc for svc in service_counts.keys() if svc != owner])
             entities.append(
                 {
@@ -1012,6 +1036,109 @@ Include:
         }
 
     def _build_api_contract_sketches(self, modules: list[dict[str, Any]], traceability: dict[str, Any]) -> dict[str, Any]:
+        def _contract_for_module(service_name: str, module: dict[str, Any]) -> dict[str, Any]:
+            source_module = str(module.get("source_module", "")).strip()
+            purpose = str(module.get("purpose", "")).strip()
+            source_lower = source_module.lower()
+            purpose_lower = purpose.lower()
+            service_slug = re.sub(r"service$", "", service_name, flags=re.IGNORECASE).lower()
+            base_name = self._titleize_identifier(module.get("base_name", source_module or service_name)).replace(" ", "")
+            action_slug = self._normalize_name(base_name) or service_slug
+            method = "GET"
+            path = f"/{service_slug}/{action_slug}"
+            auth = {"required": True, "policy": "jwt"}
+            request_fields: list[dict[str, Any]] = []
+            response_fields: list[dict[str, Any]] = [{"name": "result", "type": "object", "required": True}]
+            notes = purpose or f"Draft contract for {source_module or service_name}"
+
+            if "login" in source_lower or "login" in purpose_lower or service_name == "AuthenticationService":
+                method = "POST"
+                path = "/auth/login"
+                auth = {"required": False, "policy": "anonymous-login-bootstrap"}
+                request_fields = [
+                    {"name": "username", "type": "string", "required": True},
+                    {"name": "password", "type": "string", "required": True},
+                ]
+                response_fields = [
+                    {"name": "token", "type": "string", "required": True},
+                    {"name": "expires_at", "type": "datetime", "required": True},
+                ]
+                notes = "Authenticate credentials, issue session/token, and apply lockout policy before entering customer workflows."
+            elif "logout" in source_lower or "logout" in purpose_lower:
+                method = "POST"
+                path = "/auth/logout"
+                response_fields = [{"name": "logged_out", "type": "boolean", "required": True}]
+            elif any(token in source_lower or token in purpose_lower for token in ("deposit", "withdraw")):
+                method = "POST"
+                path = f"/transactions/{'deposit' if 'deposit' in source_lower or 'deposit' in purpose_lower else 'withdraw'}"
+                request_fields = [
+                    {"name": "accountNo", "type": "string", "required": True},
+                    {"name": "amount", "type": "decimal", "required": True},
+                    {"name": "transactionDate", "type": "date", "required": False},
+                ]
+                response_fields = [
+                    {"name": "transactionId", "type": "string", "required": True},
+                    {"name": "balance", "type": "decimal", "required": True},
+                ]
+                notes = "Submit a transactional write with balance validation and ledger persistence."
+            elif any(token in source_lower or token in purpose_lower for token in ("closeaccount", "close account")):
+                method = "PUT"
+                path = "/accounts/close"
+                request_fields = [
+                    {"name": "accountNo", "type": "string", "required": True},
+                    {"name": "closureReason", "type": "string", "required": False},
+                ]
+                response_fields = [{"name": "closed", "type": "boolean", "required": True}]
+                notes = "Close an account after eligibility and balance checks succeed."
+            elif "customer" in source_lower or "customer" in purpose_lower:
+                if any(token in source_lower or token in purpose_lower for token in ("add", "new", "create", "save", "update")):
+                    method = "POST" if any(token in source_lower or token in purpose_lower for token in ("add", "new", "create")) else "PUT"
+                    path = "/customers"
+                    request_fields = [
+                        {"name": "customerId", "type": "string", "required": False},
+                        {"name": "accountNo", "type": "string", "required": True},
+                        {"name": "firstName", "type": "string", "required": True},
+                        {"name": "lastName", "type": "string", "required": False},
+                    ]
+                    response_fields = [{"name": "customer", "type": "object", "required": True}]
+                    notes = "Create or update customer/account-holder records and enforce uniqueness validation."
+                else:
+                    method = "GET"
+                    path = "/customers/{customerId}"
+                    response_fields = [
+                        {"name": "customer", "type": "object", "required": True},
+                        {"name": "accounts", "type": "array", "required": False},
+                    ]
+                    notes = "Read customer profile and account summary details."
+            elif any(token in source_lower or token in purpose_lower for token in ("statement", "report", "monthly")):
+                method = "GET"
+                path = f"/reports/{action_slug}"
+                response_fields = [{"name": "report", "type": "object", "required": True}]
+                notes = "Generate or retrieve reporting output for statements and monthly summaries."
+            elif any(token in source_lower or token in purpose_lower for token in ("settings", "accounttype", "reference")):
+                method = "GET"
+                path = f"/reference/{action_slug}"
+                response_fields = [{"name": "items", "type": "array", "required": True}]
+                notes = "Retrieve or maintain reference data used by operational workflows."
+
+            operation_name = base_name if method == "GET" else f"{method.title()}{base_name}"
+            return {
+                "name": operation_name,
+                "method": method,
+                "path": path,
+                "replaces": [source_module] if source_module else [],
+                "notes": notes,
+                "request_body": {"fields": request_fields},
+                "response_body": {"fields": response_fields},
+                "error_contract": {
+                    "shape": [
+                        {"name": "code", "type": "string", "required": True},
+                        {"name": "message", "type": "string", "required": True},
+                    ]
+                },
+                "auth": auth,
+            }
+
         by_service: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for module in modules:
             by_service[str(module.get("service_name", "LegacyCoreService"))].append(module)
@@ -1019,18 +1146,7 @@ Include:
         for service_name, service_modules in sorted(by_service.items()):
             operations: list[dict[str, Any]] = []
             for module in service_modules[:4]:
-                base = self._titleize_identifier(module.get("base_name", module.get("source_module", service_name))).replace(" ", "")
-                path_base = re.sub(r"service$", "", service_name, flags=re.IGNORECASE).lower()
-                operation = {
-                    "name": f"Get{base}",
-                    "method": "GET",
-                    "path": f"/{path_base}/{self._normalize_name(base)}",
-                    "replaces": [module.get("source_module")],
-                    "notes": module.get("purpose") or f"Draft contract for {module.get('source_module')}",
-                }
-                if any(token in str(module.get("purpose", "")).lower() for token in ["create", "save", "deposit", "withdraw"]):
-                    operation["method"] = "POST"
-                operations.append(operation)
+                operations.append(_contract_for_module(service_name, module))
             services_payload.append({
                 "service": service_name,
                 "operations": operations,
@@ -1192,7 +1308,12 @@ Include:
         _, raw, legacy = self._raw_analyst_evidence(state)
         modules = self._collect_source_modules(state)
         dependencies = self._as_list(self._as_dict(raw.get("dependency_inventory")).get("dependencies"))
-        ownership = self._build_data_ownership_matrix(modules, legacy)
+        parsed_ownership = self._as_dict(parsed.get("data_ownership_matrix"))
+        ownership = (
+            parsed_ownership
+            if self._as_list(parsed_ownership.get("entities"))
+            else self._build_data_ownership_matrix(modules, legacy)
+        )
         coupling = self._build_coupling_heatmap(modules, legacy)
         adrs = self._build_adrs(modules, coupling)
         traceability = self._build_traceability_matrix(modules, adrs, ownership)

@@ -107,8 +107,16 @@ class ArchitectPackageTest(unittest.TestCase):
                     },
                     "business_rule_catalog": {
                         "rules": [
-                            {"rule_id": "BR-001", "form": "frmcustomer"},
-                            {"rule_id": "BR-002", "form": "frmdeposit"},
+                            {
+                                "rule_id": "BR-001",
+                                "form": "frmcustomer",
+                                "statement": "Customer records require a unique account number.",
+                            },
+                            {
+                                "rule_id": "BR-002",
+                                "form": "frmdeposit",
+                                "statement": "Deposits must update balance and ledger atomically.",
+                            },
                         ]
                     },
                     "sql_catalog": {

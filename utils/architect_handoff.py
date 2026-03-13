@@ -231,8 +231,15 @@ def _is_mutating_operation(operation_name: str, path: str, replaces: list[str]) 
     )
 
 
+def _is_auth_operation(operation_name: str, path: str, replaces: list[str]) -> bool:
+    text = " ".join([operation_name or "", path or "", " ".join(replaces)]).lower()
+    return any(token in text for token in ("login", "signin", "sign-in", "authenticate", "auth"))
+
+
 def _infer_http_method(operation_name: str, path: str, replaces: list[str], existing: str) -> str:
     current = str(existing or "").strip().upper()
+    if _is_auth_operation(operation_name, path, replaces):
+        return "POST"
     if current and current != "GET":
         return current
     if not _is_mutating_operation(operation_name, path, replaces):
@@ -295,6 +302,17 @@ def _is_meaningful_business_rule(statement: str) -> bool:
         "i = i + 1",
         "j = j + 1",
         "loop counter",
+        " vbblack",
+        " vbblue",
+        " vbred",
+        " vbyellow",
+        " vbgreen",
+        " vbwhite",
+        " vbcyan",
+        " vbmagenta",
+        "calendar",
+        "progress bar",
+        "ui color",
     )
     if any(token in lowered for token in noisy_tokens):
         return False
@@ -306,17 +324,23 @@ def _is_meaningful_business_rule(statement: str) -> bool:
         return False
     if re.search(r"^computed value rule:\s*([a-z])\s*=\s*\1\s*\+\s*1$", lowered):
         return False
+    if re.search(r"^computed value rule:\s*[a-z_][a-z0-9_\.]*\s*=\s*-2147483\d+$", lowered):
+        return False
+    if re.search(r"^computed value rule:\s*[a-z_][a-z0-9_\.]*\s*=\s*vb[a-z]+$", lowered):
+        return False
+    if re.search(r"^branching logic based on case keyascii", lowered):
+        return False
     return True
 
 
 def _classify_business_rule(statement: str) -> str:
     lowered = str(statement or "").lower()
+    if any(token in lowered for token in ("login", "password", "user", "credential", "lockout", "attempt", "recordcount < 1")):
+        return "authentication"
     if any(token in lowered for token in ("interest", "balance", "amount", "calculate", "total", "sum", "multiply", "percent")):
         return "calculation"
     if any(token in lowered for token in ("must", "required", "cannot", "invalid", "validate", "exists", "duplicate")):
         return "validation"
-    if any(token in lowered for token in ("login", "password", "user", "credential", "lockout", "attempt")):
-        return "authentication"
     if any(token in lowered for token in ("report", "statement", "print", "export")):
         return "reporting"
     if any(token in lowered for token in ("deposit", "withdraw", "transaction", "account close", "close account", "expire")):
@@ -328,10 +352,49 @@ def _rule_acceptance_criteria(rule: dict[str, Any], source_module: str, target_s
     statement = str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip()
     rule_id = str(rule.get("rule_id", "")).strip() or "rule"
     scope = target_service or source_module or "the assigned service"
+    category = _classify_business_rule(statement)
+    if category == "authentication":
+        return [
+            f"{scope} enforces {rule_id} during authentication and denies access when the rule is violated.",
+            f"Regression tests prove the login/session flow still satisfies: {statement[:160]}".strip(),
+        ]
+    if category in {"calculation", "state_transition"}:
+        return [
+            f"{scope} executes {rule_id} atomically and preserves balance and ledger integrity when processing transactional writes.",
+            f"Regression tests verify the transactional outcome expected by the legacy behavior: {statement[:160]}".strip(),
+        ]
+    if category == "validation":
+        return [
+            f"{scope} rejects invalid or incomplete requests when {rule_id} is violated and returns a deterministic validation error.",
+            f"Automated tests assert the validation rule derived from legacy behavior: {statement[:160]}".strip(),
+        ]
+    if category == "reporting":
+        return [
+            f"{scope} generates reporting output that remains consistent with {rule_id} and the legacy reporting workflow.",
+            f"Regression tests verify the output and filters implied by: {statement[:160]}".strip(),
+        ]
     return [
         f"{scope} enforces {rule_id} exactly as derived from legacy behavior and rejects invalid input when the rule is violated.",
         f"Regression tests prove the service still satisfies: {statement[:160]}".strip(),
     ]
+
+
+def _route_business_rule_target_service(statement: str, source_module: str, service_by_source: dict[str, str]) -> str:
+    source_key = _normalize_name(source_module)
+    if source_key and service_by_source.get(source_key):
+        return service_by_source[source_key]
+    lowered = str(statement or "").lower()
+    if any(token in lowered for token in ("login", "password", "credential", "lockout", "attempt", "recordcount < 1")):
+        return "AuthenticationService"
+    if any(token in lowered for token in ("deposit", "withdraw", "transaction", "balance", "interest", "amount", "accountno", "account no", "date", "expire")):
+        return "TransactionService"
+    if any(token in lowered for token in ("customer", "firstname", "lastname", "account holder", "address", "phone")):
+        return "CustomerService"
+    if any(token in lowered for token in ("statement", "report", "print", "monthly")):
+        return "ReportingService"
+    if any(token in lowered for token in ("account type", "settings", "reference")):
+        return "ReferenceDataService"
+    return ""
 
 
 def _golden_flow_entry_point(flow: dict[str, Any]) -> str:
@@ -349,6 +412,24 @@ def _golden_flow_source_module(flow: dict[str, Any]) -> str:
     entry_point = _golden_flow_entry_point(flow)
     parts = [part.strip() for part in entry_point.split("::") if part.strip()]
     return parts[0] if parts else ""
+
+
+def _derive_expected_output(flow: dict[str, Any], description: str, target_service: str) -> str:
+    explicit = str(flow.get("expected_outcome", "")).strip() or str(flow.get("outcome", "")).strip()
+    if explicit:
+        return explicit
+    lowered = description.lower()
+    if "login" in lowered:
+        return "Valid credentials result in an authenticated session and navigation to the main customer workflow."
+    if "deposit" in lowered:
+        return "Deposit is persisted, account balance is increased, and a transaction ledger record is written."
+    if "withdraw" in lowered:
+        return "Withdrawal is persisted only when funds are sufficient and the balance is reduced with a matching ledger record."
+    if "customer" in lowered:
+        return "Customer data is loaded or updated consistently with the legacy workflow."
+    if "statement" in lowered or target_service == "ReportingService":
+        return "Statement or report output is returned with the same filters and scope as the legacy workflow."
+    return description
 
 
 def _operation_shape_fields(service_name: str, op_name: str, method: str, path: str, replaces: list[str]) -> dict[str, Any]:
@@ -454,6 +535,22 @@ def _semantic_validate_architect_handoff(payload: dict[str, Any]) -> None:
         raise jsonschema.ValidationError("architect handoff invalid: upstream business rules exist but brownfield_context.business_rules is empty")
     if golden_flow_count > 0 and not anchors:
         raise jsonschema.ValidationError("architect handoff invalid: upstream golden flows exist but regression_test_anchors is empty")
+    if golden_flow_count > 0:
+        actionable_anchor_count = 0
+        for anchor in anchors:
+            if not isinstance(anchor, dict):
+                continue
+            if (
+                str(anchor.get("golden_flow_ref", "")).strip()
+                and str(anchor.get("entry_point", "")).strip()
+                and str(anchor.get("target_endpoint", "")).strip()
+                and str(anchor.get("expected_output", "")).strip()
+            ):
+                actionable_anchor_count += 1
+        if actionable_anchor_count == 0:
+            raise jsonschema.ValidationError(
+                "architect handoff invalid: upstream golden flows exist but no actionable regression anchors were produced"
+            )
     if str(system_context.get("source_type", "")).strip().startswith("brownfield"):
         if not any(str(_as_dict(decision).get("status", "")).strip().lower() in {"accepted", "approved"} for decision in decisions):
             raise jsonschema.ValidationError("architect handoff invalid: no approved architecture decisions exist for brownfield dispatch")
@@ -626,6 +723,28 @@ def _build_domain_model(
     data_ownership = []
     relationships = []
     bounded_contexts = []
+
+    def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
+        names = {name.lower(): name for name in service_names if name}
+        lowered = (table_name or '').lower()
+        if 'customer' in lowered and 'customerservice' in names:
+            return names['customerservice']
+        if 'transaction' in lowered and 'transactionservice' in names:
+            return names['transactionservice']
+        if 'account' in lowered:
+            for candidate in ('accountservice', 'customerservice', 'transactionservice'):
+                if candidate in names:
+                    return names[candidate]
+        if 'reference' in lowered and 'referencedataservice' in names:
+            return names['referencedataservice']
+        if 'report' in lowered and 'reportingservice' in names:
+            return names['reportingservice']
+        if fallback.lower() == 'reportingservice':
+            for candidate in ('customerservice', 'transactionservice', 'accountservice', 'referencedataservice'):
+                if candidate in names:
+                    return names[candidate]
+        return fallback
+
     sql_rows = _sql_rows(raw)
     form_dossiers = _raw_rows(_raw_bucket(raw, "form_dossier"), "dossiers", "forms", "rows")
     dossier_tables = {
@@ -643,11 +762,16 @@ def _build_domain_model(
         if not isinstance(entity, dict):
             continue
         name = str(entity.get("name", "")).strip()
-        owner = str(entity.get("owning_service", "")).strip()
+        legacy_tables = _safe_list_text(entity.get("legacy_tables", []))
+        owner = _preferred_owner(
+            legacy_tables[0] if legacy_tables else name,
+            [str(service.get("name", "")).strip() for service in services if isinstance(service, dict)],
+            str(entity.get("owning_service", "")).strip() or "LegacyCoreService",
+        )
         readers = _safe_list_text(entity.get("read_services", []))
         entities.append({
             "entity_name": name,
-            "legacy_tables": _safe_list_text(entity.get("legacy_tables", [])),
+            "legacy_tables": legacy_tables,
             "owner": owner,
             "readers": readers,
             "migration_notes": str(entity.get("migration_notes", "")).strip(),
@@ -667,27 +791,6 @@ def _build_domain_model(
         if name:
             entity_seen.add(_normalize_name(name))
     if not entities:
-        def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
-            names = {name.lower(): name for name in service_names if name}
-            lowered = (table_name or "").lower()
-            if "customer" in lowered and "customerservice" in names:
-                return names["customerservice"]
-            if "transaction" in lowered and "transactionservice" in names:
-                return names["transactionservice"]
-            if "account" in lowered:
-                for candidate in ("accountservice", "customerservice", "transactionservice"):
-                    if candidate in names:
-                        return names[candidate]
-            if "reference" in lowered and "referencedataservice" in names:
-                return names["referencedataservice"]
-            if "report" in lowered and "reportingservice" in names:
-                return names["reportingservice"]
-            if fallback.lower() == "reportingservice":
-                for candidate in ("customerservice", "transactionservice", "accountservice", "referencedataservice"):
-                    if candidate in names:
-                        return names[candidate]
-            return fallback
-
         table_to_services: dict[str, list[str]] = {}
         for row in sql_rows:
             source_candidates = _sql_source_candidates(row)
@@ -1060,38 +1163,41 @@ def _build_brownfield_context(
         target_service = service_by_source.get(_normalize_name(source_module), "")
         description = str(flow.get("description", "")).strip() or entry_point
         if description:
+            expected_output = _derive_expected_output(flow, description, target_service)
             regression_anchors.append({
                 "anchor_id": f"anchor_flow_{idx:02d}",
                 "type": "golden_flow",
                 "description": description,
                 "golden_flow_ref": str(flow.get("flow_id", "")).strip() or str(flow.get("id", "")).strip() or f"GF-{idx:03d}",
                 "entry_point": entry_point,
-                "expected_output": str(flow.get("expected_outcome", "")).strip() or str(flow.get("outcome", "")).strip() or description,
+                "expected_output": expected_output,
                 "target_endpoint": _golden_flow_target_endpoint(flow, service_by_source),
                 "source_module": source_module,
                 "target_service": target_service,
+                "data_fixture": f"Use legacy fixture data and replay {str(flow.get('flow_id', '')).strip() or str(flow.get('id', '')).strip() or f'GF-{idx:03d}'} against the target service contract.",
             })
-    for idx, step in enumerate(_safe_list_text(legacy.get("key_logic_steps", [])), start=1):
-        regression_anchors.append({
-            "anchor_id": f"anchor_{idx:02d}",
-            "type": "legacy_flow",
-            "description": step,
-            "expected_output": step,
-        })
-    for mapping in _as_list(traceability.get("mappings"))[:5]:
-        if not isinstance(mapping, dict):
-            continue
-        source = _as_dict(mapping.get("source"))
-        module_name = str(source.get("module", "")).strip()
-        target_service = str(_as_dict(mapping.get("target")).get("service", "")).strip()
-        if module_name:
+    if not golden_flows:
+        for idx, step in enumerate(_safe_list_text(legacy.get("key_logic_steps", [])), start=1):
             regression_anchors.append({
-                "anchor_id": f"anchor_{_slug(module_name)}",
-                "type": "module_parity",
-                "description": f"Preserve behavior currently implemented by {module_name}.",
-                "source_module": module_name,
-                "target_service": target_service,
+                "anchor_id": f"anchor_{idx:02d}",
+                "type": "legacy_flow",
+                "description": step,
+                "expected_output": step,
             })
+        for mapping in _as_list(traceability.get("mappings"))[:5]:
+            if not isinstance(mapping, dict):
+                continue
+            source = _as_dict(mapping.get("source"))
+            module_name = str(source.get("module", "")).strip()
+            target_service = str(_as_dict(mapping.get("target")).get("service", "")).strip()
+            if module_name:
+                regression_anchors.append({
+                    "anchor_id": f"anchor_{_slug(module_name)}",
+                    "type": "module_parity",
+                    "description": f"Preserve behavior currently implemented by {module_name}.",
+                    "source_module": module_name,
+                    "target_service": target_service,
+                })
     dependencies = _safe_list_text(dep.get("name") for dep in _as_list(_as_dict(raw.get("dependency_inventory")).get("dependencies")) if isinstance(dep, dict))
     risk_ids = _safe_list_text(row.get("risk_id") for row in _as_list(_as_dict(raw.get("risk_register")).get("risks")) if isinstance(row, dict))
     business_rules = []
@@ -1102,19 +1208,16 @@ def _build_brownfield_context(
         statement = str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip()
         if not rule_id or not _is_meaningful_business_rule(statement):
             continue
-        source_module = str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip()
-        target_service = service_by_source.get(_normalize_name(source_module), "")
-        if not target_service:
-            category = _classify_business_rule(statement)
-            if category == "authentication":
-                target_service = "AuthenticationService"
-            elif category in {"calculation", "state_transition"}:
-                target_service = "TransactionService"
-            elif category == "reporting":
-                target_service = "ReportingService"
-            elif "customer" in statement.lower():
-                target_service = "CustomerService"
         category = _classify_business_rule(statement)
+        source_module = str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip()
+        if not source_module:
+            for flow in golden_flows:
+                description = str(flow.get("description", "")).lower()
+                if description and any(token in description for token in statement.lower().split()[:3]):
+                    source_module = _golden_flow_source_module(flow)
+                    if source_module:
+                        break
+        target_service = _route_business_rule_target_service(statement, source_module, service_by_source)
         business_rules.append({
             "rule_id": rule_id,
             "scope": target_service or source_module or "legacy",
