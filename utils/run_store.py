@@ -94,9 +94,14 @@ def _compact_pipeline_state(pipeline_state: dict[str, Any] | None) -> dict[str, 
         "agent_results",
         "analyst_output",
         "analyst_report_v2",
+        "architect_output",
+        "db_output",
+        "security_output",
         "sil_output",
         "developer_output",
         "tester_output",
+        "validator_output",
+        "deployer_output",
         "context_bundle",
         "context_contracts",
         "system_context_model",
@@ -108,6 +113,18 @@ def _compact_pipeline_state(pipeline_state: dict[str, Any] | None) -> dict[str, 
         "run_context_bundle",
         "legacy_code",
     }
+    raw_dict_keys = {
+        "cloud_config",
+        "context_vault_ref",
+        "context_contract_validation",
+        "discover_review",
+        "github_export",
+        "github_export_progress",
+        "integration_context",
+        "pending_approval",
+        "retry_plan",
+        "team",
+    }
     for key, value in pipeline_state.items():
         if key in heavy_keys:
             continue
@@ -116,14 +133,19 @@ def _compact_pipeline_state(pipeline_state: dict[str, Any] | None) -> dict[str, 
         elif isinstance(value, list):
             compact[key] = value[:50]
         elif isinstance(value, dict):
-            compact[key] = value
+            compact[key] = value if key in raw_dict_keys else _compact_output_summary(value)
     agent_results = pipeline_state.get("agent_results", [])
     if isinstance(agent_results, list):
         compact["agent_results"] = [row for row in (_compact_agent_result(item) for item in agent_results[-20:]) if row]
     for key in (
         "analyst_output",
+        "architect_output",
         "developer_output",
+        "db_output",
+        "security_output",
         "tester_output",
+        "validator_output",
+        "deployer_output",
         "system_context_model",
         "convention_profile",
         "health_assessment",
