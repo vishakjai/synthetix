@@ -12830,7 +12830,7 @@ function renderArchitectReadable(output, useCase) {
   const reviewQueue = Array.isArray(architectPackage.human_review_queue) ? architectPackage.human_review_queue : [];
   const handoffComponents = Array.isArray(architectHandoff.component_specs) ? architectHandoff.component_specs : [];
   const handoffContracts = Array.isArray(architectHandoff.interface_contracts) ? architectHandoff.interface_contracts : [];
-  const handoffWbs = Array.isArray(((architectHandoff.wbs && architectHandoff.wbs.items) || [])) ? architectHandoff.wbs.items : [];
+  const handoffWbs = Array.isArray(architectHandoff?.wbs?.items) ? architectHandoff.wbs.items : [];
   const handoffValidation = (architectHandoff.validation_status && typeof architectHandoff.validation_status === "object") ? architectHandoff.validation_status : {};
   const handoffReview = Array.isArray(architectHandoff.human_review_queue) ? architectHandoff.human_review_queue : [];
   const services = Array.isArray(output.services) ? output.services : [];
