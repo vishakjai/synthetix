@@ -208,6 +208,39 @@ class DeveloperPrereqsTest(unittest.TestCase):
         self.assertEqual(report.get("status"), "BLOCKED")
         self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-007" for row in report.get("hard_blockers", [])))
 
+    def test_prereqs_block_when_business_rule_targets_a_different_service(self):
+        scoped = self._scoped()
+        scoped["brownfield_context"]["business_rules"][0]["target_service"] = "ReportingService"
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-010" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_anchor_endpoint_is_not_in_scoped_contracts(self):
+        scoped = self._scoped()
+        scoped["brownfield_context"]["regression_test_anchors"][0]["target_endpoint"] = "/reference/cmdsave-click"
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-011" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_scoped_contracts_duplicate_a_route(self):
+        scoped = self._scoped()
+        duplicate = dict(scoped["interface_contracts"][0])
+        duplicate["contract_id"] = "contract_duplicate"
+        scoped["interface_contracts"].append(duplicate)
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-CONTRACTS-002" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_wbs_points_at_different_service_or_module(self):
+        scoped = self._scoped()
+        scoped["wbs_items"][0]["service"] = "ReportingService"
+        scoped["wbs_items"][0]["stories"][0]["source_module"] = "frmstatement"
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        gap_ids = {row.get("gap_id") for row in report.get("hard_blockers", [])}
+        self.assertIn("GAP-WBS-002", gap_ids)
+        self.assertIn("GAP-WBS-003", gap_ids)
+
     def test_prereqs_block_when_referenced_business_rule_row_is_missing(self):
         scoped = self._scoped()
         scoped["brownfield_context"]["business_rules"] = []

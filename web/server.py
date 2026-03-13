@@ -96,6 +96,7 @@ from utils.knowledge_gateway import KnowledgeGateway  # noqa: E402
 from utils.tenant_memory import TenantMemoryStore  # noqa: E402
 from utils.analyst_aas import AnalystAASService  # noqa: E402
 from utils.analyst_docx import build_business_docx_bytes  # noqa: E402
+from utils.architect_hld_docx import build_architect_hld_docx_bytes  # noqa: E402
 from utils.analyst_report import build_analyst_report_v2, build_raw_artifact_set_v1  # noqa: E402
 from utils.analyst_markdown_migration import migrate_markdown_to_analyst_output  # noqa: E402
 from utils.landscape_router import build_greenfield_landscape_artifacts, build_landscape_artifacts  # noqa: E402
@@ -11323,6 +11324,17 @@ async def api_get_run_architect_handoff(request):
     return JSONResponse({"ok": True, "run_id": run_id, "architect_handoff_package": handoff})
 
 
+async def api_get_run_architect_package(request):
+    run_id = request.path_params.get("run_id", "")
+    run, stage_output = _resolve_stage_output_for_api(run_id, 2)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    architect_package = stage_output.get("architect_package", {}) if isinstance(stage_output.get("architect_package", {}), dict) else {}
+    if not architect_package:
+        return JSONResponse({"ok": False, "error": "architect package unavailable for this run"}, status_code=404)
+    return JSONResponse({"ok": True, "run_id": run_id, "architect_package": architect_package})
+
+
 async def api_get_run_architect_handoff_component(request):
     run_id = request.path_params.get("run_id", "")
     component = _clean_text(request.query_params.get("component"))
@@ -11339,6 +11351,60 @@ async def api_get_run_architect_handoff_component(request):
     if not component_spec:
         return JSONResponse({"ok": False, "error": f"component `{component}` not found in architect handoff package"}, status_code=404)
     return JSONResponse({"ok": True, "run_id": run_id, "component": component, "component_handoff": scoped})
+
+
+async def api_download_architect_hld_docx(request):
+    run_id = request.path_params.get("run_id", "")
+    run, stage_output = _resolve_stage_output_for_api(run_id, 2)
+    if not run:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    architect_package = stage_output.get("architect_package", {}) if isinstance(stage_output.get("architect_package", {}), dict) else {}
+    if not architect_package:
+        return JSONResponse({"ok": False, "error": "architect package unavailable for this run"}, status_code=404)
+
+    query = request.query_params
+    requested_type = str(query.get("type", "legacy")).strip().lower()
+    if requested_type not in {"legacy", "target"}:
+        return JSONResponse({"ok": False, "error": "type must be legacy or target"}, status_code=400)
+    hld_documents = architect_package.get("hld_documents", {}) if isinstance(architect_package.get("hld_documents", {}), dict) else {}
+    if str(hld_documents.get("generation_status", "")).strip().lower() == "blocked":
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "HLD generation is blocked for this run",
+                "gate_failures": hld_documents.get("gate_failures", []),
+            },
+            status_code=409,
+        )
+    doc_key = "legacy_hld" if requested_type == "legacy" else "target_hld"
+    hld_meta = hld_documents.get(doc_key, {}) if isinstance(hld_documents.get(doc_key, {}), dict) else {}
+    render_payload = hld_meta.get("render_payload", {}) if isinstance(hld_meta.get("render_payload", {}), dict) else {}
+    if not render_payload:
+        return JSONResponse({"ok": False, "error": f"{requested_type} HLD payload unavailable for this run"}, status_code=404)
+
+    template_path = str(query.get("template_path", "")).strip()
+    style_mode = str(query.get("style", "strict_template")).strip().lower()
+    strict_template = style_mode in {"strict_template", "template", "locked"}
+    try:
+        docx_bytes = build_architect_hld_docx_bytes(
+            render_payload,
+            template_path=template_path or None,
+            strict_template=strict_template,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"docx generation failed: {exc}"}, status_code=500)
+
+    file_name = Path(str(hld_meta.get("docx_path", ""))).name or f"{requested_type}-hld-{safe_name(str(run_id or 'run'))}.docx"
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_name}"',
+            "Cache-Control": "no-store",
+            "X-Docx-Style-Mode": style_mode,
+            "X-Architect-Hld-Type": requested_type,
+        },
+    )
 
 
 async def api_download_db_artifact(request):
@@ -15597,8 +15663,10 @@ routes = [
     Route("/api/runs/{run_id:str}/analyst-docx", api_download_analyst_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/analyst-docgen-docx", api_download_analyst_docgen_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/estimates", api_list_run_estimates, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/architect-package", api_get_run_architect_package, methods=["GET"]),
     Route("/api/runs/{run_id:str}/architect-handoff", api_get_run_architect_handoff, methods=["GET"]),
     Route("/api/runs/{run_id:str}/architect-handoff/component", api_get_run_architect_handoff_component, methods=["GET"]),
+    Route("/api/runs/{run_id:str}/architect-hld-docx", api_download_architect_hld_docx, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/module", api_get_run_knowledge_module, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/rule", api_get_run_knowledge_rule, methods=["GET"]),
     Route("/api/runs/{run_id:str}/knowledge/blast-radius", api_get_run_knowledge_blast_radius, methods=["GET"]),

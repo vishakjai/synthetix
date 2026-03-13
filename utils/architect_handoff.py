@@ -67,7 +67,7 @@ def _camel_split(value: str) -> str:
 
 
 def _service_path_slug(service_name: str) -> str:
-    return re.sub(r"service$", "", str(service_name or ""), flags=re.IGNORECASE).strip() or "service"
+    return (re.sub(r"service$", "", str(service_name or ""), flags=re.IGNORECASE).strip() or "service").lower()
 
 
 def _safe_list_text(values: list[Any]) -> list[str]:
@@ -82,6 +82,38 @@ def _raw_bucket(raw: dict[str, Any], *keys: str) -> dict[str, Any]:
     return {}
 
 
+def _nested_value(payload: dict[str, Any], *path: str) -> Any:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _rows_from_payload(payload: Any, *keys: str) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        return _raw_rows(payload, *keys)
+    return []
+
+
+def _prepared_raw_artifacts(analyst: dict[str, Any]) -> dict[str, Any]:
+    raw = dict(_as_dict(analyst.get("raw_artifacts")))
+    if not _golden_flow_rows(raw):
+        report_flows = _rows_from_payload(
+            _nested_value(analyst, "analyst_report_v2", "delivery_spec", "testing_and_evidence", "golden_flows"),
+            "flows",
+            "rows",
+            "anchors",
+            "items",
+        )
+        if report_flows:
+            raw["golden_flows"] = {"flows": report_flows}
+    return raw
+
+
 def _raw_rows(bucket: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
     for key in keys:
         rows = bucket.get(key)
@@ -91,26 +123,63 @@ def _raw_rows(bucket: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
 
 
 def _risk_detector_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
-    return _raw_rows(
-        _raw_bucket(raw, "static_risk_detectors", "static_risk_detector_findings", "risk_detector_findings"),
-        "findings",
-        "rows",
-        "detectors",
-    )
+    rows: list[dict[str, Any]] = []
+    for payload in (
+        raw.get("static_risk_detectors"),
+        raw.get("static_risk_detector_findings"),
+        raw.get("risk_detector_findings"),
+        raw.get("detector_findings"),
+    ):
+        rows.extend(_rows_from_payload(payload, "findings", "rows", "detectors", "items"))
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            str(row.get("detector_id", "")).strip()
+            or str(row.get("risk_id", "")).strip()
+            or str(row.get("signal", "")).strip()
+            or str(row.get("title", "")).strip()
+            or str(row.get("summary", "")).strip()
+        )
+        normalized = _normalize_name(key)
+        if normalized and normalized in seen:
+            continue
+        if normalized:
+            seen.add(normalized)
+        deduped.append(row)
+    return deduped
 
 
 def _golden_flow_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
-    return _raw_rows(
-        _raw_bucket(raw, "golden_flows", "golden_flow_inventory", "golden_flow_catalog"),
-        "flows",
-        "rows",
-        "anchors",
-    )
+    rows: list[dict[str, Any]] = []
+    for payload in (
+        raw.get("golden_flows"),
+        raw.get("golden_flow_inventory"),
+        raw.get("golden_flow_catalog"),
+    ):
+        rows.extend(_rows_from_payload(payload, "flows", "rows", "anchors", "items"))
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            str(row.get("flow_id", "")).strip()
+            or str(row.get("id", "")).strip()
+            or str(row.get("entry_point", "")).strip()
+            or str(row.get("entrypoint", "")).strip()
+            or str(row.get("name", "")).strip()
+        )
+        normalized = _normalize_name(key)
+        if normalized and normalized in seen:
+            continue
+        if normalized:
+            seen.add(normalized)
+        deduped.append(row)
+    return deduped
 
 
 def _dead_ref_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return _raw_rows(
-        _raw_bucket(raw, "dead_form_references", "dead_references", "orphaned_references"),
+        _raw_bucket(raw, "dead_form_references", "dead_form_refs", "dead_references", "orphaned_references"),
         "references",
         "rows",
         "items",
@@ -307,6 +376,131 @@ def _traceability_service_by_source(traceability: dict[str, Any]) -> dict[str, s
     }
 
 
+def _traceability_modules_by_service(traceability: dict[str, Any]) -> dict[str, list[str]]:
+    rows: dict[str, list[str]] = {}
+    for mapping in _as_list(traceability.get("mappings")):
+        if not isinstance(mapping, dict):
+            continue
+        module_name = str(_as_dict(mapping.get("source")).get("module", "")).strip()
+        service_name = str(_as_dict(mapping.get("target")).get("service", "")).strip()
+        if not module_name or not service_name:
+            continue
+        service_rows = rows.setdefault(service_name, [])
+        if module_name not in service_rows:
+            service_rows.append(module_name)
+    return rows
+
+
+def _traceability_known_modules(traceability: dict[str, Any]) -> list[str]:
+    return [
+        str(_as_dict(mapping.get("source")).get("module", "")).strip()
+        for mapping in _as_list(traceability.get("mappings"))
+        if isinstance(mapping, dict) and str(_as_dict(mapping.get("source")).get("module", "")).strip()
+    ]
+
+
+def _module_aliases(value: str) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    text = text.replace("\\", "/").split("/")[-1]
+    stem = text.rsplit(".", 1)[0]
+    normalized = _normalize_name(stem)
+    aliases = {normalized}
+    stripped = re.sub(r"^(frm|mdi|mod|mdl)", "", normalized)
+    if stripped:
+        aliases.add(stripped)
+    if "closeaccount" in stripped or "closeacount" in stripped:
+        aliases.update({"closeaccount", "closeacount"})
+    if stripped in {"with"} or "withdraw" in stripped:
+        aliases.update({"withdraw", "with"})
+    if "interest" in stripped:
+        aliases.update({"interest", "addinterest"})
+    if "checkbalance" in stripped or ("check" in stripped and "balance" in stripped):
+        aliases.update({"checkbalance", "balance"})
+    return {alias for alias in aliases if alias}
+
+
+def _resolve_module_name(candidate: str, known_modules: list[str]) -> str:
+    text = str(candidate or "").strip()
+    if not text:
+        return ""
+    target_aliases = _module_aliases(text)
+    best_match = ""
+    best_score = 0.0
+    for module_name in known_modules:
+        module_aliases = _module_aliases(module_name)
+        if target_aliases & module_aliases:
+            return module_name
+        score = 0.0
+        for left in target_aliases:
+            for right in module_aliases:
+                if left in right or right in left:
+                    score = max(score, 0.9)
+                score = max(score, SequenceMatcher(None, left, right).ratio())
+        if score > best_score:
+            best_score = score
+            best_match = module_name
+    return best_match if best_score >= 0.72 else ""
+
+
+def _module_hint_tokens(module_name: str) -> set[str]:
+    lowered = str(module_name or "").lower()
+    tokens: set[str] = set()
+    for token in ("login", "deposit", "withdraw", "interest", "customer", "close", "daily", "within", "report", "statement", "splash", "checkbalance", "balance", "setting", "reference"):
+        if token in lowered:
+            tokens.add(token)
+    if lowered.startswith("frmwith"):
+        tokens.add("withdraw")
+    if "closeacount" in lowered:
+        tokens.update({"close", "account"})
+    return tokens
+
+
+def _select_service_module(target_service: str, text: str, modules_by_service: dict[str, list[str]]) -> str:
+    candidates = modules_by_service.get(target_service, [])
+    if not candidates:
+        return ""
+    text_lower = str(text or "").lower()
+    text_normalized = _normalize_name(text)
+    best_module = candidates[0]
+    best_score = -1
+    for module_name in candidates:
+        score = 0
+        aliases = _module_aliases(module_name)
+        if any(alias and alias in text_normalized for alias in aliases):
+            score += 12
+        for token in _module_hint_tokens(module_name):
+            if token and token in text_lower:
+                score += 4
+        if score > best_score:
+            best_score = score
+            best_module = module_name
+    return best_module
+
+
+def _inferred_module_entry_point(module_name: str, target_service: str, description: str = "") -> str:
+    module = str(module_name or "").strip()
+    if not module:
+        return ""
+    text = " ".join([module, target_service, description]).lower()
+    if "login" in text or target_service == "AuthenticationService":
+        return f"{module}::cmdOK_Click"
+    if "splash" in text:
+        return f"{module}::Form_Load"
+    if "deposit" in text:
+        return f"{module}::cmdsave_Click"
+    if "withdraw" in text:
+        return f"{module}::cmdwithdraw_Click"
+    if "interest" in text:
+        return f"{module}::cmdCalculateInterest_Click"
+    if any(token in text for token in ("statement", "report", "daily", "within")):
+        return f"{module}::cmdShow_Click"
+    if any(token in text for token in ("customer", "account", "setting", "reference", "closeaccount", "close account")):
+        return f"{module}::cmdsave_Click"
+    return f"{module}::execute"
+
+
 def _is_meaningful_business_rule(statement: str) -> bool:
     text = str(statement or "").strip()
     lowered = text.lower()
@@ -388,12 +582,30 @@ def _route_target_service_from_text(text: str) -> str:
     if not lowered:
         return ""
     auth_tokens = ("login", "password", "credential", "lockout", "failed attempt", "authenticate", "signin", "recordcount < 1")
+    legacy_core_tokens = ("frminterest", "addinterest", "withindate", "frmdaily", "daily report", "legacy core")
     transaction_tokens = ("deposit", "withdraw", "transaction", "ledger", "balance", "interest", "funds", "atomic", "rollback", "expire")
-    customer_tokens = ("customer", "account holder", "profile", "firstname", "lastname", "address", "phone", "email", "unique account")
+    customer_tokens = (
+        "customer",
+        "account holder",
+        "profile",
+        "firstname",
+        "lastname",
+        "address",
+        "phone",
+        "email",
+        "unique account",
+        "tblcustomer",
+        "tblcustomers",
+        "tblaccount",
+        "customerid",
+        "accountno",
+    )
     reporting_tokens = ("statement", "report", "print", "export", "monthly summary", "ledger extract")
     reference_tokens = ("account type", "settings", "reference", "lookup", "configuration")
     if any(token in lowered for token in auth_tokens):
         return "AuthenticationService"
+    if any(token in lowered for token in legacy_core_tokens):
+        return "LegacyCoreService"
     if any(token in lowered for token in reporting_tokens):
         return "ReportingService"
     if any(token in lowered for token in reference_tokens):
@@ -439,20 +651,47 @@ def _rule_acceptance_criteria(rule: dict[str, Any], source_module: str, target_s
 
 
 def _route_business_rule_target_service(statement: str, source_module: str, service_by_source: dict[str, str]) -> str:
+    category = _classify_business_rule(statement)
     source_key = _normalize_name(source_module)
-    if source_key and service_by_source.get(source_key):
-        return service_by_source[source_key]
-    return _route_target_service_from_text(statement)
+    source_service = service_by_source.get(source_key, "") if source_key else ""
+    semantic_service = _route_target_service_from_text(statement)
+    module_service = _route_target_service_from_text(source_module)
+    weak_boundaries = {"ReportingService", "LegacyCoreService", "ExperienceShell", "ReferenceDataService"}
+    strong_boundaries = {"AuthenticationService", "CustomerService", "TransactionService"}
+    if category == "authentication" or semantic_service == "AuthenticationService":
+        return "AuthenticationService"
+    if source_service == "LegacyCoreService" and module_service == "LegacyCoreService":
+        return "LegacyCoreService"
+    if source_service and semantic_service:
+        if source_service == semantic_service:
+            return source_service
+        if source_service in weak_boundaries and semantic_service in strong_boundaries:
+            return semantic_service
+        if category in {"calculation", "state_transition", "validation"} and semantic_service in strong_boundaries:
+            return semantic_service
+    if module_service and source_service and module_service != source_service:
+        if source_service in weak_boundaries and module_service in strong_boundaries:
+            return module_service
+    return source_service or module_service or semantic_service
 
 
 def _golden_flow_entry_point(flow: dict[str, Any]) -> str:
-    entry_point = str(flow.get("entry_point", "")).strip() or str(flow.get("handler", "")).strip()
+    entry_point = (
+        str(flow.get("entry_point", "")).strip()
+        or str(flow.get("entrypoint", "")).strip()
+        or str(flow.get("handler", "")).strip()
+    )
     if entry_point:
+        parts = [part.strip() for part in entry_point.split("::") if part.strip()]
+        if len(parts) >= 2:
+            return "::".join(parts[-2:])
         return entry_point
-    description = str(flow.get("description", "")).strip()
-    match = re.search(r"([A-Za-z0-9_]+::[A-Za-z0-9_]+)", description)
-    if match:
-        return match.group(1)
+    description = str(flow.get("description", "")).strip() or str(flow.get("name", "")).strip()
+    chained = re.findall(r"([A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)+)", description)
+    if chained:
+        parts = [part.strip() for part in chained[0].split("::") if part.strip()]
+        if len(parts) >= 2:
+            return "::".join(parts[-2:])
     lowered = description.lower()
     if "login" in lowered:
         return "legacy_login::execute"
@@ -467,23 +706,76 @@ def _golden_flow_entry_point(flow: dict[str, Any]) -> str:
     return ""
 
 
-def _golden_flow_source_module(flow: dict[str, Any]) -> str:
+def _golden_flow_source_module(flow: dict[str, Any], known_modules: list[str] | None = None) -> str:
     entry_point = _golden_flow_entry_point(flow)
     parts = [part.strip() for part in entry_point.split("::") if part.strip()]
-    return parts[0] if parts else ""
+    if parts:
+        module_name = parts[0]
+        if known_modules:
+            return _resolve_module_name(module_name, known_modules) or module_name
+        return module_name
+    for candidate in (
+        str(flow.get("name", "")).strip(),
+        str(flow.get("description", "")).strip(),
+    ):
+        resolved = _resolve_module_name(candidate, known_modules or [])
+        if resolved:
+            return resolved
+    return ""
+
+
+def _normalized_risk_detector_findings(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for idx, row in enumerate(_risk_detector_rows(raw), start=1):
+        if not isinstance(row, dict):
+            continue
+        signal = (
+            str(row.get("signal", "")).strip()
+            or str(row.get("title", "")).strip()
+            or str(row.get("risk_id", "")).strip()
+            or str(row.get("detector_id", "")).strip()
+        )
+        detail = (
+            str(row.get("message", "")).strip()
+            or str(row.get("detail", "")).strip()
+            or str(row.get("description", "")).strip()
+            or str(row.get("summary", "")).strip()
+        )
+        if not signal and detail:
+            signal = _slug(detail)[:48]
+        if not detail and signal:
+            detail = f"Legacy detector finding `{signal}` requires remediation planning."
+        if not signal and not detail:
+            continue
+        findings.append(
+            {
+                "signal": signal or f"detector-finding-{idx}",
+                "severity": str(row.get("severity", "")).strip() or "medium",
+                "detail": detail or f"Legacy detector finding {idx} requires remediation planning.",
+            }
+        )
+    return findings
 
 
 def _derive_expected_output(flow: dict[str, Any], description: str, target_service: str) -> str:
     explicit = str(flow.get("expected_outcome", "")).strip() or str(flow.get("outcome", "")).strip()
-    if explicit:
+    explicit_lower = explicit.lower()
+    if explicit and explicit_lower not in {
+        "behavior matches legacy flow with equivalent side effects.",
+        "behavior matches legacy workflow with equivalent side effects.",
+    } and not re.match(r"^\(unmapped\)::[a-z0-9_]+\s+(primary|secondary)\s+flow$", explicit_lower):
         return explicit
     lowered = description.lower()
     if "login" in lowered:
         return "Valid credentials result in an authenticated session and navigation to the main customer workflow."
+    if "checkbalance" in lowered or ("check" in lowered and "balance" in lowered):
+        return "Returns the current balance for the specified account without mutating the ledger."
     if "deposit" in lowered:
         return "Deposit is persisted, account balance is increased, and a transaction ledger record is written."
     if "withdraw" in lowered:
         return "Withdrawal is persisted only when funds are sufficient and the balance is reduced with a matching ledger record."
+    if "interest" in lowered:
+        return "Interest is calculated from the current balance, persisted to the ledger, and the updated balance is returned."
     if "customer" in lowered:
         return "Customer data is loaded or updated consistently with the legacy workflow."
     if "close account" in lowered or "closeaccount" in lowered:
@@ -493,6 +785,89 @@ def _derive_expected_output(flow: dict[str, Any], description: str, target_servi
     if "settings" in lowered or target_service == "ReferenceDataService":
         return "Reference data changes are persisted and subsequently visible to dependent workflows."
     return description
+
+
+def _extract_table_names(values: list[Any]) -> list[str]:
+    tables: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "")
+        for match in re.findall(r"\btbl[a-z0-9_]+\b", text, flags=re.IGNORECASE):
+            normalized = _normalize_name(match)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                tables.append(match)
+    return tables
+
+
+def _fixture_text(flow: dict[str, Any], source_module: str, target_service: str, target_endpoint: str, description: str, sql_rows: list[dict[str, Any]]) -> str:
+    flow_tables = _extract_table_names(_as_list(flow.get("tables_touched")))
+    sql_tables: list[str] = []
+    for row in sql_rows:
+        if not isinstance(row, dict):
+            continue
+        if _normalize_name(row.get("source_module")) != _normalize_name(source_module):
+            continue
+        sql_tables.extend(_safe_list_text(row.get("data_mutations", [])))
+        sql_tables.extend(_safe_list_text(row.get("tables", [])))
+    legacy_tables = sorted({_normalize_name(table): table for table in flow_tables + _extract_table_names(sql_tables) + sql_tables if str(table).strip()}.values())
+    text = " ".join([description, source_module, target_service, target_endpoint]).lower()
+    payload: dict[str, Any]
+    if "login" in text or target_service == "AuthenticationService":
+        payload = {
+            "seed": {"username": "bank-user", "password": "correct-password"},
+            "expected_tables": legacy_tables,
+            "request": {"method": "POST", "path": target_endpoint or "/auth/login"},
+        }
+    elif "deposit" in text:
+        payload = {
+            "seed": {"accountNo": "ACC-1001", "amount": 125.0, "startingBalance": 1000.0},
+            "expected_tables": legacy_tables or ["tbltransaction"],
+            "request": {"method": "POST", "path": target_endpoint or "/transactions/deposit"},
+        }
+    elif "withdraw" in text:
+        payload = {
+            "seed": {"accountNo": "ACC-1001", "amount": 125.0, "startingBalance": 1000.0},
+            "expected_tables": legacy_tables or ["tbltransaction"],
+            "request": {"method": "POST", "path": target_endpoint or "/transactions/withdraw"},
+        }
+    elif "checkbalance" in text or ("check" in text and "balance" in text):
+        payload = {
+            "seed": {"accountNo": "ACC-1001"},
+            "expected_tables": legacy_tables or ["tblaccount"],
+            "request": {"method": "GET", "path": target_endpoint or "/transaction/checkbalance"},
+        }
+    elif "interest" in text:
+        payload = {
+            "seed": {"accountNo": "ACC-1001", "currentBalance": 1000.0, "interestRate": 0.01},
+            "expected_tables": legacy_tables or ["tbltransaction", "tblcustomers"],
+            "request": {"method": "POST", "path": target_endpoint or "/legacycore/addinterest"},
+        }
+    elif "close" in text:
+        payload = {
+            "seed": {"accountNo": "ACC-1001", "customerId": "CUST-1001", "balance": 0.0, "status": "ACTIVE"},
+            "expected_tables": legacy_tables or ["tblcustomers"],
+            "request": {"method": "PUT", "path": target_endpoint or "/accounts/close"},
+        }
+    elif "customer" in text:
+        payload = {
+            "seed": {"customerId": "CUST-1001", "accountNo": "ACC-1001"},
+            "expected_tables": legacy_tables or ["tblcustomers"],
+            "request": {"method": "GET", "path": target_endpoint or "/customers/{customerId}"},
+        }
+    elif "settings" in text or "reference/settings" in text:
+        payload = {
+            "seed": {"settings": {"defaultInterestRate": 0.01, "currency": "USD"}},
+            "expected_tables": legacy_tables or ["tblaccount"],
+            "request": {"method": "PUT", "path": target_endpoint or "/reference/settings"},
+        }
+    else:
+        payload = {
+            "seed": {"referenceId": "LEGACY-001"},
+            "expected_tables": legacy_tables,
+            "request": {"path": target_endpoint},
+        }
+    return json.dumps(payload, ensure_ascii=True, separators=(", ", ": "))
 
 
 def _operation_shape_fields(service_name: str, op_name: str, method: str, path: str, replaces: list[str]) -> dict[str, Any]:
@@ -508,6 +883,15 @@ def _operation_shape_fields(service_name: str, op_name: str, method: str, path: 
             {"name": "token", "type": "string", "required": True},
             {"name": "expires_at", "type": "datetime", "required": True},
         ]
+    elif "checkbalance" in text or ("check" in text and "balance" in text):
+        request_fields = [
+            {"name": "account_no", "type": "string", "required": True},
+        ]
+        response_fields = [
+            {"name": "account_no", "type": "string", "required": True},
+            {"name": "balance", "type": "decimal", "required": True},
+            {"name": "currency", "type": "string", "required": True},
+        ]
     elif any(token in text for token in ("deposit", "withdraw")):
         request_fields = [
             {"name": "account_no", "type": "string", "required": True},
@@ -517,6 +901,26 @@ def _operation_shape_fields(service_name: str, op_name: str, method: str, path: 
         response_fields = [
             {"name": "transaction_id", "type": "string", "required": True},
             {"name": "balance", "type": "decimal", "required": True},
+        ]
+    elif "interest" in text:
+        request_fields = [
+            {"name": "account_no", "type": "string", "required": True},
+            {"name": "current_balance", "type": "decimal", "required": True},
+            {"name": "interest_rate", "type": "decimal", "required": False},
+            {"name": "posting_date", "type": "date", "required": False},
+        ]
+        response_fields = [
+            {"name": "transaction_id", "type": "string", "required": True},
+            {"name": "interest_amount", "type": "decimal", "required": True},
+            {"name": "updated_balance", "type": "decimal", "required": True},
+        ]
+    elif "reference/settings" in text:
+        request_fields = [
+            {"name": "settings", "type": "object", "required": True},
+        ]
+        response_fields = [
+            {"name": "updated", "type": "boolean", "required": True},
+            {"name": "settings", "type": "object", "required": True},
         ]
     elif any(token in text for token in ("customer", "account")) and method in {"POST", "PUT", "PATCH"}:
         request_fields = [
@@ -556,27 +960,160 @@ def _golden_flow_target_endpoint(flow: dict[str, Any], service_by_source: dict[s
     module_name = parts[0] if parts else ""
     service_name = target_service or service_by_source.get(_normalize_name(module_name), "")
     if not service_name:
-        service_name = _route_target_service_from_text(str(flow.get("description", "")).strip())
+        service_name = _route_target_service_from_text(
+            str(flow.get("description", "")).strip() or str(flow.get("name", "")).strip() or entry_point
+        )
     if not service_name:
         return ""
-    flow_text = " ".join([entry_point, str(flow.get("description", "")).strip()]).lower()
+    flow_text = " ".join([entry_point, str(flow.get("name", "")).strip(), str(flow.get("description", "")).strip()]).lower()
     if "login" in flow_text or service_name == "AuthenticationService":
         return "/auth/login"
     if "deposit" in flow_text:
         return "/transactions/deposit"
     if "withdraw" in flow_text:
         return "/transactions/withdraw"
-    if "close account" in flow_text or "closeaccount" in flow_text:
-        return "/accounts/close"
+    if "checkbalance" in flow_text or ("balance" in flow_text and service_name == "TransactionService"):
+        return "/transaction/checkbalance"
+    if "interest" in flow_text and service_name == "LegacyCoreService":
+        return "/legacycore/addinterest"
+    if "withindate" in flow_text and service_name == "LegacyCoreService":
+        return "/legacycore/withindate"
+    if "daily" in flow_text and service_name == "LegacyCoreService":
+        return "/legacycore/daily"
+    if "form1" in flow_text and service_name == "LegacyCoreService":
+        return "/legacycore/form1"
+    if "customer" in flow_text and service_name == "CustomerService" and "close" not in flow_text:
+        return "/customers/{customerId}"
+    if "close account" in flow_text or "closeaccount" in flow_text or "closeacount" in flow_text:
+        return "/customer/closeacount" if "frmcloseacount" in flow_text or "closeacount" in flow_text else "/accounts/close"
     if "statement" in flow_text or "report" in flow_text or service_name == "ReportingService":
         action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "statement")
         return f"/reports/{action}"
     if "settings" in flow_text or "reference" in flow_text or service_name == "ReferenceDataService":
+        if any(token in flow_text for token in ("setting", "settings", "frmsettings")):
+            return "/reference/settings"
         action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "reference")
         return f"/reference/{action}"
     slug = _service_path_slug(service_name)
     action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "operation")
     return f"/{slug}/{action}"
+
+
+def _best_contract_for_anchor(anchor: dict[str, Any], contracts: list[dict[str, Any]]) -> dict[str, Any]:
+    target_service = str(anchor.get("target_service", "")).strip()
+    source_module = _normalize_name(anchor.get("source_module"))
+    flow_text = " ".join(
+        [
+            str(anchor.get("anchor_id", "")).strip(),
+            str(anchor.get("entry_point", "")).strip(),
+            str(anchor.get("description", "")).strip(),
+            str(anchor.get("expected_output", "")).strip(),
+        ]
+    ).lower()
+    best_contract: dict[str, Any] = {}
+    best_score = -1
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        if target_service and str(contract.get("owner_component", "")).strip() != target_service:
+            continue
+        spec_content = _as_dict(contract.get("spec_content"))
+        contract_text = " ".join(
+            [
+                str(contract.get("path", "")).strip(),
+                str(contract.get("operation", "")).strip(),
+                str(spec_content.get("name", "")).strip(),
+                " ".join(_safe_list_text(spec_content.get("replaces", []))),
+                str(spec_content.get("notes", "")).strip(),
+            ]
+        ).lower()
+        score = 0
+        replaces = {_normalize_name(value) for value in _safe_list_text(spec_content.get("replaces", []))}
+        if source_module and source_module in replaces:
+            score += 12
+        if str(anchor.get("target_endpoint", "")).strip() == str(contract.get("path", "")).strip():
+            score += 6
+        for token in _module_hint_tokens(anchor.get("source_module", "")) | _module_hint_tokens(anchor.get("entry_point", "")):
+            if token and token in contract_text:
+                score += 3
+        if "settings" in flow_text and "/reference/settings" == str(contract.get("path", "")).strip():
+            score += 8
+        if score > best_score:
+            best_score = score
+            best_contract = contract
+    return best_contract if best_score > 0 else {}
+
+
+def _reconcile_brownfield_contract_semantics(
+    brownfield_context: dict[str, Any],
+    interface_contracts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    brownfield = dict(brownfield_context) if isinstance(brownfield_context, dict) else {}
+    anchors = [dict(row) for row in _as_list(brownfield.get("regression_test_anchors")) if isinstance(row, dict)]
+    sql_reference_rows = [row for row in _as_list(brownfield.get("sql_reference_rows")) if isinstance(row, dict)]
+    reconciled: list[dict[str, Any]] = []
+    for anchor in anchors:
+        matched_contract = _best_contract_for_anchor(anchor, interface_contracts)
+        if matched_contract:
+            path = str(matched_contract.get("path", "")).strip()
+            method = str(matched_contract.get("method", "")).strip().upper()
+            if path:
+                anchor["target_endpoint"] = path
+                try:
+                    fixture_payload = json.loads(
+                        _fixture_text(
+                            {"flow_id": anchor.get("golden_flow_ref", "")},
+                            str(anchor.get("source_module", "")).strip(),
+                            str(anchor.get("target_service", "")).strip(),
+                            path,
+                            str(anchor.get("description", "")).strip(),
+                            sql_reference_rows,
+                        )
+                    )
+                    request = _as_dict(fixture_payload.get("request"))
+                    if method:
+                        request["method"] = method
+                    request["path"] = path
+                    fixture_payload["request"] = request
+                    anchor["data_fixture"] = json.dumps(fixture_payload, ensure_ascii=True, separators=(", ", ": "))
+                except json.JSONDecodeError:
+                    pass
+        reconciled.append(anchor)
+    brownfield["regression_test_anchors"] = reconciled
+    return brownfield
+
+
+def _reconcile_component_specs(
+    component_specs: list[dict[str, Any]],
+    interface_contracts: list[dict[str, Any]],
+    wbs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    contract_refs_by_service: dict[str, list[str]] = {}
+    for contract in interface_contracts:
+        if not isinstance(contract, dict):
+            continue
+        service_name = str(contract.get("owner_component", "")).strip()
+        contract_id = str(contract.get("contract_id", "")).strip()
+        if service_name and contract_id:
+            contract_refs_by_service.setdefault(service_name, []).append(contract_id)
+    wbs_refs_by_service: dict[str, list[str]] = {}
+    for item in _as_list(_as_dict(wbs).get("items")):
+        if not isinstance(item, dict):
+            continue
+        service_name = str(item.get("service", "")).strip()
+        wbs_id = str(item.get("wbs_id", "")).strip()
+        if service_name and wbs_id:
+            wbs_refs_by_service.setdefault(service_name, []).append(wbs_id)
+    reconciled_specs: list[dict[str, Any]] = []
+    for spec in component_specs:
+        if not isinstance(spec, dict):
+            continue
+        service_name = str(spec.get("component_name", "")).strip()
+        row = dict(spec)
+        row["interface_refs"] = sorted(set(contract_refs_by_service.get(service_name, [])))
+        row["wbs_refs"] = sorted(set(wbs_refs_by_service.get(service_name, row.get("wbs_refs", []))))
+        reconciled_specs.append(row)
+    return reconciled_specs
 
 
 def _similar_name_pairs(values: list[str]) -> list[tuple[str, str]]:
@@ -675,7 +1212,7 @@ def build_architect_handoff_package(
     architect_package: dict[str, Any],
 ) -> dict[str, Any]:
     analyst = state.get("analyst_output", {}) if isinstance(state.get("analyst_output", {}), dict) else {}
-    raw = analyst.get("raw_artifacts", {}) if isinstance(analyst.get("raw_artifacts", {}), dict) else {}
+    raw = _prepared_raw_artifacts(analyst)
     legacy = analyst.get("legacy_code_inventory", {}) if isinstance(analyst.get("legacy_code_inventory", {}), dict) else {}
     package_meta = _as_dict(architect_package.get("package_meta"))
     artifacts = _as_dict(architect_package.get("artifacts"))
@@ -703,6 +1240,10 @@ def build_architect_handoff_package(
     }
     brownfield_context = _build_brownfield_context(parsed, raw, traceability, source_evidence_summary)
     component_rows = _build_component_specs(traceability, api_contracts, migration_plan, risk_register, adrs, brownfield_context)
+    interface_contracts = _build_interface_contracts(api_contracts, service_lookup, raw, component_rows, brownfield_context)
+    brownfield_context = _reconcile_brownfield_contract_semantics(brownfield_context, interface_contracts)
+    wbs = _build_wbs(migration_plan, traceability)
+    component_rows = _reconcile_component_specs(component_rows, interface_contracts, wbs)
     approved_decision_ids = _approved_decision_ids(adrs, migration_plan)
     payload = {
         "artifact_type": "architect_handoff_package_v1",
@@ -761,12 +1302,12 @@ def build_architect_handoff_package(
             ],
         },
         "domain_model": _build_domain_model(ownership, services, legacy, raw, traceability),
-        "interface_contracts": _build_interface_contracts(api_contracts, service_lookup, raw, component_rows, brownfield_context),
+        "interface_contracts": interface_contracts,
         "component_specs": component_rows,
         "nfr_constraints": _build_nfr_constraints(parsed, raw),
         "brownfield_context": brownfield_context,
         "coding_policy": _build_coding_policy(state),
-        "wbs": _build_wbs(migration_plan, traceability),
+        "wbs": wbs,
         "scaffolding": _build_scaffolding(parsed),
         "validation_status": {
             "status": str(package_meta.get("status", "")).strip() or "WARN",
@@ -781,7 +1322,7 @@ def build_architect_handoff_package(
             },
             "contract_coverage": {
                 "components": len(component_rows),
-                "contracts": len(_build_interface_contracts(api_contracts, service_lookup, raw, component_rows, brownfield_context)),
+                "contracts": len(interface_contracts),
                 "review_items": len(review_queue),
             },
         },
@@ -815,10 +1356,30 @@ def _build_domain_model(
     bounded_contexts = []
     table_write_services: dict[str, list[str]] = {}
     table_read_services: dict[str, list[str]] = {}
+    ownership_seen: set[str] = set()
+
+    def _ownership_key(name: str, legacy_tables: list[str]) -> str:
+        for candidate in [*legacy_tables, name]:
+            key = _normalize_name(candidate)
+            if key.startswith("tbl"):
+                key = key[3:]
+            if key:
+                return key
+        return ""
+
+    all_service_names = [str(service.get("name", "")).strip() for service in services if isinstance(service, dict)]
 
     def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
+        candidate_pool = list(dict.fromkeys([name for name in service_names if name] + all_service_names))
         names = {name.lower(): name for name in service_names if name}
+        for name in candidate_pool:
+            if name:
+                names.setdefault(name.lower(), name)
         lowered = (table_name or '').lower()
+        fallback_name = names.get(str(fallback or "").lower(), str(fallback or "").strip())
+        if fallback_name and str(fallback_name).lower() not in {"legacycoreservice", "reportingservice", "referencedataservice", "experienceshell"}:
+            if any(token in lowered for token in ("customer", "transaction", "account", "credential", "user")):
+                return fallback_name
         if 'customer' in lowered and 'customerservice' in names:
             return names['customerservice']
         if 'transaction' in lowered and 'transactionservice' in names:
@@ -863,6 +1424,11 @@ def _build_domain_model(
             continue
         name = str(entity.get("name", "")).strip()
         legacy_tables = _safe_list_text(entity.get("legacy_tables", []))
+        dedupe_key = _ownership_key(name, legacy_tables)
+        if dedupe_key and dedupe_key in ownership_seen:
+            continue
+        if dedupe_key:
+            ownership_seen.add(dedupe_key)
         write_evidence_services: list[str] = []
         evidence_services: list[str] = []
         for table_name in legacy_tables:
@@ -964,6 +1530,29 @@ def _build_domain_model(
                     "from": owner,
                     "to": reader,
                 })
+    has_auth_database = any(
+        str(service.get("name", "")).strip() == "AuthenticationService" and str(service.get("database", "")).strip()
+        for service in services
+        if isinstance(service, dict)
+    )
+    has_auth_entity = any(
+        _normalize_name(row.get("owner")) == "authenticationservice"
+        for row in entities
+        if isinstance(row, dict)
+    )
+    if has_auth_database and not has_auth_entity:
+        entities.append({
+            "entity_name": "CredentialStore",
+            "legacy_tables": ["credential_store"],
+            "owner": "AuthenticationService",
+            "readers": [],
+            "migration_notes": "Synthetic ownership row created from the accepted authentication credential-store decision.",
+        })
+        data_ownership.append({
+            "entity_name": "CredentialStore",
+            "owning_service": "AuthenticationService",
+            "read_services": [],
+        })
     for variable in _global_state_rows(raw):
         name = str(variable.get("name", "")).strip() or str(variable.get("variable", "")).strip()
         owning_service = str(variable.get("owning_service", "")).strip()
@@ -1014,6 +1603,7 @@ def _build_interface_contracts(
     brownfield_context: dict[str, Any],
 ) -> list[dict[str, Any]]:
     contracts = []
+    contract_keys_seen: set[tuple[str, str, str]] = set()
     component_by_service = {
         str(component.get("component_name", "")).strip(): component
         for component in component_rows
@@ -1035,11 +1625,15 @@ def _build_interface_contracts(
         for idx, operation in enumerate(_as_list(service.get("operations")), start=1):
             if not isinstance(operation, dict):
                 continue
-            contract_id = f"contract_{_slug(service_name)}_{idx:02d}"
             replaces = _safe_list_text(operation.get("replaces", []))
             op_name = str(operation.get("name", "")).strip()
             path = str(operation.get("path", "")).strip() or f"/{_service_path_slug(service_name)}"
             method = _infer_http_method(op_name, path, replaces, str(operation.get("method", "")).strip())
+            contract_key = (service_name, method, path)
+            if contract_key in contract_keys_seen:
+                continue
+            contract_keys_seen.add(contract_key)
+            contract_id = f"contract_{_slug(service_name)}_{len([row for row in contracts if str(row.get('owner_component', '')).strip() == service_name]) + 1:02d}"
             mutating = method in {"POST", "PUT", "PATCH", "DELETE"}
             component = component_by_service.get(service_name, {})
             field_shapes = _operation_shape_fields(service_name, op_name, method, path, replaces)
@@ -1214,7 +1808,7 @@ def _build_component_specs(
             "business_rule_refs": sorted(set(business_rule_refs_by_service.get(service_name, []))),
             "regression_anchor_refs": sorted(set(regression_anchor_refs_by_service.get(service_name, []))),
             "interface_refs": contract_refs_by_service.get(service_name, []),
-            "wbs_refs": [f"WBS-PHASE-{phase_no:02d}"],
+            "wbs_refs": [f"WBS-PHASE-{phase_no:02d}-{_slug(service_name)}"],
             "traceability_refs": [str(_as_dict(row.get("source")).get("analyst_ref", "")).strip() for row in rows if str(_as_dict(row.get("source")).get("analyst_ref", "")).strip()],
         })
     return component_specs
@@ -1241,7 +1835,7 @@ def _build_nfr_constraints(parsed: dict[str, Any], raw: dict[str, Any]) -> dict[
     security = _as_dict(parsed.get("security"))
     scalability = _as_dict(parsed.get("scalability"))
     infrastructure = _as_dict(parsed.get("infrastructure"))
-    risk_rows = _risk_detector_rows(raw)
+    risk_rows = _normalized_risk_detector_findings(raw)
     transaction_risks = [
         row for row in risk_rows
         if any(token in str(row).lower() for token in ("rollback", "transaction", "select max", "concurrency", "sql injection"))
@@ -1285,16 +1879,40 @@ def _build_brownfield_context(
 ) -> dict[str, Any]:
     legacy = _as_dict(parsed.get("legacy_system"))
     service_by_source = _traceability_service_by_source(traceability)
+    modules_by_service = _traceability_modules_by_service(traceability)
+    known_modules = _traceability_known_modules(traceability)
+    sql_reference_rows = [
+        {
+            "source_module": _resolve_module_name(next(iter(_sql_source_candidates(row)), ""), known_modules) or next(iter(_sql_source_candidates(row)), ""),
+            "tables": _safe_list_text(row.get("tables", [])),
+            "sql_id": str(row.get("sql_id", "")).strip(),
+            "kind": _sql_kind(row),
+            "is_write": _sql_is_write(row),
+            "data_mutations": _sql_write_tables(row),
+            "usage_sites": _as_list(row.get("usage_sites")),
+        }
+        for row in _sql_rows(raw)
+        if isinstance(row, dict)
+    ]
     regression_anchors = []
     golden_flows = _golden_flow_rows(raw)
     for idx, flow in enumerate(golden_flows, start=1):
         entry_point = _golden_flow_entry_point(flow)
         parts = [part.strip() for part in entry_point.split("::") if part.strip()]
-        source_module = parts[0] if parts else _golden_flow_source_module(flow)
-        target_service = service_by_source.get(_normalize_name(source_module), "") or _route_target_service_from_text(str(flow.get("description", "")).strip())
-        description = str(flow.get("description", "")).strip() or entry_point
+        source_module = _resolve_module_name(parts[0] if parts else "", known_modules) or _golden_flow_source_module(flow, known_modules)
+        target_service = service_by_source.get(_normalize_name(source_module), "") or _route_target_service_from_text(
+            str(flow.get("description", "")).strip() or str(flow.get("name", "")).strip() or entry_point
+        )
+        if not source_module and target_service:
+            source_module = _select_service_module(
+                target_service,
+                str(flow.get("description", "")).strip() or str(flow.get("name", "")).strip() or entry_point,
+                modules_by_service,
+            )
+        description = str(flow.get("description", "")).strip() or str(flow.get("name", "")).strip() or entry_point
         if description:
             expected_output = _derive_expected_output(flow, description, target_service)
+            target_endpoint = _golden_flow_target_endpoint(flow, service_by_source, target_service)
             regression_anchors.append({
                 "anchor_id": f"anchor_flow_{idx:02d}",
                 "type": "golden_flow",
@@ -1302,10 +1920,10 @@ def _build_brownfield_context(
                 "golden_flow_ref": str(flow.get("flow_id", "")).strip() or str(flow.get("id", "")).strip() or f"GF-{idx:03d}",
                 "entry_point": entry_point,
                 "expected_output": expected_output,
-                "target_endpoint": _golden_flow_target_endpoint(flow, service_by_source, target_service),
+                "target_endpoint": target_endpoint,
                 "source_module": source_module,
                 "target_service": target_service,
-                "data_fixture": f"Use legacy fixture data and replay {str(flow.get('flow_id', '')).strip() or str(flow.get('id', '')).strip() or f'GF-{idx:03d}'} against the target service contract.",
+                "data_fixture": _fixture_text(flow, source_module, target_service, target_endpoint, description, sql_reference_rows),
                 "acceptance_criteria": [
                     f"{target_service or 'Assigned service'} reproduces the legacy behavior captured by {str(flow.get('flow_id', '')).strip() or str(flow.get('id', '')).strip() or f'GF-{idx:03d}'}.",
                     expected_output,
@@ -1313,26 +1931,70 @@ def _build_brownfield_context(
             })
     if not golden_flows:
         for idx, step in enumerate(_safe_list_text(legacy.get("key_logic_steps", [])), start=1):
+            target_service = _route_target_service_from_text(step)
+            source_module = _select_service_module(target_service, step, modules_by_service)
+            synthetic_ref = f"GF-LEGACY-{idx:03d}"
+            entry_point = _inferred_module_entry_point(source_module or f"legacy_step_{idx}", target_service, step)
+            expected_output = _derive_expected_output({"flow_id": synthetic_ref, "entry_point": entry_point}, step, target_service)
+            target_endpoint = _golden_flow_target_endpoint(
+                {"flow_id": synthetic_ref, "description": step, "entry_point": entry_point},
+                service_by_source,
+                target_service,
+            )
             regression_anchors.append({
                 "anchor_id": f"anchor_{idx:02d}",
                 "type": "legacy_flow",
                 "description": step,
-                "expected_output": step,
+                "golden_flow_ref": synthetic_ref,
+                "entry_point": entry_point,
+                "expected_output": expected_output,
+                "target_endpoint": target_endpoint,
+                "source_module": source_module,
+                "target_service": target_service,
+                "data_fixture": _fixture_text({"flow_id": synthetic_ref}, source_module, target_service, target_endpoint, step, sql_reference_rows),
+                "acceptance_criteria": [
+                    f"{target_service or 'Assigned service'} reproduces the legacy workflow described by step {idx}.",
+                    expected_output,
+                ],
             })
-        for mapping in _as_list(traceability.get("mappings"))[:5]:
-            if not isinstance(mapping, dict):
-                continue
-            source = _as_dict(mapping.get("source"))
-            module_name = str(source.get("module", "")).strip()
-            target_service = str(_as_dict(mapping.get("target")).get("service", "")).strip()
-            if module_name:
-                regression_anchors.append({
-                    "anchor_id": f"anchor_{_slug(module_name)}",
-                    "type": "module_parity",
-                    "description": f"Preserve behavior currently implemented by {module_name}.",
-                    "source_module": module_name,
-                    "target_service": target_service,
-                })
+    covered_modules = {
+        _normalize_name(anchor.get("source_module"))
+        for anchor in regression_anchors
+        if isinstance(anchor, dict) and str(anchor.get("source_module", "")).strip()
+    }
+    for idx, mapping in enumerate(_as_list(traceability.get("mappings")), start=1):
+        if not isinstance(mapping, dict):
+            continue
+        source = _as_dict(mapping.get("source"))
+        module_name = str(source.get("module", "")).strip()
+        target_service = str(_as_dict(mapping.get("target")).get("service", "")).strip()
+        if not module_name or _normalize_name(module_name) in covered_modules:
+            continue
+        description = f"Preserve behavior currently implemented by {module_name}."
+        synthetic_ref = f"GF-MODULE-{idx:03d}"
+        entry_point = _inferred_module_entry_point(module_name, target_service, description)
+        expected_output = _derive_expected_output({"flow_id": synthetic_ref, "entry_point": entry_point}, description, target_service)
+        target_endpoint = _golden_flow_target_endpoint(
+            {"flow_id": synthetic_ref, "description": description, "entry_point": entry_point},
+            service_by_source,
+            target_service,
+        )
+        regression_anchors.append({
+            "anchor_id": f"anchor_{_slug(module_name)}",
+            "type": "module_parity",
+            "description": description,
+            "golden_flow_ref": synthetic_ref,
+            "entry_point": entry_point,
+            "expected_output": expected_output,
+            "target_endpoint": target_endpoint,
+            "source_module": module_name,
+            "target_service": target_service,
+            "data_fixture": _fixture_text({"flow_id": synthetic_ref}, module_name, target_service, target_endpoint, description, sql_reference_rows),
+            "acceptance_criteria": [
+                f"{target_service or 'Assigned service'} preserves the behavior currently implemented by {module_name}.",
+                expected_output,
+            ],
+        })
     dependencies = _safe_list_text(dep.get("name") for dep in _as_list(_as_dict(raw.get("dependency_inventory")).get("dependencies")) if isinstance(dep, dict))
     risk_ids = _safe_list_text(row.get("risk_id") for row in _as_list(_as_dict(raw.get("risk_register")).get("risks")) if isinstance(row, dict))
     business_rules = []
@@ -1346,13 +2008,32 @@ def _build_brownfield_context(
         category = _classify_business_rule(statement)
         source_module = str(rule.get("form", "")).strip() or str(rule.get("module", "")).strip()
         if not source_module:
+            scope = _as_dict(rule.get("scope"))
+            source_module = (
+                str(scope.get("component_id", "")).strip()
+                or str(scope.get("module", "")).strip()
+                or str(scope.get("form", "")).strip()
+            )
+        if not source_module:
+            for evidence in _as_list(rule.get("evidence")):
+                if not isinstance(evidence, dict):
+                    continue
+                external_ref = _as_dict(evidence.get("external_ref"))
+                ref = str(external_ref.get("ref", "")).strip() or str(evidence.get("ref", "")).strip()
+                if ref:
+                    source_module = ref
+                    break
+        source_module = _resolve_module_name(source_module, known_modules)
+        if not source_module:
             for flow in golden_flows:
-                description = str(flow.get("description", "")).lower()
+                description = (str(flow.get("description", "")).strip() or str(flow.get("name", "")).strip()).lower()
                 if description and any(token in description for token in statement.lower().split()[:3]):
-                    source_module = _golden_flow_source_module(flow)
+                    source_module = _golden_flow_source_module(flow, known_modules)
                     if source_module:
                         break
         target_service = _route_business_rule_target_service(statement, source_module, service_by_source)
+        if not source_module and target_service:
+            source_module = _select_service_module(target_service, statement, modules_by_service)
         business_rules.append({
             "rule_id": rule_id,
             "scope": target_service or source_module or "legacy",
@@ -1381,34 +2062,14 @@ def _build_brownfield_context(
         for idx, row in enumerate(_connection_rows(raw))
         if isinstance(row, dict)
     ]
-    risk_detector_findings = [
-        {
-            "signal": str(row.get("signal", "")).strip() or str(row.get("title", "")).strip(),
-            "severity": str(row.get("severity", "")).strip() or "medium",
-            "detail": str(row.get("message", "")).strip() or str(row.get("detail", "")).strip(),
-        }
-        for row in _risk_detector_rows(raw)
-        if isinstance(row, dict)
-    ]
+    risk_detector_findings = _normalized_risk_detector_findings(raw)
     return {
         "legacy_behavior_map": {
             "summary": str(legacy.get("current_logic_summary", "")).strip(),
             "key_logic_steps": _safe_list_text(legacy.get("key_logic_steps", [])),
         },
         "business_rules": business_rules,
-        "sql_reference_rows": [
-            {
-                "source_module": next(iter(_sql_source_candidates(row)), ""),
-                "tables": _safe_list_text(row.get("tables", [])),
-                "sql_id": str(row.get("sql_id", "")).strip(),
-                "kind": _sql_kind(row),
-                "is_write": _sql_is_write(row),
-                "data_mutations": _sql_write_tables(row),
-                "usage_sites": _as_list(row.get("usage_sites")),
-            }
-            for row in _sql_rows(raw)
-            if isinstance(row, dict)
-        ],
+        "sql_reference_rows": sql_reference_rows,
         "technical_debt_policy": {
             "preserve": [row["reference"] for row in dead_refs[:3]],
             "eliminate": dependencies,
@@ -1456,20 +2117,27 @@ def _build_wbs(migration_plan: dict[str, Any], traceability: dict[str, Any]) -> 
     phases = []
     items = []
     mappings = _as_list(traceability.get("mappings"))
-    modules_by_phase: dict[int, list[str]] = {}
+    phase_rows_by_number: dict[int, dict[str, Any]] = {}
+    modules_by_service_phase: dict[tuple[int, str], list[str]] = {}
     for mapping in mappings:
         if not isinstance(mapping, dict):
             continue
         target = _as_dict(mapping.get("target"))
         source = _as_dict(mapping.get("source"))
         phase_no = int(target.get("phase", 0) or 0)
+        service_name = str(target.get("service", "")).strip()
         module_name = str(source.get("module", "")).strip()
-        if phase_no and module_name:
-            modules_by_phase.setdefault(phase_no, []).append(module_name)
+        if phase_no and service_name and module_name:
+            modules_by_service_phase.setdefault((phase_no, service_name), []).append(module_name)
     for phase in _as_list(migration_plan.get("phases")):
         if not isinstance(phase, dict):
             continue
         phase_no = int(phase.get("phase", 0) or 0)
+        if not phase_no or phase_no in phase_rows_by_number:
+            continue
+        phase_rows_by_number[phase_no] = phase
+    for phase_no in sorted({*phase_rows_by_number.keys(), *(phase for phase, _ in modules_by_service_phase.keys())}):
+        phase = phase_rows_by_number.get(phase_no, {})
         phase_id = f"WBS-PHASE-{phase_no:02d}"
         phases.append({
             "phase_id": phase_id,
@@ -1478,13 +2146,36 @@ def _build_wbs(migration_plan: dict[str, Any], traceability: dict[str, Any]) -> 
             "description": str(phase.get("description", "")).strip(),
             "exit_criteria": str(phase.get("exit_criteria", "")).strip(),
         })
-        items.append({
-            "wbs_id": phase_id,
-            "phase_id": phase_id,
-            "service": str(phase.get("target_service", "")).strip(),
-            "strategy": str(phase.get("strategy", "")).strip(),
-            "source_modules": sorted(set(modules_by_phase.get(phase_no, []))),
-        })
+        for service_name in sorted({service for item_phase, service in modules_by_service_phase if item_phase == phase_no}):
+            source_modules = sorted(set(modules_by_service_phase.get((phase_no, service_name), [])))
+            story_rows = [
+                {
+                    "story_id": f"{phase_id}-{_slug(service_name)}-STORY-{idx:02d}",
+                    "title": f"Preserve behavior for {module_name}",
+                    "description": f"Implement the {module_name} workflow inside {service_name} with contract coverage, parity anchors, and owned data-path handling.",
+                    "source_module": module_name,
+                    "acceptance_criteria": [
+                        f"{module_name} behavior is reachable through the {service_name} service boundary.",
+                        f"Regression coverage proves parity for {module_name}.",
+                    ],
+                }
+                for idx, module_name in enumerate(source_modules, start=1)
+            ]
+            items.append({
+                "wbs_id": f"{phase_id}-{_slug(service_name)}",
+                "phase_id": phase_id,
+                "epic_id": f"EPIC-{phase_no:02d}-{_slug(service_name)}",
+                "epic_name": f"{service_name} migration tranche",
+                "service": service_name,
+                "strategy": str(phase.get("strategy", "")).strip(),
+                "source_modules": source_modules,
+                "stories": story_rows,
+                "acceptance_criteria": [
+                    str(phase.get("exit_criteria", "")).strip() or f"{service_name} exits only after parity and contract checks pass.",
+                    f"{service_name} publishes stable contracts for mapped workflows.",
+                    f"Owned data paths for {service_name} are reconciled before implementation handoff.",
+                ],
+            })
     return {
         "phases": phases,
         "items": items,

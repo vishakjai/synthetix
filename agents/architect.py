@@ -12,9 +12,82 @@ import re
 
 from .base import AgentResult, BaseAgent
 from utils.architect_handoff import build_architect_handoff_package
+from utils.architect_hld import build_hld_documents
 
 
 class ArchitectAgent(BaseAgent):
+
+    def _integration_context(self, state: dict[str, Any]) -> dict[str, Any]:
+        return state.get("integration_context", {}) if isinstance(state.get("integration_context", {}), dict) else {}
+
+    def _architect_controls(self, state: dict[str, Any]) -> dict[str, Any]:
+        integration = self._integration_context(state)
+        controls = integration.get("architect_controls", {}) if isinstance(integration.get("architect_controls", {}), dict) else {}
+        merged = dict(controls)
+        for key in ("approved_adr_ids", "approved_services", "service_phase_overrides", "deferred_services"):
+            if key not in merged and key in integration:
+                merged[key] = integration.get(key)
+            if key not in merged and key in state:
+                merged[key] = state.get(key)
+        return merged
+
+    def _approved_adr_ids(self, state: dict[str, Any], adrs: list[dict[str, Any]], migration_plan: dict[str, Any]) -> set[str]:
+        controls = self._architect_controls(state)
+        approved_ids = {
+            str(value).strip()
+            for value in self._as_list(controls.get("approved_adr_ids"))
+            if str(value).strip()
+        }
+        approved_services = {
+            str(value).strip()
+            for value in self._as_list(controls.get("approved_services"))
+            if str(value).strip()
+        }
+        if approved_services:
+            for adr in adrs:
+                if not isinstance(adr, dict):
+                    continue
+                adr_id = str(adr.get("id", "")).strip()
+                targets = {
+                    str(value).strip()
+                    for value in self._as_list(self._as_dict(adr.get("traceability")).get("target_services"))
+                    if str(value).strip()
+                }
+                if adr_id and targets.intersection(approved_services):
+                    approved_ids.add(adr_id)
+        earliest_targets = {
+            str(phase.get("target_service", "")).strip()
+            for phase in self._as_list(migration_plan.get("phases"))[:1]
+            if isinstance(phase, dict) and str(phase.get("target_service", "")).strip()
+        }
+        for adr in adrs:
+            if not isinstance(adr, dict):
+                continue
+            adr_id = str(adr.get("id", "")).strip()
+            if not adr_id or adr_id in approved_ids:
+                continue
+            targets = {
+                str(value).strip()
+                for value in self._as_list(self._as_dict(adr.get("traceability")).get("target_services"))
+                if str(value).strip()
+            }
+            if targets.intersection(earliest_targets):
+                approved_ids.add(adr_id)
+        return approved_ids
+
+    def _phase_overrides(self, state: dict[str, Any]) -> dict[str, int]:
+        controls = self._architect_controls(state)
+        overrides = controls.get("service_phase_overrides", {})
+        phase_overrides = {
+            str(service).strip(): int(phase)
+            for service, phase in overrides.items()
+            if str(service).strip() and str(phase).strip().isdigit()
+        } if isinstance(overrides, dict) else {}
+        for service in self._as_list(controls.get("deferred_services")):
+            service_name = str(service).strip()
+            if service_name and service_name not in phase_overrides:
+                phase_overrides[service_name] = 4
+        return phase_overrides
 
     @staticmethod
     def _safe_mermaid_text(value: Any) -> str:
@@ -445,16 +518,14 @@ Include:
             return self._legacy_default_diagram()
 
         lines = ["graph TD;"]
-        prev_id = "start_0"
-        lines.append('    start_0["Legacy Entry"] --> step_1;')
+        lines.append('    user_0["User"] --> auth_0["Legacy Login"];')
+        lines.append('    auth_0 --> shell_0["Legacy Shell / MDI"];')
         for idx, step in enumerate(steps, start=1):
             node_id = f"step_{idx}"
             step_text = step.replace('"', "'")
             lines.append(f'    {node_id}["{step_text}"];')
-            if idx > 1:
-                lines.append(f"    step_{idx - 1} --> {node_id};")
-            prev_id = node_id
-        lines.append(f'    {prev_id} --> end_0["Legacy Response"];')
+            lines.append(f"    shell_0 --> {node_id};")
+        lines.append('    shell_0 --> end_0["Legacy Outputs"];')
         return "\n".join(lines)
 
     def _build_target_diagram(self, parsed: dict[str, Any]) -> str:
@@ -602,9 +673,35 @@ Include:
         )
         if isinstance(parsed.get("legacy_system"), dict):
             parsed["legacy_system"]["current_system_diagram_mermaid"] = self._normalize_mermaid(
-                str(parsed.get("legacy_system", {}).get("current_system_diagram_mermaid", "")).strip() or self._build_legacy_diagram_from_package(package),
+                self._build_legacy_diagram_from_package(package),
                 self._legacy_default_diagram(),
             )
+        architect_handoff = (
+            parsed.get("architect_handoff_package", {})
+            if isinstance(parsed.get("architect_handoff_package", {}), dict)
+            else {}
+        )
+        package["hld_documents"] = build_hld_documents(
+            state,
+            parsed,
+            package,
+            architect_handoff,
+            services,
+        )
+        package_meta = self._as_dict(package.get("package_meta"))
+        package_meta["artifact_hashes"] = (
+            self._as_dict(package.get("hld_documents", {})).get("legacy_hld", {}).get("source_artefact_hashes", {})
+            if isinstance(self._as_dict(package.get("hld_documents", {})).get("legacy_hld", {}), dict)
+            else {}
+        )
+        package_meta["hld_document_count"] = len(
+            [
+                key for key in ("legacy_hld", "target_hld")
+                if isinstance(self._as_dict(self._as_dict(package.get("hld_documents")).get(key)), dict)
+                and self._as_dict(self._as_dict(package.get("hld_documents")).get(key))
+            ]
+        )
+        package["package_meta"] = package_meta
         return parsed
 
     def _raw_analyst_evidence(self, state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -637,15 +734,20 @@ Include:
 
     def _classify_service(self, module_name: str, purpose: str, tables: list[str]) -> tuple[str, str]:
         corpus = " ".join([module_name, purpose, " ".join(tables)]).lower()
+        normalized_module = self._normalize_name(module_name)
         if any(token in corpus for token in ["login", "auth", "password", "user", "session"]):
             return "AuthenticationService", "Owns authentication, session bootstrap, and identity validation flows."
-        if any(token in corpus for token in ["mdi", "menu", "startup", "splash", "shell", "navigation"]):
+        if normalized_module.startswith("mdi") or any(token in corpus for token in ["menu", "startup", "splash", "shell", "navigation"]):
             return "ExperienceShell", "Owns startup orchestration and navigation routing for the modernized client experience."
-        if any(token in corpus for token in ["report", "statement", "export", "ledger"]):
+        if any(token in corpus for token in ["report", "statement", "export", "ledger", "withindate", "daily", "cmdprint", "expireitemswithindate"]):
             return "ReportingService", "Owns statements, reports, exports, and read-optimized reporting queries."
+        if any(token in corpus for token in ["frminterest", "addinterest"]):
+            return "LegacyCoreService", "Owns residual shared legacy logic that still needs explicit decomposition decisions."
         if any(token in corpus for token in ["deposit", "withdraw", "transaction", "balance", "payment", "loan"]):
             return "TransactionService", "Owns transactional workflows, balance movements, and write-heavy financial operations."
         if any(token in corpus for token in ["account type", "settings", "reference", "lookup", "config", "master data"]):
+            if any(token in corpus for token in ["account setup", "tblaccount", "customer", "account profile"]):
+                return "CustomerService", "Owns customer lifecycle, account profile data, and customer-facing account maintenance."
             return "ReferenceDataService", "Owns reference data, settings, lookup configuration, and operational parameters."
         if any(token in corpus for token in ["customer", "account", "profile", "closeaccount", "close account"]):
             return "CustomerService", "Owns customer lifecycle, account profile data, and customer-facing account maintenance."
@@ -697,7 +799,13 @@ Include:
                         tables.add(txt)
             matching_risks = [risk for risk in risk_rows if isinstance(risk, dict) and self._row_matches_module(risk, {"source_module": source_module, "base_name": base_name, "source_file": source_file})]
             matching_rules = [rule for rule in rule_rows if isinstance(rule, dict) and self._row_matches_module(rule, {"source_module": source_module, "base_name": base_name, "source_file": source_file})]
-            service_name, service_desc = self._classify_service(base_name, str(row.get("purpose") or row.get("business_use") or ""), sorted(tables))
+            classification_context = " ".join(
+                [
+                    str(row.get("purpose") or row.get("business_use") or ""),
+                    " ".join(str(value).strip() for value in self._as_list(row.get("event_handlers")) if str(value).strip()),
+                ]
+            )
+            service_name, service_desc = self._classify_service(base_name, classification_context, sorted(tables))
             normalized_key = self._normalize_name(source_module) or self._normalize_name(source_file)
             if not normalized_key or normalized_key in seen:
                 continue
@@ -813,8 +921,22 @@ Include:
         }
 
     def _build_data_ownership_matrix(self, modules: list[dict[str, Any]], legacy: dict[str, Any], raw: dict[str, Any] | None = None) -> dict[str, Any]:
+        def _entity_key(value: str) -> str:
+            text = self._normalize_name(value)
+            return text[3:] if text.startswith("tbl") else text
+
+        all_service_names = sorted({
+            str(module.get("service_name", "")).strip()
+            for module in modules
+            if isinstance(module, dict) and str(module.get("service_name", "")).strip()
+        })
+
         def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
+            available = list(dict.fromkeys([name for name in service_names if name] + all_service_names))
             lowered = table_name.lower()
+            if fallback and fallback in available and fallback not in {"LegacyCoreService", "ReportingService", "ReferenceDataService", "ExperienceShell"}:
+                if any(token in lowered for token in ("customer", "transaction", "account", "credential", "user")):
+                    return fallback
             preferences: list[str] = []
             if "customer" in lowered:
                 preferences = ["CustomerService"]
@@ -827,11 +949,11 @@ Include:
             elif any(token in lowered for token in ("report", "statement")):
                 preferences = ["ReportingService"]
             for candidate in preferences:
-                if candidate in service_names:
+                if candidate in available:
                     return candidate
             if fallback == "ReportingService":
                 for candidate in ("CustomerService", "TransactionService", "AccountService", "ReferenceDataService"):
-                    if candidate in service_names:
+                    if candidate in available:
                         return candidate
             return fallback
 
@@ -839,10 +961,16 @@ Include:
         table_to_services: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         table_to_write_services: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         table_to_modules: dict[str, set[str]] = defaultdict(set)
+        canonical_table_name: dict[str, str] = {}
         for module in modules:
             for table in self._as_list(module.get("tables")):
-                table_to_services[str(table)][str(module.get("service_name"))] += 1
-                table_to_modules[str(table)].add(str(module.get("source_module")))
+                table_name = str(table).strip()
+                if not table_name:
+                    continue
+                table_key = _entity_key(table_name)
+                canonical_table_name.setdefault(table_key, table_name)
+                table_to_services[table_key][str(module.get("service_name"))] += 1
+                table_to_modules[table_key].add(str(module.get("source_module")))
         raw_map = raw if isinstance(raw, dict) else {}
         sql_rows = self._as_list(self._as_dict(raw_map.get("sql_catalog")).get("statements"))
         source_service_by_module = {
@@ -875,13 +1003,22 @@ Include:
             write_tables = [str(value).strip() for value in self._as_list(row.get("data_mutations")) if str(value).strip()]
             touched_tables = [str(value).strip() for value in self._as_list(row.get("tables")) if str(value).strip()]
             for table in touched_tables:
-                table_to_services[table][service_name] += 1
+                table_key = _entity_key(table)
+                canonical_table_name.setdefault(table_key, table)
+                table_to_services[table_key][service_name] += 1
+                if source_name:
+                    table_to_modules[table_key].add(source_name)
             if write_like and not write_tables:
                 write_tables = touched_tables
             for table in write_tables:
-                table_to_write_services[table][service_name] += 1
-        for table, service_counts in sorted(table_to_services.items()):
-            write_service_counts = table_to_write_services.get(table, {})
+                table_key = _entity_key(table)
+                canonical_table_name.setdefault(table_key, table)
+                table_to_write_services[table_key][service_name] += 1
+                if source_name:
+                    table_to_modules[table_key].add(source_name)
+        for table_key, service_counts in sorted(table_to_services.items()):
+            table = canonical_table_name.get(table_key, table_key)
+            write_service_counts = table_to_write_services.get(table_key, {})
             if write_service_counts:
                 fallback_owner = max(write_service_counts.items(), key=lambda item: item[1])[0]
                 owner = _preferred_owner(table, list(write_service_counts.keys()), fallback_owner)
@@ -897,7 +1034,7 @@ Include:
                     "owning_service": owner,
                     "read_services": readers,
                     "migration_notes": (
-                        f"{len(table_to_modules[table])} legacy module(s) currently touch {table}; ownership shifts to {owner}"
+                        f"{len(table_to_modules[table_key])} legacy module(s) currently touch {table}; ownership shifts to {owner}"
                         f"{' based on observed write paths.' if write_service_counts else '.'}"
                     ),
                 }
@@ -906,6 +1043,60 @@ Include:
             "artifact_type": "data_ownership_matrix_v1",
             "entities": entities,
             "global_state_resolution_plan": [],
+        }
+
+    def _reconcile_data_ownership_matrix(
+        self,
+        parsed_ownership: dict[str, Any],
+        derived_ownership: dict[str, Any],
+    ) -> dict[str, Any]:
+        parsed_rows = self._as_list(parsed_ownership.get("entities"))
+        derived_rows = self._as_list(derived_ownership.get("entities"))
+        if not parsed_rows:
+            return derived_ownership
+
+        def _entity_key(row: dict[str, Any]) -> str:
+            names = [
+                str(row.get("name", "")).strip(),
+                *[str(value).strip() for value in self._as_list(row.get("legacy_tables")) if str(value).strip()],
+            ]
+            for name in names:
+                key = self._normalize_name(name)
+                if key.startswith("tbl"):
+                    key = key[3:]
+                if key:
+                    return key
+            return ""
+
+        derived_by_key = {
+            _entity_key(row): row
+            for row in derived_rows
+            if isinstance(row, dict) and _entity_key(row)
+        }
+        merged_by_key: dict[str, dict[str, Any]] = {}
+        for row in parsed_rows:
+            if not isinstance(row, dict):
+                continue
+            key = _entity_key(row)
+            if not key or key in merged_by_key:
+                continue
+            merged_by_key[key] = dict(row)
+        for key, row in derived_by_key.items():
+            existing = merged_by_key.get(key, {})
+            merged = dict(existing)
+            merged["name"] = str(row.get("name", "")).strip() or str(existing.get("name", "")).strip()
+            merged["legacy_tables"] = self._as_list(row.get("legacy_tables")) or self._as_list(existing.get("legacy_tables"))
+            merged["legacy_global_vars"] = self._as_list(existing.get("legacy_global_vars"))
+            merged["owning_service"] = str(row.get("owning_service", "")).strip() or str(existing.get("owning_service", "")).strip()
+            merged["read_services"] = self._as_list(row.get("read_services")) or self._as_list(existing.get("read_services"))
+            merged["migration_notes"] = str(row.get("migration_notes", "")).strip() or str(existing.get("migration_notes", "")).strip()
+            merged_by_key[key] = merged
+
+        merged_entities = sorted(merged_by_key.values(), key=lambda item: str(item.get("name", "")).lower())
+        return {
+            "artifact_type": "data_ownership_matrix_v1",
+            "entities": merged_entities,
+            "global_state_resolution_plan": self._as_list(parsed_ownership.get("global_state_resolution_plan")),
         }
 
     def _confidence_for_module(self, module: dict[str, Any], ownership: dict[str, Any], adr_ids: list[str]) -> tuple[float, str, list[str]]:
@@ -1018,7 +1209,8 @@ Include:
             )
         return adrs
 
-    def _build_traceability_matrix(self, modules: list[dict[str, Any]], adrs: list[dict[str, Any]], ownership: dict[str, Any]) -> dict[str, Any]:
+    def _build_traceability_matrix(self, modules: list[dict[str, Any]], adrs: list[dict[str, Any]], ownership: dict[str, Any], phase_overrides: dict[str, int] | None = None) -> dict[str, Any]:
+        overrides = phase_overrides if isinstance(phase_overrides, dict) else {}
         adr_ids_by_service: dict[str, list[str]] = defaultdict(list)
         for adr in adrs:
             if not isinstance(adr, dict):
@@ -1054,7 +1246,7 @@ Include:
                         "service": service_name,
                         "component": component_name,
                         "migration_strategy": strategy,
-                        "phase": self._phase_for_service(service_name),
+                        "phase": overrides.get(service_name, self._phase_for_service(service_name)),
                     },
                     "confidence": confidence,
                     "confidence_rationale": rationale,
@@ -1112,6 +1304,20 @@ Include:
                 method = "POST"
                 path = "/auth/logout"
                 response_fields = [{"name": "logged_out", "type": "boolean", "required": True}]
+            elif "checkbalance" in source_lower or "check balance" in purpose_lower or (
+                "balance" in source_lower and "check" in purpose_lower
+            ):
+                method = "GET"
+                path = "/transaction/checkbalance"
+                request_fields = [
+                    {"name": "accountNo", "type": "string", "required": True},
+                ]
+                response_fields = [
+                    {"name": "accountNo", "type": "string", "required": True},
+                    {"name": "balance", "type": "decimal", "required": True},
+                    {"name": "currency", "type": "string", "required": True},
+                ]
+                notes = "Return the current balance for the requested account before any transactional write occurs."
             elif any(token in source_lower or token in purpose_lower for token in ("deposit", "withdraw")):
                 method = "POST"
                 path = f"/transactions/{'deposit' if 'deposit' in source_lower or 'deposit' in purpose_lower else 'withdraw'}"
@@ -1125,6 +1331,21 @@ Include:
                     {"name": "balance", "type": "decimal", "required": True},
                 ]
                 notes = "Submit a transactional write with balance validation and ledger persistence."
+            elif any(token in source_lower or token in purpose_lower for token in ("interest", "addinterest")) and service_name == "LegacyCoreService":
+                method = "POST"
+                path = "/legacycore/addinterest"
+                request_fields = [
+                    {"name": "accountNo", "type": "string", "required": True},
+                    {"name": "currentBalance", "type": "decimal", "required": True},
+                    {"name": "interestRate", "type": "decimal", "required": False},
+                    {"name": "postingDate", "type": "date", "required": False},
+                ]
+                response_fields = [
+                    {"name": "transactionId", "type": "string", "required": True},
+                    {"name": "interestAmount", "type": "decimal", "required": True},
+                    {"name": "updatedBalance", "type": "decimal", "required": True},
+                ]
+                notes = "Calculate interest, post the resulting ledger entry, and return the updated balance snapshot."
             elif any(token in source_lower or token in purpose_lower for token in ("closeaccount", "close account")):
                 method = "PUT"
                 path = "/accounts/close"
@@ -1160,10 +1381,22 @@ Include:
                 response_fields = [{"name": "report", "type": "object", "required": True}]
                 notes = "Generate or retrieve reporting output for statements and monthly summaries."
             elif any(token in source_lower or token in purpose_lower for token in ("settings", "accounttype", "reference")):
-                method = "GET"
-                path = f"/reference/{action_slug}"
-                response_fields = [{"name": "items", "type": "array", "required": True}]
-                notes = "Retrieve or maintain reference data used by operational workflows."
+                if "settings" in source_lower or "settings" in purpose_lower:
+                    method = "PUT"
+                    path = "/reference/settings"
+                    request_fields = [
+                        {"name": "settings", "type": "object", "required": True},
+                    ]
+                    response_fields = [
+                        {"name": "updated", "type": "boolean", "required": True},
+                        {"name": "settings", "type": "object", "required": True},
+                    ]
+                    notes = "Persist settings changes used by customer and account-management workflows."
+                else:
+                    method = "GET"
+                    path = f"/reference/{action_slug}"
+                    response_fields = [{"name": "items", "type": "array", "required": True}]
+                    notes = "Retrieve or maintain reference data used by operational workflows."
 
             operation_name = base_name if method == "GET" else f"{method.title()}{base_name}"
             return {
@@ -1188,19 +1421,30 @@ Include:
             by_service[str(module.get("service_name", "LegacyCoreService"))].append(module)
         services_payload: list[dict[str, Any]] = []
         for service_name, service_modules in sorted(by_service.items()):
-            operations: list[dict[str, Any]] = []
-            for module in service_modules[:4]:
-                operations.append(_contract_for_module(service_name, module))
+            operations_by_surface: dict[tuple[str, str], dict[str, Any]] = {}
+            for module in service_modules:
+                operation = _contract_for_module(service_name, module)
+                key = (str(operation.get("method", "")).strip().upper(), str(operation.get("path", "")).strip())
+                existing = operations_by_surface.get(key)
+                if existing is None:
+                    operations_by_surface[key] = operation
+                    continue
+                replaces = list(dict.fromkeys(self._as_list(existing.get("replaces")) + self._as_list(operation.get("replaces"))))
+                existing["replaces"] = replaces
+                notes = [str(existing.get("notes", "")).strip(), str(operation.get("notes", "")).strip()]
+                existing["notes"] = " ".join(part for part in dict.fromkeys(notes) if part)
             services_payload.append({
                 "service": service_name,
-                "operations": operations,
+                "operations": list(operations_by_surface.values()),
             })
         return {"artifact_type": "api_contract_sketches_v1", "services": services_payload}
 
-    def _build_migration_plan(self, modules: list[dict[str, Any]], coupling: dict[str, Any], adrs: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_migration_plan(self, modules: list[dict[str, Any]], coupling: dict[str, Any], adrs: list[dict[str, Any]], phase_overrides: dict[str, int] | None = None) -> dict[str, Any]:
+        overrides = phase_overrides if isinstance(phase_overrides, dict) else {}
         by_phase: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for module in modules:
-            by_phase[self._phase_for_service(str(module.get("service_name", "LegacyCoreService")))].append(module)
+            service_name = str(module.get("service_name", "LegacyCoreService"))
+            by_phase[overrides.get(service_name, self._phase_for_service(service_name))].append(module)
         phase_names = {
             1: "Isolation Layer",
             2: "Customer and Reference Domains",
@@ -1322,6 +1566,8 @@ Include:
         for adr in adrs:
             if not isinstance(adr, dict):
                 continue
+            if str(adr.get("status", "")).strip().lower() in {"accepted", "approved"}:
+                continue
             queue.append({
                 "priority": "MEDIUM",
                 "artifact": "architecture_decision_records",
@@ -1351,18 +1597,24 @@ Include:
     def _build_architect_package(self, state: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
         _, raw, legacy = self._raw_analyst_evidence(state)
         modules = self._collect_source_modules(state)
+        phase_overrides = self._phase_overrides(state)
         dependencies = self._as_list(self._as_dict(raw.get("dependency_inventory")).get("dependencies"))
         parsed_ownership = self._as_dict(parsed.get("data_ownership_matrix"))
         ownership = (
-            parsed_ownership
+            self._reconcile_data_ownership_matrix(parsed_ownership, self._build_data_ownership_matrix(modules, legacy, raw))
             if self._as_list(parsed_ownership.get("entities"))
             else self._build_data_ownership_matrix(modules, legacy, raw)
         )
         coupling = self._build_coupling_heatmap(modules, legacy)
         adrs = self._build_adrs(modules, coupling)
-        traceability = self._build_traceability_matrix(modules, adrs, ownership)
+        traceability = self._build_traceability_matrix(modules, adrs, ownership, phase_overrides=phase_overrides)
         api_contracts = self._build_api_contract_sketches(modules, traceability)
-        migration_plan = self._build_migration_plan(modules, coupling, adrs)
+        migration_plan = self._build_migration_plan(modules, coupling, adrs, phase_overrides=phase_overrides)
+        approved_ids = self._approved_adr_ids(state, adrs, migration_plan)
+        for adr in adrs:
+            if not isinstance(adr, dict):
+                continue
+            adr["status"] = "Accepted" if str(adr.get("id", "")).strip() in approved_ids else (str(adr.get("status", "")).strip() or "Proposed")
         risk_register = self._build_component_risk_register(modules, coupling, ownership, dependencies)
         review_queue = self._build_human_review_queue(traceability, risk_register, adrs, ownership)
         warnings: list[str] = []
@@ -1408,6 +1660,7 @@ Include:
         services: list[dict[str, Any]] = []
         for service_name, rows in sorted(by_service.items()):
             responsibilities = sorted({str(r.get("source", {}).get("module", "")).strip() for r in rows if str(r.get("source", {}).get("module", "")).strip()})
+            database = "PostgreSQL credential store" if service_name == "AuthenticationService" else database_default
             services.append(
                 {
                     "name": service_name,
@@ -1416,7 +1669,7 @@ Include:
                     "language": language,
                     "framework": framework,
                     "api_type": "REST",
-                    "database": None if service_name == "AuthenticationService" else database_default,
+                    "database": database,
                     "cache": "Redis" if service_name in {"AuthenticationService", "ReferenceDataService"} else None,
                 }
             )

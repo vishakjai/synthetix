@@ -7,6 +7,8 @@ from agents.architect import ArchitectAgent
 from agents.base import AgentResult
 import orchestrator.pipeline as pipeline
 from utils.architect_handoff import validate_architect_handoff_json
+from utils.developer_dispatch import build_component_scoped_handoff
+from utils.developer_prereqs import evaluate_component_prerequisites
 import web.server as server
 
 
@@ -339,8 +341,8 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
             row.get("entity_name"): row.get("owning_service")
             for row in handoff.get("domain_model", {}).get("data_ownership", [])
         }
-        self.assertEqual(ownership.get("Customers"), "CustomerService")
-        self.assertEqual(ownership.get("Transaction"), "TransactionService")
+        self.assertEqual(ownership.get("Customers") or ownership.get("customers") or ownership.get("tblcustomers"), "CustomerService")
+        self.assertEqual(ownership.get("Transaction") or ownership.get("transactions") or ownership.get("tbltransaction"), "TransactionService")
 
     def test_description_only_golden_flows_produce_actionable_anchors(self):
         agent = ArchitectAgent(Mock())
@@ -404,6 +406,347 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
             for row in handoff.get("domain_model", {}).get("data_ownership", [])
         }
         self.assertEqual(ownership.get("tblaccount") or ownership.get("Account"), "TransactionService")
+
+    def test_chained_golden_flow_refs_keep_form_and_handler_not_system_prefix(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"]["golden_flows"] = {
+            "flows": [
+                {
+                    "flow_id": "GF-009",
+                    "description": "BANK::frmLogin1::cmdOK_Click authenticates users and opens the MDI shell.",
+                }
+            ]
+        }
+        normalized = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)
+        anchor = normalized["architect_handoff_package"]["brownfield_context"]["regression_test_anchors"][0]
+        self.assertEqual(anchor.get("entry_point"), "frmLogin1::cmdOK_Click")
+        self.assertEqual(anchor.get("target_endpoint"), "/auth/login")
+        self.assertTrue(anchor.get("expected_output"))
+
+    def test_handoff_wbs_is_developer_ready(self):
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, self._state())["architect_handoff_package"]
+        items = handoff.get("wbs", {}).get("items", [])
+        self.assertTrue(items)
+        first = items[0]
+        self.assertTrue(first.get("epic_id"))
+        self.assertTrue(first.get("epic_name"))
+        self.assertTrue(first.get("acceptance_criteria"))
+        self.assertTrue(first.get("stories"))
+        self.assertTrue(first["stories"][0].get("description"))
+        self.assertTrue(first["stories"][0].get("acceptance_criteria"))
+        self.assertTrue(all(item.get("service") for item in items))
+        self.assertTrue(all(str(item.get("wbs_id", "")).count("-") >= 3 for item in items))
+
+    def test_component_scoped_wbs_does_not_leak_across_services_in_same_phase(self):
+        state = self._state()
+        state["analyst_output"]["legacy_code_inventory"]["source_loc_by_file"].extend(
+            [
+                {"path": "BankApp1/Mdi.frm", "loc": 180},
+                {"path": "BankApp1/frmSplash.frm", "loc": 100},
+                {"path": "BankApp1/menu.frm", "loc": 60},
+            ]
+        )
+        state["analyst_output"]["raw_artifacts"]["form_dossier"]["dossiers"].extend(
+            [
+                {
+                    "form_name": "Mdi",
+                    "base_form_name": "Mdi",
+                    "source_file": "Mdi.frm",
+                    "project_name": "BANK",
+                    "purpose": "Application shell and navigation.",
+                    "source_loc": 180,
+                    "coverage_score": 0.8,
+                    "confidence_score": 0.82,
+                    "db_tables": [],
+                },
+                {
+                    "form_name": "frmSplash",
+                    "base_form_name": "frmSplash",
+                    "source_file": "frmSplash.frm",
+                    "project_name": "BANK",
+                    "purpose": "Startup splash screen.",
+                    "source_loc": 100,
+                    "coverage_score": 0.8,
+                    "confidence_score": 0.82,
+                    "db_tables": [],
+                },
+                {
+                    "form_name": "menu",
+                    "base_form_name": "menu",
+                    "source_file": "menu.frm",
+                    "project_name": "BANK",
+                    "purpose": "Menu navigation.",
+                    "source_loc": 60,
+                    "coverage_score": 0.75,
+                    "confidence_score": 0.8,
+                    "db_tables": [],
+                },
+            ]
+        )
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)["architect_handoff_package"]
+        auth = build_component_scoped_handoff(handoff, "AuthenticationService")
+        shell = build_component_scoped_handoff(handoff, "ExperienceShell")
+        auth_modules = {story.get("source_module") for item in auth.get("wbs_items", []) for story in item.get("stories", [])}
+        shell_modules = {story.get("source_module") for item in shell.get("wbs_items", []) for story in item.get("stories", [])}
+        self.assertEqual(auth_modules, {"frmLogin"})
+        self.assertTrue(shell_modules)
+        self.assertNotEqual(auth_modules, shell_modules)
+        self.assertTrue(all(item.get("service") == "AuthenticationService" for item in auth.get("wbs_items", [])))
+        self.assertTrue(all(item.get("service") == "ExperienceShell" for item in shell.get("wbs_items", [])))
+
+    def test_risk_detector_findings_are_normalized_for_nfr_and_brownfield_views(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"]["static_risk_detectors"] = {
+            "findings": [
+                {"severity": "high", "title": "no_rollback_on_multi_write"},
+                {"severity": "medium", "description": "manual id generation concurrency risk"},
+            ]
+        }
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)["architect_handoff_package"]
+        findings = handoff.get("brownfield_context", {}).get("technical_debt_policy", {}).get("risk_detector_findings", [])
+        self.assertTrue(findings)
+        self.assertTrue(all(str(row.get("signal", "")).strip() for row in findings))
+        self.assertTrue(all(str(row.get("detail", "")).strip() for row in findings))
+        security_rules = " ".join(handoff.get("nfr_constraints", {}).get("security", []))
+        self.assertIn("no_rollback_on_multi_write", security_rules)
+
+    def test_detector_findings_alias_is_normalized(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"].pop("static_risk_detectors", None)
+        state["analyst_output"]["raw_artifacts"]["detector_findings"] = {
+            "findings": [
+                {
+                    "detector_id": "manual_id_generation_concurrency_risk",
+                    "severity": "medium",
+                    "summary": "SELECT MAX(transactionid) is used for ID generation.",
+                }
+            ]
+        }
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)["architect_handoff_package"]
+        findings = handoff.get("brownfield_context", {}).get("technical_debt_policy", {}).get("risk_detector_findings", [])
+        self.assertEqual(findings[0].get("signal"), "manual_id_generation_concurrency_risk")
+        self.assertIn("SELECT MAX", findings[0].get("detail"))
+
+    def test_nested_analyst_report_golden_flows_drive_counts_and_module_parity_supplement(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"].pop("golden_flows", None)
+        state["analyst_output"]["analyst_report_v2"] = {
+            "delivery_spec": {
+                "testing_and_evidence": {
+                    "golden_flows": [
+                        {
+                            "id": "GF-009",
+                            "name": "BANK::frmLogin primary flow",
+                            "entrypoint": "BANK::frmLogin::cmdOK_Click",
+                            "expected_outcome": "Behavior matches legacy flow with equivalent side effects.",
+                        }
+                    ]
+                }
+            }
+        }
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)["architect_handoff_package"]
+        summary = handoff.get("brownfield_context", {}).get("source_evidence_summary", {})
+        anchors = handoff.get("brownfield_context", {}).get("regression_test_anchors", [])
+        self.assertEqual(summary.get("golden_flow_count"), 1)
+        login_anchor = next(anchor for anchor in anchors if anchor.get("golden_flow_ref") == "GF-009")
+        self.assertEqual(login_anchor.get("entry_point"), "frmLogin::cmdOK_Click")
+        self.assertTrue(login_anchor.get("expected_output"))
+        self.assertTrue(any(anchor.get("type") == "module_parity" and anchor.get("source_module") == "frmcustomer" for anchor in anchors))
+
+    def test_rule_scope_component_id_resolves_source_module_and_legacy_core_service(self):
+        state = self._state()
+        state["analyst_output"]["legacy_code_inventory"]["source_loc_by_file"].append({"path": "BankApp1/frminterest.frm", "loc": 158})
+        state["analyst_output"]["raw_artifacts"]["form_dossier"]["dossiers"].append(
+            {
+                "form_name": "frminterest",
+                "base_form_name": "frminterest",
+                "source_file": "frminterest.frm",
+                "project_name": "BANK",
+                "purpose": "Interest calculation and posting workflow.",
+                "source_loc": 158,
+                "coverage_score": 0.9,
+                "confidence_score": 0.9,
+                "db_tables": ["tbltransaction", "tblcustomers"],
+            }
+        )
+        state["analyst_output"]["raw_artifacts"]["business_rule_catalog"] = {
+            "rules": [
+                {
+                    "rule_id": "BR-010",
+                    "statement": "Computed value rule: Interest = Balance * 1 / 100",
+                    "scope": {"component_id": "BankApp1/frminterest.frm"},
+                    "evidence": [
+                        {"external_ref": {"ref": "BankApp1/frminterest.frm:99"}},
+                    ],
+                }
+            ]
+        }
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)["architect_handoff_package"]
+        rule = next(row for row in handoff.get("brownfield_context", {}).get("business_rules", []) if row.get("rule_id") == "BR-010")
+        self.assertEqual(rule.get("source_module"), "frminterest")
+        self.assertEqual(rule.get("target_service"), "LegacyCoreService")
+
+    def test_adr_statuses_stay_consistent_between_package_and_handoff(self):
+        normalized = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, self._state())
+        package_adrs = normalized.get("architect_package", {}).get("artifacts", {}).get("architecture_decision_records", [])
+        handoff_adrs = normalized.get("architect_handoff_package", {}).get("system_context", {}).get("architectural_decisions", [])
+        package_status_by_id = {row.get("id"): row.get("status") for row in package_adrs}
+        handoff_status_by_id = {row.get("decision_id"): row.get("status") for row in handoff_adrs}
+        self.assertTrue(package_status_by_id)
+        self.assertEqual(package_status_by_id, handoff_status_by_id)
+
+    def test_fallback_module_parity_anchors_and_service_inferred_rules_unblock_auth_scoping(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"].pop("golden_flows", None)
+        state["analyst_output"]["raw_artifacts"]["business_rule_catalog"] = {
+            "rules": [
+                {
+                    "rule_id": "BR-LOGIN",
+                    "statement": "Authenticate users and initiate secure application sessions.",
+                }
+            ]
+        }
+        normalized = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)
+        scoped = build_component_scoped_handoff(normalized["architect_handoff_package"], "AuthenticationService")
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "READY")
+        auth_rule = scoped["brownfield_context"]["business_rules"][0]
+        auth_anchor = scoped["brownfield_context"]["regression_test_anchors"][0]
+        self.assertEqual(auth_rule.get("source_module"), "frmLogin")
+        self.assertTrue(auth_anchor.get("golden_flow_ref"))
+        self.assertTrue(auth_anchor.get("entry_point"))
+        self.assertTrue(auth_anchor.get("target_endpoint"))
+        self.assertTrue(scoped.get("data_ownership"))
+
+    def test_threshold_auth_rule_and_settings_anchor_reconcile_to_real_component_semantics(self):
+        state = self._state()
+        state["analyst_output"]["legacy_code_inventory"]["source_loc_by_file"].append({"path": "BankApp1/Form1.frm", "loc": 120})
+        for row in state["analyst_output"]["raw_artifacts"]["form_dossier"]["dossiers"]:
+            if row.get("form_name") == "frmsettings":
+                row["purpose"] = "Account setup and settings maintenance."
+        state["analyst_output"]["raw_artifacts"]["form_dossier"]["dossiers"].append(
+            {
+                "form_name": "Form1",
+                "base_form_name": "Form1",
+                "source_file": "Form1.frm",
+                "project_name": "BANK",
+                "purpose": "Legacy print workflow.",
+                "event_handlers": ["Form_Load", "cmdPrint_Click"],
+                "source_loc": 120,
+                "coverage_score": 0.7,
+                "confidence_score": 0.72,
+                "db_tables": [],
+            }
+        )
+        state["analyst_output"]["raw_artifacts"]["business_rule_catalog"]["rules"].append(
+            {
+                "rule_id": "BR-LOCKOUT",
+                "form": "Form1",
+                "statement": "Threshold decision rule: IF rs.RecordCount < 1 THEN deny login and increment failed attempts.",
+            }
+        )
+        handoff = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)["architect_handoff_package"]
+        rule = next(row for row in handoff.get("brownfield_context", {}).get("business_rules", []) if row.get("rule_id") == "BR-LOCKOUT")
+        self.assertEqual(rule.get("target_service"), "AuthenticationService")
+        customer = build_component_scoped_handoff(handoff, "CustomerService")
+        settings_anchor = next(anchor for anchor in customer.get("brownfield_context", {}).get("regression_test_anchors", []) if anchor.get("source_module") == "frmsettings")
+        self.assertEqual(settings_anchor.get("target_endpoint"), "/reference/settings")
+        customer_paths = {contract.get("path") for contract in customer.get("interface_contracts", [])}
+        self.assertIn(settings_anchor.get("target_endpoint"), customer_paths)
+        settings_contract = next(contract for contract in customer.get("interface_contracts", []) if contract.get("path") == "/reference/settings")
+        settings_operation = settings_contract.get("spec_content", {}).get("operations", [])[0]
+        self.assertEqual(settings_operation.get("method"), "PUT")
+        request_fields = {field.get("name") for field in settings_operation.get("request_body", {}).get("fields", [])}
+        self.assertEqual(request_fields, {"settings"})
+
+    def test_checkbalance_and_interest_anchors_gain_behavioral_outputs(self):
+        state = self._state()
+        state["analyst_output"]["legacy_code_inventory"]["source_loc_by_file"].extend(
+            [
+                {"path": "BankApp1/frmcheckbalance.frm", "loc": 210},
+                {"path": "BankApp1/frminterest.frm", "loc": 160},
+                {"path": "BankApp1/frmaddinterest.frm", "loc": 165},
+            ]
+        )
+        state["analyst_output"]["raw_artifacts"]["form_dossier"]["dossiers"].extend(
+            [
+                {
+                    "form_name": "frmcheckbalance",
+                    "base_form_name": "frmcheckbalance",
+                    "source_file": "frmcheckbalance.frm",
+                    "project_name": "BANK",
+                    "purpose": "Check account balance workflow.",
+                    "event_handlers": ["cmdCheck_Click"],
+                    "source_loc": 210,
+                    "coverage_score": 0.84,
+                    "confidence_score": 0.85,
+                    "db_tables": ["tblaccount"],
+                },
+                {
+                    "form_name": "frminterest",
+                    "base_form_name": "frminterest",
+                    "source_file": "frminterest.frm",
+                    "project_name": "BANK",
+                    "purpose": "Interest calculation workflow.",
+                    "event_handlers": ["cmdCalculateInterest_Click"],
+                    "source_loc": 160,
+                    "coverage_score": 0.88,
+                    "confidence_score": 0.9,
+                    "db_tables": ["tbltransaction"],
+                },
+                {
+                    "form_name": "frmaddinterest",
+                    "base_form_name": "frmaddinterest",
+                    "source_file": "frmaddinterest.frm",
+                    "project_name": "BANK",
+                    "purpose": "Interest posting workflow.",
+                    "event_handlers": ["cmdCalculateInterest_Click"],
+                    "source_loc": 165,
+                    "coverage_score": 0.88,
+                    "confidence_score": 0.9,
+                    "db_tables": ["tbltransaction"],
+                },
+            ]
+        )
+        state["analyst_output"]["raw_artifacts"]["golden_flows"] = {
+            "flows": [
+                {
+                    "flow_id": "GF-002",
+                    "description": "(unmapped)::frmcheckbalance primary flow",
+                    "entry_point": "frmcheckbalance::cmdCheck_Click",
+                    "outcome": "(unmapped)::frmcheckbalance primary flow",
+                },
+                {
+                    "flow_id": "GF-007",
+                    "description": "(unmapped)::frminterest primary flow",
+                    "entry_point": "frminterest::cmdCalculateInterest_Click",
+                    "outcome": "(unmapped)::frminterest primary flow",
+                },
+                {
+                    "flow_id": "GF-008",
+                    "description": "(unmapped)::frmaddinterest secondary flow",
+                    "entry_point": "frmaddinterest::cmdCalculateInterest_Click",
+                    "outcome": "(unmapped)::frmaddinterest secondary flow",
+                },
+            ]
+        }
+        normalized = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, state)
+        anchors = {
+            anchor.get("golden_flow_ref"): anchor
+            for anchor in normalized.get("architect_handoff_package", {}).get("brownfield_context", {}).get("regression_test_anchors", [])
+        }
+        checkbalance_anchor = anchors["GF-002"]
+        self.assertEqual(checkbalance_anchor.get("target_endpoint"), "/transaction/checkbalance")
+        self.assertIn("current balance", str(checkbalance_anchor.get("expected_output", "")).lower())
+        checkbalance_fixture = json.loads(checkbalance_anchor.get("data_fixture"))
+        self.assertEqual(checkbalance_fixture.get("request", {}).get("method"), "GET")
+
+        for flow_id in ("GF-007", "GF-008"):
+            anchor = anchors[flow_id]
+            self.assertEqual(anchor.get("target_endpoint"), "/legacycore/addinterest")
+            self.assertIn("interest is calculated", str(anchor.get("expected_output", "")).lower())
+            fixture = json.loads(anchor.get("data_fixture"))
+            self.assertIn("currentBalance", fixture.get("seed", {}))
 
 
 class ArchitectHandoffApiTest(unittest.TestCase):
@@ -484,6 +827,34 @@ class ArchitectHandoffApiTest(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["architect_handoff_package"]["artifact_type"], "architect_handoff_package_v1")
+
+    def test_get_architect_package_from_persisted_stage_snapshot(self):
+        normalized = ArchitectAgent(Mock())._normalize_output({"legacy_system": {}}, ArchitectHandoffPackageTest()._state())
+        architect_package = normalized.get("architect_package", {})
+
+        class _FakeStore:
+            def load_stage_snapshot(self, run_id, stage):
+                if run_id != "run_handoff" or stage != 2:
+                    return None
+                return {"output": {"architect_package": architect_package}}
+
+        class _FakeManager:
+            store = _FakeStore()
+
+            def _hydrate_record(self, run_id):
+                return {"run_id": run_id, "pipeline_state": {}}
+
+            def get_run(self, run_id):
+                return {"run_id": run_id, "pipeline_state": {}}
+
+        server.MANAGER = _FakeManager()
+        response = asyncio.run(
+            server.api_get_run_architect_package(_FakeRequest(path_params={"run_id": "run_handoff"}))
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["architect_package"]["package_meta"]["artifact_count"], 7)
 
     def test_get_component_scoped_handoff_from_persisted_stage_snapshot(self):
         handoff = self._handoff()

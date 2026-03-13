@@ -120,14 +120,11 @@ def build_component_scoped_handoff(
             anchor for anchor in all_regression_anchors
             if (
                 _normalize_name(anchor.get("component")) in names
-                or _normalize_name(anchor.get("module")) in names
+                or _normalize_name(anchor.get("module")) in source_module_names
+                or _normalize_name(anchor.get("source_module")) in source_module_names
                 or _normalize_name(anchor.get("service")) in names
+                or _normalize_name(anchor.get("target_service")) in names
             )
-        ]
-    if not regression_anchors:
-        regression_anchors = [
-            anchor for anchor in all_regression_anchors
-            if str(anchor.get("type", "")).strip() in {"legacy_flow", "module_parity"}
         ]
     all_business_rules = [
         rule for rule in _as_list(brownfield.get("business_rules"))
@@ -143,7 +140,8 @@ def build_component_scoped_handoff(
             if (
                 _normalize_name(rule.get("component")) in names
                 or _normalize_name(rule.get("service")) in names
-                or not str(rule.get("component", "")).strip()
+                or _normalize_name(rule.get("target_service")) in names
+                or _normalize_name(rule.get("source_module")) in source_module_names
             )
         ]
     technical_debt_policy = _as_dict(brownfield.get("technical_debt_policy"))
@@ -170,6 +168,14 @@ def build_component_scoped_handoff(
             or any(_normalize_name(reader) in names for reader in _as_list(row.get("read_services")))
         )
     ]
+    if not scoped_data_ownership and _normalize_name(component_name) == "authenticationservice":
+        scoped_data_ownership = [
+            {
+                "entity_name": "CredentialStore",
+                "owning_service": "AuthenticationService",
+                "read_services": [],
+            }
+        ]
     scoped_sql_rows = [
         row for row in _as_list(brownfield.get("sql_reference_rows"))
         if isinstance(row, dict) and _normalize_name(row.get("source_module")) in source_module_names

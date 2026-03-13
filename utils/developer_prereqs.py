@@ -198,6 +198,88 @@ def _sql_tables_covered(sql_rows: list[dict[str, Any]], data_entities: list[dict
     return tracked_tables.issubset(covered)
 
 
+def _contract_method_path(contract: dict[str, Any]) -> tuple[str, str]:
+    spec_content = _as_dict(contract.get("spec_content"))
+    method = _normalize_text(spec_content.get("method") or contract.get("method")).upper()
+    path = _normalize_text(spec_content.get("path") or contract.get("path"))
+    return method, path
+
+
+def _duplicate_contracts(interface_contracts: list[dict[str, Any]]) -> list[str]:
+    seen: set[tuple[str, str]] = set()
+    duplicates: list[str] = []
+    for contract in interface_contracts:
+        if not isinstance(contract, dict):
+            continue
+        method, path = _contract_method_path(contract)
+        if not method or not path:
+            continue
+        key = (method, path)
+        if key in seen:
+            duplicates.append(f"{method} {path}")
+            continue
+        seen.add(key)
+    return duplicates
+
+
+def _rule_target_mismatches(component_name: str, rules: list[dict[str, Any]]) -> list[str]:
+    component_key = _normalize_name(component_name)
+    mismatches: list[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        rule_id = _normalize_text(rule.get("rule_id") or rule.get("id"))
+        target_key = _normalize_name(rule.get("target_service"))
+        if rule_id and target_key and target_key != component_key:
+            mismatches.append(rule_id)
+    return mismatches
+
+
+def _anchor_endpoint_mismatches(interface_contracts: list[dict[str, Any]], anchors: list[dict[str, Any]]) -> list[str]:
+    valid_paths = {path for method, path in (_contract_method_path(contract) for contract in interface_contracts) if path}
+    mismatches: list[str] = []
+    for anchor in anchors:
+        if not isinstance(anchor, dict):
+            continue
+        anchor_id = _normalize_text(anchor.get("anchor_id") or anchor.get("id"))
+        target_endpoint = _normalize_text(anchor.get("target_endpoint"))
+        if anchor_id and target_endpoint and target_endpoint not in valid_paths:
+            mismatches.append(anchor_id)
+    return mismatches
+
+
+def _wbs_service_mismatches(component_name: str, wbs_items: list[dict[str, Any]]) -> list[str]:
+    component_key = _normalize_name(component_name)
+    mismatches: list[str] = []
+    for item in wbs_items:
+        if not isinstance(item, dict):
+            continue
+        wbs_id = _normalize_text(item.get("wbs_id"))
+        if wbs_id and _normalize_name(item.get("service")) not in {"", component_key}:
+            mismatches.append(wbs_id)
+    return mismatches
+
+
+def _wbs_story_module_mismatches(component_spec: dict[str, Any], wbs_items: list[dict[str, Any]]) -> list[str]:
+    scoped_modules = {
+        _normalize_name(row.get("source_module"))
+        for row in _as_list(component_spec.get("module_structure"))
+        if isinstance(row, dict) and _normalize_name(row.get("source_module"))
+    }
+    mismatches: list[str] = []
+    for item in wbs_items:
+        if not isinstance(item, dict):
+            continue
+        for story in _as_list(item.get("stories")):
+            if not isinstance(story, dict):
+                continue
+            story_id = _normalize_text(story.get("story_id"))
+            source_module = _normalize_name(story.get("source_module"))
+            if story_id and source_module and scoped_modules and source_module not in scoped_modules:
+                mismatches.append(story_id)
+    return mismatches
+
+
 def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[str, Any]:
     handoff = _as_dict(component_handoff)
     component_name = _normalize_text(handoff.get("component_name"))
@@ -233,6 +315,11 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
         row for row in anchors
         if not regression_anchor_refs or _normalize_text(row.get("anchor_id") or row.get("id")) in {_normalize_text(ref) for ref in regression_anchor_refs}
     ]
+    duplicate_contract_paths = _duplicate_contracts(interface_contracts)
+    rule_target_mismatches = _rule_target_mismatches(component_name, referenced_business_rules)
+    anchor_endpoint_mismatches = _anchor_endpoint_mismatches(interface_contracts, referenced_anchors)
+    wbs_service_mismatches = _wbs_service_mismatches(component_name, wbs_items)
+    wbs_story_module_mismatches = _wbs_story_module_mismatches(component_spec, wbs_items)
 
     hard_blockers: list[dict[str, Any]] = []
     soft_blockers: list[dict[str, Any]] = []
@@ -330,6 +417,16 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                     "blocks": ["controller generation", "API parity", "contract tests"],
                 }
             )
+    if duplicate_contract_paths:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-CONTRACTS-002",
+                "category": "interface_contracts",
+                "description": f"Scoped contracts contain duplicate HTTP surfaces: {', '.join(duplicate_contract_paths[:5])}.",
+                "resolution": "Architect stage must deduplicate method/path pairs before Developer dispatch.",
+                "blocks": ["controller generation", "routing", "contract tests"],
+            }
+        )
 
     is_brownfield = bool(brownfield_context or _normalize_text(validation_status.get("source_type")).lower() == "brownfield")
     if is_brownfield and not business_rules:
@@ -369,6 +466,16 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "category": "brownfield_context",
                 "description": "Scoped business rules lack semantic fields such as target_service, category, source_module, and acceptance_criteria.",
                 "resolution": "Architect stage must interpret and route business rules per component before Developer dispatch.",
+                "blocks": ["service logic", "acceptance tests", "behavioral parity"],
+            }
+        )
+    if is_brownfield and rule_target_mismatches:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-010",
+                "category": "brownfield_context",
+                "description": f"Scoped business rules are routed to a different target_service than {component_name}: {', '.join(rule_target_mismatches[:5])}.",
+                "resolution": "Architect stage must keep business_rule_refs aligned with the component boundary before Developer dispatch.",
                 "blocks": ["service logic", "acceptance tests", "behavioral parity"],
             }
         )
@@ -412,6 +519,16 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "blocks": ["parity testing", "integration tests", "developer acceptance"],
             }
         )
+    if is_brownfield and anchor_endpoint_mismatches:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-011",
+                "category": "brownfield_context",
+                "description": f"Scoped regression anchors target endpoints not present in the component contracts: {', '.join(anchor_endpoint_mismatches[:5])}.",
+                "resolution": "Architect stage must map every scoped anchor to a real contract path before Developer dispatch.",
+                "blocks": ["parity testing", "controller generation", "integration tests"],
+            }
+        )
     if is_brownfield and business_rules and golden_flow_like_count and len(anchors) < max(1, min(2, golden_flow_like_count)):
         hard_blockers.append(
             {
@@ -440,6 +557,26 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "description": "LegacyCoreService remains an unresolved residual dumping ground with too many mixed responsibilities.",
                 "resolution": "Architect stage must decompose the residual service into smaller bounded components before Developer dispatch.",
                 "blocks": ["service generation", "repository design", "regression planning"],
+            }
+        )
+    if wbs_service_mismatches:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-WBS-002",
+                "category": "wbs",
+                "description": f"Scoped WBS items point at a different service boundary than {component_name}: {', '.join(wbs_service_mismatches[:5])}.",
+                "resolution": "Architect stage must emit component-scoped WBS items before Developer dispatch.",
+                "blocks": ["planning", "implementation", "acceptance mapping"],
+            }
+        )
+    if wbs_story_module_mismatches:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-WBS-003",
+                "category": "wbs",
+                "description": f"Scoped WBS stories reference source modules outside the component boundary: {', '.join(wbs_story_module_mismatches[:5])}.",
+                "resolution": "Architect stage must keep story source_modules aligned with the component module_structure before Developer dispatch.",
+                "blocks": ["planning", "implementation", "regression mapping"],
             }
         )
 
@@ -490,7 +627,7 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
             }
         )
 
-    checks = 15
+    checks = 20
     passed = 0
     if coding_policy:
         passed += 1
@@ -510,13 +647,23 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
         passed += 1
     if not is_brownfield or (referenced_business_rules and all(_has_rule_semantics(rule) for rule in referenced_business_rules)):
         passed += 1
+    if not is_brownfield or not rule_target_mismatches:
+        passed += 1
     if not is_brownfield or (referenced_anchors and all(_has_anchor_semantics(anchor) for anchor in referenced_anchors)):
+        passed += 1
+    if not is_brownfield or not anchor_endpoint_mismatches:
         passed += 1
     if not is_brownfield or approved_decisions:
         passed += 1
     if not _component_is_residual_dumping_ground(component_name, component_spec):
         passed += 1
     if not sql_rows or (len(data_ownership) >= 1 and _sql_tables_covered(sql_rows, data_entities, data_ownership)):
+        passed += 1
+    if not duplicate_contract_paths:
+        passed += 1
+    if not wbs_service_mismatches:
+        passed += 1
+    if not wbs_story_module_mismatches:
         passed += 1
     if not is_brownfield or len(anchors) >= 1:
         passed += 1
