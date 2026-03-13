@@ -13813,6 +13813,8 @@ function renderAgentTabPanel() {
   }
   if (stage === 2) {
     wireArchitectViewTabs(el.agentTabPanel, result?.output || {}, runUseCase);
+  }
+  if (stage === 3) {
     wireDeveloperViewTabs(el.agentTabPanel, result?.output || {});
   }
   setTimeout(() => renderMermaidBlocks(el.agentTabPanel), 0);
@@ -14568,6 +14570,8 @@ function openStageModal(stage) {
   }
   if (stage === 2) {
     wireArchitectViewTabs(el.modalReadable, result?.output || {}, runUseCase);
+  }
+  if (stage === 3) {
     wireDeveloperViewTabs(el.modalReadable, result?.output || {});
   }
   el.outputModal.showModal();
