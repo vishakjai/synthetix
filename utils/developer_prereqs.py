@@ -75,6 +75,16 @@ def _has_meaningful_shape(value: Any) -> bool:
     return False
 
 
+def _has_required_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_normalize_text(value))
+    if isinstance(value, list):
+        return any(_has_required_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_required_value(item) for item in value.values())
+    return value is not None
+
+
 def _contract_semantic_gaps(contract: dict[str, Any]) -> list[str]:
     spec_content = _as_dict(contract.get("spec_content"))
     gaps: list[str] = []
@@ -124,17 +134,68 @@ def _approved_architectural_decisions(handoff: dict[str, Any], component_spec: d
 
 
 def _has_rule_semantics(rule: dict[str, Any]) -> bool:
-    return all(
-        _normalize_text(rule.get(key))
-        for key in ("target_service", "category", "source_module", "acceptance_criteria")
+    return (
+        _has_required_value(rule.get("target_service"))
+        and _has_required_value(rule.get("category"))
+        and _has_required_value(rule.get("source_module"))
+        and _has_required_value(rule.get("acceptance_criteria"))
     )
 
 
 def _has_anchor_semantics(anchor: dict[str, Any]) -> bool:
-    return all(
-        _normalize_text(anchor.get(key))
-        for key in ("golden_flow_ref", "entry_point", "expected_output", "target_endpoint")
+    return (
+        _has_required_value(anchor.get("golden_flow_ref"))
+        and _has_required_value(anchor.get("entry_point"))
+        and _has_required_value(anchor.get("expected_output"))
+        and _has_required_value(anchor.get("target_endpoint"))
     )
+
+
+def _sql_row_is_write(row: dict[str, Any]) -> bool:
+    if bool(row.get("is_write")):
+        return True
+    kind = _normalize_text(row.get("kind")).lower()
+    if kind in {"insert", "update", "delete", "merge", "replace", "ddl", "upsert"}:
+        return True
+    return bool([value for value in _as_list(row.get("data_mutations")) if _normalize_text(value)])
+
+
+def _missing_refs(rows: list[dict[str, Any]], refs: list[str], primary_keys: tuple[str, ...]) -> list[str]:
+    if not refs:
+        return []
+    row_ids = {
+        _normalize_text(row.get(key))
+        for row in rows
+        if isinstance(row, dict)
+        for key in primary_keys
+        if _normalize_text(row.get(key))
+    }
+    return [ref for ref in refs if _normalize_text(ref) and _normalize_text(ref) not in row_ids]
+
+
+def _sql_tables_covered(sql_rows: list[dict[str, Any]], data_entities: list[dict[str, Any]], data_ownership: list[dict[str, Any]]) -> bool:
+    tracked_tables = {
+        _normalize_name(table)
+        for row in sql_rows
+        if isinstance(row, dict)
+        for table in _as_list(row.get("data_mutations")) + _as_list(row.get("tables"))
+        if _normalize_name(table)
+    }
+    if not tracked_tables:
+        return True
+    covered = set()
+    for entity in data_entities:
+        if not isinstance(entity, dict):
+            continue
+        for table in _as_list(entity.get("legacy_tables")):
+            if _normalize_name(table):
+                covered.add(_normalize_name(table))
+    for row in data_ownership:
+        if not isinstance(row, dict):
+            continue
+        if _normalize_name(row.get("entity_name")):
+            covered.add(_normalize_name(row.get("entity_name")))
+    return tracked_tables.issubset(covered)
 
 
 def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[str, Any]:
@@ -161,6 +222,17 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
     approved_decisions = _approved_architectural_decisions(handoff, component_spec)
     business_rule_refs = [str(ref).strip() for ref in _as_list(component_spec.get("business_rule_refs")) if str(ref).strip()]
     regression_anchor_refs = [str(ref).strip() for ref in _as_list(component_spec.get("regression_anchor_refs")) if str(ref).strip()]
+    write_sql_rows = [row for row in sql_rows if _sql_row_is_write(row)]
+    missing_rule_refs = _missing_refs(business_rules, business_rule_refs, ("rule_id", "id"))
+    missing_anchor_refs = _missing_refs(anchors, regression_anchor_refs, ("anchor_id", "id"))
+    referenced_business_rules = [
+        row for row in business_rules
+        if not business_rule_refs or _normalize_text(row.get("rule_id")) in {_normalize_text(ref) for ref in business_rule_refs}
+    ]
+    referenced_anchors = [
+        row for row in anchors
+        if not regression_anchor_refs or _normalize_text(row.get("anchor_id") or row.get("id")) in {_normalize_text(ref) for ref in regression_anchor_refs}
+    ]
 
     hard_blockers: list[dict[str, Any]] = []
     soft_blockers: list[dict[str, Any]] = []
@@ -207,6 +279,26 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "description": "SQL evidence exists but data_entities/data_ownership are empty. Repository and migration code would invent the schema.",
                 "resolution": "Architect stage must derive entity definitions and ownership from the SQL catalog for this component.",
                 "blocks": ["DAL generation", "schema migration", "integration tests"],
+            }
+        )
+    if write_sql_rows and not data_ownership:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-DOMAIN-002",
+                "category": "domain_model",
+                "description": "Mutating SQL evidence exists but component-scoped data ownership is empty. Write-path ownership would be invented during implementation.",
+                "resolution": "Architect stage must reconcile SQL write paths into explicit owning_service rows before Developer dispatch.",
+                "blocks": ["repository generation", "transaction boundaries", "migration scripts"],
+            }
+        )
+    if sql_rows and not _sql_tables_covered(sql_rows, data_entities, data_ownership):
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-DOMAIN-003",
+                "category": "domain_model",
+                "description": "Component SQL tables are not fully covered by scoped entity and ownership metadata.",
+                "resolution": "Architect stage must reconcile every scoped SQL table to data_entities/data_ownership before Developer dispatch.",
+                "blocks": ["repository generation", "schema migration", "parity verification"],
             }
         )
 
@@ -260,7 +352,17 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "blocks": ["service logic", "validation rules", "acceptance parity"],
             }
         )
-    if is_brownfield and business_rules and not any(_has_rule_semantics(rule) for rule in business_rules):
+    if is_brownfield and missing_rule_refs:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-008",
+                "category": "brownfield_context",
+                "description": f"Referenced business rules are missing from the scoped handoff: {', '.join(missing_rule_refs[:5])}.",
+                "resolution": "Architect stage must carry every referenced business rule into the component handoff before Developer dispatch.",
+                "blocks": ["service logic", "acceptance tests", "behavioral parity"],
+            }
+        )
+    if is_brownfield and referenced_business_rules and not all(_has_rule_semantics(rule) for rule in referenced_business_rules):
         hard_blockers.append(
             {
                 "gap_id": "GAP-BROWNFIELD-005",
@@ -290,7 +392,17 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
                 "blocks": ["parity testing", "behavior validation", "developer acceptance"],
             }
         )
-    if is_brownfield and anchors and not any(_has_anchor_semantics(anchor) for anchor in anchors):
+    if is_brownfield and missing_anchor_refs:
+        hard_blockers.append(
+            {
+                "gap_id": "GAP-BROWNFIELD-009",
+                "category": "brownfield_context",
+                "description": f"Referenced regression anchors are missing from the scoped handoff: {', '.join(missing_anchor_refs[:5])}.",
+                "resolution": "Architect stage must carry every referenced regression anchor into the component handoff before Developer dispatch.",
+                "blocks": ["parity testing", "integration tests", "developer acceptance"],
+            }
+        )
+    if is_brownfield and referenced_anchors and not all(_has_anchor_semantics(anchor) for anchor in referenced_anchors):
         hard_blockers.append(
             {
                 "gap_id": "GAP-BROWNFIELD-007",
@@ -396,15 +508,15 @@ def evaluate_component_prerequisites(component_handoff: dict[str, Any]) -> dict[
         passed += 1
     if not is_brownfield or regression_anchor_refs:
         passed += 1
-    if not is_brownfield or any(_has_rule_semantics(rule) for rule in business_rules):
+    if not is_brownfield or (referenced_business_rules and all(_has_rule_semantics(rule) for rule in referenced_business_rules)):
         passed += 1
-    if not is_brownfield or any(_has_anchor_semantics(anchor) for anchor in anchors):
+    if not is_brownfield or (referenced_anchors and all(_has_anchor_semantics(anchor) for anchor in referenced_anchors)):
         passed += 1
     if not is_brownfield or approved_decisions:
         passed += 1
     if not _component_is_residual_dumping_ground(component_name, component_spec):
         passed += 1
-    if not sql_rows or len(data_ownership) >= 1:
+    if not sql_rows or (len(data_ownership) >= 1 and _sql_tables_covered(sql_rows, data_entities, data_ownership)):
         passed += 1
     if not is_brownfield or len(anchors) >= 1:
         passed += 1

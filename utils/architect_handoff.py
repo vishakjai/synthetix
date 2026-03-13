@@ -178,6 +178,39 @@ def _sql_rows(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return _raw_rows(_raw_bucket(raw, "sql_catalog", "php_sql_catalog", "php_sql_catalog_v1"), "statements", "rows", "items")
 
 
+def _sql_kind(row: dict[str, Any]) -> str:
+    explicit = str(row.get("kind", "")).strip() or str(row.get("operation", "")).strip() or str(row.get("statement_type", "")).strip()
+    if explicit:
+        return explicit.lower()
+    raw = str(row.get("raw", "")).strip().lower()
+    if raw.startswith("insert"):
+        return "insert"
+    if raw.startswith("update"):
+        return "update"
+    if raw.startswith("delete"):
+        return "delete"
+    if raw.startswith("merge"):
+        return "merge"
+    if raw.startswith("replace"):
+        return "replace"
+    if raw.startswith("select"):
+        return "select"
+    return ""
+
+
+def _sql_is_write(row: dict[str, Any]) -> bool:
+    return _sql_kind(row) in {"insert", "update", "delete", "merge", "replace", "ddl", "upsert"}
+
+
+def _sql_write_tables(row: dict[str, Any]) -> list[str]:
+    data_mutations = _safe_list_text(row.get("data_mutations", []))
+    if data_mutations:
+        return data_mutations
+    if _sql_is_write(row):
+        return _safe_list_text(row.get("tables", []))
+    return []
+
+
 def _sql_source_candidates(row: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
     direct = str(row.get("form", "")).strip() or str(row.get("module", "")).strip()
@@ -193,6 +226,8 @@ def _sql_source_candidates(row: dict[str, Any]) -> list[str]:
         parts = [part.strip() for part in ref.split("::") if part.strip()]
         if len(parts) >= 2:
             candidates.append(parts[-2])
+        elif parts:
+            candidates.append(parts[0])
     seen: set[str] = set()
     resolved: list[str] = []
     for candidate in candidates:
@@ -348,6 +383,30 @@ def _classify_business_rule(statement: str) -> str:
     return "workflow"
 
 
+def _route_target_service_from_text(text: str) -> str:
+    lowered = str(text or "").lower()
+    if not lowered:
+        return ""
+    auth_tokens = ("login", "password", "credential", "lockout", "failed attempt", "authenticate", "signin", "recordcount < 1")
+    transaction_tokens = ("deposit", "withdraw", "transaction", "ledger", "balance", "interest", "funds", "atomic", "rollback", "expire")
+    customer_tokens = ("customer", "account holder", "profile", "firstname", "lastname", "address", "phone", "email", "unique account")
+    reporting_tokens = ("statement", "report", "print", "export", "monthly summary", "ledger extract")
+    reference_tokens = ("account type", "settings", "reference", "lookup", "configuration")
+    if any(token in lowered for token in auth_tokens):
+        return "AuthenticationService"
+    if any(token in lowered for token in reporting_tokens):
+        return "ReportingService"
+    if any(token in lowered for token in reference_tokens):
+        return "ReferenceDataService"
+    if any(token in lowered for token in customer_tokens) and not any(token in lowered for token in transaction_tokens):
+        return "CustomerService"
+    if any(token in lowered for token in transaction_tokens):
+        return "TransactionService"
+    if any(token in lowered for token in customer_tokens):
+        return "CustomerService"
+    return ""
+
+
 def _rule_acceptance_criteria(rule: dict[str, Any], source_module: str, target_service: str) -> list[str]:
     statement = str(rule.get("statement", "")).strip() or str(rule.get("rule_text", "")).strip()
     rule_id = str(rule.get("rule_id", "")).strip() or "rule"
@@ -383,18 +442,7 @@ def _route_business_rule_target_service(statement: str, source_module: str, serv
     source_key = _normalize_name(source_module)
     if source_key and service_by_source.get(source_key):
         return service_by_source[source_key]
-    lowered = str(statement or "").lower()
-    if any(token in lowered for token in ("login", "password", "credential", "lockout", "attempt", "recordcount < 1")):
-        return "AuthenticationService"
-    if any(token in lowered for token in ("deposit", "withdraw", "transaction", "balance", "interest", "amount", "accountno", "account no", "date", "expire")):
-        return "TransactionService"
-    if any(token in lowered for token in ("customer", "firstname", "lastname", "account holder", "address", "phone")):
-        return "CustomerService"
-    if any(token in lowered for token in ("statement", "report", "print", "monthly")):
-        return "ReportingService"
-    if any(token in lowered for token in ("account type", "settings", "reference")):
-        return "ReferenceDataService"
-    return ""
+    return _route_target_service_from_text(statement)
 
 
 def _golden_flow_entry_point(flow: dict[str, Any]) -> str:
@@ -405,6 +453,17 @@ def _golden_flow_entry_point(flow: dict[str, Any]) -> str:
     match = re.search(r"([A-Za-z0-9_]+::[A-Za-z0-9_]+)", description)
     if match:
         return match.group(1)
+    lowered = description.lower()
+    if "login" in lowered:
+        return "legacy_login::execute"
+    if "deposit" in lowered:
+        return "legacy_deposit::execute"
+    if "withdraw" in lowered:
+        return "legacy_withdraw::execute"
+    if "customer" in lowered:
+        return "legacy_customer::execute"
+    if "statement" in lowered or "report" in lowered:
+        return "legacy_reporting::execute"
     return ""
 
 
@@ -427,8 +486,12 @@ def _derive_expected_output(flow: dict[str, Any], description: str, target_servi
         return "Withdrawal is persisted only when funds are sufficient and the balance is reduced with a matching ledger record."
     if "customer" in lowered:
         return "Customer data is loaded or updated consistently with the legacy workflow."
+    if "close account" in lowered or "closeaccount" in lowered:
+        return "Account is closed only when eligibility checks pass and the closure state is persisted consistently."
     if "statement" in lowered or target_service == "ReportingService":
         return "Statement or report output is returned with the same filters and scope as the legacy workflow."
+    if "settings" in lowered or target_service == "ReferenceDataService":
+        return "Reference data changes are persisted and subsequently visible to dependent workflows."
     return description
 
 
@@ -487,13 +550,30 @@ def _operation_shape_fields(service_name: str, op_name: str, method: str, path: 
     }
 
 
-def _golden_flow_target_endpoint(flow: dict[str, Any], service_by_source: dict[str, str]) -> str:
+def _golden_flow_target_endpoint(flow: dict[str, Any], service_by_source: dict[str, str], target_service: str = "") -> str:
     entry_point = _golden_flow_entry_point(flow)
     parts = [part.strip() for part in entry_point.split("::") if part.strip()]
     module_name = parts[0] if parts else ""
-    service_name = service_by_source.get(_normalize_name(module_name), "")
+    service_name = target_service or service_by_source.get(_normalize_name(module_name), "")
+    if not service_name:
+        service_name = _route_target_service_from_text(str(flow.get("description", "")).strip())
     if not service_name:
         return ""
+    flow_text = " ".join([entry_point, str(flow.get("description", "")).strip()]).lower()
+    if "login" in flow_text or service_name == "AuthenticationService":
+        return "/auth/login"
+    if "deposit" in flow_text:
+        return "/transactions/deposit"
+    if "withdraw" in flow_text:
+        return "/transactions/withdraw"
+    if "close account" in flow_text or "closeaccount" in flow_text:
+        return "/accounts/close"
+    if "statement" in flow_text or "report" in flow_text or service_name == "ReportingService":
+        action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "statement")
+        return f"/reports/{action}"
+    if "settings" in flow_text or "reference" in flow_text or service_name == "ReferenceDataService":
+        action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "reference")
+        return f"/reference/{action}"
     slug = _service_path_slug(service_name)
     action = _slug(parts[-1] if parts else flow.get("id") or flow.get("name") or "operation")
     return f"/{slug}/{action}"
@@ -565,6 +645,16 @@ def _semantic_validate_architect_handoff(payload: dict[str, Any]) -> None:
                 f"architect handoff invalid: contract {contract.get('contract_id', '')} has no spec_content.operations"
             )
         method = str(spec.get("method", "")).strip().upper()
+        top_level_method = str(contract.get("method", "")).strip().upper()
+        top_level_path = str(contract.get("path", "")).strip()
+        if top_level_method and top_level_method != method:
+            raise jsonschema.ValidationError(
+                f"architect handoff invalid: contract {contract.get('contract_id', '')} top-level method does not match spec_content.method"
+            )
+        if top_level_path and top_level_path != str(spec.get("path", "")).strip():
+            raise jsonschema.ValidationError(
+                f"architect handoff invalid: contract {contract.get('contract_id', '')} top-level path does not match spec_content.path"
+            )
         if _is_mutating_operation(str(spec.get("name", "")), str(spec.get("path", "")), _safe_list_text(spec.get("replaces", []))) and method == "GET":
             raise jsonschema.ValidationError(
                 f"architect handoff invalid: mutating operation emitted as GET for contract {contract.get('contract_id', '')}"
@@ -723,6 +813,8 @@ def _build_domain_model(
     data_ownership = []
     relationships = []
     bounded_contexts = []
+    table_write_services: dict[str, list[str]] = {}
+    table_read_services: dict[str, list[str]] = {}
 
     def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
         names = {name.lower(): name for name in service_names if name}
@@ -757,24 +849,54 @@ def _build_domain_model(
         for mapping in _as_list(traceability.get("mappings"))
         if isinstance(mapping, dict) and str(_as_dict(mapping.get("target")).get("service", "")).strip()
     }
+    for row in sql_rows:
+        source_candidates = _sql_source_candidates(row)
+        source_keys = [_normalize_name(candidate) for candidate in source_candidates if _normalize_name(candidate)]
+        service_names = [service_by_source.get(source_key) for source_key in source_keys if service_by_source.get(source_key)]
+        for table_name in _safe_list_text(row.get("tables", [])):
+            table_read_services.setdefault(table_name, []).extend(service_names)
+        for table_name in _sql_write_tables(row):
+            table_write_services.setdefault(table_name, []).extend(service_names)
     entity_seen: set[str] = set()
     for entity in _as_list(ownership.get("entities")):
         if not isinstance(entity, dict):
             continue
         name = str(entity.get("name", "")).strip()
         legacy_tables = _safe_list_text(entity.get("legacy_tables", []))
+        write_evidence_services: list[str] = []
+        evidence_services: list[str] = []
+        for table_name in legacy_tables:
+            write_evidence_services.extend(table_write_services.get(table_name, []))
+            evidence_services.extend(table_write_services.get(table_name, []))
+            evidence_services.extend(table_read_services.get(table_name, []))
+        fallback_owner = (
+            max(set(write_evidence_services), key=write_evidence_services.count)
+            if write_evidence_services
+            else (
+                max(set(evidence_services), key=evidence_services.count)
+                if evidence_services
+                else (str(entity.get("owning_service", "")).strip() or "LegacyCoreService")
+            )
+        )
         owner = _preferred_owner(
             legacy_tables[0] if legacy_tables else name,
-            [str(service.get("name", "")).strip() for service in services if isinstance(service, dict)],
-            str(entity.get("owning_service", "")).strip() or "LegacyCoreService",
+            write_evidence_services or evidence_services or [str(service.get("name", "")).strip() for service in services if isinstance(service, dict)],
+            fallback_owner,
         )
-        readers = _safe_list_text(entity.get("read_services", []))
+        readers = sorted(set(_safe_list_text(entity.get("read_services", [])) + [svc for svc in evidence_services if svc and svc != owner]))
         entities.append({
             "entity_name": name,
             "legacy_tables": legacy_tables,
             "owner": owner,
             "readers": readers,
-            "migration_notes": str(entity.get("migration_notes", "")).strip(),
+            "migration_notes": (
+                str(entity.get("migration_notes", "")).strip()
+                or (
+                    f"Ownership reconciled using legacy SQL read/write evidence for {', '.join(legacy_tables[:2])}."
+                    if legacy_tables
+                    else ""
+                )
+            ),
         })
         data_ownership.append({
             "entity_name": name,
@@ -807,7 +929,11 @@ def _build_domain_model(
                     table_to_services.setdefault(table, []).append(service_name)
         for table_name, services_for_table in sorted(table_to_services.items()):
             owner = ""
-            if services_for_table:
+            write_services = table_write_services.get(table_name, [])
+            if write_services:
+                owner = max(set(write_services), key=write_services.count)
+                owner = _preferred_owner(table_name, write_services, owner)
+            elif services_for_table:
                 owner = max(set(services_for_table), key=services_for_table.count)
                 owner = _preferred_owner(table_name, services_for_table, owner)
             readers = sorted({service for service in services_for_table if service and service != owner})
@@ -821,7 +947,9 @@ def _build_domain_model(
                 "legacy_tables": [table_name],
                 "owner": owner,
                 "readers": readers,
-                "migration_notes": f"Derived from SQL catalog references to {table_name}.",
+                "migration_notes": (
+                    f"Derived from SQL {'write' if write_services else 'usage'} paths for {table_name}."
+                ),
             })
             if owner:
                 data_ownership.append({
@@ -946,6 +1074,9 @@ def _build_interface_contracts(
                 "contract_id": contract_id,
                 "contract_type": "internal_api",
                 "owner_component": service_name,
+                "operation": op_name,
+                "method": method,
+                "path": path,
                 "consumers": _infer_consumers(service_name, service_lookup),
                 "spec_format": "draft-json",
                 "spec_content": {
@@ -1160,7 +1291,7 @@ def _build_brownfield_context(
         entry_point = _golden_flow_entry_point(flow)
         parts = [part.strip() for part in entry_point.split("::") if part.strip()]
         source_module = parts[0] if parts else _golden_flow_source_module(flow)
-        target_service = service_by_source.get(_normalize_name(source_module), "")
+        target_service = service_by_source.get(_normalize_name(source_module), "") or _route_target_service_from_text(str(flow.get("description", "")).strip())
         description = str(flow.get("description", "")).strip() or entry_point
         if description:
             expected_output = _derive_expected_output(flow, description, target_service)
@@ -1171,10 +1302,14 @@ def _build_brownfield_context(
                 "golden_flow_ref": str(flow.get("flow_id", "")).strip() or str(flow.get("id", "")).strip() or f"GF-{idx:03d}",
                 "entry_point": entry_point,
                 "expected_output": expected_output,
-                "target_endpoint": _golden_flow_target_endpoint(flow, service_by_source),
+                "target_endpoint": _golden_flow_target_endpoint(flow, service_by_source, target_service),
                 "source_module": source_module,
                 "target_service": target_service,
                 "data_fixture": f"Use legacy fixture data and replay {str(flow.get('flow_id', '')).strip() or str(flow.get('id', '')).strip() or f'GF-{idx:03d}'} against the target service contract.",
+                "acceptance_criteria": [
+                    f"{target_service or 'Assigned service'} reproduces the legacy behavior captured by {str(flow.get('flow_id', '')).strip() or str(flow.get('id', '')).strip() or f'GF-{idx:03d}'}.",
+                    expected_output,
+                ],
             })
     if not golden_flows:
         for idx, step in enumerate(_safe_list_text(legacy.get("key_logic_steps", [])), start=1):
@@ -1266,6 +1401,10 @@ def _build_brownfield_context(
                 "source_module": next(iter(_sql_source_candidates(row)), ""),
                 "tables": _safe_list_text(row.get("tables", [])),
                 "sql_id": str(row.get("sql_id", "")).strip(),
+                "kind": _sql_kind(row),
+                "is_write": _sql_is_write(row),
+                "data_mutations": _sql_write_tables(row),
+                "usage_sites": _as_list(row.get("usage_sites")),
             }
             for row in _sql_rows(raw)
             if isinstance(row, dict)

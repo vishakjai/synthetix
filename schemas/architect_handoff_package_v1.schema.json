@@ -304,6 +304,15 @@
         "owner_component": {
           "type": "string"
         },
+        "operation": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
         "consumers": {
           "type": "array",
           "items": {

@@ -812,7 +812,7 @@ Include:
             "decomposition_sequence": sequence,
         }
 
-    def _build_data_ownership_matrix(self, modules: list[dict[str, Any]], legacy: dict[str, Any]) -> dict[str, Any]:
+    def _build_data_ownership_matrix(self, modules: list[dict[str, Any]], legacy: dict[str, Any], raw: dict[str, Any] | None = None) -> dict[str, Any]:
         def _preferred_owner(table_name: str, service_names: list[str], fallback: str) -> str:
             lowered = table_name.lower()
             preferences: list[str] = []
@@ -837,14 +837,57 @@ Include:
 
         entities: list[dict[str, Any]] = []
         table_to_services: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        table_to_write_services: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
         table_to_modules: dict[str, set[str]] = defaultdict(set)
         for module in modules:
             for table in self._as_list(module.get("tables")):
                 table_to_services[str(table)][str(module.get("service_name"))] += 1
                 table_to_modules[str(table)].add(str(module.get("source_module")))
+        raw_map = raw if isinstance(raw, dict) else {}
+        sql_rows = self._as_list(self._as_dict(raw_map.get("sql_catalog")).get("statements"))
+        source_service_by_module = {
+            str(module.get("source_module", "")).strip().lower(): str(module.get("service_name", "")).strip()
+            for module in modules
+            if str(module.get("source_module", "")).strip() and str(module.get("service_name", "")).strip()
+        }
+        for row in sql_rows:
+            if not isinstance(row, dict):
+                continue
+            kind = str(row.get("kind", "")).strip().lower() or str(row.get("operation", "")).strip().lower()
+            write_like = kind in {"insert", "update", "delete", "merge", "replace", "ddl", "upsert"}
+            source_name = str(row.get("form", "")).strip() or str(row.get("module", "")).strip()
+            if not source_name:
+                usage_sites = self._as_list(row.get("usage_sites"))
+                for usage in usage_sites:
+                    if not isinstance(usage, dict):
+                        continue
+                    external_ref = self._as_dict(usage.get("external_ref"))
+                    ref = str(external_ref.get("ref", "")).strip()
+                    if not ref:
+                        continue
+                    parts = [part.strip() for part in ref.split("::") if part.strip()]
+                    if len(parts) >= 2:
+                        source_name = parts[-2]
+                        break
+            service_name = source_service_by_module.get(source_name.lower(), "")
+            if not service_name:
+                continue
+            write_tables = [str(value).strip() for value in self._as_list(row.get("data_mutations")) if str(value).strip()]
+            touched_tables = [str(value).strip() for value in self._as_list(row.get("tables")) if str(value).strip()]
+            for table in touched_tables:
+                table_to_services[table][service_name] += 1
+            if write_like and not write_tables:
+                write_tables = touched_tables
+            for table in write_tables:
+                table_to_write_services[table][service_name] += 1
         for table, service_counts in sorted(table_to_services.items()):
-            fallback_owner = max(service_counts.items(), key=lambda item: item[1])[0] if service_counts else "LegacyCoreService"
-            owner = _preferred_owner(table, list(service_counts.keys()), fallback_owner)
+            write_service_counts = table_to_write_services.get(table, {})
+            if write_service_counts:
+                fallback_owner = max(write_service_counts.items(), key=lambda item: item[1])[0]
+                owner = _preferred_owner(table, list(write_service_counts.keys()), fallback_owner)
+            else:
+                fallback_owner = max(service_counts.items(), key=lambda item: item[1])[0] if service_counts else "LegacyCoreService"
+                owner = _preferred_owner(table, list(service_counts.keys()), fallback_owner)
             readers = sorted([svc for svc in service_counts.keys() if svc != owner])
             entities.append(
                 {
@@ -854,7 +897,8 @@ Include:
                     "owning_service": owner,
                     "read_services": readers,
                     "migration_notes": (
-                        f"{len(table_to_modules[table])} legacy module(s) currently touch {table}; ownership shifts to {owner}."
+                        f"{len(table_to_modules[table])} legacy module(s) currently touch {table}; ownership shifts to {owner}"
+                        f"{' based on observed write paths.' if write_service_counts else '.'}"
                     ),
                 }
             )
@@ -1312,7 +1356,7 @@ Include:
         ownership = (
             parsed_ownership
             if self._as_list(parsed_ownership.get("entities"))
-            else self._build_data_ownership_matrix(modules, legacy)
+            else self._build_data_ownership_matrix(modules, legacy, raw)
         )
         coupling = self._build_coupling_heatmap(modules, legacy)
         adrs = self._build_adrs(modules, coupling)

@@ -102,6 +102,7 @@ class DeveloperDispatchTest(unittest.TestCase):
         self.assertTrue(scoped.get("analyst_evidence", {}).get("connection_patterns"))
         self.assertTrue(scoped.get("analyst_evidence", {}).get("risk_detector_findings"))
         self.assertTrue(scoped.get("analyst_evidence", {}).get("data_entities"))
+        self.assertTrue(scoped.get("analyst_evidence", {}).get("sql_reference_rows"))
         self.assertTrue(scoped.get("component_spec", {}).get("business_rule_refs"))
         self.assertTrue(scoped.get("component_spec", {}).get("regression_anchor_refs"))
 
@@ -124,6 +125,7 @@ class DeveloperDispatchTest(unittest.TestCase):
         trace_refs = set(scoped.get("component_spec", {}).get("traceability_refs", []))
         for row in scoped.get("wbs_items", []):
             self.assertEqual(row.get("service"), "TransactionService")
+        self.assertTrue(any("kind" in row for row in scoped.get("analyst_evidence", {}).get("sql_reference_rows", [])))
         self.assertTrue(any("frmdeposit" in str(anchor.get("description", "")).lower() or "frmwithdraw" in str(anchor.get("description", "")).lower() for anchor in scoped.get("brownfield_context", {}).get("regression_test_anchors", [])))
         self.assertTrue(trace_refs)
 

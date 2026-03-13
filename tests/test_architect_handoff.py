@@ -353,6 +353,58 @@ class ArchitectHandoffPackageTest(unittest.TestCase):
         self.assertEqual(deposit_anchor.get("entry_point"), "frmdeposit::cmdSave_Click")
         self.assertTrue(deposit_anchor.get("target_endpoint"))
 
+    def test_description_only_flow_without_entrypoint_is_semantically_enriched(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"]["golden_flows"] = {
+            "flows": [
+                {
+                    "flow_id": "GF-900",
+                    "description": "Deposit workflow records the ledger entry and updates the account balance atomically.",
+                }
+            ]
+        }
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, state)
+        anchors = normalized.get("architect_handoff_package", {}).get("brownfield_context", {}).get("regression_test_anchors", [])
+        anchor = next(anchor for anchor in anchors if anchor.get("golden_flow_ref") == "GF-900")
+        self.assertTrue(anchor.get("entry_point"))
+        self.assertEqual(anchor.get("target_service"), "TransactionService")
+        self.assertEqual(anchor.get("target_endpoint"), "/transactions/deposit")
+
+    def test_write_path_sql_reconciles_owner_even_when_reads_are_shared(self):
+        state = self._state()
+        state["analyst_output"]["raw_artifacts"]["sql_catalog"] = {
+            "statements": [
+                {
+                    "sql_id": "sql:write",
+                    "kind": "update",
+                    "form": "frmdeposit",
+                    "tables": ["tblaccount"],
+                    "data_mutations": ["tblaccount"],
+                },
+                {
+                    "sql_id": "sql:read-1",
+                    "kind": "select",
+                    "form": "frmcustomer",
+                    "tables": ["tblaccount"],
+                },
+                {
+                    "sql_id": "sql:read-2",
+                    "kind": "select",
+                    "form": "frmwithdraw",
+                    "tables": ["tblaccount"],
+                },
+            ]
+        }
+        agent = ArchitectAgent(Mock())
+        normalized = agent._normalize_output({"legacy_system": {}}, state)
+        handoff = normalized["architect_handoff_package"]
+        ownership = {
+            row.get("entity_name"): row.get("owning_service")
+            for row in handoff.get("domain_model", {}).get("data_ownership", [])
+        }
+        self.assertEqual(ownership.get("tblaccount") or ownership.get("Account"), "TransactionService")
+
 
 class ArchitectHandoffApiTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -374,6 +426,46 @@ class ArchitectHandoffApiTest(unittest.TestCase):
                 if run_id != "run_handoff" or stage != 2:
                     return None
                 return {"output": {"architect_handoff_package": handoff}}
+
+        class _FakeManager:
+            store = _FakeStore()
+
+            def _hydrate_record(self, run_id):
+                return {"run_id": run_id, "pipeline_state": {}}
+
+            def get_run(self, run_id):
+                return {"run_id": run_id, "pipeline_state": {}}
+
+        server.MANAGER = _FakeManager()
+        response = asyncio.run(
+            server.api_get_run_architect_handoff(_FakeRequest(path_params={"run_id": "run_handoff"}))
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["architect_handoff_package"]["artifact_type"], "architect_handoff_package_v1")
+
+    def test_get_architect_handoff_from_real_snapshot_result_shape(self):
+        handoff = self._handoff()
+
+        class _FakeStore:
+            def load_stage_snapshot(self, run_id, stage):
+                if run_id != "run_handoff" or stage != 2:
+                    return None
+                return {
+                    "run_id": run_id,
+                    "stage": stage,
+                    "result": {
+                        "stage": 2,
+                        "status": "success",
+                        "summary": "Architect package generated",
+                        "output": {"architect_handoff_package": handoff},
+                        "logs": ["architect complete"],
+                    },
+                    "pipeline_state": {},
+                    "stage_status": {"2": "success"},
+                    "progress_logs": ["[ts] architect complete"],
+                }
 
         class _FakeManager:
             store = _FakeStore()

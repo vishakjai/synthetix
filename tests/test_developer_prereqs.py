@@ -208,6 +208,38 @@ class DeveloperPrereqsTest(unittest.TestCase):
         self.assertEqual(report.get("status"), "BLOCKED")
         self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-007" for row in report.get("hard_blockers", [])))
 
+    def test_prereqs_block_when_referenced_business_rule_row_is_missing(self):
+        scoped = self._scoped()
+        scoped["brownfield_context"]["business_rules"] = []
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-001" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_referenced_anchor_row_is_missing(self):
+        scoped = self._scoped()
+        scoped["brownfield_context"]["regression_test_anchors"] = []
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-BROWNFIELD-002" for row in report.get("hard_blockers", [])))
+
+    def test_prereqs_block_when_write_sql_tables_have_no_ownership_coverage(self):
+        scoped = self._scoped()
+        scoped["data_ownership"] = [
+            {
+                "entity_name": "Customers",
+                "owning_service": "CustomerService",
+                "read_services": ["TransactionService"],
+            }
+        ]
+        scoped["analyst_evidence"]["data_entities"] = []
+        for row in scoped["analyst_evidence"]["sql_reference_rows"]:
+            row["kind"] = "update"
+            row["is_write"] = True
+            row["data_mutations"] = list(row.get("tables", []))
+        report = evaluate_component_prerequisites(scoped)
+        self.assertEqual(report.get("status"), "BLOCKED")
+        self.assertTrue(any(row.get("gap_id") == "GAP-DOMAIN-003" for row in report.get("hard_blockers", [])))
+
     def test_developer_agent_refuses_when_component_prereqs_fail(self):
         state = self._state()
         agent = ArchitectAgent(self._llm())

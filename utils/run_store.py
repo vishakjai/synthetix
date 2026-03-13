@@ -216,6 +216,10 @@ class PipelineRunStore:
                 "run_id": run_id,
                 "stage": stage,
                 "result": stage_result,
+                "pipeline_state": pipeline_state,
+                "stage_status": {str(k): v for k, v in stage_status.items()},
+                "progress_logs": progress_logs,
+                "progress_log_count": len(progress_logs),
                 "saved_at": _utc_now_iso(),
             },
         )
@@ -423,6 +427,10 @@ class GcsPipelineRunStore:
                 "run_id": run_id,
                 "stage": stage,
                 "result": stage_result,
+                "pipeline_state": pipeline_state,
+                "stage_status": {str(k): v for k, v in stage_status.items()},
+                "progress_logs": progress_logs,
+                "progress_log_count": len(progress_logs),
                 "saved_at": _utc_now_iso(),
             },
         )
@@ -628,6 +636,8 @@ class FirestorePipelineRunStore:
                 "result": stage_result,
                 "pipeline_state": pipeline_state,
                 "stage_status": {str(k): v for k, v in stage_status.items()},
+                "progress_logs": progress_logs,
+                "progress_log_count": len(progress_logs),
                 "saved_at": saved_at,
             },
         )

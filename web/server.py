@@ -2217,6 +2217,18 @@ class PipelineRunManager:
         stage_status = {
             int(k): str(v) for k, v in raw_stage_status.items() if str(k).isdigit()
         } if isinstance(raw_stage_status, dict) else {}
+        progress_logs = (
+            list(state_payload.get("progress_logs", []))
+            if isinstance(state_payload.get("progress_logs", []), list)
+            else []
+        )
+        pipeline_state, stage_status, progress_logs = _rehydrate_state_from_stage_snapshots(
+            run_id,
+            pipeline_state,
+            stage_status,
+            progress_logs,
+            self.store,
+        )
 
         with self._lock:
             existing = self._records.get(run_id)
@@ -2278,11 +2290,7 @@ class PipelineRunManager:
                 existing.updated_at = str(meta.get("updated_at", ""))
                 existing.current_stage = _current_stage_from_status_map(stage_status, pipeline_state)
                 existing.stage_status = stage_status
-                existing.progress_logs = (
-                    list(state_payload.get("progress_logs", []))
-                    if isinstance(state_payload.get("progress_logs", []), list)
-                    else []
-                )
+                existing.progress_logs = progress_logs
                 existing.progress_log_count = int(state_payload.get("progress_log_count", len(existing.progress_logs)) or len(existing.progress_logs))
                 existing.pipeline_state = pipeline_state
                 existing.error_message = str(state_payload.get("error_message", "") or "")
@@ -2331,10 +2339,8 @@ class PipelineRunManager:
             updated_at=str(meta.get("updated_at", "")),
             current_stage=_current_stage_from_status_map(stage_status, pipeline_state),
             stage_status=stage_status,
-            progress_logs=list(state_payload.get("progress_logs", []))
-            if isinstance(state_payload.get("progress_logs", []), list)
-            else [],
-            progress_log_count=int(state_payload.get("progress_log_count", 0) or 0),
+            progress_logs=progress_logs,
+            progress_log_count=int(state_payload.get("progress_log_count", len(progress_logs)) or len(progress_logs)),
             pipeline_state=pipeline_state,
             error_message=str(state_payload.get("error_message", "") or ""),
             retry_count=self._to_int(pipeline_state.get("retry_count", 0), 0),
@@ -11295,9 +11301,13 @@ def _resolve_stage_output_for_api(run_id: str, stage: int) -> tuple[dict[str, An
         except Exception:
             persisted = None
         if isinstance(persisted, dict):
-            snapshot_output = persisted.get("output", {}) if isinstance(persisted.get("output", {}), dict) else {}
+            snapshot_output = _stage_output_from_snapshot(persisted)
             if snapshot_output:
                 return record, copy.deepcopy(snapshot_output)
+            snapshot_state = persisted.get("pipeline_state", {}) if isinstance(persisted.get("pipeline_state", {}), dict) else {}
+            snapshot_state_output = _stage_output_snapshot(snapshot_state, stage)
+            if snapshot_state_output:
+                return record, snapshot_state_output
             return record, copy.deepcopy(persisted)
     return record, {}
 
@@ -11539,6 +11549,126 @@ def _stage_output_snapshot(state: dict[str, Any], stage: int) -> dict[str, Any]:
     if isinstance(output, dict):
         return copy.deepcopy(output)
     return {}
+
+
+def _stage_result_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        return {}
+    result = snapshot.get("result", {})
+    if isinstance(result, dict):
+        return copy.deepcopy(result)
+    snapshot_like_result = {
+        "stage": snapshot.get("stage"),
+        "status": snapshot.get("status"),
+        "summary": snapshot.get("summary"),
+        "output": snapshot.get("output"),
+        "logs": snapshot.get("logs"),
+    }
+    if any(snapshot_like_result.values()):
+        return {k: v for k, v in snapshot_like_result.items() if v is not None}
+    return {}
+
+
+def _stage_output_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    result = _stage_result_from_snapshot(snapshot)
+    output = result.get("output", {}) if isinstance(result.get("output", {}), dict) else {}
+    if output:
+        return copy.deepcopy(output)
+    direct = snapshot.get("output", {}) if isinstance(snapshot.get("output", {}), dict) else {}
+    return copy.deepcopy(direct)
+
+
+def _rehydrate_state_from_stage_snapshots(
+    run_id: str,
+    pipeline_state: dict[str, Any] | None,
+    stage_status: dict[int, str] | None,
+    progress_logs: list[str] | None,
+    store: Any,
+) -> tuple[dict[str, Any], dict[int, str], list[str]]:
+    state = copy.deepcopy(pipeline_state) if isinstance(pipeline_state, dict) else {}
+    merged_stage_status = copy.deepcopy(stage_status) if isinstance(stage_status, dict) else {}
+    merged_logs = list(progress_logs) if isinstance(progress_logs, list) else []
+    load_stage_snapshot = getattr(store, "load_stage_snapshot", None)
+    if not callable(load_stage_snapshot):
+        return state, merged_stage_status, merged_logs
+
+    results = list(state.get("agent_results", [])) if isinstance(state.get("agent_results", []), list) else []
+    result_index_by_stage: dict[int, int] = {}
+    for idx, item in enumerate(results):
+        if not isinstance(item, dict):
+            continue
+        try:
+            item_stage = int(item.get("stage", -1) or -1)
+        except (TypeError, ValueError):
+            continue
+        result_index_by_stage[item_stage] = idx
+
+    for stage in range(0, TOTAL_STAGES + 1):
+        try:
+            snapshot = load_stage_snapshot(run_id, stage)
+        except Exception:
+            snapshot = None
+        if not isinstance(snapshot, dict):
+            continue
+
+        snapshot_result = _stage_result_from_snapshot(snapshot)
+        snapshot_output = _stage_output_from_snapshot(snapshot)
+        snapshot_state = snapshot.get("pipeline_state", {}) if isinstance(snapshot.get("pipeline_state", {}), dict) else {}
+        snapshot_stage_status = snapshot.get("stage_status", {}) if isinstance(snapshot.get("stage_status", {}), dict) else {}
+        snapshot_logs = snapshot.get("progress_logs", []) if isinstance(snapshot.get("progress_logs", []), list) else []
+
+        for key, value in snapshot_stage_status.items():
+            if str(key).isdigit() and int(key) not in merged_stage_status:
+                merged_stage_status[int(key)] = str(value)
+        if len(snapshot_logs) > len(merged_logs):
+            merged_logs = list(snapshot_logs)
+
+        output_key = _stage_output_key(stage)
+        if output_key and snapshot_output and not isinstance(state.get(output_key, {}), dict):
+            state[output_key] = copy.deepcopy(snapshot_output)
+        elif output_key and snapshot_output and not _stage_output_snapshot(state, stage):
+            state[output_key] = copy.deepcopy(snapshot_output)
+
+        if stage == 2:
+            handoff = (
+                snapshot_output.get("architect_handoff_package", {})
+                if isinstance(snapshot_output.get("architect_handoff_package", {}), dict)
+                else {}
+            )
+            if handoff and not isinstance(state.get("architect_handoff_package", {}), dict):
+                state["architect_handoff_package"] = copy.deepcopy(handoff)
+            elif handoff and not state.get("architect_handoff_package"):
+                state["architect_handoff_package"] = copy.deepcopy(handoff)
+
+        if snapshot_result:
+            existing_idx = result_index_by_stage.get(stage)
+            if existing_idx is None:
+                result_index_by_stage[stage] = len(results)
+                results.append(copy.deepcopy(snapshot_result))
+            else:
+                existing = results[existing_idx] if isinstance(results[existing_idx], dict) else {}
+                merged_result = dict(existing)
+                if snapshot_output and not isinstance(merged_result.get("output", {}), dict):
+                    merged_result["output"] = copy.deepcopy(snapshot_output)
+                elif snapshot_output and not merged_result.get("output"):
+                    merged_result["output"] = copy.deepcopy(snapshot_output)
+                if snapshot_result.get("logs") and not merged_result.get("logs"):
+                    merged_result["logs"] = copy.deepcopy(snapshot_result.get("logs"))
+                if snapshot_result.get("summary") and not merged_result.get("summary"):
+                    merged_result["summary"] = snapshot_result.get("summary")
+                if snapshot_result.get("status") and not merged_result.get("status"):
+                    merged_result["status"] = snapshot_result.get("status")
+                results[existing_idx] = merged_result
+
+        if output_key and not state.get(output_key) and isinstance(snapshot_state.get(output_key, {}), dict):
+            state[output_key] = copy.deepcopy(snapshot_state.get(output_key, {}))
+        if stage == 2 and not state.get("architect_handoff_package") and isinstance(snapshot_state.get("architect_handoff_package", {}), dict):
+            state["architect_handoff_package"] = copy.deepcopy(snapshot_state.get("architect_handoff_package", {}))
+
+    if results:
+        results.sort(key=lambda item: int(item.get("stage", 0) or 0) if isinstance(item, dict) else 0)
+        state["agent_results"] = results
+    return state, merged_stage_status, merged_logs
 
 
 def _set_stage_output(state: dict[str, Any], stage: int, updated_output: dict[str, Any], summary: str) -> None:
@@ -13764,6 +13894,16 @@ def _assistant_response_for_stage(
 def _load_mutable_run(run_id: str) -> tuple[RunRecord | None, dict[str, Any] | None, dict[int, str], list[str], str, str]:
     active = MANAGER._get_record(run_id)
     if active and isinstance(active.pipeline_state, dict):
+        hydrated_state, hydrated_status, hydrated_logs = _rehydrate_state_from_stage_snapshots(
+            run_id,
+            active.pipeline_state,
+            active.stage_status,
+            active.progress_logs,
+            getattr(MANAGER, "store", RUN_STORE),
+        )
+        active.pipeline_state = hydrated_state
+        active.stage_status = hydrated_status
+        active.progress_logs = hydrated_logs
         return (
             active,
             active.pipeline_state,
@@ -13784,6 +13924,13 @@ def _load_mutable_run(run_id: str) -> tuple[RunRecord | None, dict[str, Any] | N
         int(k): str(v) for k, v in raw_stage_status.items() if str(k).isdigit()
     } if isinstance(raw_stage_status, dict) else {}
     progress_logs = list(persisted.get("progress_logs", [])) if isinstance(persisted.get("progress_logs", []), list) else []
+    pipeline_state, stage_status, progress_logs = _rehydrate_state_from_stage_snapshots(
+        run_id,
+        pipeline_state,
+        stage_status,
+        progress_logs,
+        RUN_STORE,
+    )
     status = str(persisted.get("pipeline_status", "completed"))
     error_message = str(persisted.get("error_message", "") or "")
     return None, pipeline_state, stage_status, progress_logs, status, error_message
