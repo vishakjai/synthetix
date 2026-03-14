@@ -456,12 +456,175 @@ Previous code output is available in the state — fix the specific problems."""
         return self.extract_json(raw)
 
     @staticmethod
+    def _normalize_component_key(value: Any) -> str:
+        return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+    @classmethod
+    def _architect_component_catalog(
+        cls,
+        architect_handoff_package: dict[str, Any],
+        target_language: str,
+    ) -> list[dict[str, Any]]:
+        package = architect_handoff_package if isinstance(architect_handoff_package, dict) else {}
+        specs = package.get("component_specs", []) if isinstance(package.get("component_specs", []), list) else []
+        if not specs:
+            return []
+
+        raw_language = str(target_language or "").strip() or "python"
+        normalized_language = cls._normalize_language(raw_language)
+        framework_by_language = {
+            "csharp": "ASP.NET Core 8",
+            "python": "FastAPI",
+            "nodejs": "Express",
+            "go": "Go net/http",
+            "java": "Spring Boot",
+            "typescript": "NestJS",
+            "rust": "Axum",
+        }
+
+        def _phase(spec: dict[str, Any]) -> int:
+            graph = spec.get("dependency_graph", {}) if isinstance(spec.get("dependency_graph", {}), dict) else {}
+            try:
+                return max(1, int(graph.get("phase", 99) or 99))
+            except (TypeError, ValueError):
+                return 99
+
+        catalog: list[dict[str, Any]] = []
+        valid_specs = [
+            row for row in specs
+            if isinstance(row, dict) and str(row.get("component_name", "")).strip()
+        ]
+        for spec in sorted(valid_specs, key=lambda row: (_phase(row), str(row.get("component_name", "")).strip())):
+            name = str(spec.get("component_name", "")).strip()
+            responsibility = str(spec.get("responsibility", "")).strip()
+            module_structure = spec.get("module_structure", []) if isinstance(spec.get("module_structure", []), list) else []
+            interface_refs = spec.get("interface_refs", []) if isinstance(spec.get("interface_refs", []), list) else []
+            business_rule_refs = spec.get("business_rule_refs", []) if isinstance(spec.get("business_rule_refs", []), list) else []
+            regression_anchor_refs = spec.get("regression_anchor_refs", []) if isinstance(spec.get("regression_anchor_refs", []), list) else []
+            phase_number = _phase(spec)
+            name_norm = cls._normalize_component_key(name)
+            if "shell" in name_norm or "experience" in name_norm:
+                component_type = "frontend"
+            elif "legacycore" in name_norm:
+                component_type = "shared-lib"
+            else:
+                component_type = "api"
+            estimated_loc = max(
+                400,
+                (len(module_structure) * 180)
+                + (len(interface_refs) * 70)
+                + (len(business_rule_refs) * 35)
+                + (len(regression_anchor_refs) * 25),
+            )
+            priority = "critical" if phase_number <= 1 else "high" if phase_number == 2 else "medium"
+            catalog.append(
+                {
+                    "name": name,
+                    "service": name,
+                    "type": component_type,
+                    "language": raw_language,
+                    "framework": framework_by_language.get(normalized_language, raw_language),
+                    "description": responsibility or f"Implements the {name} modernization boundary.",
+                    "estimated_loc": estimated_loc,
+                    "dependencies": [],
+                    "priority": priority,
+                    "_dispatch_phase": phase_number,
+                }
+            )
+        return catalog
+
+    @classmethod
+    def _anchor_decomposition_to_handoff(
+        cls,
+        decomposition: dict[str, Any],
+        architect_handoff_package: dict[str, Any],
+        target_language: str,
+    ) -> dict[str, Any]:
+        catalog = cls._architect_component_catalog(architect_handoff_package, target_language)
+        if not catalog:
+            return decomposition
+
+        catalog_by_name = {
+            cls._normalize_component_key(component.get("name", "")): component
+            for component in catalog
+        }
+        anchored: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        candidate_components = decomposition.get("components", []) if isinstance(decomposition.get("components", []), list) else []
+
+        for component in candidate_components:
+            if not isinstance(component, dict):
+                continue
+            candidate_keys = [
+                cls._normalize_component_key(component.get("service", "")),
+                cls._normalize_component_key(component.get("name", "")),
+            ]
+            match = next((catalog_by_name.get(key) for key in candidate_keys if key and catalog_by_name.get(key)), None)
+            if not match:
+                continue
+            canonical_name = str(match.get("name", "")).strip()
+            if not canonical_name or canonical_name in seen:
+                continue
+            merged = dict(match)
+            if str(component.get("description", "")).strip():
+                merged["description"] = str(component.get("description", "")).strip()
+            if int(component.get("estimated_loc", 0) or 0) > 0:
+                merged["estimated_loc"] = int(component.get("estimated_loc", 0) or 0)
+            anchored.append(merged)
+            seen.add(canonical_name)
+
+        if not anchored:
+            anchored = [dict(component) for component in catalog]
+        else:
+            for component in catalog:
+                canonical_name = str(component.get("name", "")).strip()
+                if canonical_name and canonical_name not in seen:
+                    anchored.append(dict(component))
+                    seen.add(canonical_name)
+        parallel_groups: list[list[str]] = []
+        phases: dict[int, list[str]] = {}
+        for component in anchored:
+            phase_number = int(component.get("_dispatch_phase", 99) or 99)
+            phases.setdefault(phase_number, []).append(str(component.get("name", "")).strip())
+        for phase_number in sorted(phases):
+            group = [name for name in phases[phase_number] if name]
+            if group:
+                parallel_groups.append(group)
+
+        return {
+            "decomposition_strategy": str(decomposition.get("decomposition_strategy", "")).strip() or "Architect-scoped component decomposition",
+            "components": [{k: v for k, v in component.items() if not str(k).startswith("_")} for component in anchored],
+            "shared_libraries": [
+                str(component.get("name", "")).strip()
+                for component in anchored
+                if str(component.get("type", "")).strip().lower() == "shared-lib"
+            ],
+            "development_order": [str(component.get("name", "")).strip() for component in anchored if str(component.get("name", "")).strip()],
+            "parallel_groups": parallel_groups,
+        }
+
+    @staticmethod
+    def _architect_handoff_from_state(state: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(state.get("architect_handoff_package", {}), dict) and state.get("architect_handoff_package"):
+            return state.get("architect_handoff_package", {})
+        architect_output = state.get("architect_output", {}) if isinstance(state.get("architect_output", {}), dict) else {}
+        if isinstance(architect_output.get("architect_handoff_package", {}), dict):
+            return architect_output.get("architect_handoff_package", {})
+        return {}
+
+    @staticmethod
     def _build_dev_plan(
         decomposition: dict[str, Any],
         target_language: str,
         target_platform: str,
+        architect_handoff_package: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        components = decomposition.get("components", [])
+        anchored = DeveloperAgent._anchor_decomposition_to_handoff(
+            decomposition,
+            architect_handoff_package or {},
+            target_language,
+        )
+        components = anchored.get("components", [])
         options = {
             "microservices_count_options": [
                 {"value": 1, "label": "Monolith / single deployable"},
@@ -492,7 +655,7 @@ Previous code output is available in the state — fix the specific problems."""
             ],
         }
         return {
-            "plan_summary": decomposition.get("decomposition_strategy", ""),
+            "plan_summary": anchored.get("decomposition_strategy", ""),
             "proposed_components": components,
             "default_microservices_count": max(1, min(5, len(components) or 1)),
             "default_split_strategy": "domain-driven",
@@ -629,10 +792,12 @@ Previous code output is available in the state — fix the specific problems."""
 
         target_language = str(state.get("modernization_language", "")).strip().lower()
         target_platform = str(state.get("deployment_target", "docker-local")).strip().lower()
+        architect_handoff_package = self._architect_handoff_from_state(state)
         plan = self._build_dev_plan(
             decomposition=decomposition,
             target_language=target_language,
             target_platform=target_platform,
+            architect_handoff_package=architect_handoff_package,
         )
         return (
             plan,
@@ -855,6 +1020,18 @@ Requirements context:
                     logs=self._logs.copy(),
                 )
 
+        architect_handoff_package = self._architect_handoff_from_state(state)
+        decomposition = self._anchor_decomposition_to_handoff(
+            decomposition,
+            architect_handoff_package,
+            str(state.get("modernization_language", "")).strip(),
+        )
+        if state.get("developer_plan_approved") and state.get("developer_plan"):
+            self.log(
+                f"[{self.name}] Reusing approved developer plan with "
+                f"{len(decomposition.get('components', []))} architect-scoped components"
+            )
+
         choices = state.get("developer_choices", {}) if isinstance(state.get("developer_choices"), dict) else {}
         if choices:
             target_lang = str(choices.get("target_language", "")).strip().lower()
@@ -1019,14 +1196,7 @@ Requirements context:
             if isinstance(state.get("developer_output", {}), dict)
             else []
         )
-        architect_output = state.get("architect_output", {}) if isinstance(state.get("architect_output", {}), dict) else {}
-        architect_handoff_package = (
-            architect_output.get("architect_handoff_package", {})
-            if isinstance(architect_output.get("architect_handoff_package", {}), dict)
-            else state.get("architect_handoff_package", {})
-            if isinstance(state.get("architect_handoff_package", {}), dict)
-            else {}
-        )
+        architect_handoff_package = self._architect_handoff_from_state(state)
         if isinstance(previous_impl, list):
             for impl in previous_impl:
                 if not isinstance(impl, dict):
