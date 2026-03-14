@@ -223,6 +223,81 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
             "TransactionService",
         )
 
+    def test_run_fails_when_subagent_returns_no_files(self):
+        handoff = self._handoff()
+        llm = self._llm()
+        llm.invoke_with_tools.return_value = Mock(tool_calls=[], input_tokens=0, output_tokens=0, latency_ms=0.0)
+        llm.invoke.return_value = Mock(
+            content=json.dumps(
+                {
+                    "component_name": "TransactionService",
+                    "language": "C#",
+                    "framework": "ASP.NET Core",
+                    "files": [],
+                    "dependencies": [],
+                    "environment_variables": ["PORT"],
+                    "docker_support": True,
+                    "total_loc": 0,
+                    "notes": "No files emitted.",
+                }
+            ),
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1.0,
+        )
+        state = self._state()
+        state["architect_handoff_package"] = handoff
+
+        result = DeveloperAgent(llm).run(state)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.output.get("error"), "Developer sub-agent generation failed")
+        self.assertEqual(
+            result.output.get("subagent_failure_report", {}).get("component_failures", [])[0].get("error"),
+            "No implementation files generated",
+        )
+
+    def test_run_fails_when_subagent_returns_invalid_file_payload(self):
+        handoff = self._handoff()
+        llm = self._llm()
+        llm.invoke_with_tools.return_value = Mock(tool_calls=[], input_tokens=0, output_tokens=0, latency_ms=0.0)
+        llm.invoke.return_value = Mock(
+            content=json.dumps(
+                {
+                    "component_name": "TransactionService",
+                    "language": "C#",
+                    "framework": "ASP.NET Core",
+                    "files": [
+                        {
+                            "path": "Program.cs",
+                            "description": "Broken payload",
+                            "code": "",
+                            "lines_of_code": 0,
+                        }
+                    ],
+                    "dependencies": [],
+                    "environment_variables": ["PORT"],
+                    "docker_support": True,
+                    "total_loc": 0,
+                    "notes": "Malformed file entry.",
+                }
+            ),
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1.0,
+        )
+        state = self._state()
+        state["architect_handoff_package"] = handoff
+
+        result = DeveloperAgent(llm).run(state)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.output.get("error"), "Developer sub-agent generation failed")
+        self.assertEqual(
+            result.output.get("subagent_failure_report", {}).get("component_failures", [])[0].get("error"),
+            "Generated file payload is invalid",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

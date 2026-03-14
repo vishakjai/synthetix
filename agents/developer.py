@@ -91,6 +91,20 @@ Respond ONLY with the JSON, no other text."""
         self.remediation_notes = remediation_notes or []
         self.previous_code_context = previous_code_context or []
 
+    @staticmethod
+    def _validate_generated_files(parsed: dict[str, Any]) -> str | None:
+        files = parsed.get("files", [])
+        if not isinstance(files, list) or not files:
+            return "No implementation files generated"
+        for file_entry in files:
+            if not isinstance(file_entry, dict):
+                return "Generated file payload is invalid"
+            path = str(file_entry.get("path", "")).strip()
+            code = str(file_entry.get("code", "")).strip()
+            if not path or not code:
+                return "Generated file payload is invalid"
+        return None
+
     def run(self) -> dict[str, Any]:
         component_spec = BaseAgent._json_for_prompt(
             self.component,
@@ -169,6 +183,19 @@ REMEMBER:
         response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
         try:
             parsed = _extract_json(response.content)
+            file_error = self._validate_generated_files(parsed)
+            if file_error:
+                return {
+                    "component_name": parsed.get("component_name", self.component.get("name", "unknown")),
+                    "error": file_error,
+                    "raw": response.content[:500],
+                    "total_loc": int(parsed.get("total_loc", 0) or 0),
+                    "files": [],
+                    "_llm_metrics": {
+                        "tokens_used": response.input_tokens + response.output_tokens,
+                        "latency_ms": response.latency_ms,
+                    },
+                }
             parsed["_llm_metrics"] = {
                 "tokens_used": response.input_tokens + response.output_tokens,
                 "latency_ms": response.latency_ms,
@@ -1375,6 +1402,69 @@ Requirements context:
                     })
 
         self.log(f"[{self.name}] All sub-agents complete. Total: {total_loc} LOC")
+
+        generation_failures = [
+            {
+                "component_name": str(result.get("component_name", "")).strip(),
+                "error": str(result.get("error", "")).strip() or "Unknown generation failure",
+                "total_files": len(result.get("files", [])) if isinstance(result.get("files", []), list) else 0,
+                "total_loc": int(result.get("total_loc", 0) or 0),
+            }
+            for result in sub_results
+            if isinstance(result, dict) and (
+                str(result.get("error", "")).strip()
+                or not isinstance(result.get("files", []), list)
+                or not result.get("files", [])
+            )
+        ]
+
+        if generation_failures:
+            self.log(
+                f"[{self.name}] Developer generation failed for "
+                f"{len(generation_failures)} component(s)"
+            )
+            output = {
+                "error": "Developer sub-agent generation failed",
+                "subagent_failure_report": {
+                    "status": "BLOCKED",
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                    "component_failures": generation_failures,
+                },
+                "decomposition": decomposition,
+                "implementations": sub_results,
+                "total_loc": total_loc,
+                "total_files": sum(len(r.get("files", [])) for r in sub_results),
+                "total_components": len(sub_results),
+                "execution": {
+                    "planner_used_tool_calling": planner_used_tooling,
+                    "planner_selected_components": [c.get("name", "unknown") for c in components],
+                    "developer_choices": choices,
+                    "component_dispatches": component_dispatches,
+                    "current_dispatch_phase": dispatch_phase,
+                    "deferred_components": deferred_components,
+                    "self_heal_applied": self_heal_applied,
+                    "retry_target_components": sorted(retry_targets),
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                },
+            }
+            return AgentResult(
+                agent_name=self.name,
+                stage=self.stage,
+                status="error",
+                summary=(
+                    f"Developer generation failed for "
+                    f"{len(generation_failures)} component(s)"
+                ),
+                output=output,
+                raw_response=response_content,
+                tokens_used=(
+                    tokens_used
+                    + planner_tokens
+                    + subagent_tokens
+                ),
+                latency_ms=latency_ms + planner_latency_ms + subagent_latency_ms,
+                logs=self._logs.copy(),
+            )
 
         output = {
             "decomposition": decomposition,
