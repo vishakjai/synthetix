@@ -994,6 +994,9 @@ class PipelineRunManager:
             refreshed_status = str(refreshed.get("pipeline_status", "running")).strip().lower() or "running"
             return {"ok": True, "status": refreshed_status, "run_id": rid, "resumed": True}
 
+        if status in {"waiting_approval", "paused"}:
+            return {"ok": True, "status": status, "run_id": rid}
+
         if status in {"completed", "failed", "aborted"}:
             return {"ok": True, "status": status, "run_id": rid}
 

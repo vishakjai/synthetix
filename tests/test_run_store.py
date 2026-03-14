@@ -30,6 +30,25 @@ class RunStoreCompactionTest(unittest.TestCase):
         self.assertIn("architect_package", summary_keys)
         self.assertIn("architect_handoff_package", summary_keys)
 
+    def test_compaction_preserves_queued_request_for_worker_resume(self):
+        queued_request = {
+            "objectives": "Modernize login flow",
+            "integration_context": {
+                "project_state_mode": "brownfield",
+                "brownfield": {"repo_url": "https://github.com/example/repo"},
+            },
+            "config_summary": {"provider": "openai", "model": "gpt-5"},
+        }
+        pipeline_state = {
+            "run_id": "run_queued",
+            "workflow_state": "QUEUED",
+            "queued_request": queued_request,
+        }
+
+        compact = _compact_pipeline_state(pipeline_state)
+
+        self.assertEqual(compact.get("queued_request"), queued_request)
+
 
 if __name__ == "__main__":
     unittest.main()

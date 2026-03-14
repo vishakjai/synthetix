@@ -122,6 +122,7 @@ def _compact_pipeline_state(pipeline_state: dict[str, Any] | None) -> dict[str, 
         "github_export_progress",
         "integration_context",
         "pending_approval",
+        "queued_request",
         "retry_plan",
         "team",
     }
