@@ -180,7 +180,32 @@ Rules:
                 return "Generated file payload is invalid"
         return None
 
-    def _invoke_generation(self, user_msg: str):
+    @staticmethod
+    def _response_trace(
+        response: Any,
+        *,
+        attempt: str,
+        model_override: str = "",
+    ) -> dict[str, Any]:
+        raw_content = getattr(response, "content", "")
+        content = raw_content if isinstance(raw_content, str) else ""
+        tool_calls = getattr(response, "tool_calls", [])
+        return {
+            "attempt": attempt,
+            "model": str(model_override or getattr(response, "model", "") or "").strip(),
+            "provider": str(getattr(response, "provider", "") or "").strip(),
+            "content_length": len(content),
+            "content_preview": content[:160],
+            "tool_call_count": len(tool_calls) if isinstance(tool_calls, list) else 0,
+            "input_tokens": int(getattr(response, "input_tokens", 0) or 0) if str(getattr(response, "input_tokens", 0)).isdigit() else 0,
+            "output_tokens": int(getattr(response, "output_tokens", 0) or 0) if str(getattr(response, "output_tokens", 0)).isdigit() else 0,
+            "latency_ms": float(getattr(response, "latency_ms", 0.0) or 0.0)
+            if str(getattr(response, "latency_ms", 0.0)).replace(".", "", 1).isdigit()
+            else 0.0,
+        }
+
+    def _invoke_generation(self, user_msg: str) -> tuple[Any, list[dict[str, Any]]]:
+        traces: list[dict[str, Any]] = []
         fallback_model = str(os.getenv("DEVELOPER_SUBAGENT_OPENAI_FALLBACK_MODEL", "gpt-4o")).strip()
         current_model = str(getattr(self.llm.config, "get_model", lambda: "")() or "").strip()
         try:
@@ -190,18 +215,20 @@ Rules:
                 self.GENERATION_TOOLS,
                 tool_choice="required",
             )
+            traces.append(self._response_trace(response, attempt="primary_tools"))
             tool_calls = getattr(response, "tool_calls", None)
             raw_content = getattr(response, "content", "")
             content = raw_content.strip() if isinstance(raw_content, str) else ""
             if (isinstance(tool_calls, list) and tool_calls) or content:
-                return response
+                return response, traces
         except Exception:
             pass
         response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+        traces.append(self._response_trace(response, attempt="primary_text"))
         raw_content = getattr(response, "content", "")
         content = raw_content.strip() if isinstance(raw_content, str) else ""
         if content:
-            return response
+            return response, traces
         if (
             str(getattr(self.llm.config, "provider", "")).lower().endswith("openai")
             and fallback_model
@@ -215,15 +242,30 @@ Rules:
                     tool_choice="required",
                     model_override=fallback_model,
                 )
+                traces.append(
+                    self._response_trace(
+                        fallback_response,
+                        attempt="fallback_tools",
+                        model_override=fallback_model,
+                    )
+                )
                 fallback_tool_calls = getattr(fallback_response, "tool_calls", None)
                 fallback_raw_content = getattr(fallback_response, "content", "")
                 fallback_content = fallback_raw_content.strip() if isinstance(fallback_raw_content, str) else ""
                 if (isinstance(fallback_tool_calls, list) and fallback_tool_calls) or fallback_content:
-                    return fallback_response
+                    return fallback_response, traces
             except Exception:
                 pass
-            return self.llm.invoke(self.SYSTEM_PROMPT, user_msg, model_override=fallback_model)
-        return response
+            fallback_response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg, model_override=fallback_model)
+            traces.append(
+                self._response_trace(
+                    fallback_response,
+                    attempt="fallback_text",
+                    model_override=fallback_model,
+                )
+            )
+            return fallback_response, traces
+        return response, traces
 
     @staticmethod
     def _aggregate_metrics(responses: list[Any]) -> dict[str, Any]:
@@ -407,10 +449,12 @@ SOURCE RESPONSE:
                 return None, {
                     "response": repaired,
                     "error": error or "Failed to parse repaired sub-agent output",
+                    "trace": self._response_trace(repaired, attempt="repair_json"),
                 }
             return parsed, {
                 "response": repaired,
                 "error": "",
+                "trace": self._response_trace(repaired, attempt="repair_json"),
             }
         except Exception:
             return None, None
@@ -427,7 +471,7 @@ PREVIOUS INVALID RESPONSE EXCERPT:
 ```
 
 Retry now. Return only the corrected JSON object."""
-        retry_response = self._invoke_generation(retry_user)
+        retry_response, retry_traces = self._invoke_generation(retry_user)
         parsed, error = self._try_parse_tool_payload(getattr(retry_response, "tool_calls", []))
         if parsed is None:
             parsed, error = self._try_parse_payload(retry_response.content)
@@ -435,20 +479,26 @@ Retry now. Return only the corrected JSON object."""
             return parsed, {
                 "response": retry_response,
                 "error": "",
+                "trace": retry_traces,
             }
         repaired, repair_meta = self._repair_json_response(retry_response.content)
         if repaired is not None:
+            if repair_meta is not None:
+                repair_meta["trace"] = retry_traces + ([repair_meta.get("trace")] if repair_meta.get("trace") else [])
             return repaired, repair_meta
         return None, {
             "response": retry_response,
             "error": error or "Failed to parse sub-agent retry output",
+            "trace": retry_traces,
         }
 
     def run(self) -> dict[str, Any]:
         responses = []
+        attempt_trace: list[dict[str, Any]] = []
         user_msg = self._build_user_message()
-        response = self._invoke_generation(user_msg)
+        response, initial_traces = self._invoke_generation(user_msg)
         responses.append(response)
+        attempt_trace.extend(initial_traces)
 
         parsed, error = self._try_parse_tool_payload(getattr(response, "tool_calls", []))
         if parsed is None:
@@ -459,6 +509,11 @@ Retry now. Return only the corrected JSON object."""
                 repaired_response = repair_meta.get("response")
                 if repaired_response is not None:
                     responses.append(repaired_response)
+                trace_entry = repair_meta.get("trace")
+                if isinstance(trace_entry, list):
+                    attempt_trace.extend(trace_entry)
+                elif isinstance(trace_entry, dict):
+                    attempt_trace.append(trace_entry)
             if repaired is not None:
                 parsed = repaired
             else:
@@ -467,6 +522,11 @@ Retry now. Return only the corrected JSON object."""
                     retry_response = retry_meta.get("response")
                     if retry_response is not None:
                         responses.append(retry_response)
+                    trace_entry = retry_meta.get("trace")
+                    if isinstance(trace_entry, list):
+                        attempt_trace.extend(trace_entry)
+                    elif isinstance(trace_entry, dict):
+                        attempt_trace.append(trace_entry)
                 if retried is not None:
                     parsed = retried
                 else:
@@ -483,9 +543,15 @@ Retry now. Return only the corrected JSON object."""
                         "raw": str((responses[-1].content if responses else response.content) or "")[:500],
                         "total_loc": 0,
                         "files": [],
+                        "generation_diagnostics": {
+                            "attempt_trace": attempt_trace,
+                        },
                         "_llm_metrics": self._aggregate_metrics(responses),
                     }
 
+        parsed["generation_diagnostics"] = {
+            "attempt_trace": attempt_trace,
+        }
         parsed["_llm_metrics"] = self._aggregate_metrics(responses)
         return parsed
 

@@ -257,6 +257,9 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
             result.output.get("subagent_failure_report", {}).get("component_failures", [])[0].get("error"),
             "No implementation files generated",
         )
+        self.assertTrue(
+            result.output.get("implementations", [])[0].get("generation_diagnostics", {}).get("attempt_trace")
+        )
 
     def test_run_fails_when_subagent_returns_invalid_file_payload(self):
         handoff = self._handoff()
@@ -297,6 +300,9 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
         self.assertEqual(
             result.output.get("subagent_failure_report", {}).get("component_failures", [])[0].get("error"),
             "Generated file payload is invalid",
+        )
+        self.assertTrue(
+            result.output.get("implementations", [])[0].get("generation_diagnostics", {}).get("attempt_trace")
         )
 
     def test_subagent_retries_after_empty_response_and_succeeds(self):
