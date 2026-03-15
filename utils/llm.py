@@ -96,6 +96,36 @@ class LLMClient:
         return {"temperature": temperature}
 
     @staticmethod
+    def _openai_message_text(message: Any) -> str:
+        content = getattr(message, "content", "")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str) and block.strip():
+                    parts.append(block)
+                    continue
+                if isinstance(block, dict):
+                    text_value = block.get("text", "")
+                    if isinstance(text_value, str) and text_value.strip():
+                        parts.append(text_value)
+                        continue
+                    nested = block.get("content", "")
+                    if isinstance(nested, str) and nested.strip():
+                        parts.append(nested)
+                        continue
+                text_attr = getattr(block, "text", "")
+                if isinstance(text_attr, str) and text_attr.strip():
+                    parts.append(text_attr)
+            if parts:
+                return "\n".join(parts)
+        refusal = getattr(message, "refusal", "")
+        if isinstance(refusal, str) and refusal.strip():
+            return refusal
+        return ""
+
+    @staticmethod
     def _is_anthropic_billing_error(exc: Exception) -> bool:
         text = str(exc or "").lower()
         return (
@@ -168,7 +198,7 @@ class LLMClient:
                 }
             )
         return LLMResponse(
-            content=message.content or "",
+            content=self._openai_message_text(message),
             model=model,
             provider="openai",
             input_tokens=response.usage.prompt_tokens,
@@ -338,7 +368,7 @@ class LLMClient:
             ],
         )
         return LLMResponse(
-            content=response.choices[0].message.content,
+            content=self._openai_message_text(response.choices[0].message),
             model=self.config.get_model(),
             provider="openai",
             input_tokens=response.usage.prompt_tokens,
@@ -383,7 +413,7 @@ class LLMClient:
             )
 
         return LLMResponse(
-            content=message.content or "",
+            content=self._openai_message_text(message),
             model=self.config.get_model(),
             provider="openai",
             input_tokens=response.usage.prompt_tokens,

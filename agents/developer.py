@@ -71,6 +71,27 @@ CRITICAL REQUIREMENTS for the generated code:
 Write clean, well-documented, production-quality code that actually runs.
 Respond ONLY with the JSON, no other text."""
 
+    REPAIR_PROMPT = """You repair Developer sub-agent responses into strict JSON.
+Return exactly one valid JSON object. No markdown. No explanation.
+Preserve the implementation intent and code content where possible.
+
+Required top-level keys:
+- component_name
+- language
+- framework
+- files
+- dependencies
+- environment_variables
+- docker_support
+- total_loc
+- notes
+
+Rules:
+- files must be a non-empty array
+- every file entry must include path, description, code, and lines_of_code
+- never leave files[].code empty
+- keep code as plain string values; do not wrap code in markdown fences"""
+
     def __init__(
         self,
         llm: LLMClient,
@@ -105,7 +126,37 @@ Respond ONLY with the JSON, no other text."""
                 return "Generated file payload is invalid"
         return None
 
-    def run(self) -> dict[str, Any]:
+    def _required_file_hints(self) -> list[str]:
+        component_name = str(self.component.get("name", "Component")).strip() or "Component"
+        component_type = str(self.component.get("type", "")).strip().lower()
+        language = str(self.modernization_language or self.component.get("language", "")).strip().lower()
+        if "c#" in language or "csharp" in language:
+            project_file = f"{component_name}.csproj"
+            if component_type == "frontend":
+                return [
+                    "Program.cs",
+                    project_file,
+                    "Pages/Index.cshtml",
+                    "Pages/_ViewImports.cshtml",
+                    "Dockerfile",
+                    "README.md",
+                    "Tests/SmokeTests.cs",
+                ]
+            return [
+                "Program.cs",
+                project_file,
+                "Controllers/HealthController.cs",
+                "Dockerfile",
+                "README.md",
+                "Tests/SmokeTests.cs",
+            ]
+        if "python" in language:
+            return ["main.py", "requirements.txt", "Dockerfile", "README.md", "tests/test_smoke.py"]
+        if "typescript" in language or "javascript" in language or "node" in language:
+            return ["package.json", "src/index.ts", "Dockerfile", "README.md", "tests/smoke.test.ts"]
+        return ["Dockerfile", "README.md"]
+
+    def _build_user_message(self) -> str:
         component_spec = BaseAgent._json_for_prompt(
             self.component,
             max_chars=2600,
@@ -149,7 +200,8 @@ Respond ONLY with the JSON, no other text."""
             max_items=8,
             max_str=300,
         )
-        user_msg = f"""Generate COMPLETE, RUNNABLE code for this component.
+        required_file_hints = "\n".join(f"- {path}" for path in self._required_file_hints())
+        return f"""Generate COMPLETE, RUNNABLE code for this component.
 The code will be built into a Docker image and deployed to Kubernetes.
 
 COMPONENT SPECIFICATION:
@@ -173,46 +225,135 @@ COMPONENT-SPECIFIC QA FAILURES TO FIX:
 PREVIOUS COMPONENT CODE CONTEXT:
 {previous_context_compact}
 
+MINIMUM FILE CHECKLIST:
+{required_file_hints}
+
+OUTPUT RULES:
+- Return a single JSON object only
+- Do not use markdown fences
+- files must be non-empty
+- every files[] entry must include non-empty path, description, and code
+- keep the implementation minimal but complete; prefer 5-8 files unless the component is tiny
+- when unsure, choose the smallest compilable vertical slice that honors the handoff contracts
+
 REMEMBER:
-- Include a requirements.txt (or package.json) with exact dependency versions
+- Include a requirements.txt (or package.json / project file) with exact dependency versions
 - Include a working Dockerfile
 - The app MUST listen on port 8080 (or $PORT) and serve /health and /ready endpoints
 - Generate ALL necessary files — this must build and run as-is with zero manual edits
 - Preserve functional parity with the legacy behavior"""
 
-        response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+    def _try_parse_payload(self, raw: str) -> tuple[dict[str, Any] | None, str | None]:
         try:
-            parsed = _extract_json(response.content)
-            file_error = self._validate_generated_files(parsed)
-            if file_error:
-                return {
-                    "component_name": parsed.get("component_name", self.component.get("name", "unknown")),
-                    "error": file_error,
-                    "raw": response.content[:500],
-                    "total_loc": int(parsed.get("total_loc", 0) or 0),
-                    "files": [],
-                    "_llm_metrics": {
-                        "tokens_used": response.input_tokens + response.output_tokens,
-                        "latency_ms": response.latency_ms,
-                    },
-                }
-            parsed["_llm_metrics"] = {
-                "tokens_used": response.input_tokens + response.output_tokens,
-                "latency_ms": response.latency_ms,
-            }
-            return parsed
+            parsed = _extract_json(raw)
         except (json.JSONDecodeError, AttributeError):
-            return {
-                "component_name": self.component.get("name", "unknown"),
-                "error": "Failed to parse sub-agent output",
-                "raw": response.content[:500],
-                "total_loc": 0,
-                "files": [],
-                "_llm_metrics": {
-                    "tokens_used": response.input_tokens + response.output_tokens,
-                    "latency_ms": response.latency_ms,
-                },
+            return None, "Failed to parse sub-agent output"
+        file_error = self._validate_generated_files(parsed)
+        if file_error:
+            return None, file_error
+        return parsed, None
+
+    def _repair_json_response(self, raw: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        text = str(raw or "").strip()
+        if not text:
+            return None, None
+        repair_user = f"""The previous Developer sub-agent response was invalid.
+Rewrite it into a strict JSON object that satisfies the required schema.
+
+SOURCE RESPONSE:
+```text
+{text[:24000]}
+```"""
+        try:
+            repaired = self.llm.invoke(self.REPAIR_PROMPT, repair_user)
+            parsed, error = self._try_parse_payload(repaired.content)
+            if parsed is None:
+                return None, {
+                    "response": repaired,
+                    "error": error or "Failed to parse repaired sub-agent output",
+                }
+            return parsed, {
+                "response": repaired,
+                "error": "",
             }
+        except Exception:
+            return None, None
+
+    def _retry_generation(self, failure_reason: str, previous_raw: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        retry_user = f"""{self._build_user_message()}
+
+PREVIOUS RESPONSE FAILURE:
+- {failure_reason}
+
+PREVIOUS INVALID RESPONSE EXCERPT:
+```text
+{str(previous_raw or '')[:4000]}
+```
+
+Retry now. Return only the corrected JSON object."""
+        retry_response = self.llm.invoke(self.SYSTEM_PROMPT, retry_user)
+        parsed, error = self._try_parse_payload(retry_response.content)
+        if parsed is not None:
+            return parsed, {
+                "response": retry_response,
+                "error": "",
+            }
+        repaired, repair_meta = self._repair_json_response(retry_response.content)
+        if repaired is not None:
+            return repaired, repair_meta
+        return None, {
+            "response": retry_response,
+            "error": error or "Failed to parse sub-agent retry output",
+        }
+
+    def run(self) -> dict[str, Any]:
+        responses = []
+        user_msg = self._build_user_message()
+        response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+        responses.append(response)
+
+        parsed, error = self._try_parse_payload(response.content)
+        if parsed is None:
+            repaired, repair_meta = self._repair_json_response(response.content)
+            if repair_meta and isinstance(repair_meta.get("response"), object):
+                repaired_response = repair_meta.get("response")
+                if repaired_response is not None:
+                    responses.append(repaired_response)
+            if repaired is not None:
+                parsed = repaired
+            else:
+                retried, retry_meta = self._retry_generation(error or "Failed to parse sub-agent output", response.content)
+                if retry_meta and isinstance(retry_meta.get("response"), object):
+                    retry_response = retry_meta.get("response")
+                    if retry_response is not None:
+                        responses.append(retry_response)
+                if retried is not None:
+                    parsed = retried
+                else:
+                    final_error = ""
+                    if retry_meta and str(retry_meta.get("error", "")).strip():
+                        final_error = str(retry_meta.get("error", "")).strip()
+                    elif repair_meta and str(repair_meta.get("error", "")).strip():
+                        final_error = str(repair_meta.get("error", "")).strip()
+                    else:
+                        final_error = error or "Failed to parse sub-agent output"
+                    return {
+                        "component_name": self.component.get("name", "unknown"),
+                        "error": final_error,
+                        "raw": str((responses[-1].content if responses else response.content) or "")[:500],
+                        "total_loc": 0,
+                        "files": [],
+                        "_llm_metrics": {
+                            "tokens_used": sum(r.input_tokens + r.output_tokens for r in responses),
+                            "latency_ms": sum(r.latency_ms for r in responses),
+                        },
+                    }
+
+        parsed["_llm_metrics"] = {
+            "tokens_used": sum(r.input_tokens + r.output_tokens for r in responses),
+            "latency_ms": sum(r.latency_ms for r in responses),
+        }
+        return parsed
 
 
 def _handoff_dispatch_record(component_handoff: dict[str, Any]) -> dict[str, Any]:

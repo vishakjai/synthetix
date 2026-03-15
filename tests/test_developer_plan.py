@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock
 
 from agents.architect import ArchitectAgent
-from agents.developer import DeveloperAgent
+from agents.developer import DeveloperAgent, DeveloperSubAgent
 
 
 class DeveloperPlanAlignmentTest(unittest.TestCase):
@@ -297,6 +297,159 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
             result.output.get("subagent_failure_report", {}).get("component_failures", [])[0].get("error"),
             "Generated file payload is invalid",
         )
+
+    def test_subagent_retries_after_empty_response_and_succeeds(self):
+        llm = self._llm()
+        llm.invoke.side_effect = [
+            Mock(content="", input_tokens=1, output_tokens=1, latency_ms=1.0),
+            Mock(
+                content=json.dumps(
+                    {
+                        "component_name": "AuthenticationService",
+                        "language": "C#",
+                        "framework": "ASP.NET Core 8",
+                        "files": [
+                            {
+                                "path": "Program.cs",
+                                "description": "Entrypoint",
+                                "code": "var builder = WebApplication.CreateBuilder(args);",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "AuthenticationService.csproj",
+                                "description": "Project file",
+                                "code": "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Controllers/HealthController.cs",
+                                "description": "Health controller",
+                                "code": "public class HealthController {}",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Dockerfile",
+                                "description": "Container",
+                                "code": "FROM mcr.microsoft.com/dotnet/aspnet:8.0",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "README.md",
+                                "description": "Docs",
+                                "code": "# AuthenticationService",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Tests/SmokeTests.cs",
+                                "description": "Smoke test",
+                                "code": "public class SmokeTests {}",
+                                "lines_of_code": 1,
+                            },
+                        ],
+                        "dependencies": [],
+                        "environment_variables": ["PORT"],
+                        "docker_support": True,
+                        "total_loc": 6,
+                        "notes": "Recovered on retry.",
+                    }
+                ),
+                input_tokens=2,
+                output_tokens=2,
+                latency_ms=2.0,
+            ),
+        ]
+
+        result = DeveloperSubAgent(
+            llm=llm,
+            component={"name": "AuthenticationService", "type": "api", "language": "C#"},
+            requirements={"executive_summary": "Modernize auth."},
+            component_handoff={"component_name": "AuthenticationService"},
+            modernization_language="C#",
+        ).run()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result.get("component_name"), "AuthenticationService")
+        self.assertEqual(len(result.get("files", [])), 6)
+        self.assertEqual(result.get("_llm_metrics", {}).get("tokens_used"), 6)
+
+    def test_subagent_repairs_wrapped_json_response(self):
+        llm = self._llm()
+        llm.invoke.side_effect = [
+            Mock(content="Here is the implementation you asked for.", input_tokens=1, output_tokens=1, latency_ms=1.0),
+            Mock(
+                content=json.dumps(
+                    {
+                        "component_name": "ExperienceShell",
+                        "language": "C#",
+                        "framework": "ASP.NET Core 8",
+                        "files": [
+                            {
+                                "path": "Program.cs",
+                                "description": "Entrypoint",
+                                "code": "var builder = WebApplication.CreateBuilder(args);",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "ExperienceShell.csproj",
+                                "description": "Project file",
+                                "code": "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Pages/Index.cshtml",
+                                "description": "UI shell",
+                                "code": "<h1>ExperienceShell</h1>",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Pages/_ViewImports.cshtml",
+                                "description": "Razor imports",
+                                "code": "@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Dockerfile",
+                                "description": "Container",
+                                "code": "FROM mcr.microsoft.com/dotnet/aspnet:8.0",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "README.md",
+                                "description": "Docs",
+                                "code": "# ExperienceShell",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Tests/SmokeTests.cs",
+                                "description": "Smoke test",
+                                "code": "public class SmokeTests {}",
+                                "lines_of_code": 1,
+                            },
+                        ],
+                        "dependencies": [],
+                        "environment_variables": ["PORT"],
+                        "docker_support": True,
+                        "total_loc": 7,
+                        "notes": "Recovered via repair.",
+                    }
+                ),
+                input_tokens=2,
+                output_tokens=2,
+                latency_ms=2.0,
+            ),
+        ]
+
+        result = DeveloperSubAgent(
+            llm=llm,
+            component={"name": "ExperienceShell", "type": "frontend", "language": "C#"},
+            requirements={"executive_summary": "Modernize shell."},
+            component_handoff={"component_name": "ExperienceShell"},
+            modernization_language="C#",
+        ).run()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result.get("component_name"), "ExperienceShell")
+        self.assertEqual(len(result.get("files", [])), 7)
 
 
 if __name__ == "__main__":
