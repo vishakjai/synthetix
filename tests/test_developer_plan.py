@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import call
 from unittest.mock import Mock
 
 from agents.architect import ArchitectAgent
@@ -525,6 +526,92 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result.get("component_name"), "AuthenticationService")
         self.assertEqual(len(result.get("files", [])), 6)
+
+    def test_subagent_falls_back_to_secondary_model_when_primary_is_empty(self):
+        llm = self._llm()
+        llm.config.provider = "openai"
+        llm.config.get_model = Mock(return_value="gpt-5")
+        llm.invoke_with_tools.side_effect = [
+            Mock(content="", tool_calls=[], input_tokens=1, output_tokens=1, latency_ms=1.0),
+            Mock(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "emit_component_artifact",
+                        "arguments": {
+                            "component_name": "AuthenticationService",
+                            "language": "C#",
+                            "framework": "ASP.NET Core 8",
+                            "files": [
+                                {
+                                    "path": "Program.cs",
+                                    "description": "Entrypoint",
+                                    "code": "var builder = WebApplication.CreateBuilder(args);",
+                                    "lines_of_code": 1,
+                                },
+                                {
+                                    "path": "AuthenticationService.csproj",
+                                    "description": "Project file",
+                                    "code": "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>",
+                                    "lines_of_code": 1,
+                                },
+                                {
+                                    "path": "Controllers/HealthController.cs",
+                                    "description": "Health controller",
+                                    "code": "public class HealthController {}",
+                                    "lines_of_code": 1,
+                                },
+                                {
+                                    "path": "Dockerfile",
+                                    "description": "Container",
+                                    "code": "FROM mcr.microsoft.com/dotnet/aspnet:8.0",
+                                    "lines_of_code": 1,
+                                },
+                                {
+                                    "path": "README.md",
+                                    "description": "Docs",
+                                    "code": "# AuthenticationService",
+                                    "lines_of_code": 1,
+                                },
+                                {
+                                    "path": "Tests/SmokeTests.cs",
+                                    "description": "Smoke test",
+                                    "code": "public class SmokeTests {}",
+                                    "lines_of_code": 1,
+                                },
+                            ],
+                            "dependencies": [],
+                            "environment_variables": ["PORT"],
+                            "docker_support": True,
+                            "total_loc": 6,
+                            "notes": "Fallback model output.",
+                        },
+                    }
+                ],
+                input_tokens=2,
+                output_tokens=2,
+                latency_ms=2.0,
+            ),
+        ]
+        llm.invoke.return_value = Mock(content="", input_tokens=1, output_tokens=1, latency_ms=1.0)
+
+        result = DeveloperSubAgent(
+            llm=llm,
+            component={"name": "AuthenticationService", "type": "api", "language": "C#"},
+            requirements={"executive_summary": "Modernize auth."},
+            component_handoff={"component_name": "AuthenticationService"},
+            modernization_language="C#",
+        ).run()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result.get("component_name"), "AuthenticationService")
+        self.assertEqual(len(result.get("files", [])), 6)
+        self.assertTrue(
+            any(
+                candidate.kwargs.get("model_override") == "gpt-4o"
+                for candidate in llm.invoke_with_tools.call_args_list
+            )
+        )
 
 
 if __name__ == "__main__":

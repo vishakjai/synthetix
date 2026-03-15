@@ -140,9 +140,9 @@ class LLMClient:
         model = str(self.config.openai_model or "").strip()
         return bool(key and model)
 
-    def _fallback_invoke_openai(self, system_prompt: str, user_message: str) -> LLMResponse:
+    def _fallback_invoke_openai(self, system_prompt: str, user_message: str, model_override: str = "") -> LLMResponse:
         client = self._get_openai_client()
-        model = self.config.openai_model
+        model = str(model_override or self.config.openai_model).strip()
         response = client.chat.completions.create(
             model=model,
             **self._openai_sampling_kwargs(model),
@@ -167,9 +167,10 @@ class LLMClient:
         user_message: str,
         tools: list[dict[str, Any]],
         tool_choice: str,
+        model_override: str = "",
     ) -> LLMResponse:
         client = self._get_openai_client()
-        model = self.config.openai_model
+        model = str(model_override or self.config.openai_model).strip()
         response = client.chat.completions.create(
             model=model,
             **self._openai_sampling_kwargs(model),
@@ -207,21 +208,21 @@ class LLMClient:
             tool_calls=tool_calls,
         )
 
-    def invoke(self, system_prompt: str, user_message: str) -> LLMResponse:
+    def invoke(self, system_prompt: str, user_message: str, model_override: str = "") -> LLMResponse:
         """Send a message to the configured LLM and return structured response."""
         start_time = time.time()
         try:
             if self.config.provider == LLMProvider.ANTHROPIC:
-                response = self._invoke_anthropic(system_prompt, user_message)
+                response = self._invoke_anthropic(system_prompt, user_message, model_override=model_override)
             else:
-                response = self._invoke_openai(system_prompt, user_message)
+                response = self._invoke_openai(system_prompt, user_message, model_override=model_override)
         except Exception as exc:
             if (
                 self.config.provider == LLMProvider.ANTHROPIC
                 and self._is_anthropic_billing_error(exc)
                 and self._can_fallback_to_openai()
             ):
-                response = self._fallback_invoke_openai(system_prompt, user_message)
+                response = self._fallback_invoke_openai(system_prompt, user_message, model_override=model_override)
             else:
                 raise
 
@@ -241,6 +242,7 @@ class LLMClient:
         user_message: str,
         tools: list[dict[str, Any]],
         tool_choice: str = "auto",
+        model_override: str = "",
     ) -> LLMResponse:
         """
         Send a message with tool definitions and return tool calls requested by the LLM.
@@ -256,6 +258,7 @@ class LLMClient:
                     user_message,
                     tools,
                     tool_choice,
+                    model_override=model_override,
                 )
             else:
                 response = self._invoke_openai_with_tools(
@@ -263,6 +266,7 @@ class LLMClient:
                     user_message,
                     tools,
                     tool_choice,
+                    model_override=model_override,
                 )
         except Exception as exc:
             if (
@@ -275,16 +279,18 @@ class LLMClient:
                     user_message,
                     tools,
                     tool_choice,
+                    model_override=model_override,
                 )
             else:
                 raise
         response.latency_ms = (time.time() - start_time) * 1000
         return response
 
-    def _invoke_anthropic(self, system_prompt: str, user_message: str) -> LLMResponse:
+    def _invoke_anthropic(self, system_prompt: str, user_message: str, model_override: str = "") -> LLMResponse:
         client = self._get_anthropic_client()
+        model = str(model_override or self.config.get_model()).strip()
         response = client.messages.create(
-            model=self.config.get_model(),
+            model=model,
             max_tokens=self.config.max_output_tokens,
             temperature=self.config.temperature,
             system=system_prompt,
@@ -292,7 +298,7 @@ class LLMClient:
         )
         return LLMResponse(
             content=response.content[0].text,
-            model=self.config.get_model(),
+            model=model,
             provider="anthropic",
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
@@ -305,8 +311,10 @@ class LLMClient:
         user_message: str,
         tools: list[dict[str, Any]],
         tool_choice: str,
+        model_override: str = "",
     ) -> LLMResponse:
         client = self._get_anthropic_client()
+        model = str(model_override or self.config.get_model()).strip()
         anthropic_tools = []
         for tool in tools:
             fn = tool.get("function", {})
@@ -322,7 +330,7 @@ class LLMClient:
             )
 
         response = client.messages.create(
-            model=self.config.get_model(),
+            model=model,
             max_tokens=self.config.max_output_tokens,
             temperature=self.config.temperature,
             system=system_prompt,
@@ -348,7 +356,7 @@ class LLMClient:
 
         return LLMResponse(
             content="\n".join(p for p in content_parts if p),
-            model=self.config.get_model(),
+            model=model,
             provider="anthropic",
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
@@ -356,12 +364,13 @@ class LLMClient:
             tool_calls=tool_calls,
         )
 
-    def _invoke_openai(self, system_prompt: str, user_message: str) -> LLMResponse:
+    def _invoke_openai(self, system_prompt: str, user_message: str, model_override: str = "") -> LLMResponse:
         client = self._get_openai_client()
+        model = str(model_override or self.config.get_model()).strip()
         response = client.chat.completions.create(
-            model=self.config.get_model(),
-            **self._openai_sampling_kwargs(),
-            **self._openai_token_limit_kwargs(),
+            model=model,
+            **self._openai_sampling_kwargs(model),
+            **self._openai_token_limit_kwargs(model),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -369,7 +378,7 @@ class LLMClient:
         )
         return LLMResponse(
             content=self._openai_message_text(response.choices[0].message),
-            model=self.config.get_model(),
+            model=model,
             provider="openai",
             input_tokens=response.usage.prompt_tokens,
             output_tokens=response.usage.completion_tokens,
@@ -382,12 +391,14 @@ class LLMClient:
         user_message: str,
         tools: list[dict[str, Any]],
         tool_choice: str,
+        model_override: str = "",
     ) -> LLMResponse:
         client = self._get_openai_client()
+        model = str(model_override or self.config.get_model()).strip()
         response = client.chat.completions.create(
-            model=self.config.get_model(),
-            **self._openai_sampling_kwargs(),
-            **self._openai_token_limit_kwargs(),
+            model=model,
+            **self._openai_sampling_kwargs(model),
+            **self._openai_token_limit_kwargs(model),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -414,7 +425,7 @@ class LLMClient:
 
         return LLMResponse(
             content=self._openai_message_text(message),
-            model=self.config.get_model(),
+            model=model,
             provider="openai",
             input_tokens=response.usage.prompt_tokens,
             output_tokens=response.usage.completion_tokens,

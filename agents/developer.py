@@ -7,6 +7,7 @@ Each sub-agent generates code for a specific service/component.
 from __future__ import annotations
 
 import json
+import os
 import concurrent.futures
 from datetime import datetime
 from typing import Any
@@ -180,6 +181,8 @@ Rules:
         return None
 
     def _invoke_generation(self, user_msg: str):
+        fallback_model = str(os.getenv("DEVELOPER_SUBAGENT_OPENAI_FALLBACK_MODEL", "gpt-4o")).strip()
+        current_model = str(getattr(self.llm.config, "get_model", lambda: "")() or "").strip()
         try:
             response = self.llm.invoke_with_tools(
                 self.SYSTEM_PROMPT,
@@ -188,21 +191,60 @@ Rules:
                 tool_choice="required",
             )
             tool_calls = getattr(response, "tool_calls", None)
-            content = getattr(response, "content", None)
-            if (isinstance(tool_calls, list) and tool_calls) or isinstance(content, str):
+            raw_content = getattr(response, "content", "")
+            content = raw_content.strip() if isinstance(raw_content, str) else ""
+            if (isinstance(tool_calls, list) and tool_calls) or content:
                 return response
         except Exception:
             pass
-        return self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+        response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+        raw_content = getattr(response, "content", "")
+        content = raw_content.strip() if isinstance(raw_content, str) else ""
+        if content:
+            return response
+        if (
+            str(getattr(self.llm.config, "provider", "")).lower().endswith("openai")
+            and fallback_model
+            and fallback_model.lower() != current_model.lower()
+        ):
+            try:
+                fallback_response = self.llm.invoke_with_tools(
+                    self.SYSTEM_PROMPT,
+                    user_msg,
+                    self.GENERATION_TOOLS,
+                    tool_choice="required",
+                    model_override=fallback_model,
+                )
+                fallback_tool_calls = getattr(fallback_response, "tool_calls", None)
+                fallback_raw_content = getattr(fallback_response, "content", "")
+                fallback_content = fallback_raw_content.strip() if isinstance(fallback_raw_content, str) else ""
+                if (isinstance(fallback_tool_calls, list) and fallback_tool_calls) or fallback_content:
+                    return fallback_response
+            except Exception:
+                pass
+            return self.llm.invoke(self.SYSTEM_PROMPT, user_msg, model_override=fallback_model)
+        return response
 
     @staticmethod
     def _aggregate_metrics(responses: list[Any]) -> dict[str, Any]:
+        def _safe_int(value: Any) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        def _safe_float(value: Any) -> float:
+            try:
+                return float(value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
         return {
             "tokens_used": sum(
-                int(getattr(r, "input_tokens", 0) or 0) + int(getattr(r, "output_tokens", 0) or 0)
+                _safe_int(getattr(r, "input_tokens", 0)) + _safe_int(getattr(r, "output_tokens", 0))
                 for r in responses
             ),
-            "latency_ms": sum(float(getattr(r, "latency_ms", 0.0) or 0.0) for r in responses),
+            "latency_ms": sum(_safe_float(getattr(r, "latency_ms", 0.0)) for r in responses),
         }
 
     def _try_parse_tool_payload(self, tool_calls: list[dict[str, Any]] | None) -> tuple[dict[str, Any] | None, str | None]:
@@ -1621,10 +1663,16 @@ Requirements context:
                     # Do not expose internal metrics in final artifact payload.
                     result.pop("_llm_metrics", None)
                     sub_results.append(result)
-                    self.log(
-                        f"[{self.name}]   ✓ {comp_name} complete ({loc} LOC, "
-                        f"{len(result.get('files', []))} files)"
-                    )
+                    if str(result.get("error", "")).strip():
+                        self.log(
+                            f"[{self.name}]   ✗ {comp_name} failed: "
+                            f"{str(result.get('error', '')).strip()}"
+                        )
+                    else:
+                        self.log(
+                            f"[{self.name}]   ✓ {comp_name} complete ({loc} LOC, "
+                            f"{len(result.get('files', []))} files)"
+                        )
                 except Exception as e:
                     self.log(f"[{self.name}]   ✗ {comp_name} failed: {e}")
                     sub_results.append({
