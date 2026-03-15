@@ -92,6 +92,59 @@ Rules:
 - never leave files[].code empty
 - keep code as plain string values; do not wrap code in markdown fences"""
 
+    GENERATION_TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "emit_component_artifact",
+                "description": "Return the generated component implementation as structured files and metadata.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "component_name": {"type": "string"},
+                        "language": {"type": "string"},
+                        "framework": {"type": "string"},
+                        "files": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "code": {"type": "string"},
+                                    "lines_of_code": {"type": "number"},
+                                },
+                                "required": ["path", "description", "code", "lines_of_code"],
+                            },
+                        },
+                        "dependencies": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "environment_variables": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "docker_support": {"type": "boolean"},
+                        "total_loc": {"type": "number"},
+                        "notes": {"type": "string"},
+                    },
+                    "required": [
+                        "component_name",
+                        "language",
+                        "framework",
+                        "files",
+                        "dependencies",
+                        "environment_variables",
+                        "docker_support",
+                        "total_loc",
+                        "notes",
+                    ],
+                },
+            },
+        }
+    ]
+
     def __init__(
         self,
         llm: LLMClient,
@@ -125,6 +178,47 @@ Rules:
             if not path or not code:
                 return "Generated file payload is invalid"
         return None
+
+    def _invoke_generation(self, user_msg: str):
+        try:
+            response = self.llm.invoke_with_tools(
+                self.SYSTEM_PROMPT,
+                user_msg,
+                self.GENERATION_TOOLS,
+                tool_choice="required",
+            )
+            tool_calls = getattr(response, "tool_calls", None)
+            content = getattr(response, "content", None)
+            if (isinstance(tool_calls, list) and tool_calls) or isinstance(content, str):
+                return response
+        except Exception:
+            pass
+        return self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+
+    @staticmethod
+    def _aggregate_metrics(responses: list[Any]) -> dict[str, Any]:
+        return {
+            "tokens_used": sum(
+                int(getattr(r, "input_tokens", 0) or 0) + int(getattr(r, "output_tokens", 0) or 0)
+                for r in responses
+            ),
+            "latency_ms": sum(float(getattr(r, "latency_ms", 0.0) or 0.0) for r in responses),
+        }
+
+    def _try_parse_tool_payload(self, tool_calls: list[dict[str, Any]] | None) -> tuple[dict[str, Any] | None, str | None]:
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return None, "No tool payload returned"
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            arguments = call.get("arguments", {})
+            if not isinstance(arguments, dict):
+                continue
+            file_error = self._validate_generated_files(arguments)
+            if file_error:
+                return None, file_error
+            return arguments, None
+        return None, "No tool payload returned"
 
     def _required_file_hints(self) -> list[str]:
         component_name = str(self.component.get("name", "Component")).strip() or "Component"
@@ -291,8 +385,10 @@ PREVIOUS INVALID RESPONSE EXCERPT:
 ```
 
 Retry now. Return only the corrected JSON object."""
-        retry_response = self.llm.invoke(self.SYSTEM_PROMPT, retry_user)
-        parsed, error = self._try_parse_payload(retry_response.content)
+        retry_response = self._invoke_generation(retry_user)
+        parsed, error = self._try_parse_tool_payload(getattr(retry_response, "tool_calls", []))
+        if parsed is None:
+            parsed, error = self._try_parse_payload(retry_response.content)
         if parsed is not None:
             return parsed, {
                 "response": retry_response,
@@ -309,10 +405,12 @@ Retry now. Return only the corrected JSON object."""
     def run(self) -> dict[str, Any]:
         responses = []
         user_msg = self._build_user_message()
-        response = self.llm.invoke(self.SYSTEM_PROMPT, user_msg)
+        response = self._invoke_generation(user_msg)
         responses.append(response)
 
-        parsed, error = self._try_parse_payload(response.content)
+        parsed, error = self._try_parse_tool_payload(getattr(response, "tool_calls", []))
+        if parsed is None:
+            parsed, error = self._try_parse_payload(response.content)
         if parsed is None:
             repaired, repair_meta = self._repair_json_response(response.content)
             if repair_meta and isinstance(repair_meta.get("response"), object):
@@ -343,16 +441,10 @@ Retry now. Return only the corrected JSON object."""
                         "raw": str((responses[-1].content if responses else response.content) or "")[:500],
                         "total_loc": 0,
                         "files": [],
-                        "_llm_metrics": {
-                            "tokens_used": sum(r.input_tokens + r.output_tokens for r in responses),
-                            "latency_ms": sum(r.latency_ms for r in responses),
-                        },
+                        "_llm_metrics": self._aggregate_metrics(responses),
                     }
 
-        parsed["_llm_metrics"] = {
-            "tokens_used": sum(r.input_tokens + r.output_tokens for r in responses),
-            "latency_ms": sum(r.latency_ms for r in responses),
-        }
+        parsed["_llm_metrics"] = self._aggregate_metrics(responses)
         return parsed
 
 

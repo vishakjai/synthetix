@@ -374,6 +374,7 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
 
     def test_subagent_repairs_wrapped_json_response(self):
         llm = self._llm()
+        llm.invoke_with_tools.side_effect = RuntimeError("tool path unavailable")
         llm.invoke.side_effect = [
             Mock(content="Here is the implementation you asked for.", input_tokens=1, output_tokens=1, latency_ms=1.0),
             Mock(
@@ -450,6 +451,80 @@ class DeveloperPlanAlignmentTest(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertEqual(result.get("component_name"), "ExperienceShell")
         self.assertEqual(len(result.get("files", [])), 7)
+
+    def test_subagent_accepts_tool_payload_with_empty_message_content(self):
+        llm = self._llm()
+        llm.invoke_with_tools.return_value = Mock(
+            content="",
+            tool_calls=[
+                {
+                    "name": "emit_component_artifact",
+                    "arguments": {
+                        "component_name": "AuthenticationService",
+                        "language": "C#",
+                        "framework": "ASP.NET Core 8",
+                        "files": [
+                            {
+                                "path": "Program.cs",
+                                "description": "Entrypoint",
+                                "code": "var builder = WebApplication.CreateBuilder(args);",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "AuthenticationService.csproj",
+                                "description": "Project file",
+                                "code": "<Project Sdk=\"Microsoft.NET.Sdk.Web\"></Project>",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Controllers/HealthController.cs",
+                                "description": "Health controller",
+                                "code": "public class HealthController {}",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Dockerfile",
+                                "description": "Container",
+                                "code": "FROM mcr.microsoft.com/dotnet/aspnet:8.0",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "README.md",
+                                "description": "Docs",
+                                "code": "# AuthenticationService",
+                                "lines_of_code": 1,
+                            },
+                            {
+                                "path": "Tests/SmokeTests.cs",
+                                "description": "Smoke test",
+                                "code": "public class SmokeTests {}",
+                                "lines_of_code": 1,
+                            },
+                        ],
+                        "dependencies": [],
+                        "environment_variables": ["PORT"],
+                        "docker_support": True,
+                        "total_loc": 6,
+                        "notes": "Generated through tool call.",
+                    },
+                }
+            ],
+            input_tokens=2,
+            output_tokens=2,
+            latency_ms=2.0,
+        )
+
+        result = DeveloperSubAgent(
+            llm=llm,
+            component={"name": "AuthenticationService", "type": "api", "language": "C#"},
+            requirements={"executive_summary": "Modernize auth."},
+            component_handoff={"component_name": "AuthenticationService"},
+            modernization_language="C#",
+        ).run()
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result.get("component_name"), "AuthenticationService")
+        self.assertEqual(len(result.get("files", [])), 6)
 
 
 if __name__ == "__main__":
